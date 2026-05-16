@@ -1,0 +1,34 @@
+# config.ofs.example
+
+[design]
+netlist   = design.json
+top       = serial_alu
+cell_lib  = cells/osu018.yml
+liberty   = cells/osu018.lib
+yosys_ver = 0.61+129
+
+[fault_model]
+type                 = stuck_at
+collapsing           = false
+include_clock_faults = false
+include_reset_faults = false
+
+[simulation]
+unsupported_cells = fail
+verify            = false
+verify_tool       = iverilog
+tp_file           =
+
+[atpg]
+tool   = quaigh
+mode   = comb
+bench  = design.bench
+output = vectors.yml
+
+[report]
+output    = coverage_report.json
+threshold = 95.0
+verbose   = true
+
+[debug]
+level = INFO
