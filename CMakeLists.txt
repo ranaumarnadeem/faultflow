@@ -1,21 +1,23 @@
-cmake_minimum_required(VERSION 3.15)
-project(OpenFaultSim LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.20)
+project(faultflow LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Fetch Catch2 for testing
 include(FetchContent)
+
 FetchContent_Declare(
   Catch2
   GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-  GIT_TAG        v3.4.0
+  GIT_TAG v3.4.0
 )
-FetchContent_MakeAvailable(Catch2)
+FetchContent_Declare(
+  json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG v3.11.3
+)
+FetchContent_MakeAvailable(Catch2 json)
 
-# Include directories
-include_directories(${CMAKE_SOURCE_DIR}/src)
-
-# Tests
+add_subdirectory(src/core)
 enable_testing()
 add_subdirectory(tests/cpp)

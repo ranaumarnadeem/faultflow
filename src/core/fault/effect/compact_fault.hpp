@@ -1,0 +1,18 @@
+#pragma once
+
+#include <cstdint>
+
+#include "common/types.hpp"
+
+namespace faultflow {
+
+struct CompactFault {
+  uint32_t net_index = 0;
+  uint64_t sa_mask = 0;
+  FaultType type = FaultType::SA0;
+  uint8_t bit = 1;
+  FaultStatus status = FaultStatus::PENDING;
+  FaultExclusion exclusion = FaultExclusion::NONE;
+};
+
+}  // namespace faultflow
