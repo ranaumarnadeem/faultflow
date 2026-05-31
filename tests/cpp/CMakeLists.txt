@@ -2,11 +2,16 @@ add_executable(
   faultflow_tests
   test_main.cpp
   sim/test_gate_eval.cpp
+  sim/test_golden_ref.cpp
+  sim/test_bit_parallel.cpp
   ir/test_parsed_graph.cpp
   ir/test_normalized_graph.cpp
   ir/test_compiled_graph.cpp
   fault/test_enumerator.cpp
-  sim/test_golden_ref.cpp
+  fault/test_batch_manager.cpp
+  fixtures/test_tiny_fixtures.cpp
+  benchmarks/test_c17.cpp
+  sim/test_golden_ref_tiny.cpp
   helpers/test_helpers.cpp
 )
 

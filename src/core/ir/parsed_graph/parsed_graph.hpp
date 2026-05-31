@@ -44,6 +44,9 @@ struct ParsedGraph {
   static ParsedGraph from_file(const std::string& path);
 
   const ParsedModule& top_module() const;
+
+  // Resolve a port or netname in the top module to its Yosys net ID (first bit).
+  int net_id_by_name(const std::string& name) const;
 };
 
 }  // namespace faultflow

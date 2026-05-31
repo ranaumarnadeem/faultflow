@@ -16,8 +16,6 @@ uint64_t eval_bitwise(GateType type, const std::vector<uint64_t>& inputs) {
   const uint64_t in1 = pick(inputs, 1);
   const uint64_t in2 = pick(inputs, 2);
   const uint64_t in3 = pick(inputs, 3);
-  const uint64_t in4 = pick(inputs, 4);
-  const uint64_t in5 = pick(inputs, 5);
 
   switch (type) {
     case GateType::INV:
@@ -27,28 +25,16 @@ uint64_t eval_bitwise(GateType type, const std::vector<uint64_t>& inputs) {
       return in0;
     case GateType::AND2:
       return in0 & in1;
-    case GateType::AND3:
-      return in0 & in1 & in2;
-    case GateType::AND4:
-      return in0 & in1 & in2 & in3;
     case GateType::OR2:
       return in0 | in1;
-    case GateType::OR3:
-      return in0 | in1 | in2;
-    case GateType::OR4:
-      return in0 | in1 | in2 | in3;
     case GateType::NAND2:
       return ~(in0 & in1);
     case GateType::NAND3:
       return ~(in0 & in1 & in2);
-    case GateType::NAND4:
-      return ~(in0 & in1 & in2 & in3);
     case GateType::NOR2:
       return ~(in0 | in1);
     case GateType::NOR3:
       return ~(in0 | in1 | in2);
-    case GateType::NOR4:
-      return ~(in0 | in1 | in2 | in3);
     case GateType::XOR2:
       return in0 ^ in1;
     case GateType::XNOR2:
@@ -61,24 +47,9 @@ uint64_t eval_bitwise(GateType type, const std::vector<uint64_t>& inputs) {
       return ~((in0 | in1) & (in2 | in3));
     case GateType::AOI22:
       return ~((in0 & in1) | (in2 & in3));
-    case GateType::OAI211:
-      return ~((in0 | in1) & in2 & in3);
-    case GateType::AOI211:
-      return ~((in0 & in1) | in2 | in3);
-    case GateType::OAI221:
-      return ~((in0 | in1) & (in2 | in3) & in4);
-    case GateType::AOI221:
-      return ~((in0 & in1) | (in2 & in3) | in4);
-    case GateType::OAI222:
-      return ~((in0 | in1) & (in2 | in3) & (in4 | in5));
-    case GateType::AOI222:
-      return ~((in0 & in1) | (in2 & in3) | (in4 | in5));
     // OSU035 MUX2X1: Y = ~((S&A)|(~S&B)); pins A,B,S -> in0,in1,in2
     case GateType::MUX2:
       return ~((in2 & in0) | (~in2 & in1));
-    case GateType::MUX4:
-      return (~in5 & ~in4 & in0) | (~in5 & in4 & in1) | (in5 & ~in4 & in2) |
-             (in5 & in4 & in3);
     case GateType::CONST0:
       return 0ULL;
     case GateType::CONST1:
@@ -100,9 +71,7 @@ bool eval_scalar(GateType type, const std::vector<bool>& inputs) {
   const uint64_t w = eval_bitwise(type, {pick_b(inputs, 0) ? ~0ULL : 0ULL,
                                          pick_b(inputs, 1) ? ~0ULL : 0ULL,
                                          pick_b(inputs, 2) ? ~0ULL : 0ULL,
-                                         pick_b(inputs, 3) ? ~0ULL : 0ULL,
-                                         pick_b(inputs, 4) ? ~0ULL : 0ULL,
-                                         pick_b(inputs, 5) ? ~0ULL : 0ULL});
+                                         pick_b(inputs, 3) ? ~0ULL : 0ULL});
   return (w & 1ULL) != 0;
 }
 

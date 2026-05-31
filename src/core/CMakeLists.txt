@@ -6,7 +6,9 @@ add_library(
   ir/normalized_graph/cell_map.cpp
   ir/compiled_graph/graph_compiler.cpp
   fault/enumerator/fault_enumerator.cpp
+  fault/batch/batch_manager.cpp
   sim/golden_ref/golden_ref_sim.cpp
+  sim/engine/bit_parallel_sim.cpp
   sim/state/test_vector.cpp
 )
 

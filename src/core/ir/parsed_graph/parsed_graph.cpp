@@ -8,6 +8,44 @@
 namespace faultflow {
 namespace {
 
+bool attr_truthy(const nlohmann::json& v) {
+  if (v.is_boolean()) {
+    return v.get<bool>();
+  }
+  if (v.is_number_integer()) {
+    return v.get<int64_t>() != 0;
+  }
+  if (v.is_string()) {
+    const std::string s = v.get<std::string>();
+    if (s == "1") {
+      return true;
+    }
+    if (s == "0" || s.empty()) {
+      return false;
+    }
+    for (char c : s) {
+      if (c == '1') {
+        return true;
+      }
+    }
+    return false;
+  }
+  return false;
+}
+
+std::string attr_to_string(const nlohmann::json& v) {
+  if (v.is_string()) {
+    return v.get<std::string>();
+  }
+  if (v.is_number_integer()) {
+    return std::to_string(v.get<int64_t>());
+  }
+  if (v.is_boolean()) {
+    return v.get<bool>() ? "1" : "0";
+  }
+  return v.dump();
+}
+
 int parse_bit(const nlohmann::json& b) {
   if (b.is_number_integer()) {
     return b.get<int>();
@@ -55,16 +93,20 @@ ParsedGraph ParsedGraph::from_json(const nlohmann::json& j) {
     if (mod_j.contains("attributes") && mod_j["attributes"].is_object()) {
       for (auto a = mod_j["attributes"].begin(); a != mod_j["attributes"].end();
            ++a) {
-        mod.attrs[a.key()] = a.value().get<std::string>();
+        mod.attrs[a.key()] = attr_to_string(a.value());
       }
     }
 
-    if (mod.attrs.count("blackbox") && mod.attrs.at("blackbox") == "1") {
+    if (mod_j.contains("attributes") && mod_j["attributes"].is_object() &&
+        mod_j["attributes"].contains("blackbox") &&
+        attr_truthy(mod_j["attributes"]["blackbox"])) {
       g.lib_cells.insert(mod_name);
       continue;
     }
 
-    if (mod.attrs.count("top") && mod.attrs.at("top") == "1") {
+    if (mod_j.contains("attributes") && mod_j["attributes"].is_object() &&
+        mod_j["attributes"].contains("top") &&
+        attr_truthy(mod_j["attributes"]["top"])) {
       if (!g.top.empty()) {
         throw ParseError("Multiple top modules");
       }
@@ -101,7 +143,11 @@ ParsedGraph ParsedGraph::from_json(const nlohmann::json& j) {
         ParsedNet net;
         net.name = n.key();
         net.bits = parse_bits(n.value()["bits"]);
-        net.hide = n.value().value("hide", false);
+        if (n.value().contains("hide_name")) {
+          net.hide = attr_truthy(n.value()["hide_name"]);
+        } else {
+          net.hide = n.value().value("hide", false);
+        }
         mod.netnames[net.name] = std::move(net);
       }
     }
@@ -139,6 +185,19 @@ ParsedGraph ParsedGraph::from_file(const std::string& path) {
 
 const ParsedModule& ParsedGraph::top_module() const {
   return modules.at(top);
+}
+
+int ParsedGraph::net_id_by_name(const std::string& name) const {
+  const ParsedModule& mod = top_module();
+  auto port_it = mod.ports.find(name);
+  if (port_it != mod.ports.end() && !port_it->second.bits.empty()) {
+    return port_it->second.bits.front();
+  }
+  auto net_it = mod.netnames.find(name);
+  if (net_it != mod.netnames.end() && !net_it->second.bits.empty()) {
+    return net_it->second.bits.front();
+  }
+  throw ParseError("Unknown net or port name in top module: " + name);
 }
 
 }  // namespace faultflow
