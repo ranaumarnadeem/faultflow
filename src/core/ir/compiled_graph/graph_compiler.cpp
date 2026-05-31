@@ -18,6 +18,11 @@ uint32_t map_net(int yosys_id, std::map<int, int>& y2c, std::vector<int>& c2y) {
   return static_cast<uint32_t>(idx);
 }
 
+uint32_t map_synthetic_net(std::map<int, int>& y2c, std::vector<int>& c2y,
+                           int& next_synthetic) {
+  return map_net(next_synthetic--, y2c, c2y);
+}
+
 void wire_inputs(SimNode& sn, GateType gt,
                  const std::map<std::string, int>& pins,
                  std::map<int, int>& y2c, std::vector<int>& c2y) {
@@ -82,6 +87,127 @@ void wire_inputs(SimNode& sn, GateType gt,
   }
 }
 
+struct FanoutEdge {
+  size_t node_idx = 0;
+  int slot = 0;
+};
+
+uint32_t* input_slot(SimNode& sn, int slot) {
+  switch (slot) {
+    case 0:
+      return &sn.in0;
+    case 1:
+      return &sn.in1;
+    case 2:
+      return &sn.in2;
+    case 3:
+      return &sn.in3;
+    case 4:
+      return &sn.in4;
+    case 5:
+      return &sn.in5;
+    default:
+      return nullptr;
+  }
+}
+
+void split_fanout_branches(CompiledSimGraph& cg, std::map<int, int>& y2c,
+                           std::vector<int>& c2y, std::vector<int>& node_levels) {
+  int next_synthetic = -10000;
+  const uint32_t net_count = static_cast<uint32_t>(c2y.size());
+  std::vector<std::vector<FanoutEdge>> fanout_edges(net_count);
+
+  for (size_t ni = 0; ni < cg.nodes.size(); ++ni) {
+    SimNode& sn = cg.nodes[ni];
+    for (int slot = 0; slot < 6; ++slot) {
+      uint32_t* in = input_slot(sn, slot);
+      if (in != nullptr && *in != UNUSED_INPUT) {
+        fanout_edges[*in].push_back({ni, slot});
+      }
+    }
+  }
+
+  for (uint32_t stem = 0; stem < net_count; ++stem) {
+    if (fanout_edges[stem].size() <= 1) {
+      continue;
+    }
+    for (const FanoutEdge& edge : fanout_edges[stem]) {
+      const int consumer_level = static_cast<int>(node_levels[edge.node_idx]);
+      const uint32_t branch = map_synthetic_net(y2c, c2y, next_synthetic);
+      SimNode buf;
+      buf.type = GateType::BUF;
+      buf.in0 = stem;
+      buf.out = branch;
+      node_levels.push_back(std::max(0, consumer_level - 1));
+      cg.nodes.push_back(buf);
+
+      uint32_t* target = input_slot(cg.nodes[edge.node_idx], edge.slot);
+      if (target != nullptr) {
+        *target = branch;
+      }
+    }
+  }
+}
+
+void rebuild_level_starts(CompiledSimGraph& cg,
+                          const std::vector<int>& node_levels) {
+  cg.level_starts.clear();
+  if (cg.nodes.empty()) {
+    return;
+  }
+  std::vector<size_t> order(cg.nodes.size());
+  for (size_t i = 0; i < order.size(); ++i) {
+    order[i] = i;
+  }
+  std::stable_sort(order.begin(), order.end(),
+                   [&](size_t a, size_t b) {
+                     if (node_levels[a] != node_levels[b]) {
+                       return node_levels[a] < node_levels[b];
+                     }
+                     return a < b;
+                   });
+
+  std::vector<SimNode> sorted;
+  std::vector<int> sorted_levels;
+  sorted.reserve(cg.nodes.size());
+  sorted_levels.reserve(cg.nodes.size());
+  for (size_t idx : order) {
+    sorted.push_back(cg.nodes[idx]);
+    sorted_levels.push_back(node_levels[idx]);
+  }
+  cg.nodes = std::move(sorted);
+
+  int cur = sorted_levels[0];
+  cg.level_starts.push_back(0);
+  for (size_t i = 1; i < sorted_levels.size(); ++i) {
+    if (sorted_levels[i] != cur) {
+      cg.level_starts.push_back(static_cast<int>(i));
+      cur = sorted_levels[i];
+    }
+  }
+  cg.level_starts.push_back(static_cast<int>(cg.nodes.size()));
+}
+
+void rebuild_fanout_csr(CompiledSimGraph& cg) {
+  std::vector<std::vector<uint32_t>> fanout_lists(cg.net_count);
+  for (const auto& sn : cg.nodes) {
+    const uint32_t ins[] = {sn.in0, sn.in1, sn.in2, sn.in3, sn.in4, sn.in5};
+    for (uint32_t in : ins) {
+      if (in != UNUSED_INPUT) {
+        fanout_lists[in].push_back(sn.out);
+      }
+    }
+  }
+  cg.fanout_offsets.clear();
+  cg.fanout_targets.clear();
+  cg.fanout_offsets.push_back(0);
+  for (const auto& fo : fanout_lists) {
+    cg.fanout_targets.insert(cg.fanout_targets.end(), fo.begin(), fo.end());
+    cg.fanout_offsets.push_back(
+        static_cast<uint32_t>(cg.fanout_targets.size()));
+  }
+}
+
 }  // namespace
 
 CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
@@ -107,7 +233,7 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
               return a.first < b.first;
             });
 
-  std::vector<int> levels;
+  std::vector<int> node_levels;
   for (const auto& [nid, node] : ordered) {
     (void)nid;
     if (node->type != NodeType::GATE && node->type != NodeType::CONST) {
@@ -116,18 +242,18 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
 
     GateType gt = node->gate_type;
     if (gt == GateType::ADDF_S || gt == GateType::ADDH_S) {
-      // Multi-output lowering
       for (const auto& [pin, out_net] : node->output_pins) {
-        (void)pin;
         SimNode sn;
         if (pin == "S" || pin == "YS") {
-          sn.type = (gt == GateType::ADDF_S) ? GateType::ADDF_S : GateType::ADDH_S;
+          sn.type =
+              (gt == GateType::ADDF_S) ? GateType::ADDF_S : GateType::ADDH_S;
         } else {
-          sn.type = (gt == GateType::ADDF_S) ? GateType::ADDF_CO : GateType::ADDH_CO;
+          sn.type =
+              (gt == GateType::ADDF_S) ? GateType::ADDF_CO : GateType::ADDH_CO;
         }
         wire_inputs(sn, sn.type, node->input_pins, y2c, c2y);
         sn.out = map_net(out_net, y2c, c2y);
-        levels.push_back(node->level);
+        node_levels.push_back(node->level);
         cg.nodes.push_back(sn);
       }
       continue;
@@ -139,23 +265,13 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
       sn.type = gt;
       wire_inputs(sn, gt, node->input_pins, y2c, c2y);
       sn.out = map_net(out_net, y2c, c2y);
-      levels.push_back(node->level);
+      node_levels.push_back(node->level);
       cg.nodes.push_back(sn);
     }
   }
 
-  if (!cg.nodes.empty()) {
-    int cur = levels[0];
-    cg.level_starts.push_back(0);
-    for (size_t i = 1; i < cg.nodes.size(); ++i) {
-      if (levels[i] != cur) {
-        cg.level_starts.push_back(static_cast<int>(i));
-        cur = levels[i];
-      }
-    }
-    cg.level_starts.push_back(static_cast<int>(cg.nodes.size()));
-  }
-
+  split_fanout_branches(cg, y2c, c2y, node_levels);
+  rebuild_level_starts(cg, node_levels);
   cg.net_count = static_cast<int>(c2y.size());
   cg.yosys_to_compiled = std::move(y2c);
   cg.compiled_to_yosys = std::move(c2y);
@@ -171,22 +287,7 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
     }
   }
 
-  std::vector<std::vector<uint32_t>> fanout_lists(cg.net_count);
-  for (const auto& sn : cg.nodes) {
-    const uint32_t ins[] = {sn.in0, sn.in1, sn.in2, sn.in3, sn.in4, sn.in5};
-    for (uint32_t in : ins) {
-      if (in != UNUSED_INPUT) {
-        fanout_lists[in].push_back(sn.out);
-      }
-    }
-  }
-  cg.fanout_offsets.push_back(0);
-  for (const auto& fo : fanout_lists) {
-    cg.fanout_targets.insert(cg.fanout_targets.end(), fo.begin(), fo.end());
-    cg.fanout_offsets.push_back(
-        static_cast<uint32_t>(cg.fanout_targets.size()));
-  }
-
+  rebuild_fanout_csr(cg);
   return cg;
 }
 

@@ -23,15 +23,15 @@ bool pattern_match(const std::string& pattern, const std::string& name) {
 GateType parse_gate_type(const std::string& s) {
   static const std::map<std::string, GateType> kMap = {
       {"INV", GateType::INV},       {"BUF", GateType::BUF},
-      {"AND2", GateType::AND2},     {"AND3", GateType::AND3},
-      {"OR2", GateType::OR2},       {"NAND2", GateType::NAND2},
-      {"NAND3", GateType::NAND3},   {"NOR2", GateType::NOR2},
-      {"NOR3", GateType::NOR3},     {"XOR2", GateType::XOR2},
-      {"XNOR2", GateType::XNOR2},   {"MUX2", GateType::MUX2},
-      {"AOI21", GateType::AOI21},   {"AOI22", GateType::AOI22},
-      {"OAI21", GateType::OAI21},   {"OAI22", GateType::OAI22},
-      {"ADDF", GateType::ADDF_S},   {"ADDH", GateType::ADDH_S},
-      {"CONST0", GateType::CONST0}, {"CONST1", GateType::CONST1},
+      {"AND2", GateType::AND2},     {"OR2", GateType::OR2},
+      {"NAND2", GateType::NAND2},   {"NAND3", GateType::NAND3},
+      {"NOR2", GateType::NOR2},     {"NOR3", GateType::NOR3},
+      {"XOR2", GateType::XOR2},     {"XNOR2", GateType::XNOR2},
+      {"MUX2", GateType::MUX2},     {"AOI21", GateType::AOI21},
+      {"AOI22", GateType::AOI22},   {"OAI21", GateType::OAI21},
+      {"OAI22", GateType::OAI22},   {"ADDF", GateType::ADDF_S},
+      {"ADDH", GateType::ADDH_S},   {"CONST0", GateType::CONST0},
+      {"CONST1", GateType::CONST1},
   };
   auto it = kMap.find(s);
   if (it == kMap.end()) {
