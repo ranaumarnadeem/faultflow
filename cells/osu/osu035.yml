@@ -1,0 +1,129 @@
+# OSU035 cell map — quote keys with * and pin names to avoid YAML alias parsing.
+
+"INVX*":
+  node_type: GATE
+  gate_type: INV
+  inputs: ["A"]
+  outputs: {"Y": "Y"}
+
+"BUFX*":
+  node_type: GATE
+  gate_type: BUF
+  inputs: ["A"]
+  outputs: {"Y": "Y"}
+
+"CLKBUF*":
+  node_type: GATE
+  gate_type: BUF
+  inputs: ["A"]
+  outputs: {"Y": "Y"}
+
+"AND2X*":
+  node_type: GATE
+  gate_type: AND2
+  inputs: ["A", "B"]
+  outputs: {"Y": "Y"}
+
+"OR2X*":
+  node_type: GATE
+  gate_type: OR2
+  inputs: ["A", "B"]
+  outputs: {"Y": "Y"}
+
+"NAND2X*":
+  node_type: GATE
+  gate_type: NAND2
+  inputs: ["A", "B"]
+  outputs: {"Y": "Y"}
+
+"NAND3X*":
+  node_type: GATE
+  gate_type: NAND3
+  inputs: ["A", "B", "C"]
+  outputs: {"Y": "Y"}
+
+"NOR2X*":
+  node_type: GATE
+  gate_type: NOR2
+  inputs: ["A", "B"]
+  outputs: {"Y": "Y"}
+
+"NOR3X*":
+  node_type: GATE
+  gate_type: NOR3
+  inputs: ["A", "B", "C"]
+  outputs: {"Y": "Y"}
+
+"XOR2X*":
+  node_type: GATE
+  gate_type: XOR2
+  inputs: ["A", "B"]
+  outputs: {"Y": "Y"}
+
+"XNOR2X*":
+  node_type: GATE
+  gate_type: XNOR2
+  inputs: ["A", "B"]
+  outputs: {"Y": "Y"}
+
+"MUX2X*":
+  node_type: GATE
+  gate_type: MUX2
+  inputs: ["A", "B", "S"]
+  outputs: {"Y": "Y"}
+
+"AOI21X*":
+  node_type: GATE
+  gate_type: AOI21
+  inputs: ["A", "B", "C"]
+  outputs: {"Y": "Y"}
+
+"AOI22X*":
+  node_type: GATE
+  gate_type: AOI22
+  inputs: ["A", "B", "C", "D"]
+  outputs: {"Y": "Y"}
+
+"OAI21X*":
+  node_type: GATE
+  gate_type: OAI21
+  inputs: ["A", "B", "C"]
+  outputs: {"Y": "Y"}
+
+"OAI22X*":
+  node_type: GATE
+  gate_type: OAI22
+  inputs: ["A", "B", "C", "D"]
+  outputs: {"Y": "Y"}
+
+FAX1:
+  node_type: GATE
+  gate_type: ADDF
+  inputs: ["A", "B", "C"]
+  outputs: {"S": "YS", "CO": "YC"}
+
+HAX1:
+  node_type: GATE
+  gate_type: ADDH
+  inputs: ["A", "B"]
+  outputs: {"S": "YS", "CO": "YC"}
+
+"DFFPOSX*":
+  node_type: FF
+
+"DFFNEGX*":
+  node_type: FF
+
+DFFSR:
+  node_type: FF
+
+LATCH:
+  node_type: LATCH
+
+"TBUFX*":
+  node_type: TBUF
+
+"PAD*":
+  node_type: GATE
+  gate_type: BUF
+  unsupported: true
