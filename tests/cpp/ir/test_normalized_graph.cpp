@@ -22,18 +22,19 @@ TEST_CASE("lookup_gate_type OSU035", "[normalized_graph]") {
   REQUIRE(lookup_gate_type(yaml, "OAI21X1") == GateType::OAI21);
 }
 
-TEST_CASE("NormalizedGraph tiny_and2 levelization", "[normalized_graph]") {
-  const NormalizedGraph ng = test::load_normalized("tiny_and2.json");
-  REQUIRE(ng.PIs.count(2) == 1);
-  REQUIRE(ng.PIs.count(3) == 1);
-  REQUIRE(ng.POs.count(4) == 1);
-  int and_level = -1;
+TEST_CASE("NormalizedGraph c17 levelization", "[normalized_graph]") {
+  const NormalizedGraph ng =
+      test::load_normalized_benchmark("iscas85/synth/c17.json");
+  REQUIRE(ng.PIs.size() == 5);
+  REQUIRE(ng.POs.size() == 2);
+  int max_level = -1;
   for (const auto& [id, node] : ng.nodes) {
-    if (node.gate_type == GateType::AND2) {
-      and_level = node.level;
+    (void)id;
+    if (node.gate_type != GateType::INPUT) {
+      max_level = std::max(max_level, node.level);
     }
   }
-  REQUIRE(and_level >= 1);
+  REQUIRE(max_level >= 1);
 }
 
 TEST_CASE("Unsupported cell policy fail", "[normalized_graph]") {
@@ -41,7 +42,7 @@ TEST_CASE("Unsupported cell policy fail", "[normalized_graph]") {
   const std::string json = R"({
     "modules": {
       "m": {
-        "attributes": {"top": "1"},
+        "attributes": {"top": "00000000000000000000000000000001"},
         "ports": {"A": {"direction": "input", "bits": [2]}, "Y": {"direction": "output", "bits": [3]}},
         "cells": {"u0": {"type": "TBUFX1", "connections": {"A": [2], "EN": [3], "Y": [4]}}},
         "netnames": {}

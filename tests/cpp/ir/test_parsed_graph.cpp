@@ -6,15 +6,26 @@
 
 using namespace faultflow;
 
-TEST_CASE("ParsedGraph loads tiny_and2", "[parsed_graph]") {
-  const ParsedGraph g = test::load_parsed("tiny_and2.json");
-  REQUIRE(g.top == "tiny_and2");
-  REQUIRE(g.modules.count("tiny_and2") == 1);
-  REQUIRE(g.lib_cells.empty());
+TEST_CASE("ParsedGraph loads synthesized c17", "[parsed_graph]") {
+  const ParsedGraph g =
+      test::load_parsed_benchmark("iscas85/synth/c17.json");
+  REQUIRE(g.top == "c17");
+  REQUIRE(g.modules.count("c17") == 1);
+  REQUIRE(g.lib_cells.count("NAND2X1") == 1);
+  REQUIRE(g.lib_cells.count("INVX1") == 1);
+  REQUIRE_FALSE(g.lib_cells.count("c17"));
 
   const auto& mod = g.top_module();
-  REQUIRE(mod.cells.at("u0").type == "AND2X1");
-  REQUIRE(mod.ports.at("A").bits == std::vector<int>{2});
+  REQUIRE(mod.ports.at("N1").bits == std::vector<int>{2});
+  REQUIRE(mod.ports.at("N22").bits == std::vector<int>{7});
+  REQUIRE(mod.cells.size() == 6);
+}
+
+TEST_CASE("ParsedGraph net_id_by_name c17", "[parsed_graph]") {
+  const ParsedGraph g =
+      test::load_parsed_benchmark("iscas85/synth/c17.json");
+  REQUIRE(g.net_id_by_name("N1") == 2);
+  REQUIRE(g.net_id_by_name("N23") == 8);
 }
 
 TEST_CASE("ParsedGraph parse errors", "[parsed_graph]") {

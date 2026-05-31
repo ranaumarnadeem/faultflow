@@ -1,0 +1,148 @@
+{
+  "creator": "Yosys 0.61+129 (faultflow fixture generator)",
+  "modules": {
+    "tiny_reconverge": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "A": {
+          "direction": "input",
+          "bits": [
+            2
+          ]
+        },
+        "B": {
+          "direction": "input",
+          "bits": [
+            3
+          ]
+        },
+        "C": {
+          "direction": "input",
+          "bits": [
+            4
+          ]
+        },
+        "Y": {
+          "direction": "output",
+          "bits": [
+            7
+          ]
+        }
+      },
+      "cells": {
+        "u0": {
+          "hide_name": 0,
+          "type": "AND2X1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [
+              2
+            ],
+            "B": [
+              3
+            ],
+            "Y": [
+              5
+            ]
+          }
+        },
+        "u1": {
+          "hide_name": 0,
+          "type": "AND2X1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [
+              2
+            ],
+            "B": [
+              4
+            ],
+            "Y": [
+              6
+            ]
+          }
+        },
+        "u2": {
+          "hide_name": 0,
+          "type": "OR2X1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [
+              5
+            ],
+            "B": [
+              6
+            ],
+            "Y": [
+              7
+            ]
+          }
+        }
+      },
+      "netnames": {
+        "A": {
+          "hide_name": 0,
+          "bits": [
+            2
+          ],
+          "attributes": {}
+        },
+        "B": {
+          "hide_name": 0,
+          "bits": [
+            3
+          ],
+          "attributes": {}
+        },
+        "C": {
+          "hide_name": 0,
+          "bits": [
+            4
+          ],
+          "attributes": {}
+        },
+        "Y": {
+          "hide_name": 0,
+          "bits": [
+            7
+          ],
+          "attributes": {}
+        },
+        "n5": {
+          "hide_name": 1,
+          "bits": [
+            5
+          ],
+          "attributes": {}
+        },
+        "n6": {
+          "hide_name": 1,
+          "bits": [
+            6
+          ],
+          "attributes": {}
+        }
+      }
+    }
+  }
+}

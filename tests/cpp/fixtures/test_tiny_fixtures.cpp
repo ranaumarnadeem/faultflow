@@ -1,0 +1,96 @@
+#include <catch2/catch_test_macros.hpp>
+
+#include <algorithm>
+
+#include "fault/enumerator/fault_enumerator.hpp"
+#include "helpers/test_helpers.hpp"
+
+using namespace faultflow;
+
+namespace {
+
+const char* kTinyFixtures[] = {
+    "tiny_inv.json",
+    "tiny_buf.json",
+    "tiny_and2.json",
+    "tiny_or2.json",
+    "tiny_nand2.json",
+    "tiny_nand3.json",
+    "tiny_nor2.json",
+    "tiny_nor3.json",
+    "tiny_xor2.json",
+    "tiny_xnor2.json",
+    "tiny_mux2.json",
+    "tiny_aoi21.json",
+    "tiny_aoi22.json",
+    "tiny_oai21.json",
+    "tiny_oai22.json",
+    "tiny_addf.json",
+    "tiny_addh.json",
+    "tiny_chain.json",
+    "tiny_reconverge.json",
+};
+
+}  // namespace
+
+TEST_CASE("Tiny fixtures golden vs parallel", "[tiny_fixtures][bit_parallel]") {
+  for (const char* fixture : kTinyFixtures) {
+    INFO("fixture: " << fixture);
+    const NormalizedGraph ng = test::load_normalized(fixture);
+    const CompiledSimGraph cg = test::load_compiled(fixture);
+    const auto faults = enumerate_faults(ng, cg);
+    std::vector<int> pi_ids(ng.PIs.begin(), ng.PIs.end());
+    std::sort(pi_ids.begin(), pi_ids.end());
+    const test::VectorSet vs = test::generate_complete_input_space(pi_ids);
+    const auto mismatches =
+        test::verify_parallel_matches_golden(cg, ng, faults, vs);
+    REQUIRE(mismatches.empty());
+  }
+}
+
+TEST_CASE("FaultEnumerator tiny_and2", "[tiny_fixtures][enumerator]") {
+  const NormalizedGraph ng = test::load_normalized("tiny_and2.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_and2.json");
+  const auto faults = enumerate_faults(ng, cg);
+  REQUIRE(faults.size() == static_cast<size_t>(cg.net_count) * 2);
+}
+
+TEST_CASE("CompiledSimGraph ADDF lowering tiny_addf", "[tiny_fixtures][compiled]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_addf.json");
+  int addf_s = 0;
+  int addf_co = 0;
+  const SimNode* s_node = nullptr;
+  const SimNode* co_node = nullptr;
+  for (const auto& sn : cg.nodes) {
+    if (sn.type == GateType::ADDF_S) {
+      ++addf_s;
+      s_node = &sn;
+    }
+    if (sn.type == GateType::ADDF_CO) {
+      ++addf_co;
+      co_node = &sn;
+    }
+  }
+  REQUIRE(addf_s == 1);
+  REQUIRE(addf_co == 1);
+  REQUIRE(s_node != nullptr);
+  REQUIRE(co_node != nullptr);
+  REQUIRE(s_node->out != co_node->out);
+  REQUIRE(s_node->in0 != UNUSED_INPUT);
+  REQUIRE(s_node->in1 != UNUSED_INPUT);
+  REQUIRE(s_node->in2 != UNUSED_INPUT);
+  REQUIRE(co_node->in0 != UNUSED_INPUT);
+  REQUIRE(co_node->in1 != UNUSED_INPUT);
+  REQUIRE(co_node->in2 != UNUSED_INPUT);
+}
+
+TEST_CASE("CompiledSimGraph fanout split tiny_reconverge", "[tiny_fixtures][compiled]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_reconverge.json");
+  int buf_count = 0;
+  for (const auto& sn : cg.nodes) {
+    if (sn.type == GateType::BUF) {
+      ++buf_count;
+    }
+  }
+  REQUIRE(buf_count >= 1);
+}

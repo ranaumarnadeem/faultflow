@@ -1,0 +1,41 @@
+# -------- OSU035 synthesis script --------
+# Run from project root directory
+
+# Read design
+read_verilog tests/benchmarks/iscas85/c17.v
+
+# Check hierarchy
+hierarchy -check -top c17
+
+# Generic RTL synthesis
+proc
+flatten
+opt
+fsm
+opt
+memory
+opt
+
+# Read OSU035 liberty
+read_liberty -lib cells/osu/osu035_stdcells.lib
+
+# Technology mapping + logic optimization
+techmap
+opt
+
+# Map to standard cells using ABC
+abc -liberty cells/osu/osu035_stdcells.lib
+
+# Final cleanup
+clean
+
+# Write outputs to tests/benchmarks/iscas85 directory
+write_json tests/benchmarks/iscas85/c17.json
+write_verilog tests/benchmarks/iscas85/c17_synth.v
+write_blif -top c17 tests/benchmarks/iscas85/c17.blif
+
+# Report
+stat -liberty cells/osu/osu035_stdcells.lib
+
+aigmap
+write_aiger tests/benchmarks/iscas85/c17.aig

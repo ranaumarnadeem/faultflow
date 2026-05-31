@@ -34,4 +34,23 @@ TEST_CASE("Gate evaluation basic gates", "[gate_eval]") {
 
   REQUIRE(eval_gate(GateType::NOR2, {ALL0, ALL0}) == ALL1);
   REQUIRE(eval_gate(GateType::NOR2, {ALL1, ALL0}) == ALL0);
+
+  REQUIRE(eval_gate(GateType::XOR2, {ALL0, ALL0}) == ALL0);
+  REQUIRE(eval_gate(GateType::XOR2, {ALL1, ALL0}) == ALL1);
+  REQUIRE(eval_gate(GateType::XOR2, {ALL1, ALL1}) == ALL0);
+
+  REQUIRE(eval_gate(GateType::XNOR2, {ALL1, ALL1}) == ALL1);
+  REQUIRE(eval_gate(GateType::XNOR2, {ALL1, ALL0}) == ALL0);
+
+  // OSU035 inverting MUX2: S=1 selects A (in0)
+  REQUIRE(eval_gate(GateType::MUX2, {ALL1, ALL0, ALL1}) == ALL0);
+  REQUIRE(eval_gate(GateType::MUX2, {ALL0, ALL1, ALL0}) == ALL0);
+
+  REQUIRE(eval_gate(GateType::OAI21, {ALL0, ALL0, ALL0}) == ALL1);
+  REQUIRE(eval_gate(GateType::AOI21, {ALL1, ALL1, ALL0}) == ALL0);
+
+  REQUIRE(eval_gate(GateType::ADDF_S, {ALL1, ALL1, ALL0}) == ALL0);
+  REQUIRE(eval_gate(GateType::ADDF_CO, {ALL1, ALL1, ALL0}) == ALL1);
+  REQUIRE(eval_gate(GateType::ADDH_S, {ALL1, ALL0}) == ALL1);
+  REQUIRE(eval_gate(GateType::ADDH_CO, {ALL1, ALL1}) == ALL1);
 }
