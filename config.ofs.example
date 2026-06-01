@@ -2,9 +2,10 @@
 
 [design]
 netlist   = design.json
-top       = serial_alu
-cell_lib  = cells/osu018.yml
-liberty   = cells/osu018.lib
+top       = c17
+cell_lib  = cells/osu/osu035.json
+liberty   = cells/osu/osu035_stdcells.lib
+verilog_models = cells/osu/osu035_stdcells.v
 yosys_ver = 0.61+129
 
 [fault_model]
@@ -22,7 +23,7 @@ tp_file           =
 [atpg]
 tool   = quaigh
 mode   = comb
-bench  = design.bench
+blif   = design.blif
 output = vectors.yml
 
 [report]
