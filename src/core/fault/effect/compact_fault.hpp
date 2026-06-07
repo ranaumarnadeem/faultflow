@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 
 #include "common/types.hpp"
 
@@ -13,6 +14,7 @@ struct CompactFault {
   uint8_t bit = 1;
   FaultStatus status = FaultStatus::PENDING;
   FaultExclusion exclusion = FaultExclusion::NONE;
+  uint32_t collapsed_into = std::numeric_limits<uint32_t>::max();
 };
 
 }  // namespace faultflow
