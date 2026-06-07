@@ -15,6 +15,7 @@ struct CompactFault {
   FaultStatus status = FaultStatus::PENDING;
   FaultExclusion exclusion = FaultExclusion::NONE;
   uint32_t collapsed_into = std::numeric_limits<uint32_t>::max();
+  uint32_t detected_by_vector = 0;
 };
 
 }  // namespace faultflow
