@@ -216,9 +216,8 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
   std::vector<int> c2y;
 
   for (const auto& [id, net] : ng.nets) {
-    if (!net.is_blackboxed) {
-      map_net(id, y2c, c2y);
-    }
+    (void)net;
+    map_net(id, y2c, c2y);
   }
 
   std::vector<std::pair<int, const NormNode*>> ordered;

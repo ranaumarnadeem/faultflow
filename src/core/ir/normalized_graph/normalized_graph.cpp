@@ -1,6 +1,7 @@
 #include "ir/normalized_graph/normalized_graph.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include "common/errors.hpp"
 
 namespace faultflow {
@@ -16,11 +17,34 @@ int canonicalize(int id, std::map<int, int>& parent) {
   return parent[id];
 }
 
-void unite(int a, int b, std::map<int, int>& parent) {
-  a = canonicalize(a, parent);
-  b = canonicalize(b, parent);
-  if (a != b) {
-    parent[b] = a;
+std::string lower_name(std::string name) {
+  std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return name;
+}
+
+bool is_clock_name(const std::string& name) {
+  const std::string lower = lower_name(name);
+  return lower == "clk" || lower == "clock" ||
+         lower.find("clk") != std::string::npos;
+}
+
+bool is_reset_name(const std::string& name) {
+  const std::string lower = lower_name(name);
+  return lower == "rst" || lower == "reset" ||
+         lower.find("reset") != std::string::npos ||
+         lower.find("rst") != std::string::npos;
+}
+
+void tag_special_net(NormalizedGraph& ng, int bit, const std::string& name) {
+  if (is_clock_name(name)) {
+    ng.nets[bit].is_clock = true;
+    ng.clocks.insert(bit);
+  }
+  if (is_reset_name(name)) {
+    ng.nets[bit].is_reset = true;
+    ng.resets.insert(bit);
   }
 }
 
@@ -48,11 +72,7 @@ NormalizedGraph NormalizedGraph::from_parsed(const ParsedGraph& parsed,
     for (int bit : net.bits) {
       ensure_net(bit);
       ng.nets[bit].names.push_back(name);
-    }
-    if (net.bits.size() > 1) {
-      for (size_t i = 1; i < net.bits.size(); ++i) {
-        unite(net.bits[0], net.bits[i], parent);
-      }
+      tag_special_net(ng, bit, name);
     }
   }
 
@@ -60,6 +80,7 @@ NormalizedGraph NormalizedGraph::from_parsed(const ParsedGraph& parsed,
     for (int bit : port.bits) {
       ensure_net(bit);
       ng.nets[bit].names.push_back(pname);
+      tag_special_net(ng, bit, pname);
       if (port.direction == "input") {
         ng.nets[bit].is_pi = true;
         ng.PIs.insert(bit);
@@ -95,10 +116,26 @@ NormalizedGraph NormalizedGraph::from_parsed(const ParsedGraph& parsed,
 
     if (entry->unsupported) {
       if (policy == "blackbox") {
-        for (const auto& [pin, bits] : cell.conns) {
-          for (int bit : bits) {
-            ng.nets[bit].is_blackboxed = true;
-            ng.blackboxed.insert(bit);
+        if (!entry->outputs.empty()) {
+          for (const auto& [logical, lib_pin] : entry->outputs) {
+            (void)logical;
+            auto it = cell.conns.find(lib_pin);
+            if (it != cell.conns.end()) {
+              for (int bit : it->second) {
+                ng.nets[bit].is_blackboxed = true;
+                ng.blackboxed.insert(bit);
+              }
+            }
+          }
+        } else {
+          for (const auto& [pin, bits] : cell.conns) {
+            if (pin == "Y" || pin == "YS" || pin == "YC" || pin == "Q" ||
+                pin == "YPAD" || pin == "DO") {
+              for (int bit : bits) {
+                ng.nets[bit].is_blackboxed = true;
+                ng.blackboxed.insert(bit);
+              }
+            }
           }
         }
         continue;

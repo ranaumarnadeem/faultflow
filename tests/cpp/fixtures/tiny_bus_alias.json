@@ -1,0 +1,82 @@
+{
+  "creator": "Yosys 0.61+129 (faultflow fixture generator)",
+  "modules": {
+    "tiny_bus_alias": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "D": {
+          "direction": "input",
+          "bits": [
+            2,
+            3
+          ]
+        },
+        "Y": {
+          "direction": "output",
+          "bits": [
+            4,
+            5
+          ]
+        }
+      },
+      "cells": {
+        "u0": {
+          "hide_name": 0,
+          "type": "BUFX2",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [
+              2
+            ],
+            "Y": [
+              4
+            ]
+          }
+        },
+        "u1": {
+          "hide_name": 0,
+          "type": "BUFX2",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [
+              3
+            ],
+            "Y": [
+              5
+            ]
+          }
+        }
+      },
+      "netnames": {
+        "D": {
+          "hide_name": 0,
+          "bits": [
+            2,
+            3
+          ],
+          "attributes": {}
+        },
+        "Y": {
+          "hide_name": 0,
+          "bits": [
+            4,
+            5
+          ],
+          "attributes": {}
+        }
+      }
+    }
+  }
+}

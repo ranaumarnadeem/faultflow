@@ -1,14 +1,12 @@
 #include "sim/gate_eval.hpp"
 
+#include "common/errors.hpp"
+
 namespace faultflow {
 namespace {
 
 uint64_t pick(const std::vector<uint64_t>& inputs, size_t i) {
   return i < inputs.size() ? inputs[i] : 0ULL;
-}
-
-bool pick_b(const std::vector<bool>& inputs, size_t i) {
-  return i < inputs.size() && inputs[i];
 }
 
 uint64_t eval_bitwise(GateType type, const std::vector<uint64_t>& inputs) {
@@ -63,15 +61,17 @@ uint64_t eval_bitwise(GateType type, const std::vector<uint64_t>& inputs) {
     case GateType::ADDH_CO:
       return in0 & in1;
     default:
-      return 0ULL;
+      throw ParseError("Unsupported gate type in eval_gate");
   }
 }
 
 bool eval_scalar(GateType type, const std::vector<bool>& inputs) {
-  const uint64_t w = eval_bitwise(type, {pick_b(inputs, 0) ? ~0ULL : 0ULL,
-                                         pick_b(inputs, 1) ? ~0ULL : 0ULL,
-                                         pick_b(inputs, 2) ? ~0ULL : 0ULL,
-                                         pick_b(inputs, 3) ? ~0ULL : 0ULL});
+  std::vector<uint64_t> words;
+  words.reserve(inputs.size());
+  for (bool input : inputs) {
+    words.push_back(input ? ~0ULL : 0ULL);
+  }
+  const uint64_t w = eval_bitwise(type, words);
   return (w & 1ULL) != 0;
 }
 

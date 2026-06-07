@@ -1,0 +1,77 @@
+{
+  "creator": "Yosys 0.61+129 (faultflow fixture generator)",
+  "modules": {
+    "tiny_tbuf": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "A": {
+          "direction": "input",
+          "bits": [
+            2
+          ]
+        },
+        "EN": {
+          "direction": "input",
+          "bits": [
+            3
+          ]
+        },
+        "Y": {
+          "direction": "output",
+          "bits": [
+            4
+          ]
+        }
+      },
+      "cells": {
+        "u0": {
+          "hide_name": 0,
+          "type": "TBUFX1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "EN": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [
+              2
+            ],
+            "EN": [
+              3
+            ],
+            "Y": [
+              4
+            ]
+          }
+        }
+      },
+      "netnames": {
+        "A": {
+          "hide_name": 0,
+          "bits": [
+            2
+          ],
+          "attributes": {}
+        },
+        "EN": {
+          "hide_name": 0,
+          "bits": [
+            3
+          ],
+          "attributes": {}
+        },
+        "Y": {
+          "hide_name": 0,
+          "bits": [
+            4
+          ],
+          "attributes": {}
+        }
+      }
+    }
+  }
+}

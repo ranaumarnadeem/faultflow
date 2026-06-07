@@ -12,6 +12,7 @@ namespace {
 const char* kTinyFixtures[] = {
     "tiny_inv.json",
     "tiny_buf.json",
+    "tiny_clkbuf.json",
     "tiny_and2.json",
     "tiny_or2.json",
     "tiny_nand2.json",
@@ -29,6 +30,7 @@ const char* kTinyFixtures[] = {
     "tiny_addh.json",
     "tiny_chain.json",
     "tiny_reconverge.json",
+    "tiny_const.json",
 };
 
 }  // namespace

@@ -22,3 +22,22 @@ TEST_CASE("CompiledSimGraph c17", "[compiled_graph]") {
     REQUIRE(cg.compiled_to_yosys[cidx] == yid);
   }
 }
+
+TEST_CASE("CompiledSimGraph constant drivers", "[compiled_graph]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_const.json");
+  bool saw_const0 = false;
+  bool saw_const1 = false;
+  for (const auto& sn : cg.nodes) {
+    REQUIRE(sn.out < static_cast<uint32_t>(cg.net_count));
+    if (sn.type == GateType::CONST0) {
+      saw_const0 = true;
+    }
+    if (sn.type == GateType::CONST1) {
+      saw_const1 = true;
+    }
+  }
+  REQUIRE(saw_const0);
+  REQUIRE(saw_const1);
+  REQUIRE(cg.yosys_to_compiled.count(CONST0_NET_ID) == 1);
+  REQUIRE(cg.yosys_to_compiled.count(CONST1_NET_ID) == 1);
+}

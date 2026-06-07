@@ -1,0 +1,86 @@
+{
+  "creator": "Yosys 0.61+129 (faultflow fixture generator)",
+  "modules": {
+    "tiny_clock_reset": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "clk": {
+          "direction": "input",
+          "bits": [
+            2
+          ]
+        },
+        "reset": {
+          "direction": "input",
+          "bits": [
+            3
+          ]
+        },
+        "A": {
+          "direction": "input",
+          "bits": [
+            4
+          ]
+        },
+        "Y": {
+          "direction": "output",
+          "bits": [
+            5
+          ]
+        }
+      },
+      "cells": {
+        "u0": {
+          "hide_name": 0,
+          "type": "BUFX2",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [
+              4
+            ],
+            "Y": [
+              5
+            ]
+          }
+        }
+      },
+      "netnames": {
+        "clk": {
+          "hide_name": 0,
+          "bits": [
+            2
+          ],
+          "attributes": {}
+        },
+        "reset": {
+          "hide_name": 0,
+          "bits": [
+            3
+          ],
+          "attributes": {}
+        },
+        "A": {
+          "hide_name": 0,
+          "bits": [
+            4
+          ],
+          "attributes": {}
+        },
+        "Y": {
+          "hide_name": 0,
+          "bits": [
+            5
+          ],
+          "attributes": {}
+        }
+      }
+    }
+  }
+}

@@ -12,9 +12,6 @@ std::vector<CompactFault> enumerate_faults(const NormalizedGraph& ng,
     if (ng.nets.count(yid)) {
       net = &ng.nets.at(yid);
     }
-    if (net != nullptr && net->is_blackboxed) {
-      continue;
-    }
 
     for (int t = 0; t < 2; ++t) {
       CompactFault f;
