@@ -5,6 +5,8 @@ import hashlib
 import json
 import shutil
 import sqlite3
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,7 +14,6 @@ from typing import Any
 from faultflow.atpg import (
     VectorSet,
     parse_bench_inputs,
-    parse_blif_inputs,
     parse_quaigh_test,
 )
 from faultflow.config import FaultflowConfig
@@ -32,6 +33,22 @@ TRANSIENT_NAMES = {
 }
 
 
+YOSYS_TEMPLATE = """read_verilog {verilog}
+hierarchy -check -top {top}
+proc
+flatten
+opt_expr
+opt_clean
+synth -top {top}
+dfflibmap -liberty {liberty}
+abc -liberty {liberty}
+clean
+write_json {json}
+write_blif {blif}
+write_verilog {gate_verilog}
+"""
+
+
 def _hash_file(path: Path) -> str:
     if not path.exists():
         return ""
@@ -40,6 +57,27 @@ def _hash_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _load_core() -> Any | None:
+    candidates = [
+        Path("build/src/core"),
+        Path("build"),
+        Path("."),
+    ]
+    old_path = list(sys.path)
+    try:
+        for candidate in candidates:
+            if candidate.exists():
+                sys.path.insert(0, str(candidate.resolve()))
+        try:
+            import _faultflow_core  # type: ignore[import-not-found]
+
+            return _faultflow_core
+        except ImportError:
+            return None
+    finally:
+        sys.path[:] = old_path
 
 
 def _truthy_attr(value: Any) -> bool:
@@ -116,7 +154,9 @@ class _PythonCombSimulator:
                 continue
             bits = [_parse_bit(bit) for bit in port.get("bits", [])]
             if len(bits) != 1 or not isinstance(bits[0], int):
-                raise RunnerError(f"Only scalar real {direction} ports are supported: {name}")
+                raise RunnerError(
+                    f"Only scalar real {direction} ports are supported: {name}"
+                )
             ports[name] = bits[0]
         return ports
 
@@ -141,7 +181,9 @@ class _PythonCombSimulator:
             raise RunnerError(f"Cell pin {pin} must be scalar")
         return _parse_bit(bits[0])
 
-    def _nodes(self) -> list[tuple[dict[str, Any], dict[str, int | bool], dict[str, int]]]:
+    def _nodes(
+        self,
+    ) -> list[tuple[dict[str, Any], dict[str, int | bool], dict[str, int]]]:
         nodes = []
         for cell_name, cell in self.module.get("cells", {}).items():
             entry = self._lookup_cell(cell.get("type", ""))
@@ -156,7 +198,9 @@ class _PythonCombSimulator:
                 raise RunnerError(f"Unsupported cell {cell.get('type')} at {cell_name}")
             node_type = entry.get("node_type", "GATE")
             if node_type in {"FF", "LATCH", "TBUF", "ICG"}:
-                raise RunnerError(f"Deferred Phase 1 cell {cell.get('type')} at {cell_name}")
+                raise RunnerError(
+                    f"Deferred Phase 1 cell {cell.get('type')} at {cell_name}"
+                )
             inputs = {
                 pin: self._conn_bit(cell.get("connections", {}), pin)
                 for pin in entry.get("inputs", [])
@@ -231,7 +275,9 @@ class _PythonCombSimulator:
         elif gate == "ADDF":
             result = {
                 "S": vals[0] ^ vals[1] ^ vals[2],
-                "CO": (vals[0] and vals[1]) or (vals[1] and vals[2]) or (vals[0] and vals[2]),
+                "CO": (vals[0] and vals[1])
+                or (vals[1] and vals[2])
+                or (vals[0] and vals[2]),
             }
         elif gate == "ADDH":
             result = {"S": vals[0] ^ vals[1], "CO": vals[0] and vals[1]}
@@ -256,7 +302,9 @@ class _PythonCombSimulator:
                 values[fault.net] = fault.fault_type == "sa1"
         return values
 
-    def enumerate_faults(self, include_clock: bool, include_reset: bool) -> list[_Fault]:
+    def enumerate_faults(
+        self, include_clock: bool, include_reset: bool
+    ) -> list[_Fault]:
         faults: list[_Fault] = []
         for idx, net in enumerate(self.all_nets):
             name = self.net_names.get(net, str(net))
@@ -300,9 +348,10 @@ class Runner:
         return conn
 
     def _fingerprint(self, netlist: Path | None = None) -> dict[str, object]:
+        netlist_path = netlist if netlist is not None else self.cfg.netlist
         return {
             "top": self.cfg.top,
-            "netlist_hash": _hash_file(netlist or self._find_netlist()),
+            "netlist_hash": _hash_file(netlist_path),
             "cell_lib_hash": _hash_file(self.cfg.cell_lib),
             "config_hash": _hash_file(self.cfg.path),
             "template_hash": _hash_file(Path("faultflow/templates/yosys_synth.tcl.j2")),
@@ -314,7 +363,9 @@ class Runner:
             "include_reset_faults": int(self.cfg.fault_model.include_reset_faults),
         }
 
-    def _write_fingerprint(self, conn: sqlite3.Connection, fp: dict[str, object]) -> None:
+    def _write_fingerprint(
+        self, conn: sqlite3.Connection, fp: dict[str, object]
+    ) -> None:
         conn.execute("DELETE FROM design_fingerprint")
         conn.execute(
             """
@@ -349,43 +400,129 @@ class Runner:
         for path in candidates:
             if path.exists():
                 return path
-        raise RunnerError(f"Cannot find JSON netlist for top {self.cfg.top}")
+        return self._run_yosys()
+
+    def _find_verilog_source(self) -> Path:
+        candidates = []
+        if self.cfg.netlist.suffix in {".v", ".sv"}:
+            candidates.append(self.cfg.netlist)
+        candidates.extend(
+            [
+                Path("tests/benchmarks/iscas85") / f"{self.cfg.top}.v",
+                Path("tests/benchmarks/iscas89") / f"{self.cfg.top}.v",
+            ]
+        )
+        for path in candidates:
+            if path.exists():
+                return path
+        raise RunnerError(
+            f"Cannot find JSON netlist or Verilog source for top {self.cfg.top}"
+        )
+
+    def _run_yosys(self) -> Path:
+        if self.cfg.liberty is None or not self.cfg.liberty.exists():
+            raise RunnerError("Yosys generation requires an existing liberty file")
+        source = self._find_verilog_source()
+        json_path = self.cfg.output_dir / f"{self.cfg.top}.json"
+        blif_path = self.cfg.output_dir / f"{self.cfg.top}.blif"
+        gate_v = self.cfg.output_dir / f"{self.cfg.top}_gate.v"
+        script = self.cfg.output_dir / "yosys_synth.tcl"
+        script.write_text(
+            YOSYS_TEMPLATE.format(
+                verilog=source,
+                top=self.cfg.top,
+                liberty=self.cfg.liberty,
+                json=json_path,
+                blif=blif_path,
+                gate_verilog=gate_v,
+            ),
+            encoding="utf-8",
+        )
+        proc = subprocess.run(
+            ["yosys", "-s", str(script)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        (self.cfg.output_dir / "yosys.log").write_text(proc.stdout, encoding="utf-8")
+        if proc.returncode != 0:
+            raise RunnerError(f"Yosys failed; see {self.cfg.output_dir / 'yosys.log'}")
+        return json_path
+
+    def _find_bench_sidecar(self) -> tuple[Path, list[str]]:
+        candidates = [
+            self.cfg.output_dir / f"{self.cfg.top}.bench",
+            self.cfg.output_dir / "design.bench",
+            Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}.bench",
+            Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}.bench",
+        ]
+        for path in candidates:
+            if path.exists():
+                return path, parse_bench_inputs(path)
+        return self._run_nl2bench()
+
+    def _run_nl2bench(self) -> tuple[Path, list[str]]:
+        gate_v = self.cfg.output_dir / f"{self.cfg.top}_gate.v"
+        if not gate_v.exists():
+            self._run_yosys()
+        if not gate_v.exists():
+            raise RunnerError(f"Cannot generate BENCH; missing {gate_v}")
+        if self.cfg.liberty is None or not self.cfg.liberty.exists():
+            raise RunnerError("BENCH generation requires an existing liberty file")
+
+        bench = self.cfg.output_dir / f"{self.cfg.top}.bench"
+        nl2bench = Path("venv/bin/nl2bench")
+        cmd = [str(nl2bench if nl2bench.exists() else "nl2bench")]
+        cmd.extend(["-o", str(bench), "-l", str(self.cfg.liberty), str(gate_v)])
+        proc = subprocess.run(
+            cmd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        (self.cfg.output_dir / "nl2bench.log").write_text(proc.stdout, encoding="utf-8")
+        if proc.returncode != 0:
+            raise RunnerError(
+                f"nl2bench failed; see {self.cfg.output_dir / 'nl2bench.log'}"
+            )
+        return bench, parse_bench_inputs(bench)
 
     def _find_order_sidecar(self) -> tuple[Path, list[str]]:
-        candidates = [
-            (self.cfg.atpg.blif, parse_blif_inputs),
-            (self.cfg.output_dir / f"{self.cfg.top}.blif", parse_blif_inputs),
-            (self.cfg.output_dir / "design.blif", parse_blif_inputs),
-            (
-                Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}.blif",
-                parse_blif_inputs,
-            ),
-            (
-                Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}.bench",
-                parse_bench_inputs,
-            ),
-            (
-                Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}.bench",
-                parse_bench_inputs,
-            ),
-        ]
-        for path, parser in candidates:
-            if path.exists():
-                return path, parser(path)
-        raise RunnerError(f"Cannot find BLIF/BENCH input-order sidecar for {self.cfg.top}")
+        return self._find_bench_sidecar()
 
     def _find_vectors(self) -> Path:
         candidates = [
             self.cfg.atpg.output,
             self.cfg.output_dir / f"{self.cfg.top}atpg.test",
             self.cfg.output_dir / "atpg.test",
-            Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}atpg.test",
-            Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}atpg.test",
+            (Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}atpg.test"),
+            (Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}atpg.test"),
         ]
         for path in candidates:
             if path.exists():
                 return path
-        raise RunnerError(f"Cannot find Quaigh .test vectors for top {self.cfg.top}")
+        return self._run_quaigh()
+
+    def _run_quaigh(self) -> Path:
+        sidecar, _ = self._find_bench_sidecar()
+        if sidecar.suffix != ".bench":
+            raise RunnerError("Quaigh ATPG input must be .bench")
+        output = self.cfg.output_dir / f"{self.cfg.top}atpg.test"
+        proc = subprocess.run(
+            ["quaigh", "atpg", str(sidecar), "-o", str(output)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        (self.cfg.output_dir / "quaigh.log").write_text(proc.stdout, encoding="utf-8")
+        if proc.returncode != 0:
+            raise RunnerError(
+                f"Quaigh failed; see {self.cfg.output_dir / 'quaigh.log'}"
+            )
+        return output
 
     def _purge_transients(self) -> int:
         removed = 0
@@ -405,7 +542,9 @@ class Runner:
         self, conn: sqlite3.Connection, run_id: int, vectors: VectorSet
     ) -> None:
         for idx, vector in enumerate(vectors.vectors, 1):
-            pattern = "".join("1" if vector[name] else "0" for name in vectors.input_order)
+            pattern = "".join(
+                "1" if vector[name] else "0" for name in vectors.input_order
+            )
             conn.execute(
                 """
                 INSERT INTO vectors(run_id, source, vector_index, pattern)
@@ -443,11 +582,37 @@ class Runner:
             if fault.detected_by_vector is not None:
                 conn.execute(
                     """
-                    INSERT INTO fault_detections(fault_id, run_id, vector_index, obs_net)
+                    INSERT INTO fault_detections(
+                      fault_id, run_id, vector_index, obs_net
+                    )
                     VALUES (?, ?, ?, NULL)
                     """,
                     (cur.lastrowid, run_id, fault.detected_by_vector),
                 )
+
+    def _simulate_with_core(
+        self,
+        netlist: Path,
+        vectors: VectorSet,
+        vector_path: Path,
+    ) -> dict[str, object] | None:
+        core = _load_core()
+        if core is None:
+            return None
+        return dict(
+            core.simulate_to_db(
+                str(netlist),
+                str(self.cfg.cell_lib),
+                str(self.cfg.db_path),
+                vectors.vectors,
+                vectors.input_order,
+                str(vector_path),
+                self.cfg.fault_model.include_clock_faults,
+                self.cfg.fault_model.include_reset_faults,
+                self.cfg.fault_model.collapsing,
+                self.cfg.simulation.unsupported_cells,
+            )
+        )
 
     def sim(self, purge: bool = False) -> str:
         self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
@@ -457,39 +622,51 @@ class Runner:
         vector_path = self._find_vectors()
         vectors = parse_quaigh_test(vector_path, input_order, source=str(vector_path))
 
-        simulator = _PythonCombSimulator(
-            netlist, self.cfg.cell_lib, self.cfg.simulation.unsupported_cells
-        )
-        faults = simulator.run(vectors)
-
         with self._conn() as conn:
             self._write_fingerprint(conn, self._fingerprint(netlist))
-            conn.execute("DELETE FROM vectors")
-            run = conn.execute(
-                """
-                INSERT INTO runs(status, vector_source, vector_count)
-                VALUES ('running', ?, ?)
-                """,
-                (str(vector_path), vectors.count),
+
+        core_summary = self._simulate_with_core(netlist, vectors, vector_path)
+        mode = "c++"
+        if core_summary is None:
+            mode = "python-fallback"
+            simulator = _PythonCombSimulator(
+                netlist, self.cfg.cell_lib, self.cfg.simulation.unsupported_cells
             )
-            run_id = int(run.lastrowid)
-            self._write_vectors(conn, run_id, vectors)
-            self._write_faults(conn, run_id, faults)
-            data = summary(conn)
-            conn.execute(
-                """
-                UPDATE runs
-                SET status='complete', completed_at=CURRENT_TIMESTAMP, coverage=?
-                WHERE id=?
-                """,
-                (data["coverage_percent"], run_id),
+            faults = simulator.run(vectors)
+            with self._conn() as conn:
+                conn.execute("DELETE FROM vectors")
+                run = conn.execute(
+                    """
+                    INSERT INTO runs(status, vector_source, vector_count)
+                    VALUES ('running', ?, ?)
+                    """,
+                    (str(vector_path), vectors.count),
+                )
+                if run.lastrowid is None:
+                    raise RunnerError("SQLite did not return a run id")
+                run_id = int(run.lastrowid)
+                self._write_vectors(conn, run_id, vectors)
+                self._write_faults(conn, run_id, faults)
+                data = summary(conn)
+                conn.execute(
+                    """
+                    UPDATE runs
+                    SET status='complete', completed_at=CURRENT_TIMESTAMP, coverage=?
+                    WHERE id=?
+                    """,
+                    (data["coverage_percent"], run_id),
+                )
+
+        with self._conn() as conn:
+            json_path, txt_path, report = write_reports(
+                conn, self.cfg.output_dir, self.cfg.top
             )
-            json_path, txt_path, report = write_reports(conn, self.cfg.output_dir, self.cfg.top)
 
         purge_note = f" purged_transients={removed}" if purge else ""
         return (
-            f"sim complete top={self.cfg.top} vectors={vectors.count} "
-            f"sidecar={sidecar} coverage={report['summary']['coverage_percent']:.3f}% "
+            f"sim complete top={self.cfg.top} mode={mode} vectors={vectors.count} "
+            f"sidecar={sidecar} "
+            f"coverage={report['summary']['coverage_percent']:.3f}% "
             f"report={txt_path} json={json_path}{purge_note}"
         )
 
