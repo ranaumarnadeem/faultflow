@@ -9,6 +9,8 @@ add_executable(
   ir/test_compiled_graph.cpp
   fault/test_enumerator.cpp
   fault/test_batch_manager.cpp
+  fault/test_collapser.cpp
+  db/test_phase1_db.cpp
   fixtures/test_tiny_fixtures.cpp
   benchmarks/test_c17.cpp
   sim/test_golden_ref_tiny.cpp
