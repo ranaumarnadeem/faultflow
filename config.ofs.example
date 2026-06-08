@@ -23,7 +23,6 @@ tp_file           =
 [atpg]
 tool   = quaigh
 mode   = comb
-blif   = design.blif
 output = vectors.yml
 
 [report]

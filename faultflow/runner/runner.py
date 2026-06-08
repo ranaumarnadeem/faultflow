@@ -149,7 +149,7 @@ class Runner:
         log = self.cfg.output_dir / "yosys.log"
         if log.exists():
             for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
-                match = re.search(r"Yosys\s+(.+)$", line)
+                match = re.match(r"^Yosys\s+(.+)$", line.strip())
                 if match:
                     return match.group(1).strip()
         return self.cfg.yosys_ver

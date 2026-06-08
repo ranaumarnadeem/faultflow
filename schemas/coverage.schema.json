@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "faultflow coverage report",
+  "type": "object",
+  "required": ["metadata", "policy", "summary", "per_node", "undetected_faults"],
+  "additionalProperties": false,
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "required": [
+        "top",
+        "generated_at",
+        "faultflow_version",
+        "yosys_version",
+        "netlist_hash",
+        "cell_lib_hash",
+        "config_hash",
+        "template_hash"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "top": { "type": "string" },
+        "generated_at": { "type": "string" },
+        "faultflow_version": { "type": "string" },
+        "yosys_version": { "type": "string" },
+        "netlist_hash": { "type": "string" },
+        "cell_lib_hash": { "type": "string" },
+        "config_hash": { "type": "string" },
+        "template_hash": { "type": "string" }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "required": [
+        "unsupported_cells",
+        "include_clock_faults",
+        "include_reset_faults",
+        "collapsing"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "unsupported_cells": { "enum": ["fail", "blackbox"] },
+        "include_clock_faults": { "type": "boolean" },
+        "include_reset_faults": { "type": "boolean" },
+        "collapsing": { "type": "boolean" }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "total_raw_faults",
+        "denominator",
+        "detected",
+        "undetected",
+        "collapsed",
+        "excluded_blackbox",
+        "excluded_clock",
+        "excluded_reset",
+        "coverage_percent"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "total_raw_faults": { "type": "integer", "minimum": 0 },
+        "denominator": { "type": "integer", "minimum": 1 },
+        "detected": { "type": "integer", "minimum": 0 },
+        "undetected": { "type": "integer", "minimum": 0 },
+        "collapsed": { "type": "integer", "minimum": 0 },
+        "excluded_blackbox": { "type": "integer", "minimum": 0 },
+        "excluded_clock": { "type": "integer", "minimum": 0 },
+        "excluded_reset": { "type": "integer", "minimum": 0 },
+        "coverage_percent": { "type": "number", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "per_node": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "net_id",
+          "net_name",
+          "total_faults",
+          "detected",
+          "undetected",
+          "collapsed",
+          "excluded",
+          "coverage_percent"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "net_id": { "type": "integer" },
+          "net_name": { "type": "string" },
+          "total_faults": { "type": "integer", "minimum": 0 },
+          "detected": { "type": "integer", "minimum": 0 },
+          "undetected": { "type": "integer", "minimum": 0 },
+          "collapsed": { "type": "integer", "minimum": 0 },
+          "excluded": { "type": "integer", "minimum": 0 },
+          "coverage_percent": {
+            "anyOf": [
+              { "type": "number", "minimum": 0, "maximum": 100 },
+              { "type": "null" }
+            ]
+          }
+        }
+      }
+    },
+    "undetected_faults": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "net_id", "net_name", "fault_type"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "integer", "minimum": 1 },
+          "net_id": { "type": "integer" },
+          "net_name": { "type": "string" },
+          "fault_type": { "enum": ["sa0", "sa1"] }
+        }
+      }
+    }
+  }
+}

@@ -54,12 +54,45 @@ SQLite::Database open_db(const std::string& db_path) {
   return db;
 }
 
+bool has_column(SQLite::Database& db, const std::string& table,
+                const std::string& column) {
+  SQLite::Statement q(db, "PRAGMA table_info(" + table + ")");
+  while (q.executeStep()) {
+    if (q.getColumn(1).getString() == column) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void ensure_column(SQLite::Database& db, const std::string& table,
+                   const std::string& column, const std::string& spec) {
+  if (!has_column(db, table, column)) {
+    db.exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + spec);
+  }
+}
+
 }  // namespace
 
 void init_database(const std::string& db_path) {
   SQLite::Database db = open_db(db_path);
   db.exec(R"sql(
 PRAGMA user_version = 1;
+CREATE TABLE IF NOT EXISTS design_fingerprint (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    top TEXT NOT NULL,
+    netlist_hash TEXT NOT NULL,
+    cell_lib_hash TEXT NOT NULL,
+    config_hash TEXT NOT NULL,
+    template_hash TEXT NOT NULL,
+    yosys_version TEXT NOT NULL,
+    faultflow_version TEXT NOT NULL,
+    collapsing INTEGER NOT NULL,
+    unsupported_cells TEXT NOT NULL,
+    include_clock_faults INTEGER NOT NULL,
+    include_reset_faults INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -75,16 +108,23 @@ CREATE TABLE IF NOT EXISTS vectors (
     source TEXT NOT NULL,
     vector_index INTEGER NOT NULL,
     pattern TEXT NOT NULL,
+    inputs TEXT NOT NULL DEFAULT '{}',
+    expected TEXT NOT NULL DEFAULT '{}',
+    verified INTEGER NOT NULL DEFAULT 0,
     UNIQUE(run_id, vector_index)
 );
 CREATE TABLE IF NOT EXISTS faults (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     net_id INTEGER NOT NULL,
-    net_name TEXT,
+    net_name TEXT NOT NULL,
+    node_id INTEGER NOT NULL DEFAULT -1,
     compiled_net_index INTEGER NOT NULL,
+    type TEXT NOT NULL DEFAULT '',
     fault_type TEXT NOT NULL,
     status TEXT NOT NULL,
+    excluded TEXT NOT NULL DEFAULT 'none',
     exclusion TEXT NOT NULL DEFAULT 'none',
+    collapsed_to INTEGER,
     collapsed_into INTEGER,
     detected_by_vector INTEGER,
     UNIQUE(compiled_net_index, fault_type)
@@ -103,6 +143,14 @@ CREATE TABLE IF NOT EXISTS node_coverage (
     coverage REAL NOT NULL
 );
 )sql");
+  ensure_column(db, "vectors", "inputs", "TEXT NOT NULL DEFAULT '{}'");
+  ensure_column(db, "vectors", "expected", "TEXT NOT NULL DEFAULT '{}'");
+  ensure_column(db, "vectors", "verified", "INTEGER NOT NULL DEFAULT 0");
+  ensure_column(db, "faults", "net_name", "TEXT NOT NULL DEFAULT ''");
+  ensure_column(db, "faults", "node_id", "INTEGER NOT NULL DEFAULT -1");
+  ensure_column(db, "faults", "type", "TEXT NOT NULL DEFAULT ''");
+  ensure_column(db, "faults", "excluded", "TEXT NOT NULL DEFAULT 'none'");
+  ensure_column(db, "faults", "collapsed_to", "INTEGER");
 }
 
 int64_t start_run(const std::string& db_path, const std::string& vector_source,
@@ -151,9 +199,10 @@ void write_faults(const std::string& db_path, int64_t run_id,
   db.exec("DELETE FROM faults");
   SQLite::Statement q(
       db,
-      "INSERT INTO faults(net_id, net_name, compiled_net_index, fault_type, "
-      "status, exclusion, collapsed_into, detected_by_vector) "
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+      "INSERT INTO faults(net_id, net_name, node_id, compiled_net_index, type, "
+      "fault_type, status, excluded, exclusion, collapsed_to, collapsed_into, "
+      "detected_by_vector) "
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   SQLite::Statement det(
       db,
       "INSERT INTO fault_detections(fault_id, run_id, vector_index, obs_net) "
@@ -164,18 +213,23 @@ void write_faults(const std::string& db_path, int64_t run_id,
     q.bind(1, yid);
     q.bind(2, net_name(ng, yid));
     q.bind(3, static_cast<int64_t>(f.net_index));
-    q.bind(4, type_name(f.type));
-    q.bind(5, status_name(f.status, f.exclusion));
-    q.bind(6, exclusion_name(f.exclusion));
+    q.bind(4, static_cast<int64_t>(f.net_index));
+    q.bind(5, type_name(f.type));
+    q.bind(6, type_name(f.type));
+    q.bind(7, status_name(f.status, f.exclusion));
+    q.bind(8, exclusion_name(f.exclusion));
+    q.bind(9, exclusion_name(f.exclusion));
     if (f.collapsed_into == UINT32_MAX) {
-      q.bind(7);
+      q.bind(10);
+      q.bind(11);
     } else {
-      q.bind(7, static_cast<int64_t>(f.collapsed_into));
+      q.bind(10, static_cast<int64_t>(f.collapsed_into));
+      q.bind(11, static_cast<int64_t>(f.collapsed_into));
     }
     if (f.detected_by_vector == 0) {
-      q.bind(8);
+      q.bind(12);
     } else {
-      q.bind(8, static_cast<int64_t>(f.detected_by_vector));
+      q.bind(12, static_cast<int64_t>(f.detected_by_vector));
     }
     q.exec();
     const int64_t fault_id = db.getLastInsertRowid();

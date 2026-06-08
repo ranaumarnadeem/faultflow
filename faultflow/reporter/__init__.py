@@ -1,3 +1,3 @@
-from faultflow.reporter.coverage import write_reports
+from faultflow.reporter.coverage import CoverageError, write_reports
 
-__all__ = ["write_reports"]
+__all__ = ["CoverageError", "write_reports"]

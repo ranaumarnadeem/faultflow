@@ -18,6 +18,9 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Catch2 json)
 
+find_package(SQLiteCpp REQUIRED)
+find_package(pybind11 CONFIG REQUIRED)
+
 add_subdirectory(src/core)
 enable_testing()
 add_subdirectory(tests/cpp)
