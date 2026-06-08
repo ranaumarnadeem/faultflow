@@ -1,0 +1,286 @@
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from faultflow.atpg import VectorSet
+from faultflow.cli import main
+from faultflow.config import load_config
+from faultflow.db import connect, init_schema
+from faultflow.reporter import CoverageError, write_reports
+from faultflow.runner import Runner, RunnerError
+import faultflow.runner.runner as runner_mod
+
+
+def _config(path: Path) -> None:
+    path.write_text(
+        """
+[design]
+netlist = missing.json
+cell_lib = cells/osu/osu035.json
+
+[fault_model]
+collapsing = false
+include_clock_faults = false
+include_reset_faults = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+mode = comb
+output = missing.test
+
+[report]
+threshold = 95.0
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_init_requires_top(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+
+    with pytest.raises(SystemExit):
+        main(["init", "-c", str(cfg)])
+
+
+def test_init_creates_top_output_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    (tmp_path / "missing.json").write_text("{}", encoding="utf-8")
+
+    assert main(["init", "--top", "demo", "-c", str(cfg)]) == 0
+    assert (tmp_path / "output" / "demo" / "faultflow.sqlite").exists()
+
+
+def test_init_rejects_fingerprint_mismatch_by_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    (tmp_path / "missing.json").write_text("{}", encoding="utf-8")
+
+    assert main(["init", "--top", "demo", "-c", str(cfg)]) == 0
+    cfg.write_text(
+        cfg.read_text(encoding="utf-8").replace(
+            "unsupported_cells = fail", "unsupported_cells = blackbox"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main(["init", "--top", "demo", "-c", str(cfg)])
+
+    assert exc.value.code == 2
+    assert "unsupported_cells" in capsys.readouterr().err
+
+
+def test_sim_requires_cpp_extension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path = tmp_path / "config.ofs"
+    _config(cfg_path)
+    cfg = load_config(cfg_path, "demo")
+    runner = Runner(cfg)
+    monkeypatch.setattr(runner_mod, "_load_core", lambda: None)
+
+    with pytest.raises(RunnerError, match="_faultflow_core is required"):
+        runner._simulate_with_core(
+            Path("missing.json"),
+            VectorSet(source="vectors.test", input_order=[], vectors=[]),
+            Path("vectors.test"),
+        )
+
+
+def test_missing_nl2bench_fails_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    cfg.write_text(
+        cfg.read_text(encoding="utf-8").replace(
+            "cell_lib = cells/osu/osu035.json",
+            f"cell_lib = {tmp_path / 'cells.json'}\nliberty = {tmp_path / 'cells.lib'}",
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "cells.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "cells.lib").write_text("", encoding="utf-8")
+    out = tmp_path / "output" / "demo"
+    out.mkdir(parents=True)
+    (out / "demo_gate.v").write_text("module demo; endmodule\n", encoding="utf-8")
+    monkeypatch.setattr(runner_mod.shutil, "which", lambda _name: None)
+
+    with pytest.raises(RunnerError, match="nl2bench"):
+        Runner(load_config(cfg, "demo"))._run_nl2bench()
+
+
+def test_quaigh_receives_bench_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    out = tmp_path / "output" / "demo"
+    out.mkdir(parents=True)
+    (out / "demo.bench").write_text(
+        "INPUT(a)\nOUTPUT(y)\ny = BUFF(a)\n", encoding="utf-8"
+    )
+    seen: dict[str, list[str]] = {}
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+        seen["cmd"] = cmd
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
+
+    vector_path = Runner(load_config(cfg, "demo"))._run_quaigh()
+
+    assert vector_path == Path("output/demo/demoatpg.test")
+    assert seen["cmd"][2].endswith(".bench")
+    assert all(not arg.endswith(".blif") for arg in seen["cmd"])
+
+
+def test_verilog_netlist_runs_yosys_instead_of_simulating_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    verilog = tmp_path / "demo.v"
+    verilog.write_text("module demo(input a, output y); assign y = a; endmodule\n")
+    cfg.write_text(
+        cfg.read_text(encoding="utf-8").replace(
+            "netlist = missing.json", f"netlist = {verilog}"
+        ),
+        encoding="utf-8",
+    )
+    runner = Runner(load_config(cfg, "demo"))
+    generated = Path("output/demo/demo.json")
+    monkeypatch.setattr(runner, "_run_yosys", lambda: generated)
+
+    assert runner._find_netlist() == generated
+
+
+def test_init_without_json_defers_fingerprint_until_sim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    verilog = tmp_path / "demo.v"
+    verilog.write_text("module demo(input a, output y); assign y = a; endmodule\n")
+    cfg.write_text(
+        cfg.read_text(encoding="utf-8").replace(
+            "netlist = missing.json", f"netlist = {verilog}"
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["init", "--top", "demo", "-c", str(cfg)]) == 0
+    with connect(tmp_path / "output/demo/faultflow.sqlite") as conn:
+        row = conn.execute("SELECT COUNT(*) FROM design_fingerprint").fetchone()
+
+    assert row is not None
+    assert row[0] == 0
+
+
+def test_yosys_version_extraction_ignores_banner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    runner = Runner(load_config(cfg, "demo"))
+    runner.cfg.output_dir.mkdir(parents=True)
+    (runner.cfg.output_dir / "yosys.log").write_text(
+        """
+ /----------------------------------------------------------------------------\\
+ |  yosys -- Yosys Open SYnthesis Suite                                       |
+ \\----------------------------------------------------------------------------/
+ Yosys 0.61+129 (git sha1 6dbe03f0f, g++ 13.3.0 -fPIC -O3)
+""",
+        encoding="utf-8",
+    )
+
+    assert runner._extract_yosys_version().startswith("0.61+129")
+
+
+def test_coverage_report_schema_and_denominator_invariant(tmp_path: Path) -> None:
+    db_path = tmp_path / "faultflow.sqlite"
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        conn.execute("""
+            INSERT INTO design_fingerprint(
+              id, top, netlist_hash, cell_lib_hash, config_hash, template_hash,
+              yosys_version, faultflow_version, collapsing, unsupported_cells,
+              include_clock_faults, include_reset_faults
+            ) VALUES (
+              1, 'demo', 'net', 'cell', 'cfg', 'tmpl', 'yosys', 'pipeline-v1',
+              0, 'fail', 0, 0
+            )
+            """)
+        conn.executemany(
+            """
+            INSERT INTO faults(
+              net_id, net_name, node_id, compiled_net_index, type, fault_type,
+              status, excluded, exclusion, collapsed_to, collapsed_into
+            ) VALUES (?, ?, -1, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (1, "a", 1, "sa0", "sa0", "detected", "none", "none", None, None),
+                (1, "a", 1, "sa1", "sa1", "undetected", "none", "none", None, None),
+                (2, "b", 2, "sa0", "sa0", "undetected", "none", "none", 1, 1),
+                (3, "clk", 3, "sa0", "sa0", "excluded", "clock", "clock", None, None),
+            ],
+        )
+        conn.commit()
+
+        json_path, txt_path, report = write_reports(conn, tmp_path, "demo")
+
+        assert json_path.exists()
+        assert txt_path.exists()
+        assert report["policy"]["unsupported_cells"] == "fail"
+        assert report["summary"]["denominator"] == 2
+        assert report["undetected_faults"] == [
+            {"id": 2, "net_id": 1, "net_name": "a", "fault_type": "sa1"}
+        ]
+    finally:
+        conn.close()
+
+
+def test_coverage_report_rejects_denominator_invariant(tmp_path: Path) -> None:
+    db_path = tmp_path / "faultflow.sqlite"
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        conn.execute("""
+            INSERT INTO faults(
+              net_id, net_name, compiled_net_index, fault_type, status, exclusion
+            ) VALUES (1, 'a', 1, 'sa0', 'detected', 'none')
+            """)
+        conn.execute("""
+            INSERT INTO faults(
+              net_id, net_name, compiled_net_index, fault_type, status, exclusion
+            ) VALUES (2, 'bb', 2, 'sa0', 'excluded', 'blackbox')
+            """)
+        conn.execute("""
+            INSERT INTO faults(
+              net_id, net_name, compiled_net_index, fault_type, status, exclusion
+            ) VALUES (3, 'mystery', 3, 'sa0', 'excluded', 'other')
+            """)
+        conn.commit()
+
+        with pytest.raises(CoverageError, match="denominator invariant"):
+            write_reports(conn, tmp_path, "demo")
+    finally:
+        conn.close()

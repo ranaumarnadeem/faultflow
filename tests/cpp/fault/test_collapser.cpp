@@ -8,7 +8,7 @@
 
 using namespace faultflow;
 
-TEST_CASE("Primitive collapser marks INV input equivalents", "[phase1][collapser]") {
+TEST_CASE("Primitive collapser marks INV input equivalents", "[collapser]") {
   const NormalizedGraph ng = test::load_normalized("tiny_inv.json");
   const CompiledSimGraph cg = test::load_compiled("tiny_inv.json");
   const auto faults = collapse_primitive_faults(ng, cg, enumerate_faults(ng, cg));
