@@ -59,7 +59,7 @@ int parse_bit(const nlohmann::json& b) {
       return CONST1_NET_ID;
     }
     if (s == "x" || s == "z") {
-      throw ParseError("X/Z constants not supported in Phase 0");
+      throw ParseError("X/Z constants are not supported by the binary simulator");
     }
     throw ParseError("Unknown constant bit: " + s);
   }
