@@ -19,19 +19,6 @@ class VectorSet:
         return len(self.vectors)
 
 
-def parse_blif_inputs(path: str | Path) -> list[str]:
-    p = Path(path)
-    for raw in p.read_text(encoding="utf-8").splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if not line.startswith(".inputs"):
-            continue
-        names = line.split()[1:]
-        if not names:
-            raise PatternError(f"BLIF has empty .inputs line: {p}")
-        return names
-    raise PatternError(f"BLIF .inputs not found: {p}")
-
-
 def parse_bench_inputs(path: str | Path) -> list[str]:
     p = Path(path)
     names: list[str] = []

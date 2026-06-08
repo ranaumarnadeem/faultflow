@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import json
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
-from dataclasses import dataclass
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from faultflow.atpg import (
     VectorSet,
@@ -22,6 +22,10 @@ from faultflow.reporter import write_reports
 
 
 class RunnerError(RuntimeError):
+    pass
+
+
+class FingerprintMismatchError(RunnerError):
     pass
 
 
@@ -44,7 +48,6 @@ dfflibmap -liberty {liberty}
 abc -liberty {liberty}
 clean
 write_json {json}
-write_blif {blif}
 write_verilog {gate_verilog}
 """
 
@@ -57,6 +60,14 @@ def _hash_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _hash_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _is_json(path: Path) -> bool:
+    return path.suffix.lower() == ".json"
 
 
 def _load_core() -> Any | None:
@@ -80,264 +91,6 @@ def _load_core() -> Any | None:
         sys.path[:] = old_path
 
 
-def _truthy_attr(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value != 0
-    if isinstance(value, str):
-        return "1" in value and value.strip("0") != ""
-    return False
-
-
-def _parse_bit(bit: Any) -> int | bool:
-    if isinstance(bit, int):
-        return bit
-    if bit == "0":
-        return False
-    if bit == "1":
-        return True
-    raise RunnerError(f"X/Z constants are not supported in Phase 1: {bit}")
-
-
-def _is_clock(name: str) -> bool:
-    low = name.lower()
-    return low in {"clk", "clock"} or low.endswith("_clk") or low.endswith("_clock")
-
-
-def _is_reset(name: str) -> bool:
-    low = name.lower()
-    return low in {"rst", "reset", "rst_n", "reset_n"} or low.endswith("_rst")
-
-
-@dataclass
-class _Fault:
-    net: int
-    net_name: str
-    compiled_index: int
-    fault_type: str
-    exclusion: str = "none"
-    status: str = "undetected"
-    detected_by_vector: int | None = None
-
-
-class _PythonCombSimulator:
-    def __init__(self, json_path: Path, cell_map_path: Path, unsupported_policy: str):
-        self.json_path = json_path
-        self.cell_map_path = cell_map_path
-        self.unsupported_policy = unsupported_policy
-        self.cell_map = json.loads(cell_map_path.read_text(encoding="utf-8"))
-        design = json.loads(json_path.read_text(encoding="utf-8"))
-        self.module = self._top_module(design)
-        self.net_names = self._net_names()
-        self.input_bits = self._port_bits("input")
-        self.output_bits = self._port_bits("output")
-        self.blackboxed: set[int] = set()
-        self.nodes = self._nodes()
-        self.all_nets = self._all_nets()
-
-    def _top_module(self, design: dict[str, Any]) -> dict[str, Any]:
-        found: tuple[str, dict[str, Any]] | None = None
-        for name, mod in design.get("modules", {}).items():
-            attrs = mod.get("attributes", {})
-            if _truthy_attr(attrs.get("top", False)):
-                found = (name, mod)
-                break
-        if found is None:
-            raise RunnerError(f"No top module in {self.json_path}")
-        return found[1]
-
-    def _port_bits(self, direction: str) -> dict[str, int]:
-        ports: dict[str, int] = {}
-        for name, port in self.module.get("ports", {}).items():
-            if port.get("direction") != direction:
-                continue
-            bits = [_parse_bit(bit) for bit in port.get("bits", [])]
-            if len(bits) != 1 or not isinstance(bits[0], int):
-                raise RunnerError(
-                    f"Only scalar real {direction} ports are supported: {name}"
-                )
-            ports[name] = bits[0]
-        return ports
-
-    def _net_names(self) -> dict[int, str]:
-        names: dict[int, str] = {}
-        for name, net in self.module.get("netnames", {}).items():
-            for bit in net.get("bits", []):
-                parsed = _parse_bit(bit)
-                if isinstance(parsed, int):
-                    names.setdefault(parsed, name)
-        return names
-
-    def _lookup_cell(self, raw_type: str) -> dict[str, Any] | None:
-        for pattern, entry in self.cell_map.items():
-            if fnmatch.fnmatchcase(raw_type, pattern):
-                return entry
-        return None
-
-    def _conn_bit(self, conns: dict[str, Any], pin: str) -> int | bool:
-        bits = conns.get(pin)
-        if not bits or len(bits) != 1:
-            raise RunnerError(f"Cell pin {pin} must be scalar")
-        return _parse_bit(bits[0])
-
-    def _nodes(
-        self,
-    ) -> list[tuple[dict[str, Any], dict[str, int | bool], dict[str, int]]]:
-        nodes = []
-        for cell_name, cell in self.module.get("cells", {}).items():
-            entry = self._lookup_cell(cell.get("type", ""))
-            if entry is None or entry.get("unsupported", False):
-                if self.unsupported_policy == "blackbox":
-                    for bits in cell.get("connections", {}).values():
-                        for bit in bits:
-                            parsed = _parse_bit(bit)
-                            if isinstance(parsed, int):
-                                self.blackboxed.add(parsed)
-                    continue
-                raise RunnerError(f"Unsupported cell {cell.get('type')} at {cell_name}")
-            node_type = entry.get("node_type", "GATE")
-            if node_type in {"FF", "LATCH", "TBUF", "ICG"}:
-                raise RunnerError(
-                    f"Deferred Phase 1 cell {cell.get('type')} at {cell_name}"
-                )
-            inputs = {
-                pin: self._conn_bit(cell.get("connections", {}), pin)
-                for pin in entry.get("inputs", [])
-            }
-            outputs = {
-                logical: self._conn_bit(cell.get("connections", {}), raw_pin)
-                for logical, raw_pin in entry.get("outputs", {}).items()
-            }
-            if not all(isinstance(v, int) for v in outputs.values()):
-                raise RunnerError(f"Cell {cell_name} drives a constant output")
-            nodes.append((entry, inputs, outputs))  # type: ignore[arg-type]
-        return nodes
-
-    def _all_nets(self) -> list[int]:
-        nets: set[int] = set()
-        for bit in self.input_bits.values():
-            nets.add(bit)
-        for bit in self.output_bits.values():
-            nets.add(bit)
-        for name, net in self.module.get("netnames", {}).items():
-            for bit in net.get("bits", []):
-                parsed = _parse_bit(bit)
-                if isinstance(parsed, int):
-                    nets.add(parsed)
-                    self.net_names.setdefault(parsed, name)
-        return sorted(nets)
-
-    def _value(self, values: dict[int, bool], bit: int | bool) -> bool:
-        if isinstance(bit, bool):
-            return bit
-        return values.get(bit, False)
-
-    def _eval_node(
-        self,
-        entry: dict[str, Any],
-        inputs: dict[str, int | bool],
-        outputs: dict[str, int],
-        values: dict[int, bool],
-    ) -> None:
-        vals = [self._value(values, inputs[pin]) for pin in entry.get("inputs", [])]
-        gate = entry.get("gate_type")
-        if gate == "INV":
-            result = {"Y": not vals[0]}
-        elif gate == "BUF":
-            result = {"Y": vals[0]}
-        elif gate == "AND2":
-            result = {"Y": vals[0] and vals[1]}
-        elif gate == "OR2":
-            result = {"Y": vals[0] or vals[1]}
-        elif gate == "NAND2":
-            result = {"Y": not (vals[0] and vals[1])}
-        elif gate == "NAND3":
-            result = {"Y": not (vals[0] and vals[1] and vals[2])}
-        elif gate == "NOR2":
-            result = {"Y": not (vals[0] or vals[1])}
-        elif gate == "NOR3":
-            result = {"Y": not (vals[0] or vals[1] or vals[2])}
-        elif gate == "XOR2":
-            result = {"Y": vals[0] ^ vals[1]}
-        elif gate == "XNOR2":
-            result = {"Y": not (vals[0] ^ vals[1])}
-        elif gate == "AOI21":
-            result = {"Y": not ((vals[0] and vals[1]) or vals[2])}
-        elif gate == "AOI22":
-            result = {"Y": not ((vals[0] and vals[1]) or (vals[2] and vals[3]))}
-        elif gate == "OAI21":
-            result = {"Y": not ((vals[0] or vals[1]) and vals[2])}
-        elif gate == "OAI22":
-            result = {"Y": not ((vals[0] or vals[1]) and (vals[2] or vals[3]))}
-        elif gate == "MUX2":
-            result = {"Y": not ((vals[2] and vals[0]) or ((not vals[2]) and vals[1]))}
-        elif gate == "ADDF":
-            result = {
-                "S": vals[0] ^ vals[1] ^ vals[2],
-                "CO": (vals[0] and vals[1])
-                or (vals[1] and vals[2])
-                or (vals[0] and vals[2]),
-            }
-        elif gate == "ADDH":
-            result = {"S": vals[0] ^ vals[1], "CO": vals[0] and vals[1]}
-        else:
-            raise RunnerError(f"Unsupported gate_type in fallback simulator: {gate}")
-        for logical, value in result.items():
-            values[outputs[logical]] = value
-
-    def simulate_fault_free(self, vector: dict[str, bool]) -> dict[int, bool]:
-        values = {bit: vector.get(name, False) for name, bit in self.input_bits.items()}
-        for entry, inputs, outputs in self.nodes:
-            self._eval_node(entry, inputs, outputs, values)
-        return values
-
-    def simulate_fault(self, vector: dict[str, bool], fault: _Fault) -> dict[int, bool]:
-        values = {bit: vector.get(name, False) for name, bit in self.input_bits.items()}
-        if fault.net in values:
-            values[fault.net] = fault.fault_type == "sa1"
-        for entry, inputs, outputs in self.nodes:
-            self._eval_node(entry, inputs, outputs, values)
-            if fault.net in outputs.values():
-                values[fault.net] = fault.fault_type == "sa1"
-        return values
-
-    def enumerate_faults(
-        self, include_clock: bool, include_reset: bool
-    ) -> list[_Fault]:
-        faults: list[_Fault] = []
-        for idx, net in enumerate(self.all_nets):
-            name = self.net_names.get(net, str(net))
-            exclusion = "none"
-            if net in self.blackboxed:
-                exclusion = "blackbox"
-            elif _is_clock(name) and not include_clock:
-                exclusion = "clock"
-            elif _is_reset(name) and not include_reset:
-                exclusion = "reset"
-            faults.append(_Fault(net, name, idx, "sa0", exclusion))
-            faults.append(_Fault(net, name, idx, "sa1", exclusion))
-        return faults
-
-    def run(self, vectors: VectorSet) -> list[_Fault]:
-        faults = self.enumerate_faults(False, False)
-        for fault in faults:
-            if fault.exclusion != "none":
-                fault.status = "excluded"
-                continue
-            for vector_index, vector in enumerate(vectors.vectors, 1):
-                good = self.simulate_fault_free(vector)
-                bad = self.simulate_fault(vector, fault)
-                if any(
-                    good.get(bit, False) != bad.get(bit, False)
-                    for bit in self.output_bits.values()
-                ):
-                    fault.status = "detected"
-                    fault.detected_by_vector = vector_index
-                    break
-        return faults
-
-
 class Runner:
     def __init__(self, cfg: FaultflowConfig):
         self.cfg = cfg
@@ -347,21 +100,107 @@ class Runner:
         init_schema(conn)
         return conn
 
+    @contextmanager
+    def _db(self) -> Iterator[sqlite3.Connection]:
+        conn = self._conn()
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    def _config_fingerprint_payload(self) -> dict[str, object]:
+        return {
+            "top": self.cfg.top,
+            "cell_lib": str(self.cfg.cell_lib),
+            "collapsing": self.cfg.fault_model.collapsing,
+            "unsupported_cells": self.cfg.simulation.unsupported_cells,
+            "include_clock_faults": self.cfg.fault_model.include_clock_faults,
+            "include_reset_faults": self.cfg.fault_model.include_reset_faults,
+            "atpg_tool": self.cfg.atpg.tool,
+            "atpg_mode": self.cfg.atpg.mode,
+        }
+
+    def _rendered_yosys_script(self, source: Path | None = None) -> str:
+        src = source or self._existing_verilog_source()
+        return YOSYS_TEMPLATE.format(
+            verilog=src if src is not None else self.cfg.netlist,
+            top=self.cfg.top,
+            liberty=self.cfg.liberty or "",
+            json=self.cfg.output_dir / f"{self.cfg.top}.json",
+            gate_verilog=self.cfg.output_dir / f"{self.cfg.top}_gate.v",
+        )
+
+    def _existing_verilog_source(self) -> Path | None:
+        candidates = []
+        if self.cfg.netlist.suffix in {".v", ".sv"}:
+            candidates.append(self.cfg.netlist)
+        candidates.extend(
+            [
+                Path("tests/benchmarks/iscas85") / f"{self.cfg.top}.v",
+                Path("tests/benchmarks/iscas89") / f"{self.cfg.top}.v",
+            ]
+        )
+        for path in candidates:
+            if path.exists():
+                return path
+        return None
+
+    def _extract_yosys_version(self) -> str:
+        log = self.cfg.output_dir / "yosys.log"
+        if log.exists():
+            for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+                match = re.search(r"Yosys\s+(.+)$", line)
+                if match:
+                    return match.group(1).strip()
+        return self.cfg.yosys_ver
+
     def _fingerprint(self, netlist: Path | None = None) -> dict[str, object]:
         netlist_path = netlist if netlist is not None else self.cfg.netlist
+        config_hash = _hash_text(
+            json.dumps(self._config_fingerprint_payload(), sort_keys=True)
+        )
         return {
             "top": self.cfg.top,
             "netlist_hash": _hash_file(netlist_path),
             "cell_lib_hash": _hash_file(self.cfg.cell_lib),
-            "config_hash": _hash_file(self.cfg.path),
-            "template_hash": _hash_file(Path("faultflow/templates/yosys_synth.tcl.j2")),
-            "yosys_version": "",
+            "config_hash": config_hash,
+            "template_hash": _hash_text(self._rendered_yosys_script()),
+            "yosys_version": self._extract_yosys_version(),
             "faultflow_version": "phase1",
             "collapsing": int(self.cfg.fault_model.collapsing),
             "unsupported_cells": self.cfg.simulation.unsupported_cells,
             "include_clock_faults": int(self.cfg.fault_model.include_clock_faults),
             "include_reset_faults": int(self.cfg.fault_model.include_reset_faults),
         }
+
+    def _stored_fingerprint(self, conn: sqlite3.Connection) -> dict[str, object] | None:
+        row = conn.execute("SELECT * FROM design_fingerprint WHERE id = 1").fetchone()
+        return dict(row) if row is not None else None
+
+    def _check_fingerprint(
+        self, conn: sqlite3.Connection, current: dict[str, object]
+    ) -> None:
+        stored = self._stored_fingerprint(conn)
+        if stored is None:
+            return
+        fields = [
+            "top",
+            "netlist_hash",
+            "cell_lib_hash",
+            "collapsing",
+            "unsupported_cells",
+            "include_clock_faults",
+            "include_reset_faults",
+            "config_hash",
+            "template_hash",
+            "yosys_version",
+            "faultflow_version",
+        ]
+        for field in fields:
+            if str(stored[field]) != str(current[field]):
+                raise FingerprintMismatchError(
+                    f"Fingerprint mismatch on {field}; run with a clean output DB"
+                )
 
     def _write_fingerprint(
         self, conn: sqlite3.Connection, fp: dict[str, object]
@@ -385,36 +224,46 @@ class Runner:
 
     def init(self) -> str:
         self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
-        with self._conn() as conn:
-            self._write_fingerprint(conn, self._fingerprint())
+        with self._db() as conn:
+            existing_netlist = self._existing_json_netlist()
+            if existing_netlist is not None:
+                fp = self._fingerprint(existing_netlist)
+                self._check_fingerprint(conn, fp)
+                if self._stored_fingerprint(conn) is None:
+                    self._write_fingerprint(conn, fp)
         return f"initialized {self.cfg.output_dir}"
 
+    def _json_netlist_candidates(self) -> list[Path]:
+        candidates: list[Path] = []
+        if _is_json(self.cfg.netlist):
+            candidates.append(self.cfg.netlist)
+        candidates.extend(
+            [
+                self.cfg.output_dir / f"{self.cfg.top}.json",
+                self.cfg.output_dir / "design.json",
+                Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}.json",
+                Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}.json",
+            ]
+        )
+        return candidates
+
+    def _existing_json_netlist(self) -> Path | None:
+        for path in self._json_netlist_candidates():
+            if path.exists():
+                return path
+        return None
+
     def _find_netlist(self) -> Path:
-        candidates = [
-            self.cfg.netlist,
-            self.cfg.output_dir / f"{self.cfg.top}.json",
-            self.cfg.output_dir / "design.json",
-            Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}.json",
-            Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}.json",
-        ]
+        candidates = self._json_netlist_candidates()
         for path in candidates:
             if path.exists():
                 return path
         return self._run_yosys()
 
     def _find_verilog_source(self) -> Path:
-        candidates = []
-        if self.cfg.netlist.suffix in {".v", ".sv"}:
-            candidates.append(self.cfg.netlist)
-        candidates.extend(
-            [
-                Path("tests/benchmarks/iscas85") / f"{self.cfg.top}.v",
-                Path("tests/benchmarks/iscas89") / f"{self.cfg.top}.v",
-            ]
-        )
-        for path in candidates:
-            if path.exists():
-                return path
+        existing = self._existing_verilog_source()
+        if existing is not None:
+            return existing
         raise RunnerError(
             f"Cannot find JSON netlist or Verilog source for top {self.cfg.top}"
         )
@@ -424,7 +273,6 @@ class Runner:
             raise RunnerError("Yosys generation requires an existing liberty file")
         source = self._find_verilog_source()
         json_path = self.cfg.output_dir / f"{self.cfg.top}.json"
-        blif_path = self.cfg.output_dir / f"{self.cfg.top}.blif"
         gate_v = self.cfg.output_dir / f"{self.cfg.top}_gate.v"
         script = self.cfg.output_dir / "yosys_synth.tcl"
         script.write_text(
@@ -433,7 +281,6 @@ class Runner:
                 top=self.cfg.top,
                 liberty=self.cfg.liberty,
                 json=json_path,
-                blif=blif_path,
                 gate_verilog=gate_v,
             ),
             encoding="utf-8",
@@ -473,7 +320,13 @@ class Runner:
 
         bench = self.cfg.output_dir / f"{self.cfg.top}.bench"
         nl2bench = Path("venv/bin/nl2bench")
-        cmd = [str(nl2bench if nl2bench.exists() else "nl2bench")]
+        tool = str(nl2bench) if nl2bench.exists() else shutil.which("nl2bench")
+        if tool is None:
+            raise RunnerError(
+                "BENCH generation requires nl2bench. "
+                "Install it in venv/bin/nl2bench or on PATH."
+            )
+        cmd = [tool]
         cmd.extend(["-o", str(bench), "-l", str(self.cfg.liberty), str(gate_v)])
         proc = subprocess.run(
             cmd,
@@ -538,67 +391,18 @@ class Runner:
             removed += 1
         return removed
 
-    def _write_vectors(
-        self, conn: sqlite3.Connection, run_id: int, vectors: VectorSet
-    ) -> None:
-        for idx, vector in enumerate(vectors.vectors, 1):
-            pattern = "".join(
-                "1" if vector[name] else "0" for name in vectors.input_order
-            )
-            conn.execute(
-                """
-                INSERT INTO vectors(run_id, source, vector_index, pattern)
-                VALUES (?, ?, ?, ?)
-                """,
-                (run_id, vectors.source, idx, pattern),
-            )
-
-    def _write_faults(
-        self,
-        conn: sqlite3.Connection,
-        run_id: int,
-        faults: list[_Fault],
-    ) -> None:
-        conn.execute("DELETE FROM fault_detections")
-        conn.execute("DELETE FROM faults")
-        for fault in faults:
-            cur = conn.execute(
-                """
-                INSERT INTO faults(
-                  net_id, net_name, compiled_net_index, fault_type, status,
-                  exclusion, detected_by_vector
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    fault.net,
-                    fault.net_name,
-                    fault.compiled_index,
-                    fault.fault_type,
-                    fault.status,
-                    fault.exclusion,
-                    fault.detected_by_vector,
-                ),
-            )
-            if fault.detected_by_vector is not None:
-                conn.execute(
-                    """
-                    INSERT INTO fault_detections(
-                      fault_id, run_id, vector_index, obs_net
-                    )
-                    VALUES (?, ?, ?, NULL)
-                    """,
-                    (cur.lastrowid, run_id, fault.detected_by_vector),
-                )
-
     def _simulate_with_core(
         self,
         netlist: Path,
         vectors: VectorSet,
         vector_path: Path,
-    ) -> dict[str, object] | None:
+    ) -> dict[str, object]:
         core = _load_core()
         if core is None:
-            return None
+            raise RunnerError(
+                "C++ extension _faultflow_core is required. "
+                "Run: cmake --build build -- -j2"
+            )
         return dict(
             core.simulate_to_db(
                 str(netlist),
@@ -622,42 +426,16 @@ class Runner:
         vector_path = self._find_vectors()
         vectors = parse_quaigh_test(vector_path, input_order, source=str(vector_path))
 
-        with self._conn() as conn:
-            self._write_fingerprint(conn, self._fingerprint(netlist))
+        with self._db() as conn:
+            fp = self._fingerprint(netlist)
+            self._check_fingerprint(conn, fp)
+            if self._stored_fingerprint(conn) is None:
+                self._write_fingerprint(conn, fp)
 
-        core_summary = self._simulate_with_core(netlist, vectors, vector_path)
+        self._simulate_with_core(netlist, vectors, vector_path)
         mode = "c++"
-        if core_summary is None:
-            mode = "python-fallback"
-            simulator = _PythonCombSimulator(
-                netlist, self.cfg.cell_lib, self.cfg.simulation.unsupported_cells
-            )
-            faults = simulator.run(vectors)
-            with self._conn() as conn:
-                conn.execute("DELETE FROM vectors")
-                run = conn.execute(
-                    """
-                    INSERT INTO runs(status, vector_source, vector_count)
-                    VALUES ('running', ?, ?)
-                    """,
-                    (str(vector_path), vectors.count),
-                )
-                if run.lastrowid is None:
-                    raise RunnerError("SQLite did not return a run id")
-                run_id = int(run.lastrowid)
-                self._write_vectors(conn, run_id, vectors)
-                self._write_faults(conn, run_id, faults)
-                data = summary(conn)
-                conn.execute(
-                    """
-                    UPDATE runs
-                    SET status='complete', completed_at=CURRENT_TIMESTAMP, coverage=?
-                    WHERE id=?
-                    """,
-                    (data["coverage_percent"], run_id),
-                )
 
-        with self._conn() as conn:
+        with self._db() as conn:
             json_path, txt_path, report = write_reports(
                 conn, self.cfg.output_dir, self.cfg.top
             )
@@ -671,7 +449,7 @@ class Runner:
         )
 
     def status(self) -> str:
-        with self._conn() as conn:
+        with self._db() as conn:
             data = summary(conn)
             cov = data["coverage_percent"]
             cov_text = "n/a" if cov is None else f"{cov:.3f}%"
