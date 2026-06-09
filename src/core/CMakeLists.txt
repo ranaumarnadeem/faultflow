@@ -8,7 +8,7 @@ add_library(
   fault/enumerator/fault_enumerator.cpp
   fault/collapser/fault_collapser.cpp
   fault/batch/batch_manager.cpp
-  db/phase1_db.cpp
+  db/sqlite_store.cpp
   sim/golden_ref/golden_ref_sim.cpp
   sim/engine/bit_parallel_sim.cpp
   sim/state/test_vector.cpp
@@ -24,5 +24,5 @@ target_link_libraries(
 
 target_compile_options(faultflow_core PRIVATE -Wall -Wextra)
 
-pybind11_add_module(_faultflow_core bindings/phase1_bindings.cpp)
+pybind11_add_module(_faultflow_core bindings/python_bindings.cpp)
 target_link_libraries(_faultflow_core PRIVATE faultflow_core)

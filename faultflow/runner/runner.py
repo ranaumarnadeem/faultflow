@@ -14,11 +14,13 @@ from typing import Any, Iterator
 from faultflow.atpg import (
     VectorSet,
     parse_bench_inputs,
+    parse_bench_outputs,
     parse_quaigh_test,
 )
 from faultflow.config import FaultflowConfig
 from faultflow.db import connect, init_schema, summary
 from faultflow.reporter import write_reports
+from faultflow.verify import IverilogVerifier, VerificationError
 
 
 class RunnerError(RuntimeError):
@@ -132,7 +134,7 @@ class Runner:
 
     def _existing_verilog_source(self) -> Path | None:
         candidates = []
-        if self.cfg.netlist.suffix in {".v", ".sv"}:
+        if self.cfg.netlist.suffix == ".v":
             candidates.append(self.cfg.netlist)
         candidates.extend(
             [
@@ -166,7 +168,7 @@ class Runner:
             "config_hash": config_hash,
             "template_hash": _hash_text(self._rendered_yosys_script()),
             "yosys_version": self._extract_yosys_version(),
-            "faultflow_version": "phase1",
+            "faultflow_version": "pipeline-v1",
             "collapsing": int(self.cfg.fault_model.collapsing),
             "unsupported_cells": self.cfg.simulation.unsupported_cells,
             "include_clock_faults": int(self.cfg.fault_model.include_clock_faults),
@@ -261,6 +263,8 @@ class Runner:
         return self._run_yosys()
 
     def _find_verilog_source(self) -> Path:
+        if self.cfg.netlist.suffix == ".sv":
+            raise RunnerError("SystemVerilog (.sv) is not supported yet")
         existing = self._existing_verilog_source()
         if existing is not None:
             return existing
@@ -345,6 +349,31 @@ class Runner:
     def _find_order_sidecar(self) -> tuple[Path, list[str]]:
         return self._find_bench_sidecar()
 
+    def _gate_verilog_candidates(self) -> list[Path]:
+        return [
+            self.cfg.output_dir / f"{self.cfg.top}_gate.v",
+            self.cfg.output_dir / f"{self.cfg.top}_synth.v",
+            Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}_synth.v",
+            Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}.nl.v",
+            Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}.cut.v",
+            Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}_synth.v",
+            Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}.nl.v",
+            Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}.cut.v",
+        ]
+
+    def _find_gate_verilog(self) -> Path:
+        for path in self._gate_verilog_candidates():
+            if path.exists():
+                return path
+        if self._existing_verilog_source() is not None:
+            self._run_yosys()
+            for path in self._gate_verilog_candidates():
+                if path.exists():
+                    return path
+        raise RunnerError(
+            f"verification requires generated gate Verilog for top {self.cfg.top}"
+        )
+
     def _find_vectors(self) -> Path:
         candidates = [
             self.cfg.atpg.output,
@@ -418,13 +447,173 @@ class Runner:
             )
         )
 
-    def sim(self, purge: bool = False) -> str:
+    def _fault_free_outputs_with_core(
+        self,
+        netlist: Path,
+        vectors: VectorSet,
+        output_order: list[str],
+    ) -> list[dict[str, bool]]:
+        core = _load_core()
+        if core is None:
+            raise RunnerError(
+                "C++ extension _faultflow_core is required. "
+                "Run: cmake --build build -- -j2"
+            )
+        return list(
+            core.fault_free_outputs(
+                str(netlist),
+                str(self.cfg.cell_lib),
+                vectors.vectors,
+                vectors.input_order,
+                output_order,
+                self.cfg.simulation.unsupported_cells,
+            )
+        )
+
+    def _write_verified_vectors(
+        self,
+        run_id: int,
+        vectors: VectorSet,
+        expected_outputs: list[dict[str, bool]],
+    ) -> None:
+        if len(expected_outputs) != vectors.count:
+            raise RunnerError(
+                f"verified output count {len(expected_outputs)} does not match "
+                f"{vectors.count} vectors"
+            )
+        with self._db() as conn:
+            with conn:
+                for index, (inputs, expected) in enumerate(
+                    zip(vectors.vectors, expected_outputs), 1
+                ):
+                    cur = conn.execute(
+                        """
+                        UPDATE vectors
+                        SET inputs = ?, expected = ?, verified = 1
+                        WHERE run_id = ? AND vector_index = ?
+                        """,
+                        (
+                            json.dumps(inputs, sort_keys=True),
+                            json.dumps(expected, sort_keys=True),
+                            run_id,
+                            index,
+                        ),
+                    )
+                    if cur.rowcount != 1:
+                        raise RunnerError(
+                            f"missing DB vector row for run_id={run_id} "
+                            f"vector_index={index}"
+                        )
+
+    def _write_verified_vectors_json(
+        self,
+        vectors: VectorSet,
+        output_order: list[str],
+        expected_outputs: list[dict[str, bool]],
+    ) -> Path:
+        path = self.cfg.output_dir / "verified_vectors.json"
+        rows = []
+        for index, (inputs, expected) in enumerate(
+            zip(vectors.vectors, expected_outputs), 1
+        ):
+            rows.append(
+                {
+                    "index": index,
+                    "inputs": inputs,
+                    "expected": expected,
+                    "verified": True,
+                }
+            )
+        payload = {
+            "version": 1,
+            "top": self.cfg.top,
+            "source": vectors.source,
+            "input_order": vectors.input_order,
+            "output_order": output_order,
+            "vectors": rows,
+        }
+        path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        return path
+
+    def _mark_verification_failure(self, error: str) -> None:
+        verify_dir = self.cfg.output_dir / "verify"
+        json_path = verify_dir / "verification_report.json"
+        txt_path = verify_dir / "verification_report.txt"
+        if json_path.exists():
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+        else:
+            payload = {
+                "version": 1,
+                "metadata": {"top": self.cfg.top, "tool": "iverilog"},
+                "expected_outputs": [],
+                "vector_count": 0,
+            }
+        payload["passed"] = False
+        errors = payload.get("errors", [])
+        if not isinstance(errors, list):
+            errors = []
+        errors.append(error)
+        payload["errors"] = errors
+        verify_dir.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        with txt_path.open("a", encoding="utf-8") as f:
+            f.write(f"error: {error}\n")
+
+    def _run_verification(
+        self,
+        netlist: Path,
+        sidecar: Path,
+        vectors: VectorSet,
+        input_order: list[str],
+    ) -> list[dict[str, bool]]:
+        if self.cfg.simulation.verify_tool != "iverilog":
+            raise RunnerError("Only verify_tool=iverilog is supported")
+        if self.cfg.verilog_models is None:
+            raise RunnerError("verification requires verilog_models")
+        output_order = parse_bench_outputs(sidecar)
+        verifier = IverilogVerifier(
+            top=self.cfg.top,
+            work_dir=self.cfg.output_dir / "verify",
+            gate_verilog=self._find_gate_verilog(),
+            verilog_models=[self.cfg.verilog_models],
+        )
+        try:
+            result = verifier.run(input_order, output_order, vectors)
+        except VerificationError as exc:
+            self._mark_verification_failure(str(exc))
+            raise RunnerError(f"verification failed: {exc}") from exc
+
+        cpp_outputs = self._fault_free_outputs_with_core(netlist, vectors, output_order)
+        if cpp_outputs != result.expected_outputs:
+            error = "C++ fault-free outputs did not match Iverilog golden outputs"
+            mismatch_path = self.cfg.output_dir / "verify" / "cpp_crosscheck.txt"
+            mismatch_path.parent.mkdir(parents=True, exist_ok=True)
+            mismatch_path.write_text(
+                error + "\n",
+                encoding="utf-8",
+            )
+            self._mark_verification_failure(error)
+            raise RunnerError(
+                f"verification failed: C++ fault-free mismatch; see {mismatch_path}"
+            )
+        self._write_verified_vectors_json(
+            vectors, output_order, result.expected_outputs
+        )
+        return result.expected_outputs
+
+    def sim(self, purge: bool = False, verify: bool | None = None) -> str:
         self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
         removed = self._purge_transients() if purge else 0
         netlist = self._find_netlist()
         sidecar, input_order = self._find_order_sidecar()
         vector_path = self._find_vectors()
         vectors = parse_quaigh_test(vector_path, input_order, source=str(vector_path))
+        verify_enabled = self.cfg.simulation.verify if verify is None else verify
+        verified_outputs: list[dict[str, bool]] | None = None
 
         with self._db() as conn:
             fp = self._fingerprint(netlist)
@@ -432,7 +621,19 @@ class Runner:
             if self._stored_fingerprint(conn) is None:
                 self._write_fingerprint(conn, fp)
 
-        self._simulate_with_core(netlist, vectors, vector_path)
+        if verify_enabled:
+            verified_outputs = self._run_verification(
+                netlist, sidecar, vectors, input_order
+            )
+
+        sim_result = self._simulate_with_core(netlist, vectors, vector_path)
+        if verified_outputs is not None:
+            run_id = sim_result["run_id"]
+            if not isinstance(run_id, (int, str)):
+                raise RunnerError(
+                    "C++ simulation result did not include a valid run_id"
+                )
+            self._write_verified_vectors(int(run_id), vectors, verified_outputs)
         mode = "c++"
 
         with self._db() as conn:

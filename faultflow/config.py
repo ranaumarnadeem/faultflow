@@ -9,10 +9,19 @@ class ConfigError(RuntimeError):
     pass
 
 
+def parse_bool_value(value: str, key: str = "boolean") -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "yes", "true", "on"}:
+        return True
+    if normalized in {"0", "no", "false", "off"}:
+        return False
+    raise ConfigError(f"{key} must be one of true/false, 1/0, yes/no, or on/off")
+
+
 def _bool(parser: ConfigParser, section: str, key: str, default: bool) -> bool:
     if not parser.has_option(section, key):
         return default
-    return parser.getboolean(section, key)
+    return parse_bool_value(parser.get(section, key), key)
 
 
 def _float(parser: ConfigParser, section: str, key: str, default: float) -> float:
@@ -31,6 +40,8 @@ class FaultModelConfig:
 @dataclass(frozen=True)
 class SimulationConfig:
     unsupported_cells: str = "fail"
+    verify: bool = False
+    verify_tool: str = "iverilog"
 
 
 @dataclass(frozen=True)
@@ -78,6 +89,13 @@ def _optional_path(parser: ConfigParser, section: str, key: str) -> Path | None:
     return Path(value) if value else None
 
 
+def _verilog_models(parser: ConfigParser) -> Path:
+    value = parser.get("simulation", "verilog_models", fallback="").strip()
+    if not value:
+        value = parser.get("design", "verilog_models", fallback="").strip()
+    return Path(value) if value else Path("cells/osu/osu035_stdcells.v")
+
+
 def load_config(path: str | Path, top: str) -> FaultflowConfig:
     cfg_path = Path(path)
     parser = ConfigParser()
@@ -92,9 +110,13 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     if unsupported not in {"fail", "blackbox"}:
         raise ConfigError("unsupported_cells must be 'fail' or 'blackbox'")
 
+    verify_tool = parser.get("simulation", "verify_tool", fallback="iverilog")
+    if verify_tool != "iverilog":
+        raise ConfigError("verify_tool must be 'iverilog'")
+
     atpg_mode = parser.get("atpg", "mode", fallback="comb")
     if atpg_mode != "comb":
-        raise ConfigError("Phase 1 supports only atpg.mode=comb")
+        raise ConfigError("Only atpg.mode=comb is supported")
 
     return FaultflowConfig(
         path=cfg_path,
@@ -102,7 +124,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         netlist=_path(parser, "design", "netlist", "design.json"),
         cell_lib=_path(parser, "design", "cell_lib", "cells/osu/osu035.json"),
         liberty=_optional_path(parser, "design", "liberty"),
-        verilog_models=_optional_path(parser, "design", "verilog_models"),
+        verilog_models=_verilog_models(parser),
         yosys_ver=parser.get("design", "yosys_ver", fallback=""),
         fault_model=FaultModelConfig(
             collapsing=_bool(parser, "fault_model", "collapsing", False),
@@ -113,7 +135,11 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
                 parser, "fault_model", "include_reset_faults", False
             ),
         ),
-        simulation=SimulationConfig(unsupported_cells=unsupported),
+        simulation=SimulationConfig(
+            unsupported_cells=unsupported,
+            verify=_bool(parser, "simulation", "verify", False),
+            verify_tool=verify_tool,
+        ),
         atpg=AtpgConfig(
             tool=parser.get("atpg", "tool", fallback="quaigh"),
             mode=atpg_mode,

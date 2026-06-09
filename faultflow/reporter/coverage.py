@@ -146,7 +146,7 @@ def write_reports(
         "metadata": {
             "top": top,
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "faultflow_version": fp.get("faultflow_version", "phase1"),
+            "faultflow_version": fp.get("faultflow_version", "pipeline-v1"),
             "yosys_version": fp.get("yosys_version", ""),
             "netlist_hash": fp.get("netlist_hash", ""),
             "cell_lib_hash": fp.get("cell_lib_hash", ""),

@@ -19,22 +19,55 @@ class VectorSet:
         return len(self.vectors)
 
 
-def parse_bench_inputs(path: str | Path) -> list[str]:
+@dataclass(frozen=True)
+class BenchPorts:
+    inputs: list[str]
+    outputs: list[str]
+
+
+def _parse_bench_port_line(raw: str, path: Path) -> tuple[str, str] | None:
+    line = raw.split("#", 1)[0].strip()
+    upper = line.upper()
+    port_kind: str | None = None
+    if upper.startswith("INPUT(") or upper.startswith("PINPUT("):
+        port_kind = "input"
+    elif upper.startswith("OUTPUT(") or upper.startswith("POUTPUT("):
+        port_kind = "output"
+    if port_kind is None:
+        return None
+    start = line.find("(")
+    end = line.rfind(")")
+    if start < 0 or end <= start + 1:
+        raise PatternError(f"Malformed BENCH {port_kind} line in {path}: {raw}")
+    return port_kind, line[start + 1 : end].strip()
+
+
+def parse_bench_io(path: str | Path) -> BenchPorts:
     p = Path(path)
-    names: list[str] = []
+    inputs: list[str] = []
+    outputs: list[str] = []
     for raw in p.read_text(encoding="utf-8").splitlines():
-        line = raw.split("#", 1)[0].strip()
-        upper = line.upper()
-        if not (upper.startswith("INPUT(") or upper.startswith("PINPUT(")):
+        parsed = _parse_bench_port_line(raw, p)
+        if parsed is None:
             continue
-        start = line.find("(")
-        end = line.rfind(")")
-        if start < 0 or end <= start + 1:
-            raise PatternError(f"Malformed BENCH input line in {p}: {raw}")
-        names.append(line[start + 1 : end].strip())
-    if not names:
+        kind, name = parsed
+        if kind == "input":
+            inputs.append(name)
+        else:
+            outputs.append(name)
+    if not inputs:
         raise PatternError(f"BENCH inputs not found: {p}")
-    return names
+    if not outputs:
+        raise PatternError(f"BENCH outputs not found: {p}")
+    return BenchPorts(inputs=inputs, outputs=outputs)
+
+
+def parse_bench_inputs(path: str | Path) -> list[str]:
+    return parse_bench_io(path).inputs
+
+
+def parse_bench_outputs(path: str | Path) -> list[str]:
+    return parse_bench_io(path).outputs
 
 
 def _parse_line(line: str, line_no: int, expected_index: int) -> str | None:
@@ -61,7 +94,7 @@ def _parse_line(line: str, line_no: int, expected_index: int) -> str | None:
 
     tokens = pattern_text.split()
     if len(tokens) != 1:
-        raise PatternError(f"Line {line_no}: Phase 1 requires one timestep")
+        raise PatternError(f"Line {line_no}: combinational .test requires one timestep")
     pattern = tokens[0]
     if not pattern:
         raise PatternError(f"Line {line_no}: empty pattern")

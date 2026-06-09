@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from faultflow.config import ConfigError, load_config
+from faultflow.config import ConfigError, load_config, parse_bool_value
 from faultflow.runner import Runner, RunnerError
 
 
@@ -25,6 +25,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Clean transient junk inside output/<top>/ before sim",
     )
+    sim.add_argument(
+        "-v",
+        "--verify",
+        help="Override [simulation] verify for this sim run",
+    )
 
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
@@ -40,7 +45,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "init":
             print(runner.init())
         elif args.command == "sim":
-            print(runner.sim(purge=args.purge))
+            verify = (
+                parse_bool_value(args.verify, "verify")
+                if args.verify is not None
+                else None
+            )
+            print(runner.sim(purge=args.purge, verify=verify))
         elif args.command == "status":
             print(runner.status())
         else:
