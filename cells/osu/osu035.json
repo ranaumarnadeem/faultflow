@@ -143,6 +143,30 @@
       "clear_preset_conflict_value": 0
     }
   },
+  "$scanff_faultflow": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D", "SI", "SE"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "scan": {"in": "SI", "enable": "SE", "enable_polarity": "HIGH"}
+    }
+  },
+  "\\$scanff_faultflow": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D", "SI", "SE"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "scan": {"in": "SI", "enable": "SE", "enable_polarity": "HIGH"}
+    }
+  },
   "LATCH": {"node_type": "LATCH"},
   "TBUFX*": {"node_type": "TBUF"},
   "PAD*": {"node_type": "GATE", "gate_type": "BUF", "unsupported": true}

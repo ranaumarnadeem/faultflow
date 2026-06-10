@@ -33,6 +33,16 @@ def _parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
+
+    scan = sub.add_parser(
+        "scan", help="Generate generic scan JSON and Sky130 techmap output"
+    )
+    add_common(scan)
+    scan.add_argument(
+        "--skip-techmap",
+        action="store_true",
+        help="Write scan JSON and techmap file without running Yosys techmap",
+    )
     return parser
 
 
@@ -53,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
             print(runner.sim(purge=args.purge, verify=verify))
         elif args.command == "status":
             print(runner.status())
+        elif args.command == "scan":
+            print(runner.scan(run_techmap=not args.skip_techmap))
         else:
             parser.error(f"unknown command {args.command}")
     except (ConfigError, RunnerError) as exc:

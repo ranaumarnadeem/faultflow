@@ -20,6 +20,12 @@ from faultflow.atpg import (
 from faultflow.config import FaultflowConfig
 from faultflow.db import connect, init_schema, summary
 from faultflow.reporter import write_reports
+from faultflow.scan import (
+    ScanError,
+    stitch_scan_json,
+    write_scan_techmap,
+    run_scan_techmap,
+)
 from faultflow.verify import IverilogVerifier, VerificationError
 
 
@@ -300,6 +306,73 @@ class Runner:
         if proc.returncode != 0:
             raise RunnerError(f"Yosys failed; see {self.cfg.output_dir / 'yosys.log'}")
         return json_path
+
+    def scan(self, run_techmap: bool = True) -> str:
+        self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
+        scan_dir = self.cfg.output_dir / "scan"
+        scan_dir.mkdir(parents=True, exist_ok=True)
+        netlist = self._find_netlist()
+        generic_json = scan_dir / f"{self.cfg.top}_scan_generic.json"
+        techmap_v = scan_dir / "faultflow_scanff_map.v"
+        sky130_v = scan_dir / f"{self.cfg.top}_scan_sky130.v"
+        try:
+            result = stitch_scan_json(
+                netlist_json=netlist,
+                cell_map_json=self.cfg.cell_lib,
+                top=self.cfg.top,
+                output_json=generic_json,
+            )
+            write_scan_techmap(techmap_v)
+            techmapped: Path | None = None
+            if run_techmap:
+                techmapped = run_scan_techmap(
+                    generic_json=generic_json,
+                    techmap_verilog=techmap_v,
+                    output_verilog=sky130_v,
+                    top=result.top,
+                    log_path=scan_dir / "yosys_scan.log",
+                    script_path=scan_dir / "yosys_scan.ys",
+                )
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+
+        manifest = {
+            "version": 1,
+            "top": result.top,
+            "source_json": str(netlist),
+            "generic_json": str(generic_json),
+            "techmap_verilog": str(techmap_v),
+            "sky130_verilog": str(techmapped) if techmapped is not None else None,
+            "chain_count": result.chain_count,
+            "cell_count": result.cell_count,
+            "clock_net": result.clock_net,
+            "scan_inputs": result.scan_inputs,
+            "scan_outputs": result.scan_outputs,
+            "scan_enable": result.scan_enable,
+            "cells": [
+                {
+                    "instance": cell.instance,
+                    "original_type": cell.original_type,
+                    "clock_net": cell.clock_net,
+                    "data_net": cell.data_net,
+                    "scan_in_net": cell.scan_in_net,
+                    "scan_enable_net": cell.scan_enable_net,
+                    "q_net": cell.q_net,
+                }
+                for cell in result.cells
+            ],
+        }
+        manifest_path = scan_dir / "scan_manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        tech_note = f" sky130={sky130_v}" if run_techmap else " sky130=skipped"
+        return (
+            f"scan complete top={result.top} chains={result.chain_count} "
+            f"cells={result.cell_count} generic={generic_json} "
+            f"techmap={techmap_v}{tech_note} manifest={manifest_path}"
+        )
 
     def _find_bench_sidecar(self) -> tuple[Path, list[str]]:
         candidates = [

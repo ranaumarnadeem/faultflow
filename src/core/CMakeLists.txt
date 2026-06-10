@@ -9,6 +9,7 @@ add_library(
   fault/collapser/fault_collapser.cpp
   fault/batch/batch_manager.cpp
   db/sqlite_store.cpp
+  scan/scan_chain.cpp
   sim/golden_ref/golden_ref_sim.cpp
   sim/engine/bit_parallel_sim.cpp
   sim/state/test_vector.cpp
