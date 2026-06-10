@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS runs (
     status TEXT NOT NULL,
     vector_source TEXT,
     vector_count INTEGER NOT NULL DEFAULT 0,
+    initial_ff_state TEXT NOT NULL DEFAULT 'all_zero',
     coverage REAL
 );
 CREATE TABLE IF NOT EXISTS vectors (
@@ -144,6 +145,8 @@ CREATE TABLE IF NOT EXISTS node_coverage (
 );
 )sql");
   ensure_column(db, "vectors", "inputs", "TEXT NOT NULL DEFAULT '{}'");
+  ensure_column(db, "runs", "initial_ff_state",
+                "TEXT NOT NULL DEFAULT 'all_zero'");
   ensure_column(db, "vectors", "expected", "TEXT NOT NULL DEFAULT '{}'");
   ensure_column(db, "vectors", "verified", "INTEGER NOT NULL DEFAULT 0");
   ensure_column(db, "faults", "net_name", "TEXT NOT NULL DEFAULT ''");
@@ -154,14 +157,16 @@ CREATE TABLE IF NOT EXISTS node_coverage (
 }
 
 int64_t start_run(const std::string& db_path, const std::string& vector_source,
-                  int64_t vector_count) {
+                  int64_t vector_count,
+                  const std::string& initial_ff_state) {
   SQLite::Database db = open_db(db_path);
   SQLite::Transaction txn(db);
   SQLite::Statement q(db,
-                      "INSERT INTO runs(status, vector_source, vector_count) "
-                      "VALUES ('running', ?, ?)");
+                      "INSERT INTO runs(status, vector_source, vector_count, "
+                      "initial_ff_state) VALUES ('running', ?, ?, ?)");
   q.bind(1, vector_source);
   q.bind(2, vector_count);
+  q.bind(3, initial_ff_state);
   q.exec();
   const int64_t id = db.getLastInsertRowid();
   txn.commit();

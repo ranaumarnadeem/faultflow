@@ -9,11 +9,30 @@
 
 namespace faultflow {
 
+struct CellFFControl {
+  std::string pin;
+  Polarity polarity = Polarity::ACTIVE_HIGH;
+  uint8_t value = 0;
+  bool present = false;
+};
+
+struct CellFFMetadata {
+  std::string clock;
+  std::string data;
+  std::string output = "Q";
+  TriggerType trigger = TriggerType::POSEDGE;
+  CellFFControl clear;
+  CellFFControl preset;
+  uint8_t clear_preset_conflict_value = 0;
+  bool present = false;
+};
+
 struct CellMapEntry {
   NodeType node_type = NodeType::GATE;
   GateType gate_type = GateType::BUF;
   std::vector<std::string> inputs;
   std::map<std::string, std::string> outputs;
+  CellFFMetadata ff;
   bool unsupported = false;
 };
 

@@ -3,6 +3,7 @@
 #include <fstream>
 #include <map>
 #include <regex>
+#include <stdexcept>
 
 #include <nlohmann/json.hpp>
 
@@ -50,6 +51,53 @@ NodeType parse_node_type(const std::string& s) {
   throw ParseError("Unknown node_type: " + s);
 }
 
+TriggerType parse_trigger(const std::string& s) {
+  if (s == "POSEDGE") return TriggerType::POSEDGE;
+  if (s == "NEGEDGE") return TriggerType::NEGEDGE;
+  throw ParseError("Unknown FF trigger: " + s);
+}
+
+Polarity parse_polarity(const std::string& s) {
+  if (s == "HIGH" || s == "ACTIVE_HIGH") return Polarity::ACTIVE_HIGH;
+  if (s == "LOW" || s == "ACTIVE_LOW") return Polarity::ACTIVE_LOW;
+  throw ParseError("Unknown FF polarity/level: " + s);
+}
+
+CellFFControl parse_ff_control(const nlohmann::json& node) {
+  CellFFControl ctrl;
+  ctrl.present = true;
+  ctrl.pin = node.at("pin").get<std::string>();
+  const std::string level =
+      node.value("level", node.value("polarity", std::string("HIGH")));
+  ctrl.polarity = parse_polarity(level);
+  ctrl.value = static_cast<uint8_t>(node.value("value", 0));
+  if (ctrl.value > 1) {
+    throw ParseError("FF control value must be 0 or 1");
+  }
+  return ctrl;
+}
+
+CellFFMetadata parse_ff_metadata(const nlohmann::json& node) {
+  CellFFMetadata ff;
+  ff.present = true;
+  ff.clock = node.at("clock").get<std::string>();
+  ff.data = node.at("data").get<std::string>();
+  ff.output = node.value("output", std::string("Q"));
+  ff.trigger = parse_trigger(node.at("trigger").get<std::string>());
+  if (node.contains("clear")) {
+    ff.clear = parse_ff_control(node.at("clear"));
+  }
+  if (node.contains("preset")) {
+    ff.preset = parse_ff_control(node.at("preset"));
+  }
+  ff.clear_preset_conflict_value =
+      static_cast<uint8_t>(node.value("clear_preset_conflict_value", 0));
+  if (ff.clear_preset_conflict_value > 1) {
+    throw ParseError("FF conflict value must be 0 or 1");
+  }
+  return ff;
+}
+
 CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node) {
   CellMapEntry entry;
   if (node.value("unsupported", false)) {
@@ -72,6 +120,12 @@ CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node)
          ++it) {
       entry.outputs[it.key()] = it.value().get<std::string>();
     }
+  }
+  if (node.contains("ff")) {
+    entry.ff = parse_ff_metadata(node.at("ff"));
+  }
+  if (entry.node_type == NodeType::FF && !entry.ff.present) {
+    throw ParseError("FF cell map entry missing ff metadata: " + pattern);
   }
   return entry;
 }

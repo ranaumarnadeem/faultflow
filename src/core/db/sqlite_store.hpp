@@ -25,7 +25,8 @@ struct CoverageSummary {
 void init_database(const std::string& db_path);
 
 int64_t start_run(const std::string& db_path, const std::string& vector_source,
-                  int64_t vector_count);
+                  int64_t vector_count,
+                  const std::string& initial_ff_state = "all_zero");
 
 void write_vectors(const std::string& db_path, int64_t run_id,
                    const std::string& source,

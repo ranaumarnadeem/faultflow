@@ -18,9 +18,10 @@ uint32_t map_net(int yosys_id, std::map<int, int>& y2c, std::vector<int>& c2y) {
   return static_cast<uint32_t>(idx);
 }
 
-uint32_t map_synthetic_net(std::map<int, int>& y2c, std::vector<int>& c2y,
-                           int& next_synthetic) {
-  return map_net(next_synthetic--, y2c, c2y);
+uint32_t append_branch_alias(std::vector<int>& c2y, int source_yosys_id) {
+  const uint32_t idx = static_cast<uint32_t>(c2y.size());
+  c2y.push_back(source_yosys_id);
+  return idx;
 }
 
 void wire_inputs(SimNode& sn, GateType gt,
@@ -38,6 +39,7 @@ void wire_inputs(SimNode& sn, GateType gt,
       wire("A", sn.in0);
       break;
     case GateType::INPUT:
+    case GateType::DFF:
       break;
     case GateType::AND2:
     case GateType::OR2:
@@ -113,7 +115,6 @@ uint32_t* input_slot(SimNode& sn, int slot) {
 
 void split_fanout_branches(CompiledSimGraph& cg, std::map<int, int>& y2c,
                            std::vector<int>& c2y, std::vector<int>& node_levels) {
-  int next_synthetic = -10000;
   const uint32_t net_count = static_cast<uint32_t>(c2y.size());
   std::vector<std::vector<FanoutEdge>> fanout_edges(net_count);
 
@@ -133,7 +134,8 @@ void split_fanout_branches(CompiledSimGraph& cg, std::map<int, int>& y2c,
     }
     for (const FanoutEdge& edge : fanout_edges[stem]) {
       const int consumer_level = static_cast<int>(node_levels[edge.node_idx]);
-      const uint32_t branch = map_synthetic_net(y2c, c2y, next_synthetic);
+      const int source_yosys_id = c2y.at(stem);
+      const uint32_t branch = append_branch_alias(c2y, source_yosys_id);
       SimNode buf;
       buf.type = GateType::BUF;
       buf.in0 = stem;
@@ -176,6 +178,7 @@ void rebuild_level_starts(CompiledSimGraph& cg,
     sorted_levels.push_back(node_levels[idx]);
   }
   cg.nodes = std::move(sorted);
+  cg.ff_nodes.clear();
 
   int cur = sorted_levels[0];
   cg.level_starts.push_back(0);
@@ -186,6 +189,11 @@ void rebuild_level_starts(CompiledSimGraph& cg,
     }
   }
   cg.level_starts.push_back(static_cast<int>(cg.nodes.size()));
+  for (size_t i = 0; i < cg.nodes.size(); ++i) {
+    if (cg.nodes[i].type == GateType::DFF) {
+      cg.ff_nodes.push_back(static_cast<int>(i));
+    }
+  }
 }
 
 void rebuild_fanout_csr(CompiledSimGraph& cg) {
@@ -235,7 +243,39 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
   std::vector<int> node_levels;
   for (const auto& [nid, node] : ordered) {
     (void)nid;
-    if (node->type != NodeType::GATE && node->type != NodeType::CONST) {
+    if (node->type != NodeType::GATE && node->type != NodeType::CONST &&
+        node->type != NodeType::FF) {
+      continue;
+    }
+
+    if (node->type == NodeType::FF) {
+      SimNode sn;
+      sn.type = GateType::DFF;
+      sn.in0 = map_net(node->ff_config.data_net, y2c, c2y);
+      sn.in1 = map_net(node->ff_config.clock_net, y2c, c2y);
+      if (node->ff_config.clear.present) {
+        sn.in2 = map_net(node->ff_config.clear.net, y2c, c2y);
+      }
+      if (node->ff_config.preset.present) {
+        sn.in3 = map_net(node->ff_config.preset.net, y2c, c2y);
+      }
+      sn.out = map_net(node->ff_config.output_net, y2c, c2y);
+      sn.ff_cfg = static_cast<uint32_t>(cg.ff_configs.size());
+
+      CompiledFFConfig cfg;
+      cfg.trigger = node->ff_config.trigger;
+      cfg.has_clear = node->ff_config.clear.present;
+      cfg.clear_polarity = node->ff_config.clear.polarity;
+      cfg.clear_value = node->ff_config.clear.value;
+      cfg.has_preset = node->ff_config.preset.present;
+      cfg.preset_polarity = node->ff_config.preset.polarity;
+      cfg.preset_value = node->ff_config.preset.value;
+      cfg.clear_preset_conflict_value =
+          node->ff_config.clear_preset_conflict_value;
+
+      cg.ff_configs.push_back(cfg);
+      node_levels.push_back(0);
+      cg.nodes.push_back(sn);
       continue;
     }
 

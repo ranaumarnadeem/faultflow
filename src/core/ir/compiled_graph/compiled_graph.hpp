@@ -21,6 +21,8 @@ struct SimNode {
 
 struct CompiledSimGraph {
   std::vector<SimNode> nodes;
+  std::vector<CompiledFFConfig> ff_configs;
+  std::vector<int> ff_nodes;
   std::vector<uint32_t> fanout_offsets;
   std::vector<uint32_t> fanout_targets;
   std::vector<int> level_starts;
