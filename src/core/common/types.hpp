@@ -58,8 +58,12 @@ struct FFConfig {
   int clock_net = -1;
   int data_net = -1;
   int output_net = -1;
+  int scan_in_net = -1;
+  int scan_enable_net = -1;
   FFControlConfig clear;
   FFControlConfig preset;
+  Polarity scan_enable_polarity = Polarity::ACTIVE_HIGH;
+  bool has_scan = false;
   uint8_t clear_preset_conflict_value = 0;
 };
 
@@ -72,6 +76,8 @@ struct CompiledFFConfig {
   uint8_t clear_preset_conflict_value = 0;
   bool has_clear = false;
   bool has_preset = false;
+  bool has_scan = false;
+  Polarity scan_enable_polarity = Polarity::ACTIVE_HIGH;
 };
 
 enum class FaultType : uint8_t { SA0 = 0, SA1 = 1 };

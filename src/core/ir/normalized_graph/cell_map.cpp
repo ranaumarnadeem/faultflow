@@ -90,6 +90,27 @@ CellFFMetadata parse_ff_metadata(const nlohmann::json& node) {
   if (node.contains("preset")) {
     ff.preset = parse_ff_control(node.at("preset"));
   }
+  if (node.contains("scan")) {
+    const auto& scan = node.at("scan");
+    ff.has_scan = true;
+    if (scan.contains("in")) {
+      ff.scan_in = scan.at("in").get<std::string>();
+    } else if (scan.contains("input")) {
+      ff.scan_in = scan.at("input").get<std::string>();
+    } else {
+      throw ParseError("FF scan metadata missing in/input pin");
+    }
+    if (scan.contains("enable")) {
+      ff.scan_enable = scan.at("enable").get<std::string>();
+    } else if (scan.contains("en")) {
+      ff.scan_enable = scan.at("en").get<std::string>();
+    } else {
+      throw ParseError("FF scan metadata missing enable/en pin");
+    }
+    const std::string scan_level = scan.value(
+        "enable_polarity", scan.value("polarity", std::string("HIGH")));
+    ff.scan_enable_polarity = parse_polarity(scan_level);
+  }
   ff.clear_preset_conflict_value =
       static_cast<uint8_t>(node.value("clear_preset_conflict_value", 0));
   if (ff.clear_preset_conflict_value > 1) {

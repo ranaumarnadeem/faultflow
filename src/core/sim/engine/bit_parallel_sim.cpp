@@ -141,12 +141,18 @@ void BitParallelSim::update_ff_states(SimState& state,
     const uint64_t edge =
         edge_mask(state.prev_values[sn.in1], nv[sn.in1], cfg.trigger) &
         ~(clear | preset);
+    uint64_t capture = nv[sn.in0];
+    if (cfg.has_scan && sn.in4 != UNUSED_INPUT && sn.in5 != UNUSED_INPUT) {
+      const uint64_t scan_active =
+          active_mask(nv[sn.in5], cfg.scan_enable_polarity);
+      capture = (capture & ~scan_active) | (nv[sn.in4] & scan_active);
+    }
 
     uint64_t value = next[idx];
     value = apply_value_mask(value, conflict, cfg.clear_preset_conflict_value);
     value = apply_value_mask(value, clear_only, cfg.clear_value);
     value = apply_value_mask(value, preset_only, cfg.preset_value);
-    value = (value & ~edge) | (nv[sn.in0] & edge);
+    value = (value & ~edge) | (capture & edge);
     next[idx] = value;
   }
   state.ff_states = std::move(next);

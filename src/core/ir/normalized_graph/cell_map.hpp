@@ -20,11 +20,15 @@ struct CellFFMetadata {
   std::string clock;
   std::string data;
   std::string output = "Q";
+  std::string scan_in;
+  std::string scan_enable;
   TriggerType trigger = TriggerType::POSEDGE;
+  Polarity scan_enable_polarity = Polarity::ACTIVE_HIGH;
   CellFFControl clear;
   CellFFControl preset;
   uint8_t clear_preset_conflict_value = 0;
   bool present = false;
+  bool has_scan = false;
 };
 
 struct CellMapEntry {

@@ -89,6 +89,13 @@ FFConfig build_ff_config(const CellMapEntry& entry, const ParsedCell& cell) {
     cfg.preset.polarity = entry.ff.preset.polarity;
     cfg.preset.value = entry.ff.preset.value;
   }
+  if (entry.ff.has_scan) {
+    cfg.has_scan = true;
+    cfg.scan_in_net = first_conn_or_throw(cell, entry.ff.scan_in, cell.type);
+    cfg.scan_enable_net =
+        first_conn_or_throw(cell, entry.ff.scan_enable, cell.type);
+    cfg.scan_enable_polarity = entry.ff.scan_enable_polarity;
+  }
   cfg.clear_preset_conflict_value = entry.ff.clear_preset_conflict_value;
   return cfg;
 }

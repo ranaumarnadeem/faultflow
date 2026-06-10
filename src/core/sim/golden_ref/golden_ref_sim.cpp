@@ -142,7 +142,12 @@ void update_ff_states(const CompiledSimGraph& cg,
       continue;
     }
     if (edge_active(prev_values[sn.in1], values[sn.in1], cfg.trigger)) {
-      next[idx] = values[sn.in0];
+      bool capture = values[sn.in0];
+      if (cfg.has_scan && sn.in4 != UNUSED_INPUT && sn.in5 != UNUSED_INPUT &&
+          control_active(values[sn.in5], cfg.scan_enable_polarity)) {
+        capture = values[sn.in4];
+      }
+      next[idx] = capture;
     }
   }
   ff_states = std::move(next);

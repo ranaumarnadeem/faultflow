@@ -259,6 +259,10 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
       if (node->ff_config.preset.present) {
         sn.in3 = map_net(node->ff_config.preset.net, y2c, c2y);
       }
+      if (node->ff_config.has_scan) {
+        sn.in4 = map_net(node->ff_config.scan_in_net, y2c, c2y);
+        sn.in5 = map_net(node->ff_config.scan_enable_net, y2c, c2y);
+      }
       sn.out = map_net(node->ff_config.output_net, y2c, c2y);
       sn.ff_cfg = static_cast<uint32_t>(cg.ff_configs.size());
 
@@ -270,6 +274,8 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
       cfg.has_preset = node->ff_config.preset.present;
       cfg.preset_polarity = node->ff_config.preset.polarity;
       cfg.preset_value = node->ff_config.preset.value;
+      cfg.has_scan = node->ff_config.has_scan;
+      cfg.scan_enable_polarity = node->ff_config.scan_enable_polarity;
       cfg.clear_preset_conflict_value =
           node->ff_config.clear_preset_conflict_value;
 
