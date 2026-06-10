@@ -70,11 +70,9 @@ TEST_CASE("NormalizedGraph blackbox policy tags unknown outputs", "[normalized_g
   REQUIRE(ng.nets.at(3).is_blackboxed);
 }
 
-TEST_CASE("Deferred OSU035 cells hard-fail while unsupported", "[normalized_graph]") {
+TEST_CASE("Deferred OSU035 latch and tbuf cells hard-fail while unsupported",
+          "[normalized_graph]") {
   const CellMap yaml = CellMap::load(test::cell_map_path());
-  REQUIRE_THROWS_AS(
-      NormalizedGraph::from_parsed(test::load_parsed("tiny_dff.json"), yaml),
-      UnsupportedCellError);
   REQUIRE_THROWS_AS(
       NormalizedGraph::from_parsed(test::load_parsed("tiny_latch.json"), yaml),
       UnsupportedCellError);

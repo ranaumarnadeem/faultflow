@@ -19,6 +19,7 @@ from faultflow.runner import Runner, RunnerError
 from faultflow.verify import (
     CycleSpec,
     IverilogVerifier,
+    SequentialStep,
     VerificationError,
     VectorContract,
     parse_iverilog_samples,
@@ -176,6 +177,43 @@ def test_rendered_testbench_drives_pis_and_samples_pos() -> None:
     assert '$display("FFVERIFY_VECTOR %0d %b", 1, {y, z});' in text
 
 
+def test_rendered_testbench_supports_sequential_steps() -> None:
+    vectors = VectorSet(
+        source="tiny_dff.seq",
+        input_order=["clk", "d"],
+        vectors=[{"clk": False, "d": False}],
+    )
+    steps = [
+        [
+            SequentialStep(
+                inputs={"clk": False, "d": True},
+                cycle=CycleSpec(
+                    cycle=0,
+                    clock_edge="NONE",
+                    reset_state=0,
+                    sample_outputs=False,
+                ),
+            ),
+            SequentialStep(
+                inputs={"clk": True, "d": True},
+                cycle=CycleSpec(
+                    cycle=1,
+                    clock_edge="POSEDGE",
+                    reset_state=0,
+                    sample_outputs=True,
+                ),
+            ),
+        ]
+    ]
+
+    text = render_testbench("tiny_dff", ["clk", "d"], ["q"], vectors, steps)
+
+    assert "clk = 1'b0;" in text
+    assert "clk = 1'b1;" in text
+    assert text.count("FFVERIFY_VECTOR") == 1
+    assert '$display("FFVERIFY_VECTOR %0d %b", 1, {q});' in text
+
+
 def test_rendered_testbench_rejects_missing_pi() -> None:
     vectors = VectorSet(source="demo.test", input_order=["a"], vectors=[{}])
 
@@ -255,6 +293,56 @@ def test_iverilog_verifier_collects_binary_outputs(tmp_path: Path) -> None:
     assert result.passed is True
     assert result.expected_outputs == [{"y": True}, {"y": False}]
     assert (tmp_path / "verify" / "testbench.v").exists()
+
+
+def test_cpp_sequence_helper_matches_iverilog_tiny_dff(tmp_path: Path) -> None:
+    core = runner_mod._load_core()
+    assert core is not None
+
+    gate = tmp_path / "tiny_dff.v"
+    gate.write_text(
+        """
+module tiny_dff(input CLK, input D, output Q);
+  DFFPOSX1 u0(.CLK(CLK), .D(D), .Q(Q));
+endmodule
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    vectors = VectorSet(
+        source="tiny_dff.seq",
+        input_order=["CLK", "D"],
+        vectors=[{"CLK": False, "D": False}],
+    )
+    steps = [
+        [
+            SequentialStep(
+                inputs={"CLK": False, "D": True},
+                cycle=CycleSpec(0, "NONE", 0, False),
+            ),
+            SequentialStep(
+                inputs={"CLK": True, "D": True},
+                cycle=CycleSpec(1, "POSEDGE", 0, True),
+            ),
+        ]
+    ]
+    verifier = IverilogVerifier(
+        top="tiny_dff",
+        work_dir=tmp_path / "verify",
+        gate_verilog=gate,
+        verilog_models=[Path("cells/osu/osu035_stdcells.v")],
+    )
+
+    iverilog_result = verifier.run(["CLK", "D"], ["Q"], vectors, steps)
+    cpp_result = core.fault_free_sequence_outputs(
+        "tests/cpp/fixtures/tiny_dff.json",
+        "cells/osu/osu035.json",
+        [[{"CLK": False, "D": True}, {"CLK": True, "D": True}]],
+        ["CLK", "D"],
+        ["Q"],
+        "fail",
+    )
+
+    assert cpp_result == iverilog_result.expected_outputs == [{"Q": True}]
 
 
 def test_runner_verification_failure_aborts_before_sim(

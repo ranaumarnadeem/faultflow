@@ -3,6 +3,7 @@ add_executable(
   test_main.cpp
   sim/test_gate_eval.cpp
   sim/test_golden_ref.cpp
+  sim/test_sequential_ff.cpp
   sim/test_bit_parallel.cpp
   ir/test_parsed_graph.cpp
   ir/test_normalized_graph.cpp
