@@ -1,6 +1,7 @@
 from faultflow.verify.gate import (
     CycleSpec,
     IverilogVerifier,
+    SequentialStep,
     VerificationError,
     VerificationResult,
     VectorContract,
@@ -11,6 +12,7 @@ from faultflow.verify.gate import (
 __all__ = [
     "CycleSpec",
     "IverilogVerifier",
+    "SequentialStep",
     "VerificationError",
     "VerificationResult",
     "VectorContract",

@@ -48,6 +48,51 @@ void tag_special_net(NormalizedGraph& ng, int bit, const std::string& name) {
   }
 }
 
+void tag_clock_net(NormalizedGraph& ng, int bit) {
+  ng.nets[bit].is_clock = true;
+  ng.clocks.insert(bit);
+}
+
+void tag_reset_net(NormalizedGraph& ng, int bit) {
+  ng.nets[bit].is_reset = true;
+  ng.resets.insert(bit);
+}
+
+int first_conn_or_throw(const ParsedCell& cell, const std::string& pin,
+                        const std::string& cell_type) {
+  const auto it = cell.conns.find(pin);
+  if (it == cell.conns.end() || it->second.empty()) {
+    throw ParseError("Cell " + cell_type + " missing required pin " + pin);
+  }
+  return it->second.front();
+}
+
+FFConfig build_ff_config(const CellMapEntry& entry, const ParsedCell& cell) {
+  FFConfig cfg;
+  cfg.trigger = entry.ff.trigger;
+  cfg.clock_net = first_conn_or_throw(cell, entry.ff.clock, cell.type);
+  cfg.data_net = first_conn_or_throw(cell, entry.ff.data, cell.type);
+  const auto out_it = entry.outputs.find(entry.ff.output);
+  if (out_it == entry.outputs.end()) {
+    throw ParseError("FF cell map output missing: " + cell.type);
+  }
+  cfg.output_net = first_conn_or_throw(cell, out_it->second, cell.type);
+  if (entry.ff.clear.present) {
+    cfg.clear.present = true;
+    cfg.clear.net = first_conn_or_throw(cell, entry.ff.clear.pin, cell.type);
+    cfg.clear.polarity = entry.ff.clear.polarity;
+    cfg.clear.value = entry.ff.clear.value;
+  }
+  if (entry.ff.preset.present) {
+    cfg.preset.present = true;
+    cfg.preset.net = first_conn_or_throw(cell, entry.ff.preset.pin, cell.type);
+    cfg.preset.polarity = entry.ff.preset.polarity;
+    cfg.preset.value = entry.ff.preset.value;
+  }
+  cfg.clear_preset_conflict_value = entry.ff.clear_preset_conflict_value;
+  return cfg;
+}
+
 }  // namespace
 
 NormalizedGraph NormalizedGraph::from_parsed(const ParsedGraph& parsed,
@@ -143,15 +188,15 @@ NormalizedGraph NormalizedGraph::from_parsed(const ParsedGraph& parsed,
       throw UnsupportedCellError(cell.type);
     }
 
-    if (entry->node_type == NodeType::FF || entry->node_type == NodeType::LATCH ||
-        entry->node_type == NodeType::TBUF) {
+    if (entry->node_type == NodeType::LATCH || entry->node_type == NodeType::TBUF) {
       throw UnsupportedCellError(cell.type);
     }
 
     NormNode node;
     node.id = next_node_id++;
     node.type = entry->node_type;
-    node.gate_type = entry->gate_type;
+    node.gate_type =
+        entry->node_type == NodeType::FF ? GateType::DFF : entry->gate_type;
 
     for (const auto& in_pin : entry->inputs) {
       auto it = cell.conns.find(in_pin);
@@ -171,7 +216,31 @@ NormalizedGraph NormalizedGraph::from_parsed(const ParsedGraph& parsed,
       }
     }
 
+    if (entry->node_type == NodeType::FF) {
+      node.ff_config = build_ff_config(*entry, cell);
+      tag_clock_net(ng, node.ff_config.clock_net);
+      if (node.ff_config.clear.present) {
+        tag_reset_net(ng, node.ff_config.clear.net);
+      }
+      if (node.ff_config.preset.present) {
+        tag_reset_net(ng, node.ff_config.preset.net);
+      }
+      node.level = 0;
+    }
+
     ng.nodes[node.id] = std::move(node);
+  }
+
+  bool has_ff = false;
+  for (const auto& [nid, node] : ng.nodes) {
+    (void)nid;
+    if (node.type == NodeType::FF) {
+      has_ff = true;
+      break;
+    }
+  }
+  if (has_ff && ng.clocks.size() > 1) {
+    throw ParseError("Sequential simulation supports exactly one clock net");
   }
 
   // PI source pseudo-nodes (INPUT)
@@ -237,6 +306,10 @@ NormalizedGraph NormalizedGraph::from_parsed(const ParsedGraph& parsed,
   while (changed && guard++ < static_cast<int>(ng.nodes.size()) + 5) {
     changed = false;
     for (auto& [nid, node] : ng.nodes) {
+      if (node.type == NodeType::FF) {
+        node.level = 0;
+        continue;
+      }
       int max_in = -1;
       for (const auto& [pin, in_net] : node.input_pins) {
         (void)pin;

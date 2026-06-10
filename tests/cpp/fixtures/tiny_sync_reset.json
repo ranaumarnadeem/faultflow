@@ -1,0 +1,50 @@
+{
+  "creator": "faultflow hand fixture",
+  "modules": {
+    "tiny_sync_reset": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "CLK": {"direction": "input", "bits": [2]},
+        "RST": {"direction": "input", "bits": [3]},
+        "A": {"direction": "input", "bits": [4]},
+        "Q": {"direction": "output", "bits": [7]}
+      },
+      "cells": {
+        "u_inv": {
+          "hide_name": 0,
+          "type": "INVX1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "Y": "output"},
+          "connections": {"A": [3], "Y": [5]}
+        },
+        "u_and": {
+          "hide_name": 0,
+          "type": "AND2X1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "Y": "output"},
+          "connections": {"A": [4], "B": [5], "Y": [6]}
+        },
+        "u_ff": {
+          "hide_name": 0,
+          "type": "DFFPOSX1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+          "connections": {"CLK": [2], "D": [6], "Q": [7]}
+        }
+      },
+      "netnames": {
+        "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+        "RST": {"hide_name": 0, "bits": [3], "attributes": {}},
+        "A": {"hide_name": 0, "bits": [4], "attributes": {}},
+        "rst_n": {"hide_name": 0, "bits": [5], "attributes": {}},
+        "ff_d": {"hide_name": 0, "bits": [6], "attributes": {}},
+        "Q": {"hide_name": 0, "bits": [7], "attributes": {}}
+      }
+    }
+  }
+}

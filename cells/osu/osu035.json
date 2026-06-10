@@ -107,9 +107,42 @@
     "inputs": ["A", "B"],
     "outputs": {"S": "YS", "CO": "YC"}
   },
-  "DFFPOSX*": {"node_type": "FF"},
-  "DFFNEGX*": {"node_type": "FF"},
-  "DFFSR": {"node_type": "FF"},
+  "DFFPOSX*": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE"
+    }
+  },
+  "DFFNEGX*": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "NEGEDGE"
+    }
+  },
+  "DFFSR": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D", "R", "S"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "clear": {"pin": "R", "level": "LOW", "value": 0},
+      "preset": {"pin": "S", "level": "LOW", "value": 1},
+      "clear_preset_conflict_value": 0
+    }
+  },
   "LATCH": {"node_type": "LATCH"},
   "TBUFX*": {"node_type": "TBUF"},
   "PAD*": {"node_type": "GATE", "gate_type": "BUF", "unsupported": true}

@@ -55,9 +55,25 @@ TEST_CASE("SQLite store initializes schema", "[db]") {
   REQUIRE(has_column(sqlite, "faults", "type"));
   REQUIRE(has_column(sqlite, "faults", "excluded"));
   REQUIRE(has_column(sqlite, "faults", "collapsed_to"));
+  REQUIRE(has_column(sqlite, "runs", "initial_ff_state"));
   REQUIRE(has_column(sqlite, "vectors", "inputs"));
   REQUIRE(has_column(sqlite, "vectors", "expected"));
   REQUIRE(has_column(sqlite, "vectors", "verified"));
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("SQLite store freezes run initial FF state", "[db][sequential]") {
+  const auto path = db_path("faultflow_sqlite_store_initial_ff.sqlite");
+  db::init_database(path.string());
+  const int64_t run_id =
+      db::start_run(path.string(), "seq_vectors.json", 3, "{\"0\":true}");
+
+  SQLite::Database sqlite(path.string(), SQLite::OPEN_READONLY);
+  SQLite::Statement q(sqlite,
+                      "SELECT initial_ff_state FROM runs WHERE id = ?");
+  q.bind(1, run_id);
+  REQUIRE(q.executeStep());
+  REQUIRE(q.getColumn(0).getString() == "{\"0\":true}");
   std::filesystem::remove(path);
 }
 

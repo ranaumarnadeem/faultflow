@@ -59,6 +59,38 @@ std::vector<TestVector> convert_vectors_strict(
   return out;
 }
 
+std::vector<TestVector> convert_sequence_vectors_strict(
+    const ParsedGraph& parsed,
+    const std::vector<std::vector<std::map<std::string, bool>>>& raw_sequences,
+    const std::vector<std::string>& input_order) {
+  std::vector<TestVector> out;
+  out.reserve(raw_sequences.size());
+  for (size_t vi = 0; vi < raw_sequences.size(); ++vi) {
+    if (raw_sequences[vi].empty()) {
+      throw std::runtime_error("sequence " + std::to_string(vi + 1) +
+                               ": empty cycle sequence");
+    }
+    TestVector tv;
+    for (size_t ci = 0; ci < raw_sequences[vi].size(); ++ci) {
+      const auto& raw = raw_sequences[vi][ci];
+      TestCycle cycle;
+      cycle.sample_outputs = ci + 1 == raw_sequences[vi].size();
+      for (const auto& input : input_order) {
+        const auto it = raw.find(input);
+        if (it == raw.end()) {
+          throw std::runtime_error("sequence " + std::to_string(vi + 1) +
+                                   " cycle " + std::to_string(ci + 1) +
+                                   ": missing PI " + input);
+        }
+        cycle.inputs[parsed.net_id_by_name(input)] = it->second;
+      }
+      tv.cycles.push_back(std::move(cycle));
+    }
+    out.push_back(std::move(tv));
+  }
+  return out;
+}
+
 std::vector<std::string> vector_patterns(
     const std::vector<std::map<std::string, bool>>& raw_vectors,
     const std::vector<std::string>& input_order) {
@@ -177,6 +209,43 @@ std::vector<std::map<std::string, bool>> fault_free_outputs(
   return out;
 }
 
+std::vector<std::map<std::string, bool>> fault_free_sequence_outputs(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::vector<std::vector<std::map<std::string, bool>>>& raw_sequences,
+    const std::vector<std::string>& input_order,
+    const std::vector<std::string>& output_order,
+    const std::string& unsupported_policy) {
+  const ParsedGraph parsed = ParsedGraph::from_file(json_path);
+  const CellMap cell_map = CellMap::load(cell_map_path);
+  const NormalizedGraph ng =
+      NormalizedGraph::from_parsed(parsed, cell_map, unsupported_policy);
+  const CompiledSimGraph cg = GraphCompiler::compile(ng);
+  const std::vector<TestVector> vectors =
+      convert_sequence_vectors_strict(parsed, raw_sequences, input_order);
+
+  GoldenRefSim ref;
+  std::vector<std::map<std::string, bool>> out;
+  out.reserve(vectors.size());
+  for (const TestVector& vector : vectors) {
+    const auto samples = ref.simulate_sequence_fault_free(cg, vector);
+    if (samples.empty()) {
+      throw std::runtime_error("sequence produced no sampled outputs");
+    }
+    const std::map<int, bool>& values = samples.back();
+    std::map<std::string, bool> sample;
+    for (const auto& output : output_order) {
+      const int yid = parsed.net_id_by_name(output);
+      const auto it = values.find(yid);
+      if (it == values.end()) {
+        throw std::runtime_error("output not simulated: " + output);
+      }
+      sample[output] = it->second;
+    }
+    out.push_back(std::move(sample));
+  }
+  return out;
+}
+
 }  // namespace faultflow
 
 PYBIND11_MODULE(_faultflow_core, m) {
@@ -190,4 +259,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
   m.def("fault_free_outputs", &faultflow::fault_free_outputs, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("vectors"), py::arg("input_order"),
         py::arg("output_order"), py::arg("unsupported_policy") = "fail");
+  m.def("fault_free_sequence_outputs", &faultflow::fault_free_sequence_outputs,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("sequences"),
+        py::arg("input_order"), py::arg("output_order"),
+        py::arg("unsupported_policy") = "fail");
 }

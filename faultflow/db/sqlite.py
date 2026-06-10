@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS runs (
     status TEXT NOT NULL,
     vector_source TEXT,
     vector_count INTEGER NOT NULL DEFAULT 0,
+    initial_ff_state TEXT NOT NULL DEFAULT 'all_zero',
     coverage REAL
 );
 
@@ -84,6 +85,7 @@ CREATE TABLE IF NOT EXISTS node_coverage (
 
 MIGRATIONS = [
     ("vectors", "inputs", "TEXT NOT NULL DEFAULT '{}'"),
+    ("runs", "initial_ff_state", "TEXT NOT NULL DEFAULT 'all_zero'"),
     ("vectors", "expected", "TEXT NOT NULL DEFAULT '{}'"),
     ("vectors", "verified", "INTEGER NOT NULL DEFAULT 0"),
     ("faults", "net_name", "TEXT NOT NULL DEFAULT ''"),

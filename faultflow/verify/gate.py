@@ -34,6 +34,12 @@ class CycleSpec:
 
 
 @dataclass(frozen=True)
+class SequentialStep:
+    inputs: dict[str, bool]
+    cycle: CycleSpec
+
+
+@dataclass(frozen=True)
 class VectorContract:
     initial_cycles: int
     reset_active_until: int
@@ -87,17 +93,46 @@ def _validate_vectors(pis: list[str], vectors: VectorSet) -> None:
                 raise VerificationError(f"vector {index}: missing PI {pi}")
 
 
+def _validate_steps(pis: list[str], steps: list[list[SequentialStep]]) -> None:
+    for vector_index, sequence in enumerate(steps, 1):
+        if not sequence:
+            raise VerificationError(f"vector {vector_index}: empty cycle sequence")
+        for step_index, step in enumerate(sequence, 1):
+            for pi in pis:
+                if pi not in step.inputs:
+                    raise VerificationError(
+                        f"vector {vector_index} cycle {step_index}: missing PI {pi}"
+                    )
+
+
+def _drive_inputs(
+    lines: list[str], input_order: list[str], values: dict[str, bool]
+) -> None:
+    for pi in input_order:
+        value = "1" if values[pi] else "0"
+        lines.append(f"  {_verilog_ident(pi)} = 1'b{value};")
+
+
 def render_testbench(
     top: str,
     input_order: list[str],
     output_order: list[str],
     vectors: VectorSet,
+    sequential_steps: list[list[SequentialStep]] | None = None,
 ) -> str:
     if not input_order:
         raise VerificationError("verification requires at least one PI")
     if not output_order:
         raise VerificationError("verification requires at least one PO")
-    _validate_vectors(input_order, vectors)
+    if sequential_steps is None:
+        _validate_vectors(input_order, vectors)
+    else:
+        if len(sequential_steps) != vectors.count:
+            raise VerificationError(
+                f"sequential step count {len(sequential_steps)} does not match "
+                f"{vectors.count} vectors"
+            )
+        _validate_steps(input_order, sequential_steps)
 
     lines = [
         "`timescale 1ns/1ps",
@@ -120,14 +155,25 @@ def render_testbench(
     lines.append("initial begin")
 
     output_concat = ", ".join(_verilog_ident(name) for name in output_order)
-    for index, vector in enumerate(vectors.vectors, 1):
-        for pi in input_order:
-            value = "1" if vector[pi] else "0"
-            lines.append(f"  {_verilog_ident(pi)} = 1'b{value};")
-        lines.append("  #10;")
-        lines.append(
-            f'  $display("FFVERIFY_VECTOR %0d %b", {index}, ' f"{{{output_concat}}});"
-        )
+    if sequential_steps is None:
+        for index, vector in enumerate(vectors.vectors, 1):
+            _drive_inputs(lines, input_order, vector)
+            lines.append("  #10;")
+            lines.append(
+                f'  $display("FFVERIFY_VECTOR %0d %b", {index}, '
+                f"{{{output_concat}}});"
+            )
+    else:
+        for index, sequence in enumerate(sequential_steps, 1):
+            for step in sequence:
+                _drive_inputs(lines, input_order, step.inputs)
+                delay = max(1, step.cycle.settle_cycles + 1) * 10
+                lines.append(f"  #{delay};")
+                if step.cycle.sample_outputs:
+                    lines.append(
+                        f'  $display("FFVERIFY_VECTOR %0d %b", {index}, '
+                        f"{{{output_concat}}});"
+                    )
     lines.append("  $finish;")
     lines.append("end")
     lines.append("endmodule")
@@ -206,6 +252,7 @@ class IverilogVerifier:
         input_order: list[str],
         output_order: list[str],
         vectors: VectorSet,
+        sequential_steps: list[list[SequentialStep]] | None = None,
     ) -> VerificationResult:
         iverilog = shutil.which("iverilog")
         if iverilog is None:
@@ -225,7 +272,13 @@ class IverilogVerifier:
         tb = self.work_dir / "testbench.v"
         exe = self.work_dir / "verify.vvp"
         tb.write_text(
-            render_testbench(self.top, input_order, output_order, vectors),
+            render_testbench(
+                self.top,
+                input_order,
+                output_order,
+                vectors,
+                sequential_steps,
+            ),
             encoding="utf-8",
         )
 

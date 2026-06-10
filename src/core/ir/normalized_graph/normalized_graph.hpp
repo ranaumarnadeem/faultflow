@@ -33,6 +33,7 @@ struct NormNode {
   std::map<std::string, int> input_pins;
   std::map<std::string, int> output_pins;
   int level = 0;
+  FFConfig ff_config;
 };
 
 struct NormalizedGraph {
