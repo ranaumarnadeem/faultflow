@@ -30,6 +30,17 @@ def _float(parser: ConfigParser, section: str, key: str, default: float) -> floa
     return parser.getfloat(section, key)
 
 
+def _int(parser: ConfigParser, section: str, key: str, default: int) -> int:
+    if not parser.has_option(section, key):
+        return default
+    return parser.getint(section, key)
+
+
+def _optional_int(parser: ConfigParser, section: str, key: str) -> int | None:
+    value = parser.get(section, key, fallback="").strip()
+    return int(value) if value else None
+
+
 @dataclass(frozen=True)
 class FaultModelConfig:
     collapsing: bool = False
@@ -58,6 +69,16 @@ class ReportConfig:
 
 
 @dataclass(frozen=True)
+class ScanConfig:
+    chains: int = 1
+    max_chain_length: int | None = None
+    scan_in: str = "scan_in"
+    scan_out: str = "scan_out"
+    scan_enable: str = "scan_en"
+    run_techmap: bool = True
+
+
+@dataclass(frozen=True)
 class FaultflowConfig:
     path: Path
     top: str
@@ -70,6 +91,7 @@ class FaultflowConfig:
     simulation: SimulationConfig
     atpg: AtpgConfig
     report: ReportConfig
+    scan: ScanConfig
 
     @property
     def output_dir(self) -> Path:
@@ -148,5 +170,13 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         report=ReportConfig(
             output=_path(parser, "report", "output", "coverage_report.json"),
             threshold=_float(parser, "report", "threshold", 95.0),
+        ),
+        scan=ScanConfig(
+            chains=_int(parser, "scan", "chains", 1),
+            max_chain_length=_optional_int(parser, "scan", "max_chain_length"),
+            scan_in=parser.get("scan", "scan_in", fallback="scan_in"),
+            scan_out=parser.get("scan", "scan_out", fallback="scan_out"),
+            scan_enable=parser.get("scan", "scan_enable", fallback="scan_en"),
+            run_techmap=_bool(parser, "scan", "run_techmap", True),
         ),
     )

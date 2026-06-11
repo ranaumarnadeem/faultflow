@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from faultflow.atpg import (
+    PatternError,
     VectorSet,
     parse_bench_inputs,
     parse_bench_outputs,
@@ -22,9 +23,18 @@ from faultflow.db import connect, init_schema, summary
 from faultflow.reporter import write_reports
 from faultflow.scan import (
     ScanError,
+    plan_scan_json,
     stitch_scan_json,
     write_scan_techmap,
     run_scan_techmap,
+)
+from faultflow.scan.checks import check_scan_structure
+from faultflow.scan.reports import (
+    format_dry_run,
+    load_manifest,
+    manifest_from_result,
+    utc_timestamp,
+    write_scan_artifacts,
 )
 from faultflow.verify import IverilogVerifier, VerificationError
 
@@ -76,6 +86,70 @@ def _hash_text(text: str) -> str:
 
 def _is_json(path: Path) -> bool:
     return path.suffix.lower() == ".json"
+
+
+def _truthy_attr(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"1", "true"}:
+        return True
+    if set(text) <= {"0", "1"}:
+        return "1" in text
+    return False
+
+
+def _load_json_object(path: Path) -> dict[str, Any]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise RunnerError(f"JSON root must be an object: {path}")
+    return data
+
+
+def _json_top_module(path: Path, top: str) -> tuple[str, dict[str, Any]]:
+    data = _load_json_object(path)
+    modules = data.get("modules")
+    if not isinstance(modules, dict):
+        raise RunnerError(f"Yosys JSON missing modules: {path}")
+    if top in modules and isinstance(modules[top], dict):
+        return top, modules[top]
+    for name, module in modules.items():
+        if not isinstance(module, dict):
+            continue
+        attrs = module.get("attributes", {})
+        if isinstance(attrs, dict) and _truthy_attr(attrs.get("top", False)):
+            return str(name), module
+    raise RunnerError(f"Cannot find top module {top} in {path}")
+
+
+def _port_names(path: Path, top: str, direction: str) -> list[str]:
+    _, module = _json_top_module(path, top)
+    ports = module.get("ports")
+    if not isinstance(ports, dict):
+        raise RunnerError(f"module {top} ports must be an object")
+    out: list[str] = []
+    for name, port in ports.items():
+        if isinstance(port, dict) and port.get("direction") == direction:
+            bits = port.get("bits")
+            if isinstance(bits, list) and len(bits) == 1 and isinstance(bits[0], int):
+                out.append(str(name))
+    return sorted(out)
+
+
+def _port_name_for_net(path: Path, top: str, net_id: int, direction: str) -> str | None:
+    _, module = _json_top_module(path, top)
+    ports = module.get("ports")
+    if not isinstance(ports, dict):
+        return None
+    for name, port in ports.items():
+        if not isinstance(port, dict) or port.get("direction") != direction:
+            continue
+        bits = port.get("bits")
+        if isinstance(bits, list) and bits == [net_id]:
+            return str(name)
+    return None
 
 
 def _load_core() -> Any | None:
@@ -307,11 +381,53 @@ class Runner:
             raise RunnerError(f"Yosys failed; see {self.cfg.output_dir / 'yosys.log'}")
         return json_path
 
-    def scan(self, run_techmap: bool = True) -> str:
+    def _scan_dir(self) -> Path:
+        return self.cfg.output_dir / "scan"
+
+    def _scan_manifest_path(self) -> Path:
+        return self._scan_dir() / "scan_manifest.json"
+
+    def scan(
+        self,
+        run_techmap: bool | None = None,
+        scan_chains: int | None = None,
+        max_chain_length: int | None = None,
+        scan_in: str | None = None,
+        scan_out: str | None = None,
+        scan_enable: str | None = None,
+        dry_run: bool = False,
+    ) -> str:
         self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
-        scan_dir = self.cfg.output_dir / "scan"
+        scan_dir = self._scan_dir()
         scan_dir.mkdir(parents=True, exist_ok=True)
         netlist = self._find_netlist()
+        chains = self.cfg.scan.chains if scan_chains is None else scan_chains
+        max_len = (
+            self.cfg.scan.max_chain_length
+            if max_chain_length is None
+            else max_chain_length
+        )
+        si_base = self.cfg.scan.scan_in if scan_in is None else scan_in
+        so_base = self.cfg.scan.scan_out if scan_out is None else scan_out
+        se_name = self.cfg.scan.scan_enable if scan_enable is None else scan_enable
+        do_techmap = self.cfg.scan.run_techmap if run_techmap is None else run_techmap
+
+        if dry_run:
+            try:
+                plan = plan_scan_json(
+                    netlist_json=netlist,
+                    cell_map_json=self.cfg.cell_lib,
+                    top=self.cfg.top,
+                    scan_chains=chains,
+                    max_chain_length=max_len,
+                    scan_in_base=si_base,
+                    scan_out_base=so_base,
+                    scan_enable=se_name,
+                )
+            except ScanError as exc:
+                raise RunnerError(str(exc)) from exc
+            return format_dry_run(plan)
+
         generic_json = scan_dir / f"{self.cfg.top}_scan_generic.json"
         techmap_v = scan_dir / "faultflow_scanff_map.v"
         sky130_v = scan_dir / f"{self.cfg.top}_scan_sky130.v"
@@ -321,10 +437,15 @@ class Runner:
                 cell_map_json=self.cfg.cell_lib,
                 top=self.cfg.top,
                 output_json=generic_json,
+                scan_chains=chains,
+                max_chain_length=max_len,
+                scan_in_base=si_base,
+                scan_out_base=so_base,
+                scan_enable=se_name,
             )
             write_scan_techmap(techmap_v)
             techmapped: Path | None = None
-            if run_techmap:
+            if do_techmap:
                 techmapped = run_scan_techmap(
                     generic_json=generic_json,
                     techmap_verilog=techmap_v,
@@ -336,42 +457,272 @@ class Runner:
         except ScanError as exc:
             raise RunnerError(str(exc)) from exc
 
-        manifest = {
-            "version": 1,
-            "top": result.top,
-            "source_json": str(netlist),
-            "generic_json": str(generic_json),
-            "techmap_verilog": str(techmap_v),
-            "sky130_verilog": str(techmapped) if techmapped is not None else None,
-            "chain_count": result.chain_count,
-            "cell_count": result.cell_count,
-            "clock_net": result.clock_net,
-            "scan_inputs": result.scan_inputs,
-            "scan_outputs": result.scan_outputs,
-            "scan_enable": result.scan_enable,
-            "cells": [
-                {
-                    "instance": cell.instance,
-                    "original_type": cell.original_type,
-                    "clock_net": cell.clock_net,
-                    "data_net": cell.data_net,
-                    "scan_in_net": cell.scan_in_net,
-                    "scan_enable_net": cell.scan_enable_net,
-                    "q_net": cell.q_net,
-                }
-                for cell in result.cells
-            ],
-        }
-        manifest_path = scan_dir / "scan_manifest.json"
-        manifest_path.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        tech_note = f" sky130={sky130_v}" if run_techmap else " sky130=skipped"
+        manifest = manifest_from_result(result, netlist, techmap_v, techmapped)
+        write_scan_artifacts(scan_dir, manifest)
+        manifest_path = self._scan_manifest_path()
+        tech_note = f" sky130={sky130_v}" if do_techmap else " sky130=skipped"
         return (
             f"scan complete top={result.top} chains={result.chain_count} "
             f"cells={result.cell_count} generic={generic_json} "
             f"techmap={techmap_v}{tech_note} manifest={manifest_path}"
+        )
+
+    def scan_status(self) -> str:
+        manifest_path = self._scan_manifest_path()
+        if not manifest_path.exists():
+            raise RunnerError(f"scan manifest not found: {manifest_path}")
+        manifest = load_manifest(manifest_path)
+        latest = manifest.get("latest_check")
+        check_status = latest.get("status") if isinstance(latest, dict) else "not-run"
+        ineligible = manifest.get("ineligible_ffs", [])
+        ineligible_count = len(ineligible) if isinstance(ineligible, list) else 0
+        return (
+            f"top={manifest.get('top')} chains={manifest.get('chain_count')} "
+            f"scan_cells={manifest.get('cell_count')} "
+            f"ineligible={ineligible_count} "
+            f"check={check_status} manifest={manifest_path}"
+        )
+
+    def scan_techmap(self) -> str:
+        manifest_path = self._scan_manifest_path()
+        if not manifest_path.exists():
+            raise RunnerError(f"scan manifest not found: {manifest_path}")
+        manifest = load_manifest(manifest_path)
+        generic_json = Path(str(manifest["generic_json"]))
+        if _hash_file(generic_json) != str(manifest.get("generic_json_hash", "")):
+            raise RunnerError("generic scan JSON hash does not match manifest")
+        techmap_v = Path(str(manifest["techmap_verilog"]))
+        sky130_v = self._scan_dir() / f"{self.cfg.top}_scan_sky130.v"
+        write_scan_techmap(techmap_v)
+        try:
+            techmapped = run_scan_techmap(
+                generic_json=generic_json,
+                techmap_verilog=techmap_v,
+                output_verilog=sky130_v,
+                top=str(manifest["top"]),
+                log_path=self._scan_dir() / "yosys_scan.log",
+                script_path=self._scan_dir() / "yosys_scan.ys",
+            )
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+        manifest["sky130_verilog"] = str(techmapped)
+        write_scan_artifacts(self._scan_dir(), manifest)
+        return f"scan techmap complete top={manifest['top']} sky130={techmapped}"
+
+    def _scan_vector_source(
+        self,
+        source_json: Path,
+        vectors_path: Path | None,
+    ) -> tuple[VectorSet, str]:
+        input_order = _port_names(source_json, self.cfg.top, "input")
+        pattern_order = self._scan_pattern_input_order(source_json, input_order)
+        if vectors_path is not None:
+            vectors = parse_quaigh_test(
+                vectors_path, pattern_order, source=str(vectors_path)
+            )
+            return vectors, str(vectors_path)
+
+        candidates = [
+            self.cfg.atpg.output,
+            self.cfg.output_dir / f"{self.cfg.top}atpg.test",
+            self.cfg.output_dir / "atpg.test",
+            (Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}atpg.test"),
+            (Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}atpg.test"),
+        ]
+        for path in candidates:
+            if path.exists():
+                try:
+                    vectors = parse_quaigh_test(path, pattern_order, source=str(path))
+                except PatternError:
+                    continue
+                return vectors, str(path)
+
+        try:
+            generated = self._find_vectors()
+            _, generated_order = self._find_order_sidecar()
+            vectors = parse_quaigh_test(
+                generated, generated_order, source=str(generated)
+            )
+            return vectors, str(generated)
+        except (PatternError, RunnerError):
+            cycle_count = max(10, int(self._current_scan_cell_count()) + 2)
+            smoke_vectors: list[dict[str, bool]] = []
+            for cycle_index in range(cycle_count):
+                smoke_vectors.append(
+                    {
+                        name: ((cycle_index + pi_index) % 2) == 1
+                        for pi_index, name in enumerate(input_order)
+                    }
+                )
+            return (
+                VectorSet("deterministic_scan_smoke", input_order, smoke_vectors),
+                "smoke",
+            )
+
+    def _scan_pattern_input_order(
+        self,
+        source_json: Path,
+        fallback_order: list[str],
+    ) -> list[str]:
+        input_names = set(_port_names(source_json, self.cfg.top, "input"))
+        candidates = [
+            self.cfg.output_dir / f"{self.cfg.top}.bench",
+            self.cfg.output_dir / "design.bench",
+            Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}.bench",
+            Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}.bench",
+        ]
+        for path in candidates:
+            if not path.exists():
+                continue
+            try:
+                order = parse_bench_inputs(path)
+            except PatternError:
+                continue
+            if set(order) <= input_names:
+                return order
+        return fallback_order
+
+    def _current_scan_cell_count(self) -> int:
+        manifest_path = self._scan_manifest_path()
+        if not manifest_path.exists():
+            return 0
+        manifest = load_manifest(manifest_path)
+        value = manifest.get("cell_count", 0)
+        return int(value) if isinstance(value, int) else 0
+
+    def _sequence_outputs(
+        self,
+        netlist: Path,
+        vectors: VectorSet,
+        output_order: list[str],
+        clock_name: str,
+        extra_inputs: dict[str, bool] | None = None,
+    ) -> list[dict[str, bool]]:
+        core = _load_core()
+        if core is None:
+            raise RunnerError(
+                "C++ extension _faultflow_core is required. "
+                "Run: cmake --build build -- -j2"
+            )
+        extra = extra_inputs or {}
+        input_order = sorted(set(vectors.input_order) | set(extra) | {clock_name})
+        sequences = []
+        for vector in vectors.vectors:
+            base = {name: bool(vector.get(name, False)) for name in input_order}
+            base.update(extra)
+            low = dict(base)
+            high = dict(base)
+            low[clock_name] = False
+            high[clock_name] = True
+            sequences.append([low, high])
+        return list(
+            core.fault_free_sequence_outputs(
+                str(netlist),
+                str(self.cfg.cell_lib),
+                sequences,
+                input_order,
+                output_order,
+                self.cfg.simulation.unsupported_cells,
+            )
+        )
+
+    def _run_scan_normal_mode_check(
+        self,
+        manifest: dict[str, object],
+        vectors_path: Path | None,
+    ) -> tuple[list[str], dict[str, object]]:
+        source_json = Path(str(manifest["source_json"]))
+        generic_json = Path(str(manifest["generic_json"]))
+        output_order = _port_names(source_json, str(manifest["top"]), "output")
+        if not output_order:
+            raise RunnerError("normal-mode scan check requires at least one PO")
+        clock_net_raw = manifest["clock_net"]
+        if not isinstance(clock_net_raw, int):
+            raise RunnerError("scan manifest clock_net must be an integer")
+        clock_net = clock_net_raw
+        clock_name = _port_name_for_net(
+            source_json, str(manifest["top"]), clock_net, "input"
+        )
+        if clock_name is None:
+            raise RunnerError(f"cannot map scan clock net {clock_net} to an input port")
+        vectors, vector_source = self._scan_vector_source(source_json, vectors_path)
+
+        original = self._sequence_outputs(
+            source_json, vectors, output_order, clock_name
+        )
+        raw_scan_inputs = manifest.get("scan_inputs", [])
+        scan_inputs = (
+            [str(name) for name in raw_scan_inputs]
+            if isinstance(raw_scan_inputs, list)
+            else []
+        )
+        scan_extra = {str(manifest["scan_enable"]): False}
+        scan_extra.update({name: False for name in scan_inputs})
+        scanned_vectors = VectorSet(
+            source=vectors.source,
+            input_order=sorted(set(vectors.input_order) | set(scan_extra)),
+            vectors=[
+                {
+                    **{name: vector.get(name, False) for name in vectors.input_order},
+                    **scan_extra,
+                }
+                for vector in vectors.vectors
+            ],
+        )
+        scanned = self._sequence_outputs(
+            generic_json,
+            scanned_vectors,
+            output_order,
+            clock_name,
+            extra_inputs=scan_extra,
+        )
+        if original != scanned:
+            raise RunnerError(
+                "normal-mode scanned outputs differ from original outputs"
+            )
+        return [], {
+            "vector_source": vector_source,
+            "vector_count": vectors.count,
+            "output_order": output_order,
+        }
+
+    def scan_check(
+        self,
+        vectors_path: Path | None = None,
+        require_techmap: bool = False,
+    ) -> str:
+        manifest_path = self._scan_manifest_path()
+        if not manifest_path.exists():
+            raise RunnerError(f"scan manifest not found: {manifest_path}")
+        manifest = load_manifest(manifest_path)
+        structural = check_scan_structure(manifest, require_techmap=require_techmap)
+        errors = list(structural.errors)
+        warnings = list(structural.warnings)
+        normal_mode: dict[str, object] | None = None
+        if not errors:
+            try:
+                extra_warnings, normal_mode = self._run_scan_normal_mode_check(
+                    manifest, vectors_path
+                )
+                warnings.extend(extra_warnings)
+            except Exception as exc:
+                errors.append(str(exc))
+
+        latest_check = {
+            "timestamp": utc_timestamp(),
+            "status": "PASS" if not errors else "FAIL",
+            "warnings": warnings,
+            "errors": errors,
+            "normal_mode": normal_mode,
+        }
+        manifest["latest_check"] = latest_check
+        write_scan_artifacts(self._scan_dir(), manifest)
+        if errors:
+            raise RunnerError("scan-check failed: " + "; ".join(errors))
+        return (
+            f"scan-check PASS top={manifest.get('top')} "
+            f"vectors={normal_mode.get('vector_count') if normal_mode else 0} "
+            f"manifest={manifest_path}"
         )
 
     def _find_bench_sidecar(self) -> tuple[Path, list[str]]:
