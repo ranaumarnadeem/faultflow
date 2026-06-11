@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://faultflow.local/schemas/techmap_scanff.schema.json",
+  "title": "faultflow scan techmap configuration",
+  "type": "object",
+  "required": ["generic_cell", "library_cell", "pins"],
+  "properties": {
+    "generic_cell": {"const": "$scanff_faultflow"},
+    "library_cell": {"type": "string", "minLength": 1},
+    "pins": {
+      "type": "object",
+      "required": ["CLK", "D", "SDI", "SE", "Q"],
+      "properties": {
+        "CLK": {"type": "string"},
+        "D": {"type": "string"},
+        "SDI": {"type": "string"},
+        "SE": {"type": "string"},
+        "Q": {"type": "string"}
+      }
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://faultflow.local/schemas/yosys_json_subset.schema.json",
+  "title": "faultflow Yosys JSON subset",
+  "type": "object",
+  "required": ["modules"],
+  "properties": {
+    "modules": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["ports", "cells", "netnames"],
+        "properties": {
+          "attributes": {"type": "object"},
+          "ports": {"type": "object"},
+          "cells": {"type": "object"},
+          "netnames": {"type": "object"}
+        }
+      }
+    }
+  }
+}
