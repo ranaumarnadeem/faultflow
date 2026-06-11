@@ -1,0 +1,85 @@
+{
+  "modules": {
+    "tiny_scan_multichain": {
+      "attributes": {"top": "1"},
+      "ports": {
+        "CLK": {"direction": "input", "bits": [2]},
+        "scan_in_0": {"direction": "input", "bits": [3]},
+        "scan_in_1": {"direction": "input", "bits": [4]},
+        "scan_en": {"direction": "input", "bits": [5]},
+        "D0": {"direction": "input", "bits": [6]},
+        "D1": {"direction": "input", "bits": [7]},
+        "D2": {"direction": "input", "bits": [8]},
+        "D3": {"direction": "input", "bits": [9]},
+        "Q0": {"direction": "output", "bits": [10]},
+        "scan_out_0": {"direction": "output", "bits": [11]},
+        "Q2": {"direction": "output", "bits": [12]},
+        "scan_out_1": {"direction": "output", "bits": [13]}
+      },
+      "cells": {
+        "ff0": {
+          "type": "$scanff_faultflow",
+          "parameters": {},
+          "attributes": {"faultflow_scan": "1", "faultflow_scan_chain": "0", "faultflow_scan_index": "0"},
+          "connections": {
+            "CLK": [2],
+            "D": [6],
+            "SDI": [3],
+            "SE": [5],
+            "Q": [10]
+          }
+        },
+        "ff1": {
+          "type": "$scanff_faultflow",
+          "parameters": {},
+          "attributes": {"faultflow_scan": "1", "faultflow_scan_chain": "0", "faultflow_scan_index": "1"},
+          "connections": {
+            "CLK": [2],
+            "D": [7],
+            "SDI": [10],
+            "SE": [5],
+            "Q": [11]
+          }
+        },
+        "ff2": {
+          "type": "$scanff_faultflow",
+          "parameters": {},
+          "attributes": {"faultflow_scan": "1", "faultflow_scan_chain": "1", "faultflow_scan_index": "0"},
+          "connections": {
+            "CLK": [2],
+            "D": [8],
+            "SDI": [4],
+            "SE": [5],
+            "Q": [12]
+          }
+        },
+        "ff3": {
+          "type": "$scanff_faultflow",
+          "parameters": {},
+          "attributes": {"faultflow_scan": "1", "faultflow_scan_chain": "1", "faultflow_scan_index": "1"},
+          "connections": {
+            "CLK": [2],
+            "D": [9],
+            "SDI": [12],
+            "SE": [5],
+            "Q": [13]
+          }
+        }
+      },
+      "netnames": {
+        "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+        "scan_in_0": {"hide_name": 0, "bits": [3], "attributes": {}},
+        "scan_in_1": {"hide_name": 0, "bits": [4], "attributes": {}},
+        "scan_en": {"hide_name": 0, "bits": [5], "attributes": {}},
+        "D0": {"hide_name": 0, "bits": [6], "attributes": {}},
+        "D1": {"hide_name": 0, "bits": [7], "attributes": {}},
+        "D2": {"hide_name": 0, "bits": [8], "attributes": {}},
+        "D3": {"hide_name": 0, "bits": [9], "attributes": {}},
+        "Q0": {"hide_name": 0, "bits": [10], "attributes": {}},
+        "scan_out_0": {"hide_name": 0, "bits": [11], "attributes": {}},
+        "Q2": {"hide_name": 0, "bits": [12], "attributes": {}},
+        "scan_out_1": {"hide_name": 0, "bits": [13], "attributes": {}}
+      }
+    }
+  }
+}

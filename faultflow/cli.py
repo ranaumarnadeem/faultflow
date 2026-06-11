@@ -34,15 +34,54 @@ def _parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
 
-    scan = sub.add_parser(
-        "scan", help="Generate generic scan JSON and Sky130 techmap output"
-    )
+    scan = sub.add_parser("scan", help="Insert generic scan chains")
     add_common(scan)
+    scan.add_argument("--scan-chains", type=int, help="Requested scan chain count")
+    scan.add_argument(
+        "--max-chain-length",
+        type=int,
+        help="Maximum FFs per scan chain; may increase chain count",
+    )
+    scan.add_argument("-SI", "--scan-in", help="Scan input port base name")
+    scan.add_argument("-SO", "--scan-out", help="Scan output port base name")
+    scan.add_argument("-SE", "--scan-enable", help="Scan enable port name")
+    techmap_group = scan.add_mutually_exclusive_group()
+    techmap_group.add_argument(
+        "--techmap",
+        dest="techmap",
+        action="store_true",
+        default=None,
+        help="Run Sky130 techmap after stitching",
+    )
+    techmap_group.add_argument(
+        "--no-techmap",
+        dest="techmap",
+        action="store_false",
+        help="Write scan JSON and techmap file without running Yosys techmap",
+    )
     scan.add_argument(
         "--skip-techmap",
         action="store_true",
-        help="Write scan JSON and techmap file without running Yosys techmap",
+        help=argparse.SUPPRESS,
     )
+    scan.add_argument("--dry-run", action="store_true", help="Print scan plan only")
+
+    scan_status = sub.add_parser("scan-status", help="Print scan insertion status")
+    add_common(scan_status)
+
+    scan_check = sub.add_parser("scan-check", help="Validate inserted scan chains")
+    add_common(scan_check)
+    scan_check.add_argument("--vectors", type=Path, help="Explicit .test vector file")
+    scan_check.add_argument(
+        "--require-techmap",
+        action="store_true",
+        help="Require generated Sky130 Verilog artifact",
+    )
+
+    scan_techmap = sub.add_parser(
+        "scan-techmap", help="Regenerate Sky130 techmap output from scanned JSON"
+    )
+    add_common(scan_techmap)
     return parser
 
 
@@ -64,7 +103,31 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "status":
             print(runner.status())
         elif args.command == "scan":
-            print(runner.scan(run_techmap=not args.skip_techmap))
+            run_techmap = args.techmap
+            if args.skip_techmap:
+                run_techmap = False
+            print(
+                runner.scan(
+                    run_techmap=run_techmap,
+                    scan_chains=args.scan_chains,
+                    max_chain_length=args.max_chain_length,
+                    scan_in=args.scan_in,
+                    scan_out=args.scan_out,
+                    scan_enable=args.scan_enable,
+                    dry_run=args.dry_run,
+                )
+            )
+        elif args.command == "scan-status":
+            print(runner.scan_status())
+        elif args.command == "scan-check":
+            print(
+                runner.scan_check(
+                    vectors_path=args.vectors,
+                    require_techmap=args.require_techmap,
+                )
+            )
+        elif args.command == "scan-techmap":
+            print(runner.scan_techmap())
         else:
             parser.error(f"unknown command {args.command}")
     except (ConfigError, RunnerError) as exc:
