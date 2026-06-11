@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://faultflow.local/schemas/scan_report.schema.json",
+  "title": "faultflow scan check result",
+  "type": "object",
+  "required": ["timestamp", "status", "warnings", "errors"],
+  "properties": {
+    "timestamp": {"type": "string"},
+    "status": {"enum": ["PASS", "FAIL"]},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "errors": {"type": "array", "items": {"type": "string"}},
+    "normal_mode": {
+      "type": ["object", "null"],
+      "properties": {
+        "vector_source": {"type": "string"},
+        "vector_count": {"type": "integer", "minimum": 0},
+        "output_order": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

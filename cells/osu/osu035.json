@@ -145,26 +145,26 @@
   },
   "$scanff_faultflow": {
     "node_type": "FF",
-    "inputs": ["CLK", "D", "SI", "SE"],
+    "inputs": ["CLK", "D", "SDI", "SE"],
     "outputs": {"Q": "Q"},
     "ff": {
       "clock": "CLK",
       "data": "D",
       "output": "Q",
       "trigger": "POSEDGE",
-      "scan": {"in": "SI", "enable": "SE", "enable_polarity": "HIGH"}
+      "scan": {"in": "SDI", "enable": "SE", "enable_polarity": "HIGH"}
     }
   },
   "\\$scanff_faultflow": {
     "node_type": "FF",
-    "inputs": ["CLK", "D", "SI", "SE"],
+    "inputs": ["CLK", "D", "SDI", "SE"],
     "outputs": {"Q": "Q"},
     "ff": {
       "clock": "CLK",
       "data": "D",
       "output": "Q",
       "trigger": "POSEDGE",
-      "scan": {"in": "SI", "enable": "SE", "enable_polarity": "HIGH"}
+      "scan": {"in": "SDI", "enable": "SE", "enable_polarity": "HIGH"}
     }
   },
   "LATCH": {"node_type": "LATCH"},

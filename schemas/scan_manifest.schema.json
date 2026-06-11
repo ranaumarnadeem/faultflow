@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://faultflow.local/schemas/scan_manifest.schema.json",
+  "title": "faultflow scan manifest",
+  "type": "object",
+  "required": [
+    "version",
+    "top",
+    "source_json",
+    "generic_json",
+    "generic_json_hash",
+    "chain_count",
+    "cell_count",
+    "clock_net",
+    "scan_inputs",
+    "scan_outputs",
+    "scan_enable",
+    "chains",
+    "cells",
+    "ineligible_ffs"
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "top": {"type": "string", "minLength": 1},
+    "source_json": {"type": "string"},
+    "generic_json": {"type": "string"},
+    "generic_json_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "techmap_verilog": {"type": "string"},
+    "sky130_verilog": {"type": ["string", "null"]},
+    "chain_order_policy": {"type": "string"},
+    "chain_count": {"type": "integer", "minimum": 1},
+    "cell_count": {"type": "integer", "minimum": 1},
+    "clock_net": {"type": "integer"},
+    "scan_inputs": {"type": "array", "items": {"type": "string"}},
+    "scan_outputs": {"type": "array", "items": {"type": "string"}},
+    "scan_enable": {"type": "string"},
+    "min_chain_length": {"type": "integer", "minimum": 0},
+    "max_chain_length": {"type": "integer", "minimum": 0},
+    "chains": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "scan_in", "scan_out", "length", "cells"],
+        "properties": {
+          "index": {"type": "integer", "minimum": 0},
+          "scan_in": {"type": "string"},
+          "scan_out": {"type": "string"},
+          "scan_in_net": {"type": "integer"},
+          "scan_out_net": {"type": "integer"},
+          "length": {"type": "integer", "minimum": 1},
+          "cells": {"type": "array", "items": {"type": "string"}},
+          "cell_records": {"type": "array"}
+        }
+      }
+    },
+    "cells": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/scan_cell"}
+    },
+    "ineligible_ffs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["instance", "cell_type", "reason"],
+        "properties": {
+          "instance": {"type": "string"},
+          "cell_type": {"type": "string"},
+          "reason": {
+            "enum": [
+              "has_async_reset",
+              "has_async_set",
+              "has_async_reset_set",
+              "negedge_clock",
+              "no_clock_pin",
+              "no_data_pin",
+              "no_output_pin",
+              "unknown_cell_type",
+              "existing_scan_cell",
+              "unsupported_ff_shape",
+              "multiple_clock_nets"
+            ]
+          }
+        }
+      }
+    },
+    "latest_check": {"type": ["object", "null"]}
+  },
+  "$defs": {
+    "scan_cell": {
+      "type": "object",
+      "required": [
+        "instance",
+        "original_type",
+        "chain_index",
+        "chain_position",
+        "clock_net",
+        "data_net",
+        "scan_in_net",
+        "scan_enable_net",
+        "q_net"
+      ],
+      "properties": {
+        "instance": {"type": "string"},
+        "original_type": {"type": "string"},
+        "chain_index": {"type": "integer", "minimum": 0},
+        "chain_position": {"type": "integer", "minimum": 0},
+        "clock_net": {"type": "integer"},
+        "data_net": {"type": "integer"},
+        "scan_in_net": {"type": "integer"},
+        "scan_enable_net": {"type": "integer"},
+        "q_net": {"type": "integer"}
+      }
+    }
+  }
+}

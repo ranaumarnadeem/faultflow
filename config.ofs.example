@@ -5,7 +5,6 @@ netlist   = design.json
 top       = c17
 cell_lib  = cells/osu/osu035.json
 liberty   = cells/osu/osu035_stdcells.lib
-verilog_models = cells/osu/osu035_stdcells.v
 yosys_ver = 0.61+129
 
 [fault_model]
@@ -18,6 +17,7 @@ include_reset_faults = false
 unsupported_cells = fail
 verify            = false
 verify_tool       = iverilog
+verilog_models    = cells/osu/osu035_stdcells.v
 tp_file           =
 
 [atpg]
@@ -29,6 +29,14 @@ output = vectors.yml
 output    = coverage_report.json
 threshold = 95.0
 verbose   = true
+
+[scan]
+chains           = 1
+max_chain_length =
+scan_in          = scan_in
+scan_out         = scan_out
+scan_enable      = scan_en
+run_techmap      = true
 
 [debug]
 level = INFO

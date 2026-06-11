@@ -4,7 +4,7 @@
       "attributes": {"top": "1"},
       "ports": {
         "CLK": {"direction": "input", "bits": [2]},
-        "scan_in_0": {"direction": "input", "bits": [3]},
+        "scan_in": {"direction": "input", "bits": [3]},
         "scan_en": {"direction": "input", "bits": [4]},
         "D0": {"direction": "input", "bits": [5]},
         "D1": {"direction": "input", "bits": [6]},
@@ -21,7 +21,7 @@
           "connections": {
             "CLK": [2],
             "D": [5],
-            "SI": [3],
+            "SDI": [3],
             "SE": [4],
             "Q": [8]
           }
@@ -33,7 +33,7 @@
           "connections": {
             "CLK": [2],
             "D": [6],
-            "SI": [8],
+            "SDI": [8],
             "SE": [4],
             "Q": [9]
           }
@@ -45,7 +45,7 @@
           "connections": {
             "CLK": [2],
             "D": [7],
-            "SI": [9],
+            "SDI": [9],
             "SE": [4],
             "Q": [10]
           }
@@ -53,7 +53,7 @@
       },
       "netnames": {
         "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
-        "scan_in_0": {"hide_name": 0, "bits": [3], "attributes": {}},
+        "scan_in": {"hide_name": 0, "bits": [3], "attributes": {}},
         "scan_en": {"hide_name": 0, "bits": [4], "attributes": {}},
         "D0": {"hide_name": 0, "bits": [5], "attributes": {}},
         "D1": {"hide_name": 0, "bits": [6], "attributes": {}},

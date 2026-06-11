@@ -1,0 +1,4 @@
+read_json output/<top>/scan/<top>_scan_generic.json
+techmap -map output/<top>/scan/faultflow_scanff_map.v
+clean
+write_verilog output/<top>/scan/<top>_scan_sky130.v
