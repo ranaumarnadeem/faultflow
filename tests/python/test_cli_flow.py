@@ -255,6 +255,15 @@ def test_coverage_report_schema_and_denominator_invariant(tmp_path: Path) -> Non
               0, 'fail', 0, 0
             )
             """)
+        conn.execute("""
+            INSERT INTO runs(
+              status, vector_source, vector_count, atpg_terminal_reason,
+              atpg_rounds, atpg_sat, atpg_unsat, atpg_timeout, atpg_unknown
+            ) VALUES (
+              'complete', 'native_sat_atpg', 3, 'THRESHOLD_MET',
+              2, 4, 1, 0, 0
+            )
+            """)
         conn.executemany(
             """
             INSERT INTO faults(
@@ -280,6 +289,9 @@ def test_coverage_report_schema_and_denominator_invariant(tmp_path: Path) -> Non
         assert report["undetected_faults"] == [
             {"id": 2, "net_id": 1, "net_name": "a", "fault_type": "sa1"}
         ]
+        assert report["run"]["atpg_terminal_reason"] == "THRESHOLD_MET"
+        assert report["run"]["atpg_rounds"] == 2
+        assert report["run"]["atpg_sat"] == 4
     finally:
         conn.close()
 

@@ -1,0 +1,560 @@
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+
+import pytest
+
+from faultflow.cli import main
+from faultflow.config import load_config
+from faultflow.db import connect, init_schema, summary
+from faultflow.runner import Runner
+from faultflow.runner.progressive_atpg import (
+    redundancy_model_id,
+    run_progressive_native_atpg,
+)
+from faultflow.runner.runner import FingerprintMismatchError, RunnerError
+import faultflow.runner.runner as runner_mod
+
+ROOT = Path(__file__).resolve().parents[2]
+FIXTURES = ROOT / "tests/cpp/fixtures"
+C17_JSON = ROOT / "tests/benchmarks/iscas85/synth/c17.json"
+C17_BENCH = ROOT / "tests/benchmarks/iscas85/synth/c17.bench"
+C17_TEST = ROOT / "tests/benchmarks/iscas85/synth/c17atpg.test"
+C432_JSON = ROOT / "tests/benchmarks/iscas85/synth/c432.json"
+CELL_LIB = ROOT / "cells/osu/osu035.json"
+
+
+@pytest.fixture(scope="module")
+def require_cpp_core() -> None:
+    if runner_mod._load_core() is None:
+        pytest.skip("C++ extension _faultflow_core is required")
+
+
+def _prepare_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    schema_dir = tmp_path / "schemas"
+    schema_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy(
+        ROOT / "schemas/coverage.schema.json",
+        schema_dir / "coverage.schema.json",
+    )
+
+
+def _write_cfg(
+    tmp_path: Path,
+    *,
+    top: str,
+    netlist: Path,
+    atpg_overrides: dict[str, int | str] | None = None,
+    fault_model_lines: str = "collapsing = false",
+    threshold: float = 100.0,
+) -> Path:
+    atpg = {
+        "random_vectors": 64,
+        "max_rounds": 20,
+        "sat_timeout_seconds": 10,
+        "sat_conflict_limit": 100000,
+    }
+    if atpg_overrides is not None:
+        atpg.update(atpg_overrides)
+    atpg_lines = "\n".join(f"{key} = {value}" for key, value in atpg.items())
+    cfg_path = tmp_path / "config.ofs"
+    cfg_path.write_text(
+        f"""
+[design]
+netlist = {netlist}
+cell_lib = {CELL_LIB}
+
+[fault_model]
+{fault_model_lines}
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+{atpg_lines}
+
+[report]
+threshold = {threshold}
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    return cfg_path
+
+
+def _runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    top: str,
+    netlist: Path,
+    atpg_overrides: dict[str, int | str] | None = None,
+    threshold: float = 100.0,
+) -> Runner:
+    _prepare_workspace(tmp_path, monkeypatch)
+    cfg_path = _write_cfg(
+        tmp_path,
+        top=top,
+        netlist=netlist,
+        atpg_overrides=atpg_overrides,
+        threshold=threshold,
+    )
+    return Runner(load_config(cfg_path, top))
+
+
+@pytest.mark.integration
+def test_runner_resume_increases_or_preserves_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    if not C432_JSON.exists():
+        pytest.skip("c432 netlist missing")
+
+    runner = _runner(tmp_path, monkeypatch, top="c432", netlist=C432_JSON)
+    runner.init()
+    runner.sim(clean=True, max_rounds=1, target_coverage=50.0)
+
+    with connect(runner.cfg.db_path) as conn:
+        init_schema(conn)
+        after_first = summary(conn)
+        fault_rows = conn.execute("SELECT COUNT(*) FROM faults").fetchone()[0]
+        run_count = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+
+    assert run_count == 1
+    assert after_first["detected"] > 0
+
+    runner.sim(max_rounds=5, target_coverage=100.0)
+
+    with connect(runner.cfg.db_path) as conn:
+        init_schema(conn)
+        after_second = summary(conn)
+        fault_rows_after = conn.execute("SELECT COUNT(*) FROM faults").fetchone()[0]
+        run_count_after = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+
+    assert fault_rows_after == fault_rows
+    assert run_count_after == 2
+    assert after_second["detected"] >= after_first["detected"]
+    assert float(after_second["coverage_percent"] or 0.0) >= float(
+        after_first["coverage_percent"] or 0.0
+    )
+
+
+@pytest.mark.integration
+def test_runner_fingerprint_mismatch_blocks_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    fixture = FIXTURES / "tiny_inv.json"
+    if not fixture.exists():
+        pytest.skip("tiny_inv fixture missing")
+
+    netlist = tmp_path / "output/tiny_inv/tiny_inv.json"
+    netlist.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(fixture, netlist)
+
+    runner = _runner(tmp_path, monkeypatch, top="tiny_inv", netlist=netlist)
+    runner.init()
+    runner.sim(clean=True, max_rounds=1, target_coverage=100.0)
+
+    cfg_path = tmp_path / "config.ofs"
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8").replace(
+            "unsupported_cells = fail", "unsupported_cells = blackbox"
+        ),
+        encoding="utf-8",
+    )
+    runner = Runner(load_config(cfg_path, "tiny_inv"))
+
+    with pytest.raises(FingerprintMismatchError, match="unsupported_cells"):
+        runner.sim(max_rounds=1, target_coverage=100.0)
+
+
+@pytest.mark.integration
+def test_real_circuit_timeouts_persist_without_redundant_classification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    fixture = FIXTURES / "tiny_chain.json"
+    if not fixture.exists():
+        pytest.skip("tiny_chain fixture missing")
+
+    netlist = tmp_path / "output/tiny_chain/tiny_chain.json"
+    netlist.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(fixture, netlist)
+
+    _prepare_workspace(tmp_path, monkeypatch)
+    cfg_path = _write_cfg(
+        tmp_path,
+        top="tiny_chain",
+        netlist=netlist,
+        atpg_overrides={
+            "random_vectors": 0,
+            "sat_conflict_limit": 0,
+            "sat_timeout_seconds": 0,
+        },
+        threshold=100.0,
+    )
+    cfg = load_config(cfg_path, "tiny_chain")
+
+    fp = {
+        "netlist_hash": "n",
+        "cell_lib_hash": "c",
+        "collapsing": 0,
+        "unsupported_cells": "fail",
+        "include_clock_faults": 0,
+        "include_reset_faults": 0,
+    }
+    _, stats, _, _, _ = run_progressive_native_atpg(
+        cfg, netlist, redundancy_model_id(fp), max_rounds=2, target_coverage=100.0
+    )
+
+    assert stats.timeout > 0
+    assert stats.terminal_reason in {"STALLED", "MAX_ROUNDS"}
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        data = summary(conn)
+        timeout_faults = conn.execute(
+            "SELECT COUNT(*) AS n FROM faults WHERE status = 'undetected'"
+        ).fetchone()
+
+    assert data["undetected"] > 0
+    assert data["redundant"] == 0
+    assert timeout_faults is not None
+    assert int(timeout_faults["n"]) == data["undetected"]
+    if data["detected"] == 0:
+        assert stats.terminal_reason == "STALLED"
+
+
+@pytest.mark.integration
+def test_timeout_and_unknown_faults_never_marked_redundant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    fixture = FIXTURES / "tiny_chain.json"
+    if not fixture.exists():
+        pytest.skip("tiny_chain fixture missing")
+
+    netlist = tmp_path / "output/tiny_chain/tiny_chain.json"
+    netlist.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(fixture, netlist)
+
+    _prepare_workspace(tmp_path, monkeypatch)
+    cfg_path = _write_cfg(
+        tmp_path,
+        top="tiny_chain",
+        netlist=netlist,
+        atpg_overrides={
+            "random_vectors": 0,
+            "sat_conflict_limit": 0,
+            "sat_timeout_seconds": 0,
+        },
+    )
+    cfg = load_config(cfg_path, "tiny_chain")
+    model = redundancy_model_id(
+        {
+            "netlist_hash": "n",
+            "cell_lib_hash": "c",
+            "collapsing": 0,
+            "unsupported_cells": "fail",
+            "include_clock_faults": 0,
+            "include_reset_faults": 0,
+        }
+    )
+    run_progressive_native_atpg(
+        cfg, netlist, model, max_rounds=1, target_coverage=100.0
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        data = summary(conn)
+        bad = conn.execute("""
+            SELECT COUNT(*) AS n FROM faults
+            WHERE status = 'redundant'
+               OR status NOT IN ('undetected', 'detected', 'redundant')
+            """).fetchone()
+
+    assert data["redundant"] == 0
+    assert data["undetected"] > 0
+    assert bad is not None
+    assert int(bad["n"]) == 0
+
+
+@pytest.mark.integration
+def test_redundant_faults_excluded_from_denominator_tiny_const(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    fixture = FIXTURES / "tiny_const.json"
+    if not fixture.exists():
+        pytest.skip("tiny_const fixture missing")
+
+    netlist = tmp_path / "output/tiny_const/tiny_const.json"
+    netlist.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(fixture, netlist)
+
+    _prepare_workspace(tmp_path, monkeypatch)
+    cfg_path = _write_cfg(
+        tmp_path,
+        top="tiny_const",
+        netlist=netlist,
+        atpg_overrides={"random_vectors": 0},
+    )
+    cfg = load_config(cfg_path, "tiny_const")
+    model = redundancy_model_id(
+        {
+            "netlist_hash": "n",
+            "cell_lib_hash": "c",
+            "collapsing": 0,
+            "unsupported_cells": "fail",
+            "include_clock_faults": 0,
+            "include_reset_faults": 0,
+        }
+    )
+    _, stats, _, _, _ = run_progressive_native_atpg(cfg, netlist, model)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        data = summary(conn)
+        redundant_rows = conn.execute("""
+            SELECT net_name, fault_type, status, redundancy_model_id
+            FROM faults
+            WHERE status = 'redundant'
+            ORDER BY net_name, fault_type
+            """).fetchall()
+
+    assert stats.unsat > 0
+    assert data["redundant"] > 0
+    assert data["denominator"] == data["detected"] + data["undetected"]
+    assert data["total_raw_faults"] == data["denominator"] + data["redundant"]
+    assert any(
+        row["net_name"] == "Y0" and row["fault_type"] == "sa0" for row in redundant_rows
+    )
+
+
+@pytest.mark.integration
+def test_stale_redundant_reactivated_when_model_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    fixture = FIXTURES / "tiny_const.json"
+    if not fixture.exists():
+        pytest.skip("tiny_const fixture missing")
+
+    netlist = tmp_path / "output/tiny_const/tiny_const.json"
+    netlist.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(fixture, netlist)
+
+    _prepare_workspace(tmp_path, monkeypatch)
+    cfg_path = _write_cfg(
+        tmp_path,
+        top="tiny_const",
+        netlist=netlist,
+        atpg_overrides={"random_vectors": 0},
+    )
+    cfg = load_config(cfg_path, "tiny_const")
+    model = redundancy_model_id(
+        {
+            "netlist_hash": "n",
+            "cell_lib_hash": "c",
+            "collapsing": 0,
+            "unsupported_cells": "fail",
+            "include_clock_faults": 0,
+            "include_reset_faults": 0,
+        }
+    )
+    run_progressive_native_atpg(cfg, netlist, model)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        conn.execute(
+            "UPDATE faults SET redundancy_model_id = 'stale-model' "
+            "WHERE status = 'redundant'"
+        )
+        conn.commit()
+        stale = conn.execute(
+            "SELECT COUNT(*) FROM faults WHERE status = 'redundant'"
+        ).fetchone()[0]
+        assert stale > 0
+
+    run_progressive_native_atpg(cfg, netlist, model)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        data = summary(conn)
+        stale_left = conn.execute(
+            "SELECT COUNT(*) FROM faults WHERE redundancy_model_id = 'stale-model'"
+        ).fetchone()[0]
+
+    assert stale_left == 0
+    assert data["redundant"] > 0
+
+
+@pytest.mark.integration
+def test_vector_patterns_are_deduplicated_in_db(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    fixture = FIXTURES / "tiny_inv.json"
+    if not fixture.exists():
+        pytest.skip("tiny_inv fixture missing")
+
+    netlist = tmp_path / "output/tiny_inv/tiny_inv.json"
+    netlist.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(fixture, netlist)
+
+    _prepare_workspace(tmp_path, monkeypatch)
+    cfg_path = _write_cfg(
+        tmp_path,
+        top="tiny_inv",
+        netlist=netlist,
+        atpg_overrides={"random_vectors": 16},
+    )
+    cfg = load_config(cfg_path, "tiny_inv")
+    vectors, stats, run_id, _, _ = run_progressive_native_atpg(
+        cfg,
+        netlist,
+        redundancy_model_id(
+            {
+                "netlist_hash": "n",
+                "cell_lib_hash": "c",
+                "collapsing": 0,
+                "unsupported_cells": "fail",
+                "include_clock_faults": 0,
+                "include_reset_faults": 0,
+            }
+        ),
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        rows = conn.execute(
+            "SELECT pattern FROM vectors WHERE run_id = ? ORDER BY vector_index",
+            (run_id,),
+        ).fetchall()
+
+    patterns = [row["pattern"] for row in rows]
+    assert len(patterns) == len(set(patterns))
+    assert len(patterns) == vectors.count
+    assert stats.accepted_vectors == vectors.count
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_cli_ext_vectors_end_to_end_c17(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    if not (C17_JSON.exists() and C17_BENCH.exists() and C17_TEST.exists()):
+        pytest.skip("c17 benchmark artifacts missing")
+
+    ext_test = tmp_path / "c17atpg.test"
+    ext_bench = tmp_path / "c17atpg.bench"
+    shutil.copy(C17_TEST, ext_test)
+    shutil.copy(C17_BENCH, ext_bench)
+
+    _prepare_workspace(tmp_path, monkeypatch)
+    cfg_path = _write_cfg(tmp_path, top="c17", netlist=C17_JSON, threshold=95.0)
+
+    assert (
+        main(
+            [
+                "sim",
+                "--top",
+                "c17",
+                "-c",
+                str(cfg_path),
+                "--clean",
+                "--ext",
+                str(ext_test),
+            ]
+        )
+        == 0
+    )
+
+    report_path = tmp_path / "output/c17/coverage_report.json"
+    assert report_path.exists()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["summary"]["denominator"] > 0
+    assert report["run"]["vector_source"].startswith("external:")
+    assert report["run"].get("atpg_terminal_reason") in {None, ""}
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_cli_progressive_sim_writes_atpg_terminal_to_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    fixture = FIXTURES / "tiny_inv.json"
+    if not fixture.exists():
+        pytest.skip("tiny_inv fixture missing")
+
+    netlist = tmp_path / "output/tiny_inv/tiny_inv.json"
+    netlist.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(fixture, netlist)
+
+    _prepare_workspace(tmp_path, monkeypatch)
+    cfg_path = _write_cfg(tmp_path, top="tiny_inv", netlist=netlist)
+
+    assert (
+        main(
+            [
+                "sim",
+                "--top",
+                "tiny_inv",
+                "-c",
+                str(cfg_path),
+                "--clean",
+                "--max",
+                "3",
+                "-t",
+                "100",
+            ]
+        )
+        == 0
+    )
+
+    report = json.loads(
+        (tmp_path / "output/tiny_inv/coverage_report.json").read_text(encoding="utf-8")
+    )
+    assert report["run"]["atpg_terminal_reason"] in {
+        "COMPLETE",
+        "THRESHOLD_MET",
+        "MAX_ROUNDS",
+        "STALLED",
+    }
+    assert report["run"]["atpg_rounds"] >= 1
+    assert report["summary"]["coverage_percent"] == 100.0
+
+
+@pytest.mark.integration
+def test_invalid_max_rounds_raises_from_progressive_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    fixture = FIXTURES / "tiny_inv.json"
+    if not fixture.exists():
+        pytest.skip("tiny_inv fixture missing")
+
+    netlist = tmp_path / "output/tiny_inv/tiny_inv.json"
+    netlist.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(fixture, netlist)
+
+    runner = _runner(tmp_path, monkeypatch, top="tiny_inv", netlist=netlist)
+    runner.init()
+
+    with pytest.raises(RunnerError, match="max_rounds must be >= 1"):
+        runner.sim(clean=True, max_rounds=0, target_coverage=100.0)

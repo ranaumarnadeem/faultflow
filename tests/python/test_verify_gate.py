@@ -82,10 +82,16 @@ def test_cli_verify_override_reaches_runner(
             purge: bool = False,
             clean: bool = False,
             verify: bool | None = None,
+            ext: Path | None = None,
+            max_rounds: int | None = None,
+            target_coverage: float | None = None,
         ) -> str:
             seen["purge"] = purge
             seen["clean"] = clean
             seen["verify"] = verify
+            seen["ext"] = ext
+            seen["max_rounds"] = max_rounds
+            seen["target_coverage"] = target_coverage
             return "ok"
 
     monkeypatch.setattr(cli_mod, "Runner", FakeRunner)
@@ -363,19 +369,18 @@ def test_runner_verification_failure_aborts_before_sim(
     vector_path.write_text("1: 1\n", encoding="utf-8")
     bench = tmp_path / "demo.bench"
     bench.write_text("INPUT(a)\nOUTPUT(y)\n", encoding="utf-8")
-    called = {"sim": False}
+    called = {"report": False}
+    vectors = VectorSet(
+        source=str(vector_path),
+        input_order=["a"],
+        vectors=[{"a": True}],
+    )
 
     monkeypatch.setattr(runner, "_find_netlist", lambda: tmp_path / "demo.json")
+    monkeypatch.setattr(runner, "_check_fingerprint", lambda _conn, _fp: None)
+    monkeypatch.setattr(runner, "_stored_fingerprint", lambda _conn: None)
+    monkeypatch.setattr(runner, "_write_fingerprint", lambda _conn, _fp: None)
     monkeypatch.setattr(runner, "_find_order_sidecar", lambda: (bench, ["a"]))
-    monkeypatch.setattr(
-        runner,
-        "_native_vectors",
-        lambda _netlist: VectorSet(
-            source=str(vector_path),
-            input_order=["a"],
-            vectors=[{"a": True}],
-        ),
-    )
     monkeypatch.setattr(
         runner,
         "_run_verification",
@@ -385,16 +390,31 @@ def test_runner_verification_failure_aborts_before_sim(
         raising=False,
     )
 
-    def fake_sim(*_args: object, **_kwargs: object) -> dict[str, object]:
-        called["sim"] = True
-        return {"run_id": 1}
+    def fake_progressive(*_args: object, **_kwargs: object) -> tuple[object, ...]:
+        from faultflow.runner.progressive_atpg import AtpgStats
 
-    monkeypatch.setattr(runner, "_simulate_with_core", fake_sim)
+        return vectors, AtpgStats(terminal_reason="COMPLETE"), 1, 0.0, 0.0
+
+    monkeypatch.setattr(
+        "faultflow.runner.progressive_atpg.run_progressive_native_atpg",
+        fake_progressive,
+    )
+
+    def fake_write_reports(*_args: object, **_kwargs: object) -> tuple[object, ...]:
+        called["report"] = True
+        report_path = tmp_path / "output" / "demo" / "coverage_report.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text("{}", encoding="utf-8")
+        return report_path, tmp_path / "output" / "demo" / "fault_report.txt", {
+            "summary": {"coverage_percent": 100.0}
+        }
+
+    monkeypatch.setattr("faultflow.runner.runner.write_reports", fake_write_reports)
 
     with pytest.raises(RunnerError, match="verification failed"):
         runner.sim()
 
-    assert called["sim"] is False
+    assert called["report"] is False
     assert not (tmp_path / "output" / "demo" / "coverage_report.json").exists()
 
 
