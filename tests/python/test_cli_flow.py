@@ -95,8 +95,34 @@ def test_sim_requires_cpp_extension(
         runner._simulate_with_core(
             Path("missing.json"),
             VectorSet(source="vectors.test", input_order=[], vectors=[]),
-            Path("vectors.test"),
+            "vectors.test",
         )
+
+
+def test_clean_db_removes_only_sqlite_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg_path = tmp_path / "config.ofs"
+    _config(cfg_path)
+    runner = Runner(load_config(cfg_path, "demo"))
+    out = tmp_path / "output" / "demo"
+    out.mkdir(parents=True)
+    keep = out / "coverage_report.json"
+    keep.write_text("{}", encoding="utf-8")
+    db_files = [
+        out / "faultflow.sqlite",
+        out / "faultflow.sqlite-wal",
+        out / "faultflow.sqlite-shm",
+        out / "faultflow.sqlite-journal",
+    ]
+    for path in db_files:
+        path.write_text("db", encoding="utf-8")
+
+    assert runner._clean_db() == 4
+
+    assert keep.exists()
+    assert all(not path.exists() for path in db_files)
 
 
 def test_missing_nl2bench_fails_cleanly(

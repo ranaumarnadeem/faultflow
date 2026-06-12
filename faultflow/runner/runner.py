@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -336,6 +337,13 @@ class Runner:
         return None
 
     def _find_netlist(self) -> Path:
+        if self.cfg.netlist.suffix in {".v", ".sv"}:
+            return self._run_yosys()
+        if (
+            not self.cfg.netlist.exists()
+            and self._existing_verilog_source() is not None
+        ):
+            return self._run_yosys()
         candidates = self._json_netlist_candidates()
         for path in candidates:
             if path.exists():
@@ -844,11 +852,24 @@ class Runner:
             removed += 1
         return removed
 
+    def _clean_db(self) -> int:
+        removed = 0
+        for path in [
+            self.cfg.db_path,
+            self.cfg.db_path.with_name(self.cfg.db_path.name + "-wal"),
+            self.cfg.db_path.with_name(self.cfg.db_path.name + "-shm"),
+            self.cfg.db_path.with_name(self.cfg.db_path.name + "-journal"),
+        ]:
+            if path.exists():
+                path.unlink()
+                removed += 1
+        return removed
+
     def _simulate_with_core(
         self,
         netlist: Path,
         vectors: VectorSet,
-        vector_path: Path,
+        vector_source: str,
     ) -> dict[str, object]:
         core = _load_core()
         if core is None:
@@ -863,13 +884,81 @@ class Runner:
                 str(self.cfg.db_path),
                 vectors.vectors,
                 vectors.input_order,
-                str(vector_path),
+                vector_source,
                 self.cfg.fault_model.include_clock_faults,
                 self.cfg.fault_model.include_reset_faults,
                 self.cfg.fault_model.collapsing,
                 self.cfg.simulation.unsupported_cells,
             )
         )
+
+    def _core(self) -> Any:
+        core = _load_core()
+        if core is None:
+            raise RunnerError(
+                "C++ extension _faultflow_core is required. "
+                "Run: cmake --build build -- -j2"
+            )
+        return core
+
+    def _native_vectors(self, netlist: Path) -> VectorSet:
+        core = self._core()
+        raw_vectors = list(
+            core.native_atpg_vectors(
+                str(netlist),
+                str(self.cfg.cell_lib),
+                self.cfg.simulation.unsupported_cells,
+                self.cfg.atpg.random_vectors,
+                self.cfg.atpg.sat_conflict_limit,
+                self.cfg.atpg.max_sat_vectors,
+                self.cfg.fault_model.include_clock_faults,
+                self.cfg.fault_model.include_reset_faults,
+                self.cfg.fault_model.collapsing,
+            )
+        )
+        input_order = _port_names(netlist, self.cfg.top, "input")
+        return VectorSet("native_sat_atpg", input_order, raw_vectors)
+
+    def _external_vectors(self, ext: Path, netlist: Path) -> tuple[VectorSet, Path]:
+        if ext.suffix != ".test":
+            raise RunnerError("--ext requires a .test file")
+        if not ext.exists():
+            raise RunnerError(f"external vector file not found: {ext}")
+        bench = ext.with_suffix(".bench")
+        if not bench.exists():
+            raise RunnerError(f"--ext requires BENCH sidecar: {bench}")
+        try:
+            input_order = parse_bench_inputs(bench)
+            netlist_inputs = _port_names(netlist, self.cfg.top, "input")
+            if input_order != netlist_inputs:
+                raise RunnerError(
+                    "external BENCH PI order mismatch: "
+                    f"bench={input_order} netlist={netlist_inputs}"
+                )
+            vectors = parse_quaigh_test(ext, input_order, source=f"external:{ext}")
+        except PatternError as exc:
+            raise RunnerError(f"invalid external vectors: {exc}") from exc
+        return vectors, bench
+
+    def _write_run_timings(
+        self,
+        run_id: int,
+        atpg_seconds: float,
+        fault_sim_seconds: float,
+        total_seconds: float,
+    ) -> None:
+        with self._db() as conn:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE runs
+                    SET atpg_generation_seconds = ?,
+                        fault_simulation_seconds = ?,
+                        total_sim_seconds = ?
+                    WHERE id = ?
+                    """,
+                    (atpg_seconds, fault_sim_seconds, total_seconds, run_id),
+                )
 
     def _fault_free_outputs_with_core(
         self,
@@ -1029,13 +1118,28 @@ class Runner:
         )
         return result.expected_outputs
 
-    def sim(self, purge: bool = False, verify: bool | None = None) -> str:
+    def sim(
+        self,
+        purge: bool = False,
+        clean: bool = False,
+        verify: bool | None = None,
+        ext: Path | None = None,
+    ) -> str:
+        total_start = time.perf_counter()
         self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
+        cleaned = self._clean_db() if clean else 0
         removed = self._purge_transients() if purge else 0
         netlist = self._find_netlist()
-        sidecar, input_order = self._find_order_sidecar()
-        vector_path = self._find_vectors()
-        vectors = parse_quaigh_test(vector_path, input_order, source=str(vector_path))
+        atpg_start = time.perf_counter()
+        if ext is not None:
+            vectors, sidecar = self._external_vectors(ext, netlist)
+            vector_source = f"external:{ext}"
+            atpg_seconds = 0.0
+        else:
+            vectors = self._native_vectors(netlist)
+            sidecar = self.cfg.output_dir / "native_sat_atpg"
+            vector_source = "native_sat_atpg"
+            atpg_seconds = time.perf_counter() - atpg_start
         verify_enabled = self.cfg.simulation.verify if verify is None else verify
         verified_outputs: list[dict[str, bool]] | None = None
 
@@ -1046,11 +1150,15 @@ class Runner:
                 self._write_fingerprint(conn, fp)
 
         if verify_enabled:
+            if ext is None:
+                sidecar, _ = self._find_order_sidecar()
             verified_outputs = self._run_verification(
-                netlist, sidecar, vectors, input_order
+                netlist, sidecar, vectors, vectors.input_order
             )
 
-        sim_result = self._simulate_with_core(netlist, vectors, vector_path)
+        sim_start = time.perf_counter()
+        sim_result = self._simulate_with_core(netlist, vectors, vector_source)
+        fault_sim_seconds = time.perf_counter() - sim_start
         if verified_outputs is not None:
             run_id = sim_result["run_id"]
             if not isinstance(run_id, (int, str)):
@@ -1058,6 +1166,13 @@ class Runner:
                     "C++ simulation result did not include a valid run_id"
                 )
             self._write_verified_vectors(int(run_id), vectors, verified_outputs)
+        run_id = sim_result["run_id"]
+        if not isinstance(run_id, (int, str)):
+            raise RunnerError("C++ simulation result did not include a valid run_id")
+        total_seconds = time.perf_counter() - total_start
+        self._write_run_timings(
+            int(run_id), atpg_seconds, fault_sim_seconds, total_seconds
+        )
         mode = "c++"
 
         with self._db() as conn:
@@ -1066,11 +1181,14 @@ class Runner:
             )
 
         purge_note = f" purged_transients={removed}" if purge else ""
+        clean_note = f" cleaned_db_files={cleaned}" if clean else ""
         return (
             f"sim complete top={self.cfg.top} mode={mode} vectors={vectors.count} "
-            f"sidecar={sidecar} "
+            f"source={vector_source} sidecar={sidecar} "
             f"coverage={report['summary']['coverage_percent']:.3f}% "
-            f"report={txt_path} json={json_path}{purge_note}"
+            f"atpg_seconds={atpg_seconds:.3f} "
+            f"fault_sim_seconds={fault_sim_seconds:.3f} "
+            f"report={txt_path} json={json_path}{purge_note}{clean_note}"
         )
 
     def status(self) -> str:

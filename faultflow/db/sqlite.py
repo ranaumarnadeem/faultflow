@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS runs (
     vector_source TEXT,
     vector_count INTEGER NOT NULL DEFAULT 0,
     initial_ff_state TEXT NOT NULL DEFAULT 'all_zero',
+    atpg_generation_seconds REAL NOT NULL DEFAULT 0.0,
+    fault_simulation_seconds REAL NOT NULL DEFAULT 0.0,
+    total_sim_seconds REAL NOT NULL DEFAULT 0.0,
     coverage REAL
 );
 
@@ -93,6 +96,9 @@ MIGRATIONS = [
     ("faults", "type", "TEXT NOT NULL DEFAULT ''"),
     ("faults", "excluded", "TEXT NOT NULL DEFAULT 'none'"),
     ("faults", "collapsed_to", "INTEGER"),
+    ("runs", "atpg_generation_seconds", "REAL NOT NULL DEFAULT 0.0"),
+    ("runs", "fault_simulation_seconds", "REAL NOT NULL DEFAULT 0.0"),
+    ("runs", "total_sim_seconds", "REAL NOT NULL DEFAULT 0.0"),
 ]
 
 

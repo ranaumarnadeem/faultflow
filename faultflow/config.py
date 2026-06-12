@@ -57,9 +57,12 @@ class SimulationConfig:
 
 @dataclass(frozen=True)
 class AtpgConfig:
-    tool: str = "quaigh"
+    tool: str = "native"
     mode: str = "comb"
     output: Path = Path("atpg.test")
+    random_vectors: int = 64
+    sat_conflict_limit: int = 100000
+    max_sat_vectors: int = 10000
 
 
 @dataclass(frozen=True)
@@ -136,6 +139,10 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     if verify_tool != "iverilog":
         raise ConfigError("verify_tool must be 'iverilog'")
 
+    atpg_tool = parser.get("atpg", "tool", fallback="native")
+    if atpg_tool not in {"native", "sat_atpg", "quaigh"}:
+        raise ConfigError("atpg.tool must be native, sat_atpg, or quaigh")
+
     atpg_mode = parser.get("atpg", "mode", fallback="comb")
     if atpg_mode != "comb":
         raise ConfigError("Only atpg.mode=comb is supported")
@@ -163,9 +170,12 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             verify_tool=verify_tool,
         ),
         atpg=AtpgConfig(
-            tool=parser.get("atpg", "tool", fallback="quaigh"),
+            tool=atpg_tool,
             mode=atpg_mode,
             output=_path(parser, "atpg", "output", f"{top}atpg.test"),
+            random_vectors=_int(parser, "atpg", "random_vectors", 64),
+            sat_conflict_limit=_int(parser, "atpg", "sat_conflict_limit", 100000),
+            max_sat_vectors=_int(parser, "atpg", "max_sat_vectors", 10000),
         ),
         report=ReportConfig(
             output=_path(parser, "report", "output", "coverage_report.json"),

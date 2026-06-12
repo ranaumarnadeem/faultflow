@@ -77,8 +77,14 @@ def test_cli_verify_override_reaches_runner(
         def __init__(self, cfg: object) -> None:
             seen["cfg"] = cfg
 
-        def sim(self, purge: bool = False, verify: bool | None = None) -> str:
+        def sim(
+            self,
+            purge: bool = False,
+            clean: bool = False,
+            verify: bool | None = None,
+        ) -> str:
             seen["purge"] = purge
+            seen["clean"] = clean
             seen["verify"] = verify
             return "ok"
 
@@ -361,7 +367,15 @@ def test_runner_verification_failure_aborts_before_sim(
 
     monkeypatch.setattr(runner, "_find_netlist", lambda: tmp_path / "demo.json")
     monkeypatch.setattr(runner, "_find_order_sidecar", lambda: (bench, ["a"]))
-    monkeypatch.setattr(runner, "_find_vectors", lambda: vector_path)
+    monkeypatch.setattr(
+        runner,
+        "_native_vectors",
+        lambda _netlist: VectorSet(
+            source=str(vector_path),
+            input_order=["a"],
+            vectors=[{"a": True}],
+        ),
+    )
     monkeypatch.setattr(
         runner,
         "_run_verification",

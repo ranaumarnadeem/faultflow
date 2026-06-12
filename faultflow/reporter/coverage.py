@@ -83,6 +83,17 @@ def _undetected_faults(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     ]
 
 
+def _latest_run(conn: sqlite3.Connection) -> dict[str, Any]:
+    row = conn.execute("""
+        SELECT id, vector_source, vector_count, atpg_generation_seconds,
+               fault_simulation_seconds, total_sim_seconds
+        FROM runs
+        ORDER BY id DESC
+        LIMIT 1
+        """).fetchone()
+    return dict(row) if row is not None else {}
+
+
 def _validate_report(report: dict[str, Any]) -> None:
     schema_path = Path("schemas/coverage.schema.json")
     if not schema_path.exists():
@@ -97,7 +108,14 @@ def _validate_report(report: dict[str, Any]) -> None:
 
 
 def _validate_report_shape(report: dict[str, Any]) -> None:
-    required = {"metadata", "policy", "summary", "per_node", "undetected_faults"}
+    required = {
+        "metadata",
+        "policy",
+        "summary",
+        "run",
+        "per_node",
+        "undetected_faults",
+    }
     missing = required - set(report)
     if missing:
         raise CoverageError(f"coverage report missing keys: {sorted(missing)}")
@@ -155,10 +173,12 @@ def write_reports(
         },
         "policy": _policy(fp),
         "summary": data,
+        "run": _latest_run(conn),
         "per_node": _per_node(conn),
         "undetected_faults": _undetected_faults(conn),
     }
     _validate_report(report)
+    run = cast(dict[str, Any], report["run"])
     json_path = output_dir / "coverage_report.json"
     txt_path = output_dir / "fault_report.txt"
     json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -175,6 +195,14 @@ def write_reports(
         f"excluded_clock:      {data['excluded_clock']}",
         f"excluded_reset:      {data['excluded_reset']}",
         f"coverage_percent:    {data['coverage_percent']:.3f}",
+        "",
+        "run:",
+        f"vector_source:       {run.get('vector_source', '')}",
+        f"vector_count:        {run.get('vector_count', 0)}",
+        "atpg_seconds:        " f"{float(run.get('atpg_generation_seconds', 0.0)):.3f}",
+        "fault_sim_seconds:   "
+        f"{float(run.get('fault_simulation_seconds', 0.0)):.3f}",
+        "total_sim_seconds:   " f"{float(run.get('total_sim_seconds', 0.0)):.3f}",
         "",
         "policy:",
         f"unsupported_cells:   {_policy_text(report, 'unsupported_cells')}",

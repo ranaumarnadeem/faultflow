@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "faultflow coverage report",
   "type": "object",
-  "required": ["metadata", "policy", "summary", "per_node", "undetected_faults"],
+  "required": ["metadata", "policy", "summary", "run", "per_node", "undetected_faults"],
   "additionalProperties": false,
   "properties": {
     "metadata": {
@@ -69,6 +69,26 @@
         "excluded_clock": { "type": "integer", "minimum": 0 },
         "excluded_reset": { "type": "integer", "minimum": 0 },
         "coverage_percent": { "type": "number", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": [
+        "id",
+        "vector_source",
+        "vector_count",
+        "atpg_generation_seconds",
+        "fault_simulation_seconds",
+        "total_sim_seconds"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "vector_source": { "type": ["string", "null"] },
+        "vector_count": { "type": "integer", "minimum": 0 },
+        "atpg_generation_seconds": { "type": "number", "minimum": 0 },
+        "fault_simulation_seconds": { "type": "number", "minimum": 0 },
+        "total_sim_seconds": { "type": "number", "minimum": 0 }
       }
     },
     "per_node": {

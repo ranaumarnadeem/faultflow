@@ -26,9 +26,19 @@ def _parser() -> argparse.ArgumentParser:
         help="Clean transient junk inside output/<top>/ before sim",
     )
     sim.add_argument(
+        "--clean",
+        action="store_true",
+        help="Remove output/<top>/faultflow.sqlite before sim",
+    )
+    sim.add_argument(
         "-v",
         "--verify",
         help="Override [simulation] verify for this sim run",
+    )
+    sim.add_argument(
+        "--ext",
+        type=Path,
+        help="External .test vectors; requires a same-stem .bench sidecar",
     )
 
     status = sub.add_parser("status", help="Print current coverage status")
@@ -99,7 +109,17 @@ def main(argv: list[str] | None = None) -> int:
                 if args.verify is not None
                 else None
             )
-            print(runner.sim(purge=args.purge, verify=verify))
+            if args.ext is None:
+                print(runner.sim(purge=args.purge, clean=args.clean, verify=verify))
+            else:
+                print(
+                    runner.sim(
+                        purge=args.purge,
+                        clean=args.clean,
+                        verify=verify,
+                        ext=args.ext,
+                    )
+                )
         elif args.command == "status":
             print(runner.status())
         elif args.command == "scan":
