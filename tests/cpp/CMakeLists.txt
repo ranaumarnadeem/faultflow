@@ -2,6 +2,7 @@ add_executable(
   faultflow_tests
   test_main.cpp
   sim/test_gate_eval.cpp
+  sim/test_sky130_gate_eval.cpp
   sim/test_golden_ref.cpp
   sim/test_sequential_ff.cpp
   scan/test_scan_chain.cpp

@@ -33,6 +33,17 @@ void wire_inputs(SimNode& sn, GateType gt,
       slot = map_net(it->second, y2c, c2y);
     }
   };
+  auto wire_seq = [&](std::initializer_list<const char*> names) {
+    uint32_t* slots[] = {&sn.in0, &sn.in1, &sn.in2,
+                         &sn.in3, &sn.in4, &sn.in5};
+    size_t idx = 0;
+    for (const char* name : names) {
+      if (idx < 6) {
+        wire(name, *slots[idx]);
+      }
+      ++idx;
+    }
+  };
   switch (gt) {
     case GateType::INV:
     case GateType::BUF:
@@ -42,13 +53,41 @@ void wire_inputs(SimNode& sn, GateType gt,
     case GateType::DFF:
       break;
     case GateType::AND2:
+    case GateType::AND2B:
     case GateType::OR2:
     case GateType::NAND2:
     case GateType::NOR2:
     case GateType::XOR2:
     case GateType::XNOR2:
+    case GateType::NAND2B:
+    case GateType::NOR2B:
       wire("A", sn.in0);
       wire("B", sn.in1);
+      wire("A_N", sn.in0);
+      wire("B_N", sn.in1);
+      wire("SLEEP", sn.in1);
+      break;
+    case GateType::AND3:
+    case GateType::OR3:
+    case GateType::XOR3:
+    case GateType::XNOR3:
+    case GateType::NAND3B:
+    case GateType::NOR3B:
+    case GateType::OR3B:
+      wire_seq({"A", "B", "C"});
+      wire("A_N", sn.in0);
+      wire("C_N", sn.in2);
+      break;
+    case GateType::AND4:
+    case GateType::OR4:
+    case GateType::NAND4:
+    case GateType::NOR4:
+    case GateType::NAND4B:
+    case GateType::NOR4B:
+    case GateType::OR4B:
+      wire_seq({"A", "B", "C", "D"});
+      wire("A_N", sn.in0);
+      wire("D_N", sn.in3);
       break;
     case GateType::NAND3:
     case GateType::NOR3:
@@ -69,6 +108,58 @@ void wire_inputs(SimNode& sn, GateType gt,
       wire("A", sn.in0);
       wire("B", sn.in1);
       wire("S", sn.in2);
+      break;
+    case GateType::MUX2_NI:
+      wire_seq({"A0", "A1", "S"});
+      break;
+    case GateType::A21O:
+    case GateType::A21OI:
+    case GateType::A21BO:
+    case GateType::A21BOI:
+      wire_seq({"A1", "A2", "B1"});
+      wire("B1_N", sn.in2);
+      break;
+    case GateType::A22O:
+    case GateType::A22OI:
+    case GateType::O22A:
+    case GateType::O22AI:
+      wire_seq({"A1", "A2", "B1", "B2"});
+      break;
+    case GateType::A211OI:
+    case GateType::O211AI:
+      wire_seq({"A1", "A2", "B1", "C1"});
+      break;
+    case GateType::A2111OI:
+      wire_seq({"A1", "A2", "B1", "C1", "D1"});
+      break;
+    case GateType::A221O:
+    case GateType::A221OI:
+    case GateType::O221AI:
+      wire_seq({"A1", "A2", "B1", "B2", "C1"});
+      break;
+    case GateType::A31O:
+    case GateType::A31OI:
+    case GateType::O31A:
+    case GateType::O31AI:
+      wire_seq({"A1", "A2", "A3", "B1"});
+      break;
+    case GateType::A32O:
+    case GateType::A32OI:
+    case GateType::O32AI:
+      wire_seq({"A1", "A2", "A3", "B1", "B2"});
+      break;
+    case GateType::A41OI:
+      wire_seq({"A1", "A2", "A3", "A4", "B1"});
+      break;
+    case GateType::O21A:
+    case GateType::O21AI:
+    case GateType::O21BAI:
+      wire_seq({"A1", "A2", "B1"});
+      wire("B1_N", sn.in2);
+      break;
+    case GateType::O311A:
+    case GateType::O311AI:
+      wire_seq({"A1", "A2", "A3", "B1", "C1"});
       break;
     case GateType::ADDF_S:
     case GateType::ADDF_CO:

@@ -1,6 +1,7 @@
 add_library(
   faultflow_core
   sim/gate_eval.cpp
+  atpg/sat_atpg.cpp
   ir/parsed_graph/parsed_graph.cpp
   ir/normalized_graph/normalized_graph.cpp
   ir/normalized_graph/cell_map.cpp
@@ -20,7 +21,7 @@ target_include_directories(faultflow_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 set_target_properties(faultflow_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_link_libraries(
-  faultflow_core PUBLIC nlohmann_json::nlohmann_json SQLiteCpp
+  faultflow_core PUBLIC nlohmann_json::nlohmann_json SQLiteCpp cadical
 )
 
 target_compile_options(faultflow_core PRIVATE -Wall -Wextra)

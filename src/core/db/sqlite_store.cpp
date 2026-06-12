@@ -101,6 +101,9 @@ CREATE TABLE IF NOT EXISTS runs (
     vector_source TEXT,
     vector_count INTEGER NOT NULL DEFAULT 0,
     initial_ff_state TEXT NOT NULL DEFAULT 'all_zero',
+    atpg_generation_seconds REAL NOT NULL DEFAULT 0.0,
+    fault_simulation_seconds REAL NOT NULL DEFAULT 0.0,
+    total_sim_seconds REAL NOT NULL DEFAULT 0.0,
     coverage REAL
 );
 CREATE TABLE IF NOT EXISTS vectors (
@@ -147,6 +150,11 @@ CREATE TABLE IF NOT EXISTS node_coverage (
   ensure_column(db, "vectors", "inputs", "TEXT NOT NULL DEFAULT '{}'");
   ensure_column(db, "runs", "initial_ff_state",
                 "TEXT NOT NULL DEFAULT 'all_zero'");
+  ensure_column(db, "runs", "atpg_generation_seconds",
+                "REAL NOT NULL DEFAULT 0.0");
+  ensure_column(db, "runs", "fault_simulation_seconds",
+                "REAL NOT NULL DEFAULT 0.0");
+  ensure_column(db, "runs", "total_sim_seconds", "REAL NOT NULL DEFAULT 0.0");
   ensure_column(db, "vectors", "expected", "TEXT NOT NULL DEFAULT '{}'");
   ensure_column(db, "vectors", "verified", "INTEGER NOT NULL DEFAULT 0");
   ensure_column(db, "faults", "net_name", "TEXT NOT NULL DEFAULT ''");

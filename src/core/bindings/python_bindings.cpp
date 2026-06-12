@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "atpg/sat_atpg.hpp"
 #include "db/sqlite_store.hpp"
 #include "fault/collapser/fault_collapser.hpp"
 #include "fault/enumerator/fault_enumerator.hpp"
@@ -246,6 +247,22 @@ std::vector<std::map<std::string, bool>> fault_free_sequence_outputs(
   return out;
 }
 
+std::vector<std::map<std::string, bool>> native_atpg_vectors(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& unsupported_policy, int random_vectors,
+    int conflict_limit, int max_sat_vectors, bool include_clock_faults,
+    bool include_reset_faults, bool collapsing) {
+  atpg::SatAtpgOptions options;
+  options.random_vectors = random_vectors;
+  options.conflict_limit = conflict_limit;
+  options.max_sat_vectors = max_sat_vectors;
+  options.include_clock_faults = include_clock_faults;
+  options.include_reset_faults = include_reset_faults;
+  options.collapsing = collapsing;
+  return atpg::generate_comb_sat_vectors(json_path, cell_map_path,
+                                         unsupported_policy, options);
+}
+
 }  // namespace faultflow
 
 PYBIND11_MODULE(_faultflow_core, m) {
@@ -263,4 +280,11 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("sequences"),
         py::arg("input_order"), py::arg("output_order"),
         py::arg("unsupported_policy") = "fail");
+  m.def("native_atpg_vectors", &faultflow::native_atpg_vectors,
+        py::arg("json_path"), py::arg("cell_map_path"),
+        py::arg("unsupported_policy") = "fail",
+        py::arg("random_vectors") = 64, py::arg("conflict_limit") = 100000,
+        py::arg("max_sat_vectors") = 10000,
+        py::arg("include_clock_faults") = false,
+        py::arg("include_reset_faults") = false, py::arg("collapsing") = false);
 }
