@@ -1,6 +1,9 @@
 add_library(
   faultflow_core
   sim/gate_eval.cpp
+  atpg/cnf_encoder.cpp
+  atpg/fault_solver.cpp
+  atpg/progressive_atpg.cpp
   atpg/sat_atpg.cpp
   ir/parsed_graph/parsed_graph.cpp
   ir/normalized_graph/normalized_graph.cpp

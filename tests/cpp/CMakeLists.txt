@@ -14,6 +14,8 @@ add_executable(
   fault/test_batch_manager.cpp
   fault/test_collapser.cpp
   db/test_sqlite_store.cpp
+  atpg/test_cnf_truth_tables.cpp
+  atpg/test_miter_sat.cpp
   fixtures/test_tiny_fixtures.cpp
   benchmarks/test_c17.cpp
   sim/test_golden_ref_tiny.cpp
