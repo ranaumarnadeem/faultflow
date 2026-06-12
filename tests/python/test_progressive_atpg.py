@@ -87,7 +87,6 @@ unsupported_cells = fail
 [atpg]
 random_vectors = 8
 sat_conflict_limit = 100000
-max_sat_vectors = 100
 max_rounds = 20
 sat_timeout_seconds = 10
 

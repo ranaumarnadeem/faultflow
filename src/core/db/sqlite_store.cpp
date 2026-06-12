@@ -32,12 +32,41 @@ const char* status_name(FaultStatus status, FaultExclusion exclusion) {
       return "detected";
     case FaultStatus::UNDETECTED:
       return "undetected";
+    case FaultStatus::REDUNDANT:
+      return "redundant";
   }
   return "undetected";
 }
 
+FaultStatus status_from_name(const std::string& name) {
+  if (name == "detected") {
+    return FaultStatus::DETECTED;
+  }
+  if (name == "redundant") {
+    return FaultStatus::REDUNDANT;
+  }
+  return FaultStatus::UNDETECTED;
+}
+
+FaultExclusion exclusion_from_name(const std::string& name) {
+  if (name == "clock") {
+    return FaultExclusion::CLOCK;
+  }
+  if (name == "reset") {
+    return FaultExclusion::RESET;
+  }
+  if (name == "blackbox") {
+    return FaultExclusion::BLACKBOX;
+  }
+  return FaultExclusion::NONE;
+}
+
 const char* type_name(FaultType type) {
   return type == FaultType::SA0 ? "sa0" : "sa1";
+}
+
+FaultType type_from_name(const std::string& name) {
+  return name == "sa1" ? FaultType::SA1 : FaultType::SA0;
 }
 
 std::string net_name(const NormalizedGraph& ng, int yid) {
@@ -72,12 +101,57 @@ void ensure_column(SQLite::Database& db, const std::string& table,
   }
 }
 
+void ensure_v2_schema(SQLite::Database& db) {
+  ensure_column(db, "design_fingerprint", "redundancy_model_id",
+                "TEXT NOT NULL DEFAULT ''");
+  ensure_column(db, "faults", "redundancy_model_id", "TEXT");
+  ensure_column(db, "runs", "atpg_terminal_reason", "TEXT");
+  ensure_column(db, "runs", "atpg_rounds", "INTEGER NOT NULL DEFAULT 0");
+  ensure_column(db, "runs", "atpg_sat", "INTEGER NOT NULL DEFAULT 0");
+  ensure_column(db, "runs", "atpg_unsat", "INTEGER NOT NULL DEFAULT 0");
+  ensure_column(db, "runs", "atpg_timeout", "INTEGER NOT NULL DEFAULT 0");
+  ensure_column(db, "runs", "atpg_unknown", "INTEGER NOT NULL DEFAULT 0");
+  ensure_column(db, "runs", "atpg_rejected_candidates",
+                "INTEGER NOT NULL DEFAULT 0");
+  ensure_column(db, "runs", "atpg_generated_vectors",
+                "INTEGER NOT NULL DEFAULT 0");
+  ensure_column(db, "runs", "atpg_accepted_vectors",
+                "INTEGER NOT NULL DEFAULT 0");
+  db.exec("PRAGMA user_version = 2");
+}
+
+void bind_fault_insert(SQLite::Statement& q, const NormalizedGraph& ng,
+                       const CompiledSimGraph& cg, const CompactFault& f) {
+  const int yid = cg.compiled_to_yosys.at(f.net_index);
+  q.bind(1, yid);
+  q.bind(2, net_name(ng, yid));
+  q.bind(3, static_cast<int64_t>(f.net_index));
+  q.bind(4, static_cast<int64_t>(f.net_index));
+  q.bind(5, type_name(f.type));
+  q.bind(6, type_name(f.type));
+  q.bind(7, status_name(f.status, f.exclusion));
+  q.bind(8, exclusion_name(f.exclusion));
+  q.bind(9, exclusion_name(f.exclusion));
+  if (f.collapsed_into == UINT32_MAX) {
+    q.bind(10);
+    q.bind(11);
+  } else {
+    q.bind(10, static_cast<int64_t>(f.collapsed_into));
+    q.bind(11, static_cast<int64_t>(f.collapsed_into));
+  }
+  if (f.detected_by_vector == 0) {
+    q.bind(12);
+  } else {
+    q.bind(12, static_cast<int64_t>(f.detected_by_vector));
+  }
+  q.bind(13);
+}
+
 }  // namespace
 
 void init_database(const std::string& db_path) {
   SQLite::Database db = open_db(db_path);
   db.exec(R"sql(
-PRAGMA user_version = 1;
 CREATE TABLE IF NOT EXISTS design_fingerprint (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     top TEXT NOT NULL,
@@ -91,6 +165,7 @@ CREATE TABLE IF NOT EXISTS design_fingerprint (
     unsupported_cells TEXT NOT NULL,
     include_clock_faults INTEGER NOT NULL,
     include_reset_faults INTEGER NOT NULL,
+    redundancy_model_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS runs (
@@ -104,7 +179,16 @@ CREATE TABLE IF NOT EXISTS runs (
     atpg_generation_seconds REAL NOT NULL DEFAULT 0.0,
     fault_simulation_seconds REAL NOT NULL DEFAULT 0.0,
     total_sim_seconds REAL NOT NULL DEFAULT 0.0,
-    coverage REAL
+    coverage REAL,
+    atpg_terminal_reason TEXT,
+    atpg_rounds INTEGER NOT NULL DEFAULT 0,
+    atpg_sat INTEGER NOT NULL DEFAULT 0,
+    atpg_unsat INTEGER NOT NULL DEFAULT 0,
+    atpg_timeout INTEGER NOT NULL DEFAULT 0,
+    atpg_unknown INTEGER NOT NULL DEFAULT 0,
+    atpg_rejected_candidates INTEGER NOT NULL DEFAULT 0,
+    atpg_generated_vectors INTEGER NOT NULL DEFAULT 0,
+    atpg_accepted_vectors INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS vectors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,6 +215,7 @@ CREATE TABLE IF NOT EXISTS faults (
     collapsed_to INTEGER,
     collapsed_into INTEGER,
     detected_by_vector INTEGER,
+    redundancy_model_id TEXT,
     UNIQUE(compiled_net_index, fault_type)
 );
 CREATE TABLE IF NOT EXISTS fault_detections (
@@ -162,6 +247,16 @@ CREATE TABLE IF NOT EXISTS node_coverage (
   ensure_column(db, "faults", "type", "TEXT NOT NULL DEFAULT ''");
   ensure_column(db, "faults", "excluded", "TEXT NOT NULL DEFAULT 'none'");
   ensure_column(db, "faults", "collapsed_to", "INTEGER");
+  ensure_v2_schema(db);
+}
+
+int64_t fault_count(const std::string& db_path) {
+  SQLite::Database db = open_db(db_path);
+  SQLite::Statement q(db, "SELECT COUNT(*) FROM faults");
+  if (!q.executeStep()) {
+    return 0;
+  }
+  return q.getColumn(0).getInt64();
 }
 
 int64_t start_run(const std::string& db_path, const std::string& vector_source,
@@ -203,6 +298,51 @@ void write_vectors(const std::string& db_path, int64_t run_id,
   txn.commit();
 }
 
+void append_vectors(const std::string& db_path, int64_t run_id,
+                    const std::string& source,
+                    const std::vector<std::string>& patterns,
+                    int64_t start_index) {
+  if (patterns.empty()) {
+    return;
+  }
+  SQLite::Database db = open_db(db_path);
+  SQLite::Transaction txn(db);
+  SQLite::Statement q(db,
+                      "INSERT INTO vectors(run_id, source, vector_index, pattern) "
+                      "VALUES (?, ?, ?, ?)");
+  for (size_t i = 0; i < patterns.size(); ++i) {
+    q.bind(1, run_id);
+    q.bind(2, source);
+    q.bind(3, start_index + static_cast<int64_t>(i));
+    q.bind(4, patterns[i]);
+    q.exec();
+    q.reset();
+  }
+  txn.commit();
+}
+
+void insert_faults_if_empty(const std::string& db_path,
+                            const NormalizedGraph& ng, const CompiledSimGraph& cg,
+                            const std::vector<CompactFault>& faults) {
+  if (fault_count(db_path) > 0) {
+    return;
+  }
+  SQLite::Database db = open_db(db_path);
+  SQLite::Transaction txn(db);
+  SQLite::Statement q(
+      db,
+      "INSERT INTO faults(net_id, net_name, node_id, compiled_net_index, type, "
+      "fault_type, status, excluded, exclusion, collapsed_to, collapsed_into, "
+      "detected_by_vector, redundancy_model_id) "
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  for (const CompactFault& f : faults) {
+    bind_fault_insert(q, ng, cg, f);
+    q.exec();
+    q.reset();
+  }
+  txn.commit();
+}
+
 void write_faults(const std::string& db_path, int64_t run_id,
                   const NormalizedGraph& ng, const CompiledSimGraph& cg,
                   const std::vector<CompactFault>& faults) {
@@ -214,36 +354,14 @@ void write_faults(const std::string& db_path, int64_t run_id,
       db,
       "INSERT INTO faults(net_id, net_name, node_id, compiled_net_index, type, "
       "fault_type, status, excluded, exclusion, collapsed_to, collapsed_into, "
-      "detected_by_vector) "
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      "detected_by_vector, redundancy_model_id) "
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   SQLite::Statement det(
       db,
       "INSERT INTO fault_detections(fault_id, run_id, vector_index, obs_net) "
       "VALUES (?, ?, ?, NULL)");
-  for (size_t i = 0; i < faults.size(); ++i) {
-    const CompactFault& f = faults[i];
-    const int yid = cg.compiled_to_yosys.at(f.net_index);
-    q.bind(1, yid);
-    q.bind(2, net_name(ng, yid));
-    q.bind(3, static_cast<int64_t>(f.net_index));
-    q.bind(4, static_cast<int64_t>(f.net_index));
-    q.bind(5, type_name(f.type));
-    q.bind(6, type_name(f.type));
-    q.bind(7, status_name(f.status, f.exclusion));
-    q.bind(8, exclusion_name(f.exclusion));
-    q.bind(9, exclusion_name(f.exclusion));
-    if (f.collapsed_into == UINT32_MAX) {
-      q.bind(10);
-      q.bind(11);
-    } else {
-      q.bind(10, static_cast<int64_t>(f.collapsed_into));
-      q.bind(11, static_cast<int64_t>(f.collapsed_into));
-    }
-    if (f.detected_by_vector == 0) {
-      q.bind(12);
-    } else {
-      q.bind(12, static_cast<int64_t>(f.detected_by_vector));
-    }
+  for (const CompactFault& f : faults) {
+    bind_fault_insert(q, ng, cg, f);
     q.exec();
     const int64_t fault_id = db.getLastInsertRowid();
     q.reset();
@@ -258,14 +376,91 @@ void write_faults(const std::string& db_path, int64_t run_id,
   txn.commit();
 }
 
+FaultRecord load_fault(const std::string& db_path, int64_t fault_id) {
+  SQLite::Database db = open_db(db_path);
+  SQLite::Statement q(
+      db, "SELECT id, compiled_net_index, fault_type, status, exclusion, "
+          "collapsed_into FROM faults WHERE id = ?");
+  q.bind(1, fault_id);
+  if (!q.executeStep()) {
+    throw std::runtime_error("fault not found: " + std::to_string(fault_id));
+  }
+  FaultRecord rec;
+  rec.id = q.getColumn(0).getInt64();
+  rec.compiled_net_index = static_cast<uint32_t>(q.getColumn(1).getInt64());
+  rec.type = type_from_name(q.getColumn(2).getString());
+  rec.status = status_from_name(q.getColumn(3).getString());
+  rec.exclusion = exclusion_from_name(q.getColumn(4).getString());
+  if (q.getColumn(5).isNull()) {
+    rec.collapsed_into = UINT32_MAX;
+  } else {
+    rec.collapsed_into = static_cast<uint32_t>(q.getColumn(5).getInt64());
+  }
+  return rec;
+}
+
+void mark_fault_detected(const std::string& db_path, int64_t run_id,
+                         int64_t fault_id, int64_t vector_index) {
+  SQLite::Database db = open_db(db_path);
+  SQLite::Transaction txn(db);
+  SQLite::Statement q(db,
+                      "UPDATE faults SET status='detected', detected_by_vector=? "
+                      "WHERE id=?");
+  q.bind(1, vector_index);
+  q.bind(2, fault_id);
+  q.exec();
+  SQLite::Statement det(
+      db,
+      "INSERT OR IGNORE INTO fault_detections(fault_id, run_id, vector_index, "
+      "obs_net) VALUES (?, ?, ?, NULL)");
+  det.bind(1, fault_id);
+  det.bind(2, run_id);
+  det.bind(3, vector_index);
+  det.exec();
+  txn.commit();
+}
+
+void mark_fault_redundant(const std::string& db_path, int64_t fault_id,
+                          const std::string& redundancy_model_id) {
+  SQLite::Database db = open_db(db_path);
+  SQLite::Statement q(
+      db, "UPDATE faults SET status='redundant', redundancy_model_id=?, "
+          "detected_by_vector=NULL WHERE id=?");
+  q.bind(1, redundancy_model_id);
+  q.bind(2, fault_id);
+  q.exec();
+}
+
+void invalidate_stale_redundant(const std::string& db_path,
+                                const std::string& redundancy_model_id) {
+  SQLite::Database db = open_db(db_path);
+  SQLite::Statement q(
+      db,
+      "UPDATE faults SET status='undetected', redundancy_model_id=NULL "
+      "WHERE status='redundant' AND (redundancy_model_id IS NULL OR "
+      "redundancy_model_id != ?)");
+  q.bind(1, redundancy_model_id);
+  q.exec();
+}
+
+void update_run_vector_count(const std::string& db_path, int64_t run_id,
+                             int64_t vector_count) {
+  SQLite::Database db = open_db(db_path);
+  SQLite::Statement q(db, "UPDATE runs SET vector_count=? WHERE id=?");
+  q.bind(1, vector_count);
+  q.bind(2, run_id);
+  q.exec();
+}
+
 CoverageSummary summarize(const std::string& db_path) {
   SQLite::Database db = open_db(db_path);
   SQLite::Statement q(db, R"sql(
 SELECT
   COUNT(*) AS total_raw_faults,
-  SUM(CASE WHEN exclusion = 'none' AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS denominator,
+  SUM(CASE WHEN exclusion = 'none' AND collapsed_into IS NULL AND status != 'redundant' THEN 1 ELSE 0 END) AS denominator,
   SUM(CASE WHEN status = 'detected' AND exclusion = 'none' AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS detected,
   SUM(CASE WHEN status = 'undetected' AND exclusion = 'none' AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS undetected,
+  SUM(CASE WHEN status = 'redundant' AND exclusion = 'none' AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS redundant,
   SUM(CASE WHEN collapsed_into IS NOT NULL THEN 1 ELSE 0 END) AS collapsed,
   SUM(CASE WHEN exclusion = 'blackbox' THEN 1 ELSE 0 END) AS excluded_blackbox,
   SUM(CASE WHEN exclusion = 'clock' THEN 1 ELSE 0 END) AS excluded_clock,
@@ -280,10 +475,11 @@ FROM faults
   s.denominator = q.getColumn(1).getInt64();
   s.detected = q.getColumn(2).getInt64();
   s.undetected = q.getColumn(3).getInt64();
-  s.collapsed = q.getColumn(4).getInt64();
-  s.excluded_blackbox = q.getColumn(5).getInt64();
-  s.excluded_clock = q.getColumn(6).getInt64();
-  s.excluded_reset = q.getColumn(7).getInt64();
+  s.redundant = q.getColumn(4).getInt64();
+  s.collapsed = q.getColumn(5).getInt64();
+  s.excluded_blackbox = q.getColumn(6).getInt64();
+  s.excluded_clock = q.getColumn(7).getInt64();
+  s.excluded_reset = q.getColumn(8).getInt64();
   s.coverage_percent =
       s.denominator == 0 ? 0.0
                          : 100.0 * static_cast<double>(s.detected) /
@@ -293,12 +489,34 @@ FROM faults
 
 void complete_run(const std::string& db_path, int64_t run_id,
                   double coverage_percent) {
+  AtpgRunStats stats;
+  complete_run_with_atpg(db_path, run_id, coverage_percent, stats);
+}
+
+void complete_run_with_atpg(const std::string& db_path, int64_t run_id,
+                            double coverage_percent, const AtpgRunStats& stats) {
   SQLite::Database db = open_db(db_path);
-  SQLite::Statement q(db,
-                      "UPDATE runs SET status='complete', "
-                      "completed_at=CURRENT_TIMESTAMP, coverage=? WHERE id=?");
+  SQLite::Statement q(
+      db,
+      "UPDATE runs SET status='complete', completed_at=CURRENT_TIMESTAMP, "
+      "coverage=?, atpg_terminal_reason=?, atpg_rounds=?, atpg_sat=?, "
+      "atpg_unsat=?, atpg_timeout=?, atpg_unknown=?, atpg_rejected_candidates=?, "
+      "atpg_generated_vectors=?, atpg_accepted_vectors=? WHERE id=?");
   q.bind(1, coverage_percent);
-  q.bind(2, run_id);
+  if (stats.terminal_reason.empty()) {
+    q.bind(2);
+  } else {
+    q.bind(2, stats.terminal_reason);
+  }
+  q.bind(3, stats.rounds);
+  q.bind(4, stats.sat);
+  q.bind(5, stats.unsat);
+  q.bind(6, stats.timeout);
+  q.bind(7, stats.unknown);
+  q.bind(8, stats.rejected_candidates);
+  q.bind(9, stats.generated_vectors);
+  q.bind(10, stats.accepted_vectors);
+  q.bind(11, run_id);
   q.exec();
 }
 

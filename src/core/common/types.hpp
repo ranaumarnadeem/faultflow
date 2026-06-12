@@ -131,6 +131,7 @@ enum class FaultStatus : uint8_t {
   PENDING = 0,
   DETECTED = 1,
   UNDETECTED = 2,
+  REDUNDANT = 3,
 };
 
 enum class FaultExclusion : uint8_t {

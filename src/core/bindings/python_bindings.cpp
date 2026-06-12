@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "atpg/progressive_atpg.hpp"
 #include "atpg/sat_atpg.hpp"
 #include "db/sqlite_store.hpp"
 #include "fault/collapser/fault_collapser.hpp"
@@ -115,6 +116,7 @@ py::dict summary_to_dict(const db::CoverageSummary& s) {
   d["denominator"] = s.denominator;
   d["detected"] = s.detected;
   d["undetected"] = s.undetected;
+  d["redundant"] = s.redundant;
   d["collapsed"] = s.collapsed;
   d["excluded_blackbox"] = s.excluded_blackbox;
   d["excluded_clock"] = s.excluded_clock;
@@ -247,20 +249,103 @@ std::vector<std::map<std::string, bool>> fault_free_sequence_outputs(
   return out;
 }
 
-std::vector<std::map<std::string, bool>> native_atpg_vectors(
+std::vector<std::map<std::string, bool>> atpg_random_vectors(
+    const std::vector<std::string>& input_order, int count, uint64_t seed) {
+  return atpg::generate_random_vectors(input_order, count, seed);
+}
+
+void ensure_faults_enumerated_py(
     const std::string& json_path, const std::string& cell_map_path,
-    const std::string& unsupported_policy, int random_vectors,
-    int conflict_limit, int max_sat_vectors, bool include_clock_faults,
-    bool include_reset_faults, bool collapsing) {
-  atpg::SatAtpgOptions options;
-  options.random_vectors = random_vectors;
-  options.conflict_limit = conflict_limit;
-  options.max_sat_vectors = max_sat_vectors;
-  options.include_clock_faults = include_clock_faults;
-  options.include_reset_faults = include_reset_faults;
-  options.collapsing = collapsing;
-  return atpg::generate_comb_sat_vectors(json_path, cell_map_path,
-                                         unsupported_policy, options);
+    const std::string& db_path, bool include_clock_faults,
+    bool include_reset_faults, bool collapsing,
+    const std::string& unsupported_policy) {
+  atpg::ensure_faults_enumerated(json_path, cell_map_path, db_path,
+                                 include_clock_faults, include_reset_faults,
+                                 collapsing, unsupported_policy);
+}
+
+py::dict solve_fault_atpg(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::vector<std::string>& blocked_patterns, int conflict_limit,
+    int sat_timeout_seconds, const std::string& unsupported_policy) {
+  const atpg::SolveFaultResult result = atpg::solve_fault_for_db(
+      json_path, cell_map_path, db_path, fault_id, blocked_patterns,
+      conflict_limit, sat_timeout_seconds, unsupported_policy);
+  py::dict out;
+  out["result"] = result.result;
+  out["vector"] = result.vector;
+  return out;
+}
+
+bool verify_fault_candidate(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::map<std::string, bool>& vector,
+    const std::string& unsupported_policy) {
+  return atpg::verify_fault_vector(json_path, cell_map_path, db_path, fault_id,
+                                   vector, unsupported_policy);
+}
+
+py::list simulate_incremental_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t run_id,
+    const std::vector<std::map<std::string, bool>>& new_vectors,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
+    const std::string& unsupported_policy) {
+  const std::vector<atpg::ProgressiveDetection> detections =
+      atpg::simulate_incremental(json_path, cell_map_path, db_path, run_id,
+                                 new_vectors, input_order, fault_ids,
+                                 vector_start_index, unsupported_policy);
+  py::list out;
+  for (const auto& det : detections) {
+    py::dict row;
+    row["fault_id"] = det.fault_id;
+    row["vector_index"] = det.vector_index;
+    out.append(row);
+  }
+  return out;
+}
+
+void invalidate_stale_redundant_py(const std::string& db_path,
+                                   const std::string& redundancy_model_id) {
+  db::invalidate_stale_redundant(db_path, redundancy_model_id);
+}
+
+void append_vectors_py(const std::string& db_path, int64_t run_id,
+                       const std::string& source,
+                       const std::vector<std::string>& patterns,
+                       int64_t start_index) {
+  db::append_vectors(db_path, run_id, source, patterns, start_index);
+}
+
+void mark_fault_redundant_py(const std::string& db_path, int64_t fault_id,
+                             const std::string& redundancy_model_id) {
+  db::mark_fault_redundant(db_path, fault_id, redundancy_model_id);
+}
+
+void complete_run_with_atpg_py(const std::string& db_path, int64_t run_id,
+                               double coverage_percent,
+                               const std::string& terminal_reason, int rounds,
+                               int sat, int unsat, int timeout, int unknown,
+                               int rejected, int generated, int accepted) {
+  db::AtpgRunStats stats;
+  stats.terminal_reason = terminal_reason;
+  stats.rounds = rounds;
+  stats.sat = sat;
+  stats.unsat = unsat;
+  stats.timeout = timeout;
+  stats.unknown = unknown;
+  stats.rejected_candidates = rejected;
+  stats.generated_vectors = generated;
+  stats.accepted_vectors = accepted;
+  db::complete_run_with_atpg(db_path, run_id, coverage_percent, stats);
+}
+
+void update_run_vector_count_py(const std::string& db_path, int64_t run_id,
+                              int64_t vector_count) {
+  db::update_run_vector_count(db_path, run_id, vector_count);
 }
 
 }  // namespace faultflow
@@ -280,11 +365,39 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("sequences"),
         py::arg("input_order"), py::arg("output_order"),
         py::arg("unsupported_policy") = "fail");
-  m.def("native_atpg_vectors", &faultflow::native_atpg_vectors,
-        py::arg("json_path"), py::arg("cell_map_path"),
-        py::arg("unsupported_policy") = "fail",
-        py::arg("random_vectors") = 64, py::arg("conflict_limit") = 100000,
-        py::arg("max_sat_vectors") = 10000,
+  m.def("atpg_random_vectors", &faultflow::atpg_random_vectors,
+        py::arg("input_order"), py::arg("count"), py::arg("seed"));
+  m.def("ensure_faults_enumerated", &faultflow::ensure_faults_enumerated_py,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("include_clock_faults") = false,
-        py::arg("include_reset_faults") = false, py::arg("collapsing") = false);
+        py::arg("include_reset_faults") = false, py::arg("collapsing") = false,
+        py::arg("unsupported_policy") = "fail");
+  m.def("solve_fault_atpg", &faultflow::solve_fault_atpg, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("db_path"), py::arg("fault_id"),
+        py::arg("blocked_patterns"), py::arg("conflict_limit") = 100000,
+        py::arg("sat_timeout_seconds") = 10,
+        py::arg("unsupported_policy") = "fail");
+  m.def("verify_fault_candidate", &faultflow::verify_fault_candidate,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
+        py::arg("fault_id"), py::arg("vector"),
+        py::arg("unsupported_policy") = "fail");
+  m.def("simulate_incremental", &faultflow::simulate_incremental_py,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
+        py::arg("run_id"), py::arg("new_vectors"), py::arg("input_order"),
+        py::arg("fault_ids"), py::arg("vector_start_index"),
+        py::arg("unsupported_policy") = "fail");
+  m.def("invalidate_stale_redundant", &faultflow::invalidate_stale_redundant_py,
+        py::arg("db_path"), py::arg("redundancy_model_id"));
+  m.def("append_vectors", &faultflow::append_vectors_py, py::arg("db_path"),
+        py::arg("run_id"), py::arg("source"), py::arg("patterns"),
+        py::arg("start_index"));
+  m.def("mark_fault_redundant", &faultflow::mark_fault_redundant_py,
+        py::arg("db_path"), py::arg("fault_id"), py::arg("redundancy_model_id"));
+  m.def("complete_run_with_atpg", &faultflow::complete_run_with_atpg_py,
+        py::arg("db_path"), py::arg("run_id"), py::arg("coverage_percent"),
+        py::arg("terminal_reason"), py::arg("rounds"), py::arg("sat"),
+        py::arg("unsat"), py::arg("timeout"), py::arg("unknown"),
+        py::arg("rejected"), py::arg("generated"), py::arg("accepted"));
+  m.def("update_run_vector_count", &faultflow::update_run_vector_count_py,
+        py::arg("db_path"), py::arg("run_id"), py::arg("vector_count"));
 }
