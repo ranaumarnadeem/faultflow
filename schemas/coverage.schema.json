@@ -52,6 +52,7 @@
         "denominator",
         "detected",
         "undetected",
+        "redundant",
         "collapsed",
         "excluded_blackbox",
         "excluded_clock",
@@ -64,6 +65,7 @@
         "denominator": { "type": "integer", "minimum": 1 },
         "detected": { "type": "integer", "minimum": 0 },
         "undetected": { "type": "integer", "minimum": 0 },
+        "redundant": { "type": "integer", "minimum": 0 },
         "collapsed": { "type": "integer", "minimum": 0 },
         "excluded_blackbox": { "type": "integer", "minimum": 0 },
         "excluded_clock": { "type": "integer", "minimum": 0 },
@@ -88,7 +90,20 @@
         "vector_count": { "type": "integer", "minimum": 0 },
         "atpg_generation_seconds": { "type": "number", "minimum": 0 },
         "fault_simulation_seconds": { "type": "number", "minimum": 0 },
-        "total_sim_seconds": { "type": "number", "minimum": 0 }
+        "total_sim_seconds": { "type": "number", "minimum": 0 },
+        "coverage": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "atpg_terminal_reason": {
+          "type": ["string", "null"],
+          "enum": ["COMPLETE", "THRESHOLD_MET", "STALLED", "MAX_ROUNDS", null]
+        },
+        "atpg_rounds": { "type": "integer", "minimum": 0 },
+        "atpg_sat": { "type": "integer", "minimum": 0 },
+        "atpg_unsat": { "type": "integer", "minimum": 0 },
+        "atpg_timeout": { "type": "integer", "minimum": 0 },
+        "atpg_unknown": { "type": "integer", "minimum": 0 },
+        "atpg_rejected_candidates": { "type": "integer", "minimum": 0 },
+        "atpg_generated_vectors": { "type": "integer", "minimum": 0 },
+        "atpg_accepted_vectors": { "type": "integer", "minimum": 0 }
       }
     },
     "per_node": {
