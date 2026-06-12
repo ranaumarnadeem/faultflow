@@ -154,7 +154,11 @@ def _port_name_for_net(path: Path, top: str, net_id: int, direction: str) -> str
 
 
 def _load_core() -> Any | None:
+    repo_root = Path(__file__).resolve().parents[2]
     candidates = [
+        repo_root / "build/src/core",
+        repo_root / "build",
+        repo_root,
         Path("build/src/core"),
         Path("build"),
         Path("."),
@@ -1204,14 +1208,22 @@ class Runner:
             run = conn.execute("""
                 SELECT atpg_terminal_reason, atpg_rounds, atpg_sat, atpg_unsat,
                        atpg_timeout, atpg_unknown, atpg_rejected_candidates,
-                       atpg_generated_vectors, atpg_accepted_vectors
+                       atpg_generated_vectors, atpg_accepted_vectors,
+                       atpg_generation_seconds, fault_simulation_seconds,
+                       total_sim_seconds
                 FROM runs
                 ORDER BY id DESC
                 LIMIT 1
                 """).fetchone()
             atpg_note = ""
             if run is not None:
+                atpg_seconds = float(run["atpg_generation_seconds"] or 0.0)
+                fault_sim_seconds = float(run["fault_simulation_seconds"] or 0.0)
+                total_sim_seconds = float(run["total_sim_seconds"] or 0.0)
                 atpg_note = (
+                    f" atpg_seconds={atpg_seconds:.3f}"
+                    f" fault_sim_seconds={fault_sim_seconds:.3f}"
+                    f" total_sim_seconds={total_sim_seconds:.3f}"
                     f" atpg_terminal={run['atpg_terminal_reason'] or 'n/a'}"
                     f" rounds={run['atpg_rounds']}"
                     f" sat={run['atpg_sat']} unsat={run['atpg_unsat']}"

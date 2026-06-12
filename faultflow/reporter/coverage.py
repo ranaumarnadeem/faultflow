@@ -215,6 +215,7 @@ def write_reports(
         f"atpg_unsat:          {run.get('atpg_unsat', 0)}",
         f"atpg_timeout:        {run.get('atpg_timeout', 0)}",
         f"atpg_unknown:        {run.get('atpg_unknown', 0)}",
+        f"atpg_rejected:       {run.get('atpg_rejected_candidates', 0)}",
         "",
         "policy:",
         f"unsupported_cells:   {_policy_text(report, 'unsupported_cells')}",
