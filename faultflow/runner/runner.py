@@ -288,20 +288,24 @@ class Runner:
     def _write_fingerprint(
         self, conn: sqlite3.Connection, fp: dict[str, object]
     ) -> None:
+        from faultflow.runner.progressive_atpg import redundancy_model_id
+
+        payload = dict(fp)
+        payload["redundancy_model_id"] = redundancy_model_id(payload)
         conn.execute("DELETE FROM design_fingerprint")
         conn.execute(
             """
             INSERT INTO design_fingerprint (
               id, top, netlist_hash, cell_lib_hash, config_hash, template_hash,
               yosys_version, faultflow_version, collapsing, unsupported_cells,
-              include_clock_faults, include_reset_faults
+              include_clock_faults, include_reset_faults, redundancy_model_id
             ) VALUES (
               1, :top, :netlist_hash, :cell_lib_hash, :config_hash, :template_hash,
               :yosys_version, :faultflow_version, :collapsing, :unsupported_cells,
-              :include_clock_faults, :include_reset_faults
+              :include_clock_faults, :include_reset_faults, :redundancy_model_id
             )
             """,
-            fp,
+            payload,
         )
         conn.commit()
 
@@ -901,24 +905,6 @@ class Runner:
             )
         return core
 
-    def _native_vectors(self, netlist: Path) -> VectorSet:
-        core = self._core()
-        raw_vectors = list(
-            core.native_atpg_vectors(
-                str(netlist),
-                str(self.cfg.cell_lib),
-                self.cfg.simulation.unsupported_cells,
-                self.cfg.atpg.random_vectors,
-                self.cfg.atpg.sat_conflict_limit,
-                self.cfg.atpg.max_sat_vectors,
-                self.cfg.fault_model.include_clock_faults,
-                self.cfg.fault_model.include_reset_faults,
-                self.cfg.fault_model.collapsing,
-            )
-        )
-        input_order = _port_names(netlist, self.cfg.top, "input")
-        return VectorSet("native_sat_atpg", input_order, raw_vectors)
-
     def _external_vectors(self, ext: Path, netlist: Path) -> tuple[VectorSet, Path]:
         if ext.suffix != ".test":
             raise RunnerError("--ext requires a .test file")
@@ -1124,22 +1110,14 @@ class Runner:
         clean: bool = False,
         verify: bool | None = None,
         ext: Path | None = None,
+        max_rounds: int | None = None,
+        target_coverage: float | None = None,
     ) -> str:
         total_start = time.perf_counter()
         self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
         cleaned = self._clean_db() if clean else 0
         removed = self._purge_transients() if purge else 0
         netlist = self._find_netlist()
-        atpg_start = time.perf_counter()
-        if ext is not None:
-            vectors, sidecar = self._external_vectors(ext, netlist)
-            vector_source = f"external:{ext}"
-            atpg_seconds = 0.0
-        else:
-            vectors = self._native_vectors(netlist)
-            sidecar = self.cfg.output_dir / "native_sat_atpg"
-            vector_source = "native_sat_atpg"
-            atpg_seconds = time.perf_counter() - atpg_start
         verify_enabled = self.cfg.simulation.verify if verify is None else verify
         verified_outputs: list[dict[str, bool]] | None = None
 
@@ -1149,30 +1127,56 @@ class Runner:
             if self._stored_fingerprint(conn) is None:
                 self._write_fingerprint(conn, fp)
 
-        if verify_enabled:
-            if ext is None:
-                sidecar, _ = self._find_order_sidecar()
-            verified_outputs = self._run_verification(
-                netlist, sidecar, vectors, vectors.input_order
+        if ext is not None:
+            vectors, sidecar = self._external_vectors(ext, netlist)
+            vector_source = f"external:{ext}"
+            atpg_seconds = 0.0
+            if verify_enabled:
+                verified_outputs = self._run_verification(
+                    netlist, sidecar, vectors, vectors.input_order
+                )
+            sim_start = time.perf_counter()
+            sim_result = self._simulate_with_core(netlist, vectors, vector_source)
+            fault_sim_seconds = time.perf_counter() - sim_start
+            if verified_outputs is not None:
+                run_id = sim_result["run_id"]
+                if not isinstance(run_id, (int, str)):
+                    raise RunnerError(
+                        "C++ simulation result did not include a valid run_id"
+                    )
+                self._write_verified_vectors(int(run_id), vectors, verified_outputs)
+            run_id = int(sim_result["run_id"])
+            atpg_terminal = ""
+        else:
+            from faultflow.runner.progressive_atpg import (
+                redundancy_model_id,
+                run_progressive_native_atpg,
             )
 
-        sim_start = time.perf_counter()
-        sim_result = self._simulate_with_core(netlist, vectors, vector_source)
-        fault_sim_seconds = time.perf_counter() - sim_start
-        if verified_outputs is not None:
-            run_id = sim_result["run_id"]
-            if not isinstance(run_id, (int, str)):
-                raise RunnerError(
-                    "C++ simulation result did not include a valid run_id"
+            with self._db() as conn:
+                fp = self._fingerprint(netlist)
+                model_id = redundancy_model_id(fp)
+            vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
+                run_progressive_native_atpg(
+                    self.cfg,
+                    netlist,
+                    model_id,
+                    max_rounds=max_rounds,
+                    target_coverage=target_coverage,
                 )
-            self._write_verified_vectors(int(run_id), vectors, verified_outputs)
-        run_id = sim_result["run_id"]
-        if not isinstance(run_id, (int, str)):
-            raise RunnerError("C++ simulation result did not include a valid run_id")
+            )
+            sidecar = self.cfg.output_dir / "native_sat_atpg"
+            vector_source = "native_sat_atpg"
+            atpg_terminal = atpg_stats.terminal_reason
+            if verify_enabled:
+                sidecar, _ = self._find_order_sidecar()
+                verified_outputs = self._run_verification(
+                    netlist, sidecar, vectors, vectors.input_order
+                )
+                self._write_verified_vectors(run_id, vectors, verified_outputs)
+
         total_seconds = time.perf_counter() - total_start
-        self._write_run_timings(
-            int(run_id), atpg_seconds, fault_sim_seconds, total_seconds
-        )
+        self._write_run_timings(run_id, atpg_seconds, fault_sim_seconds, total_seconds)
         mode = "c++"
 
         with self._db() as conn:
@@ -1182,12 +1186,13 @@ class Runner:
 
         purge_note = f" purged_transients={removed}" if purge else ""
         clean_note = f" cleaned_db_files={cleaned}" if clean else ""
+        terminal_note = f" atpg_terminal={atpg_terminal}" if ext is None else ""
         return (
             f"sim complete top={self.cfg.top} mode={mode} vectors={vectors.count} "
             f"source={vector_source} sidecar={sidecar} "
             f"coverage={report['summary']['coverage_percent']:.3f}% "
             f"atpg_seconds={atpg_seconds:.3f} "
-            f"fault_sim_seconds={fault_sim_seconds:.3f} "
+            f"fault_sim_seconds={fault_sim_seconds:.3f}{terminal_note} "
             f"report={txt_path} json={json_path}{purge_note}{clean_note}"
         )
 
@@ -1196,11 +1201,31 @@ class Runner:
             data = summary(conn)
             cov = data["coverage_percent"]
             cov_text = "n/a" if cov is None else f"{cov:.3f}%"
+            run = conn.execute("""
+                SELECT atpg_terminal_reason, atpg_rounds, atpg_sat, atpg_unsat,
+                       atpg_timeout, atpg_unknown, atpg_rejected_candidates,
+                       atpg_generated_vectors, atpg_accepted_vectors
+                FROM runs
+                ORDER BY id DESC
+                LIMIT 1
+                """).fetchone()
+            atpg_note = ""
+            if run is not None:
+                atpg_note = (
+                    f" atpg_terminal={run['atpg_terminal_reason'] or 'n/a'}"
+                    f" rounds={run['atpg_rounds']}"
+                    f" sat={run['atpg_sat']} unsat={run['atpg_unsat']}"
+                    f" timeout={run['atpg_timeout']} unknown={run['atpg_unknown']}"
+                    f" rejected={run['atpg_rejected_candidates']}"
+                    f" generated={run['atpg_generated_vectors']}"
+                    f" accepted={run['atpg_accepted_vectors']}"
+                )
             return (
                 f"top={self.cfg.top} coverage={cov_text} "
                 f"detected={data['detected']} denominator={data['denominator']} "
-                f"undetected={data['undetected']} collapsed={data['collapsed']} "
+                f"undetected={data['undetected']} redundant={data.get('redundant', 0)} "
+                f"collapsed={data['collapsed']} "
                 f"excluded_blackbox={data['excluded_blackbox']} "
                 f"excluded_clock={data['excluded_clock']} "
-                f"excluded_reset={data['excluded_reset']}"
+                f"excluded_reset={data['excluded_reset']}{atpg_note}"
             )

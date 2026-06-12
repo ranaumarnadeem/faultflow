@@ -86,7 +86,10 @@ def _undetected_faults(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 def _latest_run(conn: sqlite3.Connection) -> dict[str, Any]:
     row = conn.execute("""
         SELECT id, vector_source, vector_count, atpg_generation_seconds,
-               fault_simulation_seconds, total_sim_seconds
+               fault_simulation_seconds, total_sim_seconds, coverage,
+               atpg_terminal_reason, atpg_rounds, atpg_sat, atpg_unsat,
+               atpg_timeout, atpg_unknown, atpg_rejected_candidates,
+               atpg_generated_vectors, atpg_accepted_vectors
         FROM runs
         ORDER BY id DESC
         LIMIT 1
@@ -124,6 +127,7 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         "denominator",
         "detected",
         "undetected",
+        "redundant",
         "collapsed",
         "excluded_blackbox",
         "excluded_clock",
@@ -148,6 +152,7 @@ def write_reports(
         raise CoverageError("denominator is zero")
     invariant = (
         data["denominator"]
+        + data.get("redundant", 0)
         + data["collapsed"]
         + data["excluded_blackbox"]
         + data["excluded_clock"]
@@ -190,6 +195,7 @@ def write_reports(
         f"denominator:         {data['denominator']}",
         f"detected:            {data['detected']}",
         f"undetected:          {data['undetected']}",
+        f"redundant:           {data.get('redundant', 0)}",
         f"collapsed:           {data['collapsed']}",
         f"excluded_blackbox:   {data['excluded_blackbox']}",
         f"excluded_clock:      {data['excluded_clock']}",
@@ -203,6 +209,12 @@ def write_reports(
         "fault_sim_seconds:   "
         f"{float(run.get('fault_simulation_seconds', 0.0)):.3f}",
         "total_sim_seconds:   " f"{float(run.get('total_sim_seconds', 0.0)):.3f}",
+        f"atpg_terminal:       {run.get('atpg_terminal_reason', '') or 'n/a'}",
+        f"atpg_rounds:         {run.get('atpg_rounds', 0)}",
+        f"atpg_sat:            {run.get('atpg_sat', 0)}",
+        f"atpg_unsat:          {run.get('atpg_unsat', 0)}",
+        f"atpg_timeout:        {run.get('atpg_timeout', 0)}",
+        f"atpg_unknown:        {run.get('atpg_unknown', 0)}",
         "",
         "policy:",
         f"unsupported_cells:   {_policy_text(report, 'unsupported_cells')}",

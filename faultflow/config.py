@@ -62,7 +62,8 @@ class AtpgConfig:
     output: Path = Path("atpg.test")
     random_vectors: int = 64
     sat_conflict_limit: int = 100000
-    max_sat_vectors: int = 10000
+    max_rounds: int = 20
+    sat_timeout_seconds: int = 10
 
 
 @dataclass(frozen=True)
@@ -175,7 +176,8 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             output=_path(parser, "atpg", "output", f"{top}atpg.test"),
             random_vectors=_int(parser, "atpg", "random_vectors", 64),
             sat_conflict_limit=_int(parser, "atpg", "sat_conflict_limit", 100000),
-            max_sat_vectors=_int(parser, "atpg", "max_sat_vectors", 10000),
+            max_rounds=_int(parser, "atpg", "max_rounds", 20),
+            sat_timeout_seconds=_int(parser, "atpg", "sat_timeout_seconds", 10),
         ),
         report=ReportConfig(
             output=_path(parser, "report", "output", "coverage_report.json"),

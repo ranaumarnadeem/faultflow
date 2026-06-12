@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA = """
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 
 CREATE TABLE IF NOT EXISTS design_fingerprint (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS design_fingerprint (
     unsupported_cells TEXT NOT NULL,
     include_clock_faults INTEGER NOT NULL,
     include_reset_faults INTEGER NOT NULL,
+    redundancy_model_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -34,7 +35,16 @@ CREATE TABLE IF NOT EXISTS runs (
     atpg_generation_seconds REAL NOT NULL DEFAULT 0.0,
     fault_simulation_seconds REAL NOT NULL DEFAULT 0.0,
     total_sim_seconds REAL NOT NULL DEFAULT 0.0,
-    coverage REAL
+    coverage REAL,
+    atpg_terminal_reason TEXT,
+    atpg_rounds INTEGER NOT NULL DEFAULT 0,
+    atpg_sat INTEGER NOT NULL DEFAULT 0,
+    atpg_unsat INTEGER NOT NULL DEFAULT 0,
+    atpg_timeout INTEGER NOT NULL DEFAULT 0,
+    atpg_unknown INTEGER NOT NULL DEFAULT 0,
+    atpg_rejected_candidates INTEGER NOT NULL DEFAULT 0,
+    atpg_generated_vectors INTEGER NOT NULL DEFAULT 0,
+    atpg_accepted_vectors INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS vectors (
@@ -64,6 +74,7 @@ CREATE TABLE IF NOT EXISTS faults (
     collapsed_to INTEGER,
     collapsed_into INTEGER,
     detected_by_vector INTEGER,
+    redundancy_model_id TEXT,
     UNIQUE(compiled_net_index, fault_type)
 );
 
@@ -99,6 +110,17 @@ MIGRATIONS = [
     ("runs", "atpg_generation_seconds", "REAL NOT NULL DEFAULT 0.0"),
     ("runs", "fault_simulation_seconds", "REAL NOT NULL DEFAULT 0.0"),
     ("runs", "total_sim_seconds", "REAL NOT NULL DEFAULT 0.0"),
+    ("design_fingerprint", "redundancy_model_id", "TEXT NOT NULL DEFAULT ''"),
+    ("faults", "redundancy_model_id", "TEXT"),
+    ("runs", "atpg_terminal_reason", "TEXT"),
+    ("runs", "atpg_rounds", "INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "atpg_sat", "INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "atpg_unsat", "INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "atpg_timeout", "INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "atpg_unknown", "INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "atpg_rejected_candidates", "INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "atpg_generated_vectors", "INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "atpg_accepted_vectors", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -129,12 +151,14 @@ def summary(conn: sqlite3.Connection) -> dict[str, Any]:
     row = conn.execute("""
         SELECT
           COUNT(*) AS total_raw_faults,
-          SUM(CASE WHEN exclusion = 'none' AND collapsed_into IS NULL THEN 1 ELSE 0 END)
-            AS denominator,
+          SUM(CASE WHEN exclusion = 'none' AND collapsed_into IS NULL
+                    AND status != 'redundant' THEN 1 ELSE 0 END) AS denominator,
           SUM(CASE WHEN status = 'detected' AND exclusion = 'none'
                     AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS detected,
           SUM(CASE WHEN status = 'undetected' AND exclusion = 'none'
                     AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS undetected,
+          SUM(CASE WHEN status = 'redundant' AND exclusion = 'none'
+                    AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS redundant,
           SUM(CASE WHEN collapsed_into IS NOT NULL THEN 1 ELSE 0 END) AS collapsed,
           SUM(CASE WHEN exclusion = 'blackbox' THEN 1 ELSE 0 END) AS excluded_blackbox,
           SUM(CASE WHEN exclusion = 'clock' THEN 1 ELSE 0 END) AS excluded_clock,

@@ -40,6 +40,19 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="External .test vectors; requires a same-stem .bench sidecar",
     )
+    sim.add_argument(
+        "--max",
+        type=int,
+        metavar="ROUNDS",
+        help="Maximum progressive ATPG rounds (default: [atpg] max_rounds or 20)",
+    )
+    sim.add_argument(
+        "-t",
+        dest="target_coverage",
+        type=float,
+        metavar="PCT",
+        help="Target coverage percent to stop ATPG (default: [report] threshold)",
+    )
 
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
@@ -109,17 +122,23 @@ def main(argv: list[str] | None = None) -> int:
                 if args.verify is not None
                 else None
             )
+            if args.max is not None and args.max < 1:
+                parser.error("--max must be >= 1")
+            if args.target_coverage is not None and not (
+                0.0 < args.target_coverage <= 100.0
+            ):
+                parser.error("-t must be in (0, 100]")
+            sim_kwargs = {
+                "purge": args.purge,
+                "clean": args.clean,
+                "verify": verify,
+                "max_rounds": args.max,
+                "target_coverage": args.target_coverage,
+            }
             if args.ext is None:
-                print(runner.sim(purge=args.purge, clean=args.clean, verify=verify))
+                print(runner.sim(**sim_kwargs))
             else:
-                print(
-                    runner.sim(
-                        purge=args.purge,
-                        clean=args.clean,
-                        verify=verify,
-                        ext=args.ext,
-                    )
-                )
+                print(runner.sim(**sim_kwargs, ext=args.ext))
         elif args.command == "status":
             print(runner.status())
         elif args.command == "scan":
