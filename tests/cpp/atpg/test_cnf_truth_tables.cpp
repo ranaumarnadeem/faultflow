@@ -90,4 +90,34 @@ TEST_CASE("CNF truth tables wave 3 Sky130 lowered primitives", "[atpg][cnf][sky1
   check_cnf_table(GateType::XNOR3, 3, [](const auto& in) {
     return !(in[0] ^ in[1] ^ in[2]);
   });
+  check_cnf_table(GateType::A211OI, 4, [](const auto& in) {
+    return !((in[0] && in[1]) || in[2] || in[3]);
+  });
+  check_cnf_table(GateType::O32AI, 5, [](const auto& in) {
+    return !((in[0] | in[1] | in[2]) & (in[3] | in[4]));
+  });
+  check_cnf_table(GateType::NOR3B, 3, [](const auto& in) {
+    return !in[0] && !in[1] && in[2];
+  });
+  check_cnf_table(GateType::A21OI, 3, [](const auto& in) {
+    return !((in[0] && in[1]) || in[2]);
+  });
+  check_cnf_table(GateType::A22OI, 4, [](const auto& in) {
+    return !((in[0] && in[1]) || (in[2] && in[3]));
+  });
+  check_cnf_table(GateType::O21AI, 3, [](const auto& in) {
+    return !((in[0] || in[1]) && in[2]);
+  });
+  check_cnf_table(GateType::O211AI, 4, [](const auto& in) {
+    return !((in[0] || in[1]) && in[2] && in[3]);
+  });
+  check_cnf_table(GateType::O31AI, 4, [](const auto& in) {
+    return !((in[0] || in[1] || in[2]) && in[3]);
+  });
+  check_cnf_table(GateType::NOR2B, 2, [](const auto& in) {
+    return !in[0] && in[1];
+  });
+  check_cnf_table(GateType::OR3B, 3, [](const auto& in) {
+    return in[0] || in[1] || !in[2];
+  });
 }

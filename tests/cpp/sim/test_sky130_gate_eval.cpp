@@ -58,4 +58,34 @@ TEST_CASE("Sky130 primitive truth tables are independently pinned",
   check_table(GateType::XNOR3, 3, [](const auto& in) {
     return !(in[0] ^ in[1] ^ in[2]);
   });
+  check_table(GateType::A211OI, 4, [](const auto& in) {
+    return !((in[0] && in[1]) || in[2] || in[3]);
+  });
+  check_table(GateType::O32AI, 5, [](const auto& in) {
+    return !((in[0] | in[1] | in[2]) & (in[3] | in[4]));
+  });
+  check_table(GateType::NOR3B, 3, [](const auto& in) {
+    return !in[0] && !in[1] && in[2];
+  });
+  check_table(GateType::A21OI, 3, [](const auto& in) {
+    return !((in[0] && in[1]) || in[2]);
+  });
+  check_table(GateType::A22OI, 4, [](const auto& in) {
+    return !((in[0] && in[1]) || (in[2] && in[3]));
+  });
+  check_table(GateType::O21AI, 3, [](const auto& in) {
+    return !((in[0] || in[1]) && in[2]);
+  });
+  check_table(GateType::O211AI, 4, [](const auto& in) {
+    return !((in[0] || in[1]) && in[2] && in[3]);
+  });
+  check_table(GateType::O31AI, 4, [](const auto& in) {
+    return !((in[0] || in[1] || in[2]) && in[3]);
+  });
+  check_table(GateType::NOR2B, 2, [](const auto& in) {
+    return !in[0] && in[1];
+  });
+  check_table(GateType::OR3B, 3, [](const auto& in) {
+    return in[0] || in[1] || !in[2];
+  });
 }
