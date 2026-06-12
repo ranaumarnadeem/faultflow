@@ -1,0 +1,223 @@
+#include "atpg/progressive_atpg.hpp"
+
+#include <random>
+#include <stdexcept>
+
+#include "atpg/fault_solver.hpp"
+#include "atpg/sat_atpg.hpp"
+#include "db/sqlite_store.hpp"
+#include "fault/collapser/fault_collapser.hpp"
+#include "fault/enumerator/fault_enumerator.hpp"
+#include "ir/compiled_graph/compiled_graph.hpp"
+#include "ir/normalized_graph/cell_map.hpp"
+#include "ir/normalized_graph/normalized_graph.hpp"
+#include "ir/parsed_graph/parsed_graph.hpp"
+#include "sim/engine/bit_parallel_sim.hpp"
+#include "sim/golden_ref/golden_ref_sim.hpp"
+#include "sim/state/test_vector.hpp"
+
+namespace faultflow::atpg {
+namespace {
+
+struct GraphContext {
+  ParsedGraph parsed;
+  NormalizedGraph ng;
+  CompiledSimGraph cg;
+};
+
+GraphContext load_graph(const std::string& json_path,
+                        const std::string& cell_map_path,
+                        const std::string& unsupported_policy) {
+  GraphContext ctx;
+  ctx.parsed = ParsedGraph::from_file(json_path);
+  const CellMap cell_map = CellMap::load(cell_map_path);
+  ctx.ng = NormalizedGraph::from_parsed(ctx.parsed, cell_map, unsupported_policy);
+  ctx.cg = GraphCompiler::compile(ctx.ng);
+  if (!ctx.cg.ff_nodes.empty()) {
+    throw std::runtime_error("progressive native ATPG is combinational-only");
+  }
+  return ctx;
+}
+
+std::vector<CompactFault> enumerate_all(
+    const NormalizedGraph& ng, const CompiledSimGraph& cg, bool include_clock_faults,
+    bool include_reset_faults, bool collapsing) {
+  EnumeratorOptions options;
+  options.include_clock_faults = include_clock_faults;
+  options.include_reset_faults = include_reset_faults;
+  std::vector<CompactFault> faults = enumerate_faults(ng, cg, options);
+  if (collapsing) {
+    faults = collapse_primitive_faults(ng, cg, std::move(faults));
+  }
+  for (auto& fault : faults) {
+    if (fault.exclusion != FaultExclusion::NONE ||
+        fault.collapsed_into != UINT32_MAX) {
+      fault.status = FaultStatus::UNDETECTED;
+    } else {
+      fault.status = FaultStatus::UNDETECTED;
+    }
+  }
+  return faults;
+}
+
+CompactFault fault_from_record(const db::FaultRecord& rec) {
+  CompactFault fault;
+  fault.net_index = rec.compiled_net_index;
+  fault.type = rec.type;
+  fault.status = rec.status;
+  fault.exclusion = rec.exclusion;
+  fault.collapsed_into = rec.collapsed_into;
+  return fault;
+}
+
+TestVector vector_from_map(const ParsedGraph& parsed,
+                           const std::map<std::string, bool>& values,
+                           const std::vector<std::string>& input_order) {
+  TestVector vec;
+  for (const auto& input : input_order) {
+    const auto it = values.find(input);
+    if (it == values.end()) {
+      throw std::runtime_error("missing PI in vector: " + input);
+    }
+    vec.inputs[parsed.net_id_by_name(input)] = it->second;
+  }
+  return vec;
+}
+
+std::string solve_result_name(SatSolveResult result) {
+  switch (result) {
+    case SatSolveResult::SAT:
+      return "SAT";
+    case SatSolveResult::UNSAT:
+      return "UNSAT";
+    case SatSolveResult::TIMEOUT:
+      return "TIMEOUT";
+    case SatSolveResult::UNKNOWN:
+      return "UNKNOWN";
+  }
+  return "UNKNOWN";
+}
+
+}  // namespace
+
+std::vector<std::map<std::string, bool>> generate_random_vectors(
+    const std::vector<std::string>& input_order, int count, uint64_t seed) {
+  std::vector<std::map<std::string, bool>> vectors;
+  std::mt19937_64 rng(seed);
+  vectors.reserve(static_cast<size_t>(count));
+  for (int i = 0; i < count; ++i) {
+    std::map<std::string, bool> vector;
+    for (const auto& input : input_order) {
+      vector[input] = (rng() & 1ULL) != 0;
+    }
+    vectors.push_back(std::move(vector));
+  }
+  return vectors;
+}
+
+void ensure_faults_enumerated(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, bool include_clock_faults,
+    bool include_reset_faults, bool collapsing,
+    const std::string& unsupported_policy) {
+  db::init_database(db_path);
+  if (db::fault_count(db_path) > 0) {
+    return;
+  }
+  const GraphContext ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const std::vector<CompactFault> faults =
+      enumerate_all(ctx.ng, ctx.cg, include_clock_faults, include_reset_faults,
+                    collapsing);
+  db::insert_faults_if_empty(db_path, ctx.ng, ctx.cg, faults);
+}
+
+SolveFaultResult solve_fault_for_db(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::vector<std::string>& blocked_patterns, int conflict_limit,
+    int sat_timeout_seconds, const std::string& unsupported_policy) {
+  const GraphContext ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const db::FaultRecord rec = db::load_fault(db_path, fault_id);
+  if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
+      rec.status != FaultStatus::UNDETECTED) {
+    throw std::runtime_error("fault is not active for SAT ATPG");
+  }
+  const auto pis = ordered_pis(ctx.parsed, ctx.cg);
+  CompactFault fault = fault_from_record(rec);
+
+  SatSolveOptions options;
+  options.conflict_limit = conflict_limit;
+  options.sat_timeout_seconds = sat_timeout_seconds;
+  options.blocked_patterns = blocked_patterns;
+
+  std::map<std::string, bool> vector;
+  const SatSolveResult result =
+      solve_stuck_at_fault(ctx.cg, pis, fault, options, vector);
+
+  SolveFaultResult out;
+  out.result = solve_result_name(result);
+  if (result == SatSolveResult::SAT) {
+    out.vector = std::move(vector);
+  }
+  return out;
+}
+
+bool verify_fault_vector(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::map<std::string, bool>& vector,
+    const std::string& unsupported_policy) {
+  const GraphContext ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const db::FaultRecord rec = db::load_fault(db_path, fault_id);
+  CompactFault fault = fault_from_record(rec);
+  GoldenRefSim golden;
+  const TestVector vec = [&]() {
+    TestVector tv;
+    for (const auto& [name, value] : vector) {
+      tv.inputs[ctx.parsed.net_id_by_name(name)] = value;
+    }
+    return tv;
+  }();
+  return golden.is_detected(ctx.cg, golden.simulate_fault_free(ctx.cg, vec),
+                            golden.simulate_with_fault(ctx.cg, vec, fault));
+}
+
+std::vector<ProgressiveDetection> simulate_incremental(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t run_id,
+    const std::vector<std::map<std::string, bool>>& new_vectors,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
+    const std::string& unsupported_policy) {
+  if (new_vectors.empty() || fault_ids.empty()) {
+    return {};
+  }
+  const GraphContext ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  std::vector<TestVector> vectors;
+  vectors.reserve(new_vectors.size());
+  for (const auto& raw : new_vectors) {
+    vectors.push_back(vector_from_map(ctx.parsed, raw, input_order));
+  }
+
+  BitParallelSim sim;
+  std::vector<ProgressiveDetection> detections;
+  for (int64_t fault_id : fault_ids) {
+    const db::FaultRecord rec = db::load_fault(db_path, fault_id);
+    if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
+        rec.status != FaultStatus::UNDETECTED) {
+      continue;
+    }
+    CompactFault fault = fault_from_record(rec);
+    for (size_t vi = 0; vi < vectors.size(); ++vi) {
+      if (sim.simulate_single_fault(ctx.cg, vectors[vi], fault)) {
+        const int64_t vector_index = vector_start_index + static_cast<int64_t>(vi);
+        db::mark_fault_detected(db_path, run_id, fault_id, vector_index);
+        detections.push_back({fault_id, vector_index});
+        break;
+      }
+    }
+  }
+  return detections;
+}
+
+}  // namespace faultflow::atpg
