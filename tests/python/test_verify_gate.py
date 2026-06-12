@@ -405,9 +405,11 @@ def test_runner_verification_failure_aborts_before_sim(
         report_path = tmp_path / "output" / "demo" / "coverage_report.json"
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text("{}", encoding="utf-8")
-        return report_path, tmp_path / "output" / "demo" / "fault_report.txt", {
-            "summary": {"coverage_percent": 100.0}
-        }
+        return (
+            report_path,
+            tmp_path / "output" / "demo" / "fault_report.txt",
+            {"summary": {"coverage_percent": 100.0}},
+        )
 
     monkeypatch.setattr("faultflow.runner.runner.write_reports", fake_write_reports)
 
