@@ -1,12 +1,34 @@
+import json
 from pathlib import Path
 
+import pytest
+
 from faultflow.cli import main
+import faultflow.runner.runner as runner_mod
 
 
-def test_c17_existing_quaigh_test_flow() -> None:
+@pytest.mark.integration
+@pytest.mark.slow
+def test_c17_native_progressive_sim_flow() -> None:
+    if runner_mod._load_core() is None:
+        pytest.skip("C++ extension _faultflow_core is required")
+    if not Path("tests/benchmarks/iscas85/synth/c17.json").exists():
+        pytest.skip("c17 netlist missing")
+
     cfg = Path("config.ofs.example")
     Path("output/c17/faultflow.sqlite").unlink(missing_ok=True)
 
-    assert main(["sim", "--top", "c17", "-c", str(cfg), "--purge"]) == 0
+    assert main(["sim", "--top", "c17", "-c", str(cfg), "--purge", "--clean"]) == 0
     assert Path("output/c17/fault_report.txt").exists()
-    assert Path("output/c17/coverage_report.json").exists()
+    report_path = Path("output/c17/coverage_report.json")
+    assert report_path.exists()
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["run"]["vector_source"] == "native_sat_atpg"
+    assert report["run"]["atpg_terminal_reason"] in {
+        "COMPLETE",
+        "THRESHOLD_MET",
+        "STALLED",
+        "MAX_ROUNDS",
+    }
+    assert report["run"]["atpg_rounds"] >= 1

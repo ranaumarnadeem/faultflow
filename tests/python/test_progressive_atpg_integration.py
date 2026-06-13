@@ -23,6 +23,7 @@ C17_JSON = ROOT / "tests/benchmarks/iscas85/synth/c17.json"
 C17_BENCH = ROOT / "tests/benchmarks/iscas85/synth/c17.bench"
 C17_TEST = ROOT / "tests/benchmarks/iscas85/synth/c17atpg.test"
 C432_JSON = ROOT / "tests/benchmarks/iscas85/synth/c432.json"
+C499_JSON = ROOT / "tests/benchmarks/iscas85/synth/c499.json"
 CELL_LIB = ROOT / "cells/osu/osu035.json"
 
 
@@ -537,6 +538,72 @@ def test_cli_progressive_sim_writes_atpg_terminal_to_report(
     }
     assert report["run"]["atpg_rounds"] >= 1
     assert report["summary"]["coverage_percent"] == 100.0
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_native_c17_reaches_complete_or_threshold(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    if not C17_JSON.exists():
+        pytest.skip("c17 netlist missing")
+
+    runner = _runner(
+        tmp_path, monkeypatch, top="c17", netlist=C17_JSON, threshold=100.0
+    )
+    runner.init()
+    runner.sim(clean=True, max_rounds=20, target_coverage=100.0)
+
+    report = json.loads(
+        (tmp_path / "output/c17/coverage_report.json").read_text(encoding="utf-8")
+    )
+    assert report["run"]["vector_source"] == "native_sat_atpg"
+    assert report["run"]["atpg_terminal_reason"] in {"COMPLETE", "THRESHOLD_MET"}
+    assert float(report["summary"]["coverage_percent"] or 0.0) >= 100.0
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_native_c499_improves_coverage_with_clean_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    if not C499_JSON.exists():
+        pytest.skip("c499 netlist missing")
+
+    runner = _runner(
+        tmp_path,
+        monkeypatch,
+        top="c499",
+        netlist=C499_JSON,
+        atpg_overrides={"random_vectors": 0},
+        threshold=100.0,
+    )
+    runner.init()
+    runner.sim(clean=True, max_rounds=1, target_coverage=50.0)
+
+    with connect(runner.cfg.db_path) as conn:
+        init_schema(conn)
+        after_random_only = summary(conn)
+
+    runner.sim(max_rounds=10, target_coverage=100.0)
+
+    report = json.loads(
+        (tmp_path / "output/c499/coverage_report.json").read_text(encoding="utf-8")
+    )
+    assert report["run"]["vector_source"] == "native_sat_atpg"
+    assert report["run"]["atpg_terminal_reason"] in {
+        "COMPLETE",
+        "THRESHOLD_MET",
+        "STALLED",
+        "MAX_ROUNDS",
+    }
+    assert float(report["summary"]["coverage_percent"] or 0.0) >= float(
+        after_random_only["coverage_percent"] or 0.0
+    )
 
 
 @pytest.mark.integration

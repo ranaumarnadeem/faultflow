@@ -207,6 +207,129 @@ def test_max_rounds_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
 
 
 @pytest.mark.unit
+def test_verify_fault_candidate_rejects_non_detecting_vector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, netlist = _tiny_inv_cfg(tmp_path, monkeypatch)
+
+    from faultflow.runner import runner as runner_mod
+
+    core = runner_mod._load_core()
+    if core is None:
+        pytest.skip("C++ extension _faultflow_core is required")
+
+    core.ensure_faults_enumerated(
+        str(netlist),
+        str(cfg.cell_lib),
+        str(cfg.db_path),
+        cfg.fault_model.include_clock_faults,
+        cfg.fault_model.include_reset_faults,
+        cfg.fault_model.collapsing,
+        cfg.simulation.unsupported_cells,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        row = conn.execute("""
+            SELECT id
+            FROM faults
+            WHERE net_name = 'Y' AND fault_type = 'sa1' AND status = 'undetected'
+            """).fetchone()
+    assert row is not None
+    fault_id = int(row["id"])
+
+    bad_vector = {"A": False}
+    assert not core.verify_fault_candidate(
+        str(netlist),
+        str(cfg.cell_lib),
+        str(cfg.db_path),
+        fault_id,
+        bad_vector,
+        cfg.simulation.unsupported_cells,
+    )
+
+
+@pytest.mark.unit
+def test_rejected_sat_candidate_increments_stats_and_keeps_fault_undetected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, netlist = _tiny_inv_cfg(tmp_path, monkeypatch)
+    cfg_path = tmp_path / "config.ofs"
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8").replace(
+            "random_vectors = 8", "random_vectors = 0"
+        ),
+        encoding="utf-8",
+    )
+    from faultflow.config import load_config
+
+    cfg = load_config(cfg_path, top="tiny_inv")
+
+    from faultflow.runner import runner as runner_mod
+
+    core = runner_mod._load_core()
+    if core is None:
+        pytest.skip("C++ extension _faultflow_core is required")
+
+    bad_vector = {"A": False}
+    core.ensure_faults_enumerated(
+        str(netlist),
+        str(cfg.cell_lib),
+        str(cfg.db_path),
+        cfg.fault_model.include_clock_faults,
+        cfg.fault_model.include_reset_faults,
+        cfg.fault_model.collapsing,
+        cfg.simulation.unsupported_cells,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        target_row = conn.execute("""
+            SELECT id
+            FROM faults
+            WHERE net_name = 'Y' AND fault_type = 'sa1' AND status = 'undetected'
+            """).fetchone()
+    assert target_row is not None
+    target_fault_id = int(target_row["id"])
+
+    def rejectable_sat_solve(*args: Any, **kwargs: Any) -> dict[str, object]:
+        del kwargs
+        fault_id = int(args[3])
+        if fault_id == target_fault_id:
+            return {"result": "SAT", "vector": bad_vector}
+        return {"result": "TIMEOUT", "vector": {}}
+
+    monkeypatch.setattr(core, "solve_fault_atpg", rejectable_sat_solve)
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+
+    _, stats, run_id, _, _ = run_progressive_native_atpg(
+        cfg, netlist, _model_id(), max_rounds=1, target_coverage=100.0
+    )
+
+    assert stats.sat == 1
+    assert stats.rejected_candidates == 1
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        fault = conn.execute(
+            "SELECT status FROM faults WHERE id = ?",
+            (target_fault_id,),
+        ).fetchone()
+        run = conn.execute(
+            """
+            SELECT atpg_rejected_candidates
+            FROM runs
+            WHERE id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+    assert fault is not None
+    assert fault["status"] == "undetected"
+    assert run is not None
+    assert int(run["atpg_rejected_candidates"]) == 1
+
+
+@pytest.mark.unit
 def test_stalled_when_sat_only_returns_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
