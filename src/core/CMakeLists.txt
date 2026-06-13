@@ -14,6 +14,7 @@ add_library(
   fault/batch/batch_manager.cpp
   db/sqlite_store.cpp
   scan/scan_chain.cpp
+  scan/scan_pattern_sim.cpp
   sim/golden_ref/golden_ref_sim.cpp
   sim/engine/bit_parallel_sim.cpp
   sim/state/test_vector.cpp

@@ -1,7 +1,10 @@
 # config.ofs.example
+# Native SAT ATPG is the default sim path when [atpg] tool = native.
+# --ext foo.test requires a same-stem foo.bench sidecar for PI order.
+# --clean removes output/<top>/faultflow.sqlite and SQLite sidecars only;
+# use --purge to delete transient junk inside output/<top>/.
 
-[design]
-netlist   = design.json
+[design]netlist   = design.json
 top       = c17
 cell_lib  = cells/osu/osu035.json
 liberty   = cells/osu/osu035_stdcells.lib
@@ -21,9 +24,13 @@ verilog_models    = cells/osu/osu035_stdcells.v
 tp_file           =
 
 [atpg]
-tool   = quaigh
-mode   = comb
-output = vectors.yml
+tool               = native
+mode               = comb
+output             = atpg.test
+random_vectors       = 64
+sat_conflict_limit   = 100000
+max_rounds           = 20
+sat_timeout_seconds  = 10
 
 [report]
 output    = coverage_report.json

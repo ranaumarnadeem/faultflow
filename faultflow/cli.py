@@ -28,7 +28,7 @@ def _parser() -> argparse.ArgumentParser:
     sim.add_argument(
         "--clean",
         action="store_true",
-        help="Remove output/<top>/faultflow.sqlite before sim",
+        help="Remove output/<top>/faultflow.sqlite (or faultflow_scan.sqlite with --scan) before sim",
     )
     sim.add_argument(
         "-v",
@@ -47,6 +47,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Maximum progressive ATPG rounds (default: [atpg] max_rounds or 20)",
     )
     sim.add_argument(
+        "--scan",
+        action="store_true",
+        help="Run full-scan stuck-at ATPG on reduced pseudo-PI/PO view",
+    )
+    sim.add_argument(
         "-t",
         dest="target_coverage",
         type=float,
@@ -56,6 +61,11 @@ def _parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
+    status.add_argument(
+        "--scan",
+        action="store_true",
+        help="Read status from output/<top>/faultflow_scan.sqlite",
+    )
 
     scan = sub.add_parser("scan", help="Insert generic scan chains")
     add_common(scan)
@@ -134,13 +144,14 @@ def main(argv: list[str] | None = None) -> int:
                 "verify": verify,
                 "max_rounds": args.max,
                 "target_coverage": args.target_coverage,
+                "scan": args.scan,
             }
             if args.ext is None:
                 print(runner.sim(**sim_kwargs))
             else:
                 print(runner.sim(**sim_kwargs, ext=args.ext))
         elif args.command == "status":
-            print(runner.status())
+            print(runner.status(scan=args.scan))
         elif args.command == "scan":
             run_techmap = args.techmap
             if args.skip_techmap:

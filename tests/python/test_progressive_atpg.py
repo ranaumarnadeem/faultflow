@@ -471,8 +471,9 @@ threshold = 95.0
         ext: Path | None = None,
         max_rounds: int | None = None,
         target_coverage: float | None = None,
+        scan: bool = False,
     ) -> str:
-        del self, purge, clean, verify, ext
+        del self, purge, clean, verify, ext, scan
         captured["max_rounds"] = max_rounds
         captured["target_coverage"] = target_coverage
         return "sim complete"

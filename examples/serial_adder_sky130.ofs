@@ -1,0 +1,34 @@
+[design]
+netlist   = examples/serial_adder.v
+top       = serial_adder
+cell_lib  = cells/sky130/sky130_fd_sc_hd.json
+liberty   = cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib
+yosys_ver = 0.61+129
+
+[fault_model]
+type                 = stuck_at
+collapsing           = false
+include_clock_faults = false
+include_reset_faults = false
+
+[simulation]
+unsupported_cells = fail
+verify            = false
+verify_tool       = iverilog
+verilog_models    = cells/sky130/sky130_fd_sc_hd.v
+
+[atpg]
+tool                 = native
+mode                 = comb
+output               = output/serial_adder/serial_adder.test
+random_vectors       = 64
+max_rounds           = 20
+sat_timeout_seconds  = 10
+
+[scan]
+chains           = 4
+max_chain_length =
+scan_in          = scan_in
+scan_out         = scan_out
+scan_enable      = scan_en
+run_techmap      = true

@@ -30,8 +30,11 @@ from faultflow.scan import (
     run_scan_techmap,
 )
 from faultflow.scan.checks import check_scan_structure
+from faultflow.scan.atpg_view import build_scan_atpg_view
+from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.reports import (
     format_dry_run,
+    hash_file,
     load_manifest,
     manifest_from_result,
     utc_timestamp,
@@ -182,14 +185,15 @@ class Runner:
     def __init__(self, cfg: FaultflowConfig):
         self.cfg = cfg
 
-    def _conn(self) -> sqlite3.Connection:
-        conn = connect(self.cfg.db_path)
+    def _conn(self, scan: bool = False) -> sqlite3.Connection:
+        db_path = self.cfg.scan_db_path if scan else self.cfg.db_path
+        conn = connect(db_path)
         init_schema(conn)
         return conn
 
     @contextmanager
-    def _db(self) -> Iterator[sqlite3.Connection]:
-        conn = self._conn()
+    def _db(self, scan: bool = False) -> Iterator[sqlite3.Connection]:
+        conn = self._conn(scan=scan)
         try:
             yield conn
         finally:
@@ -613,6 +617,7 @@ class Runner:
         output_order: list[str],
         clock_name: str,
         extra_inputs: dict[str, bool] | None = None,
+        cell_map_path: Path | None = None,
     ) -> list[dict[str, bool]]:
         core = _load_core()
         if core is None:
@@ -631,10 +636,11 @@ class Runner:
             low[clock_name] = False
             high[clock_name] = True
             sequences.append([low, high])
+        cell_map = cell_map_path if cell_map_path is not None else self.cfg.cell_lib
         return list(
             core.fault_free_sequence_outputs(
                 str(netlist),
-                str(self.cfg.cell_lib),
+                str(cell_map),
                 sequences,
                 input_order,
                 output_order,
@@ -691,6 +697,7 @@ class Runner:
             output_order,
             clock_name,
             extra_inputs=scan_extra,
+            cell_map_path=resolve_scan_cell_map(self.cfg),
         )
         if original != scanned:
             raise RunnerError(
@@ -730,6 +737,7 @@ class Runner:
             "warnings": warnings,
             "errors": errors,
             "normal_mode": normal_mode,
+            "generic_json_hash": hash_file(Path(str(manifest["generic_json"]))),
         }
         manifest["latest_check"] = latest_check
         write_scan_artifacts(self._scan_dir(), manifest)
@@ -860,13 +868,14 @@ class Runner:
             removed += 1
         return removed
 
-    def _clean_db(self) -> int:
+    def _clean_db(self, scan: bool = False) -> int:
         removed = 0
+        base = self.cfg.scan_db_path if scan else self.cfg.db_path
         for path in [
-            self.cfg.db_path,
-            self.cfg.db_path.with_name(self.cfg.db_path.name + "-wal"),
-            self.cfg.db_path.with_name(self.cfg.db_path.name + "-shm"),
-            self.cfg.db_path.with_name(self.cfg.db_path.name + "-journal"),
+            base,
+            base.with_name(base.name + "-wal"),
+            base.with_name(base.name + "-shm"),
+            base.with_name(base.name + "-journal"),
         ]:
             if path.exists():
                 path.unlink()
@@ -1108,6 +1117,43 @@ class Runner:
         )
         return result.expected_outputs
 
+    def _preflight_sim_scan(self) -> dict[str, object]:
+        manifest_path = self._scan_manifest_path()
+        if not manifest_path.exists():
+            raise RunnerError(
+                f"scan manifest not found: {manifest_path}; run scan first"
+            )
+        manifest = load_manifest(manifest_path)
+        generic_json = Path(str(manifest["generic_json"]))
+        if not generic_json.exists():
+            raise RunnerError(f"generic scanned JSON not found: {generic_json}")
+        actual_hash = hash_file(generic_json)
+        expected_hash = str(manifest.get("generic_json_hash", ""))
+        if actual_hash != expected_hash:
+            raise RunnerError(
+                "generic scanned JSON hash does not match scan_manifest.json"
+            )
+        latest = manifest.get("latest_check")
+        if not isinstance(latest, dict) or latest.get("status") != "PASS":
+            raise RunnerError(
+                "scan-check has not passed; run scan-check before sim --scan"
+            )
+        check_hash = latest.get("generic_json_hash")
+        if check_hash != actual_hash:
+            raise RunnerError(
+                "scan-check is stale for the current generic scanned JSON; "
+                "re-run scan-check"
+            )
+        ineligible = manifest.get("ineligible_ffs", [])
+        if isinstance(ineligible, list) and ineligible:
+            names = ", ".join(
+                sorted(str(item.get("instance", "?")) for item in ineligible if isinstance(item, dict))
+            )
+            raise RunnerError(
+                f"sim --scan requires full scan; ineligible FFs remain: {names}"
+            )
+        return manifest
+
     def sim(
         self,
         purge: bool = False,
@@ -1116,7 +1162,22 @@ class Runner:
         ext: Path | None = None,
         max_rounds: int | None = None,
         target_coverage: float | None = None,
+        scan: bool = False,
     ) -> str:
+        if scan and ext is not None:
+            raise RunnerError(
+                "External vectors have no scan pseudo-PI semantics; --scan --ext "
+                "is not meaningful in this architecture. A scan-aware vector "
+                "format would be required."
+            )
+        if scan:
+            return self._sim_scan(
+                purge=purge,
+                clean=clean,
+                max_rounds=max_rounds,
+                target_coverage=target_coverage,
+            )
+
         total_start = time.perf_counter()
         self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
         cleaned = self._clean_db() if clean else 0
@@ -1200,8 +1261,100 @@ class Runner:
             f"report={txt_path} json={json_path}{purge_note}{clean_note}"
         )
 
-    def status(self) -> str:
-        with self._db() as conn:
+    def _sim_scan(
+        self,
+        *,
+        purge: bool = False,
+        clean: bool = False,
+        max_rounds: int | None = None,
+        target_coverage: float | None = None,
+    ) -> str:
+        from faultflow.runner.progressive_atpg import (
+            redundancy_model_id,
+            run_progressive_native_atpg,
+        )
+
+        total_start = time.perf_counter()
+        self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
+        cleaned = self._clean_db(scan=True) if clean else 0
+        removed = self._purge_transients() if purge else 0
+        from faultflow.scan.verify import make_tier_b_verifier
+
+        manifest = self._preflight_sim_scan()
+        generic_json = Path(str(manifest["generic_json"]))
+        view, pseudo_port_map = build_scan_atpg_view(
+            _load_json_object(generic_json), manifest
+        )
+        atpg_view_path = self.cfg.output_dir / "scan_atpg_view.json"
+        pseudo_map_path = self.cfg.output_dir / "scan_pseudo_port_map.json"
+        atpg_view_path.write_text(
+            json.dumps(view, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        pseudo_map_path.write_text(
+            json.dumps(pseudo_port_map, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        netlist = atpg_view_path
+        reduced_output_order = _port_names(netlist, self.cfg.top, "output")
+        tier_b = make_tier_b_verifier(
+            self.cfg,
+            manifest,
+            generic_json,
+            pseudo_port_map,
+            reduced_output_order,
+        )
+
+        with self._db(scan=True) as conn:
+            fp = self._fingerprint(netlist)
+            self._check_fingerprint(conn, fp)
+            if self._stored_fingerprint(conn) is None:
+                self._write_fingerprint(conn, fp)
+
+        with self._db(scan=True) as conn:
+            model_id = redundancy_model_id(self._fingerprint(netlist))
+
+        vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
+            run_progressive_native_atpg(
+                self.cfg,
+                netlist,
+                model_id,
+                max_rounds=max_rounds,
+                target_coverage=target_coverage,
+                db_path=self.cfg.scan_db_path,
+                vector_source="scan_native_sat_atpg",
+                on_vector_accepted=tier_b,
+            )
+        )
+        total_seconds = time.perf_counter() - total_start
+        self._write_run_timings(run_id, atpg_seconds, fault_sim_seconds, total_seconds)
+
+        scan_context = {
+            "pseudo_port_map": pseudo_port_map,
+            "manifest_hash": str(manifest.get("generic_json_hash", "")),
+        }
+        with self._db(scan=True) as conn:
+            json_path, txt_path, report = write_reports(
+                conn,
+                self.cfg.output_dir,
+                self.cfg.top,
+                scan_context=scan_context,
+            )
+
+        purge_note = f" purged_transients={removed}" if purge else ""
+        clean_note = f" cleaned_db_files={cleaned}" if clean else ""
+        return (
+            f"sim complete top={self.cfg.top} mode=scan vectors={vectors.count} "
+            f"source=scan_native_sat_atpg sidecar={atpg_view_path} "
+            f"coverage={report['summary']['coverage_percent']:.3f}% "
+            f"atpg_seconds={atpg_seconds:.3f} "
+            f"fault_sim_seconds={fault_sim_seconds:.3f} "
+            f"atpg_terminal={atpg_stats.terminal_reason} "
+            f"report={txt_path} json={json_path}{purge_note}{clean_note}"
+        )
+
+    def status(self, scan: bool = False) -> str:
+        with self._db(scan=scan) as conn:
             data = summary(conn)
             cov = data["coverage_percent"]
             cov_text = "n/a" if cov is None else f"{cov:.3f}%"
@@ -1233,7 +1386,7 @@ class Runner:
                     f" accepted={run['atpg_accepted_vectors']}"
                 )
             return (
-                f"top={self.cfg.top} coverage={cov_text} "
+                f"top={self.cfg.top} scan_mode={str(scan).lower()} coverage={cov_text} "
                 f"detected={data['detected']} denominator={data['denominator']} "
                 f"undetected={data['undetected']} redundant={data.get('redundant', 0)} "
                 f"collapsed={data['collapsed']} "

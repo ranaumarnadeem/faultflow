@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,41 @@ def _append_unique_vectors(
     return accepted
 
 
+def _accept_and_simulate(
+    core: Any,
+    *,
+    json_path: str,
+    cell_map_path: str,
+    db_path: str,
+    run_id: int,
+    vector_source: str,
+    vector: dict[str, bool],
+    input_order: list[str],
+    fault_ids: list[int],
+    vector_index: int,
+    unsupported: str,
+    on_vector_accepted: Callable[[dict[str, bool], int | None], None] | None,
+) -> None:
+    fault_id = fault_ids[0] if len(fault_ids) == 1 else None
+    # Tier B must run before any DB write for this vector.
+    if on_vector_accepted is not None:
+        on_vector_accepted(vector, fault_id)
+    key = pattern_key(vector, input_order)
+    core.append_vectors(db_path, run_id, vector_source, [key], vector_index)
+    core.simulate_incremental(
+        json_path,
+        cell_map_path,
+        db_path,
+        run_id,
+        [vector],
+        input_order,
+        fault_ids,
+        vector_index,
+        unsupported,
+    )
+    core.update_run_vector_count(db_path, run_id, vector_index)
+
+
 def run_progressive_native_atpg(
     cfg: FaultflowConfig,
     netlist: Path,
@@ -92,6 +128,10 @@ def run_progressive_native_atpg(
     *,
     max_rounds: int | None = None,
     target_coverage: float | None = None,
+    db_path: Path | None = None,
+    cell_map_path: Path | None = None,
+    vector_source: str = "native_sat_atpg",
+    on_vector_accepted: Callable[[dict[str, bool], int | None], None] | None = None,
 ) -> tuple[VectorSet, AtpgStats, int, float, float]:
     from faultflow.runner.runner import _load_core, _port_names
 
@@ -112,21 +152,21 @@ def run_progressive_native_atpg(
         raise RunnerError("target coverage must be in (0, 100]")
 
     input_order = _port_names(netlist, cfg.top, "input")
-    db_path = str(cfg.db_path)
+    effective_db_path = str(db_path if db_path is not None else cfg.db_path)
     json_path = str(netlist)
-    cell_map_path = str(cfg.cell_lib)
+    effective_cell_map = str(cell_map_path if cell_map_path is not None else cfg.cell_lib)
     unsupported = cfg.simulation.unsupported_cells
 
     core.ensure_faults_enumerated(
         json_path,
-        cell_map_path,
-        db_path,
+        effective_cell_map,
+        effective_db_path,
         cfg.fault_model.include_clock_faults,
         cfg.fault_model.include_reset_faults,
         cfg.fault_model.collapsing,
         unsupported,
     )
-    core.invalidate_stale_redundant(db_path, redundancy_model)
+    core.invalidate_stale_redundant(effective_db_path, redundancy_model)
 
     stats = AtpgStats()
     vectors: list[dict[str, bool]] = []
@@ -136,22 +176,23 @@ def run_progressive_native_atpg(
     atpg_start = time.perf_counter()
     sim_start = time.perf_counter()
 
-    with connect(db_path) as conn:
+    with connect(effective_db_path) as conn:
         init_schema(conn)
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO runs(status, vector_source, vector_count)
-            VALUES ('running', 'native_sat_atpg', 0)
-            """)
+            VALUES ('running', ?, 0)
+            """,
+            (vector_source,),
+        )
         conn.commit()
         run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
 
     terminal = "MAX_ROUNDS"
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
-        with connect(db_path) as conn:
+        with connect(effective_db_path) as conn:
             init_schema(conn)
-            # MUST stay first in the round: random prepass detections must not
-            # mask SAT-only TIMEOUT/UNKNOWN stall detection.
             prev_detected, prev_redundant = _fault_counts(conn)
             active_rows = _active_fault_rows(conn)
             active_ids = [int(row["id"]) for row in active_rows]
@@ -171,37 +212,36 @@ def run_progressive_native_atpg(
         if new_random:
             stats.generated_vectors += len(new_random)
             stats.accepted_vectors += len(new_random)
-            start_index = len(vectors) - len(new_random) + 1
-            patterns = [pattern_key(v, input_order) for v in new_random]
-            core.append_vectors(
-                db_path, run_id, "native_sat_atpg", patterns, start_index
-            )
-            core.simulate_incremental(
-                json_path,
-                cell_map_path,
-                db_path,
-                run_id,
-                new_random,
-                input_order,
-                active_ids,
-                start_index,
-                unsupported,
-            )
-            core.update_run_vector_count(db_path, run_id, len(vectors))
+            base_index = len(vectors) - len(new_random) + 1
+            for offset, vector in enumerate(new_random):
+                vector_index = base_index + offset
+                _accept_and_simulate(
+                    core,
+                    json_path=json_path,
+                    cell_map_path=effective_cell_map,
+                    db_path=effective_db_path,
+                    run_id=run_id,
+                    vector_source=vector_source,
+                    vector=vector,
+                    input_order=input_order,
+                    fault_ids=active_ids,
+                    vector_index=vector_index,
+                    unsupported=unsupported,
+                    on_vector_accepted=on_vector_accepted,
+                )
 
-        with connect(db_path) as conn:
+        with connect(effective_db_path) as conn:
             init_schema(conn)
             active_rows = _active_fault_rows(conn)
             active_ids = [int(row["id"]) for row in active_rows]
 
-        new_sat_vectors: list[dict[str, bool]] = []
         for fault_id in active_ids:
             blocked = sorted(rejected_patterns.get(fault_id, set()))
             solved = dict(
                 core.solve_fault_atpg(
                     json_path,
-                    cell_map_path,
-                    db_path,
+                    effective_cell_map,
+                    effective_db_path,
                     fault_id,
                     blocked,
                     cfg.atpg.sat_conflict_limit,
@@ -220,48 +260,44 @@ def run_progressive_native_atpg(
                     continue
                 if core.verify_fault_candidate(
                     json_path,
-                    cell_map_path,
-                    db_path,
+                    effective_cell_map,
+                    effective_db_path,
                     fault_id,
                     candidate,
                     unsupported,
                 ):
                     seen_patterns.add(key)
                     vectors.append(candidate)
-                    new_sat_vectors.append(candidate)
                     stats.accepted_vectors += 1
-                    start_index = len(vectors)
-                    core.append_vectors(
-                        db_path,
-                        run_id,
-                        "native_sat_atpg",
-                        [key],
-                        start_index,
+                    vector_index = len(vectors)
+                    _accept_and_simulate(
+                        core,
+                        json_path=json_path,
+                        cell_map_path=effective_cell_map,
+                        db_path=effective_db_path,
+                        run_id=run_id,
+                        vector_source=vector_source,
+                        vector=candidate,
+                        input_order=input_order,
+                        fault_ids=[fault_id],
+                        vector_index=vector_index,
+                        unsupported=unsupported,
+                        on_vector_accepted=on_vector_accepted,
                     )
-                    core.simulate_incremental(
-                        json_path,
-                        cell_map_path,
-                        db_path,
-                        run_id,
-                        [candidate],
-                        input_order,
-                        [fault_id],
-                        start_index,
-                        unsupported,
-                    )
-                    core.update_run_vector_count(db_path, run_id, len(vectors))
                 else:
                     stats.rejected_candidates += 1
                     rejected_patterns.setdefault(fault_id, set()).add(key)
             elif result == "UNSAT":
                 stats.unsat += 1
-                core.mark_fault_redundant(db_path, fault_id, redundancy_model)
+                core.mark_fault_redundant(
+                    effective_db_path, fault_id, redundancy_model
+                )
             elif result == "TIMEOUT":
                 stats.timeout += 1
             else:
                 stats.unknown += 1
 
-        with connect(db_path) as conn:
+        with connect(effective_db_path) as conn:
             init_schema(conn)
             data = summary(conn)
             detected, redundant = _fault_counts(conn)
@@ -286,13 +322,13 @@ def run_progressive_native_atpg(
     atpg_seconds = time.perf_counter() - atpg_start
     fault_sim_seconds = time.perf_counter() - sim_start
 
-    with connect(db_path) as conn:
+    with connect(effective_db_path) as conn:
         init_schema(conn)
         data = summary(conn)
         if data["denominator"] == 0:
             raise RunnerError("denominator is zero after progressive ATPG")
         core.complete_run_with_atpg(
-            db_path,
+            effective_db_path,
             run_id,
             float(data["coverage_percent"] or 0.0),
             terminal,
@@ -308,7 +344,7 @@ def run_progressive_native_atpg(
 
     stats.terminal_reason = terminal
     return (
-        VectorSet("native_sat_atpg", input_order, vectors),
+        VectorSet(vector_source, input_order, vectors),
         stats,
         run_id,
         atpg_seconds,

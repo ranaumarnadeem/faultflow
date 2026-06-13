@@ -6,6 +6,7 @@ add_executable(
   sim/test_golden_ref.cpp
   sim/test_sequential_ff.cpp
   scan/test_scan_chain.cpp
+  scan/test_scan_sequence.cpp
   sim/test_bit_parallel.cpp
   ir/test_parsed_graph.cpp
   ir/test_normalized_graph.cpp

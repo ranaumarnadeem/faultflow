@@ -1,0 +1,26 @@
+[design]
+netlist = examples/cla4.v
+cell_lib = cells/osu/osu035.json
+liberty = cells/osu/osu035_stdcells.lib
+verilog_models = cells/osu/osu035_stdcells.v
+yosys_ver = 0.61+129
+
+[fault_model]
+type = stuck_at
+collapsing = false
+include_clock_faults = false
+include_reset_faults = false
+
+[simulation]
+unsupported_cells = fail
+verify = false
+verify_tool = iverilog
+
+[atpg]
+tool = quaigh
+mode = comb
+output = output/cla4/cla4atpg.test
+
+[report]
+output = coverage_report.json
+threshold = 95.0

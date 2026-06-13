@@ -143,8 +143,23 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         raise CoverageError("coverage report node/fault sections must be arrays")
 
 
+def _translate_scan_net_name(
+    net_name: str, pseudo_port_map: dict[str, dict[str, Any]]
+) -> str:
+    if net_name.startswith("__ppi_"):
+        instance = net_name.removeprefix("__ppi_")
+        return f"{instance}.Q"
+    if net_name.startswith("__ppo_"):
+        instance = net_name.removeprefix("__ppo_")
+        return f"{instance}.D"
+    return net_name
+
+
 def write_reports(
-    conn: sqlite3.Connection, output_dir: Path, top: str
+    conn: sqlite3.Connection,
+    output_dir: Path,
+    top: str,
+    scan_context: dict[str, Any] | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     data = summary(conn)
@@ -165,6 +180,20 @@ def write_reports(
         )
 
     fp = _fingerprint(conn)
+    per_node = _per_node(conn)
+    undetected = _undetected_faults(conn)
+    if scan_context is not None:
+        pseudo_port_map = scan_context.get("pseudo_port_map", {})
+        if isinstance(pseudo_port_map, dict):
+            for node in per_node:
+                node["net_name"] = _translate_scan_net_name(
+                    str(node["net_name"]), pseudo_port_map
+                )
+            for fault in undetected:
+                fault["net_name"] = _translate_scan_net_name(
+                    str(fault["net_name"]), pseudo_port_map
+                )
+
     report = {
         "metadata": {
             "top": top,
@@ -179,9 +208,13 @@ def write_reports(
         "policy": _policy(fp),
         "summary": data,
         "run": _latest_run(conn),
-        "per_node": _per_node(conn),
-        "undetected_faults": _undetected_faults(conn),
+        "per_node": per_node,
+        "undetected_faults": undetected,
     }
+    if scan_context is not None:
+        run = cast(dict[str, Any], report["run"])
+        run["scan_mode"] = True
+        run["scan_manifest_hash"] = scan_context.get("manifest_hash", "")
     _validate_report(report)
     run = cast(dict[str, Any], report["run"])
     json_path = output_dir / "coverage_report.json"
@@ -190,6 +223,17 @@ def write_reports(
 
     txt = [
         f"faultflow coverage report for {top}",
+    ]
+    if scan_context is not None:
+        txt.extend(
+            [
+                "scan_mode:           true",
+                "excluded_faults:     scan-cell-internal, scan-path-only (Q->SDI)",
+                "",
+            ]
+        )
+    txt.extend(
+        [
         "",
         f"total_raw_faults:    {data['total_raw_faults']}",
         f"denominator:         {data['denominator']}",
@@ -224,7 +268,7 @@ def write_reports(
         f"collapsing:          {_policy_text(report, 'collapsing')}",
         "",
         "undetected faults:",
-    ]
+    ])
     for fault in cast(list[dict[str, Any]], report["undetected_faults"]):
         txt.append(
             f"- id={fault['id']} net={fault['net_id']} "

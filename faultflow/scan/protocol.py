@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any
+
+from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX
+from faultflow.scan.protocol_constants import load_sequence, unload_sequence
 
 
 def _with_clock(values: dict[str, bool], clock: str, level: bool) -> dict[str, bool]:
@@ -137,3 +142,62 @@ def multi_chain_scan_shift_capture_shiftout_cycles(
         )
     )
     return cycles
+
+
+@dataclass(frozen=True)
+class ScanPattern:
+    load_seqs: dict[int, list[bool]]
+    capture_pi_values: dict[str, bool]
+    expected_unload: dict[int, list[bool]]
+
+
+def _chain_lengths(manifest: dict[str, Any]) -> dict[int, int]:
+    chains = manifest.get("chains", [])
+    if not isinstance(chains, list):
+        return {}
+    lengths: dict[int, int] = {}
+    for raw in chains:
+        if not isinstance(raw, dict):
+            continue
+        index = raw.get("index")
+        length = raw.get("length")
+        if isinstance(index, int) and isinstance(length, int):
+            lengths[index] = length
+    return lengths
+
+
+def serialize_vector(
+    vector: dict[str, bool],
+    pseudo_port_map: dict[str, dict[str, Any]],
+    manifest: dict[str, Any],
+) -> ScanPattern:
+    lengths = _chain_lengths(manifest)
+    load_by_chain: dict[int, dict[int, bool]] = {}
+    unload_by_chain: dict[int, dict[int, bool]] = {}
+    for entry in pseudo_port_map.values():
+        chain_id = int(entry["chain_id"])
+        position = int(entry["position_in_chain"])
+        load_by_chain.setdefault(chain_id, {})[position] = bool(
+            vector.get(str(entry["ppi_port"]), False)
+        )
+        unload_by_chain.setdefault(chain_id, {})[position] = bool(
+            vector.get(str(entry["ppo_port"]), False)
+        )
+    load_seqs = {
+        chain_id: load_sequence(targets, lengths.get(chain_id, len(targets)))
+        for chain_id, targets in load_by_chain.items()
+    }
+    expected_unload = {
+        chain_id: unload_sequence(targets, lengths.get(chain_id, len(targets)))
+        for chain_id, targets in unload_by_chain.items()
+    }
+    capture_pi_values = {
+        name: bool(value)
+        for name, value in vector.items()
+        if not name.startswith(PPI_PREFIX) and not name.startswith(PPO_PREFIX)
+    }
+    return ScanPattern(
+        load_seqs=load_seqs,
+        capture_pi_values=capture_pi_values,
+        expected_unload=expected_unload,
+    )

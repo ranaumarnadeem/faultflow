@@ -85,6 +85,7 @@ def test_cli_verify_override_reaches_runner(
             ext: Path | None = None,
             max_rounds: int | None = None,
             target_coverage: float | None = None,
+            scan: bool = False,
         ) -> str:
             seen["purge"] = purge
             seen["clean"] = clean
@@ -92,6 +93,7 @@ def test_cli_verify_override_reaches_runner(
             seen["ext"] = ext
             seen["max_rounds"] = max_rounds
             seen["target_coverage"] = target_coverage
+            seen["scan"] = scan
             return "ok"
 
     monkeypatch.setattr(cli_mod, "Runner", FakeRunner)
