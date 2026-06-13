@@ -1,13 +1,15 @@
 # config.ofs.example
 # Native SAT ATPG is the default sim path when [atpg] tool = native.
 # --ext foo.test requires a same-stem foo.bench sidecar for PI order.
-# --clean removes output/<top>/faultflow.sqlite (and legacy faultflow_scan.sqlite) only;
-# use --purge to delete transient junk inside output/<top>/.
+# --clean removes output/<top>/.faultflow/ internal workspace only;
+# deliverables (coverage.rpt, patterns.test, scan artifacts) stay in output/<top>/.
+# --purge deletes transient junk inside .faultflow/.
 
-[design]netlist   = design.json
+[design]
+netlist   = tests/benchmarks/iscas85/synth/c17.json
 top       = c17
-cell_lib  = cells/osu/osu035.json
-liberty   = cells/osu/osu035_stdcells.lib
+cell_lib  = cells/sky130/sky130_fd_sc_hd.json
+liberty   = cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib
 yosys_ver = 0.61+129
 
 [fault_model]
@@ -20,20 +22,20 @@ include_reset_faults = false
 unsupported_cells = fail
 verify            = false
 verify_tool       = iverilog
-verilog_models    = cells/osu/osu035_stdcells.v
+verilog_models    = cells/sky130/sky130_fd_sc_hd.v
 tp_file           =
 
 [atpg]
 tool               = native
 mode               = comb
-output             = atpg.test
+output             = patterns.test
 random_vectors       = 64
 sat_conflict_limit   = 100000
 max_rounds           = 20
 sat_timeout_seconds  = 10
 
 [report]
-output    = coverage_report.json
+output    = coverage.rpt
 threshold = 95.0
 verbose   = true
 

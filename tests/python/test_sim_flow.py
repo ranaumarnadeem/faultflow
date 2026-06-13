@@ -16,11 +16,11 @@ def test_c17_native_progressive_sim_flow() -> None:
         pytest.skip("c17 netlist missing")
 
     cfg = Path("config.ofs.example")
-    Path("output/c17/faultflow.sqlite").unlink(missing_ok=True)
+    Path("output/c17/.faultflow/faultflow.sqlite").unlink(missing_ok=True)
 
     assert main(["sim", "--top", "c17", "-c", str(cfg), "--purge", "--clean"]) == 0
-    assert Path("output/c17/fault_report.txt").exists()
-    report_path = Path("output/c17/coverage_report.json")
+    assert Path("output/c17/coverage.rpt").exists()
+    report_path = Path("output/c17/.faultflow/intermediate/coverage_report.json")
     assert report_path.exists()
 
     report = json.loads(report_path.read_text(encoding="utf-8"))

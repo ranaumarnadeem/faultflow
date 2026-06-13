@@ -76,17 +76,21 @@ mode = comb
     assert "pseudo-PI semantics" in capsys.readouterr().err
 
 
-def test_clean_db_removes_unified_and_legacy_scan_db(
+def test_clean_workspace_removes_unified_and_legacy_scan_db(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """--clean removes the unified DB and any legacy faultflow_scan.sqlite sidecar."""
+    """--clean removes .faultflow/ and legacy root-level DB sidecars."""
     monkeypatch.chdir(tmp_path)
     out = tmp_path / "output/tiny_dff"
-    out.mkdir(parents=True)
-    comb_db = out / "faultflow.sqlite"
+    workspace = out / ".faultflow"
+    workspace.mkdir(parents=True)
+    comb_db = workspace / "faultflow.sqlite"
+    legacy_comb = out / "faultflow.sqlite"
     scan_db = out / "faultflow_scan.sqlite"
     comb_db.write_text("comb", encoding="utf-8")
+    legacy_comb.write_text("legacy", encoding="utf-8")
     scan_db.write_text("scan", encoding="utf-8")
+    (out / "coverage.rpt").write_text("keep", encoding="utf-8")
     source = tmp_path / "tiny_dff.json"
     source.write_text(json.dumps(_tiny_dff_json(), indent=2) + "\n", encoding="utf-8")
     cfg = tmp_path / "config.ofs"
@@ -105,10 +109,12 @@ mode = comb
     runner_cfg = load_config(cfg, "tiny_dff")
     from faultflow.runner.runner import Runner
 
-    removed = Runner(runner_cfg)._clean_db()
-    assert removed == 2
-    assert not comb_db.exists()
+    removed = Runner(runner_cfg)._clean_workspace()
+    assert removed >= 2
+    assert not workspace.exists()
+    assert not legacy_comb.exists()
     assert not scan_db.exists()
+    assert (out / "coverage.rpt").exists()
 
 
 def test_reduced_view_fault_count_matches_manual(

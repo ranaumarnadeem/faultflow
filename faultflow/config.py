@@ -4,6 +4,34 @@ from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
 
+FAULTFLOW_WORKSPACE = ".faultflow"
+
+SKY130_CELL_LIB = Path("cells/sky130/sky130_fd_sc_hd.json")
+SKY130_LIBERTY = Path("cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib")
+SKY130_VERILOG_MODELS = Path("cells/sky130/sky130_fd_sc_hd.v")
+
+BENCHMARK_SYNTH_ROOTS = (
+    Path("tests/benchmarks/iscas85/synth"),
+    Path("tests/benchmarks/iscas89/synth"),
+)
+
+
+def benchmark_synth_json(top: str) -> list[Path]:
+    return [root / f"{top}.json" for root in BENCHMARK_SYNTH_ROOTS]
+
+
+def benchmark_synth_bench(top: str) -> list[Path]:
+    return [root / f"{top}.bench" for root in BENCHMARK_SYNTH_ROOTS]
+
+
+def benchmark_synth_test(top: str) -> list[Path]:
+    return [root / f"{top}atpg.test" for root in BENCHMARK_SYNTH_ROOTS]
+
+
+def benchmark_synth_gate_verilog(top: str) -> list[Path]:
+    names = (f"{top}_gate.v", f"{top}_synth.v", f"{top}.nl.v", f"{top}.cut.v")
+    return [root / name for root in BENCHMARK_SYNTH_ROOTS for name in names]
+
 
 class ConfigError(RuntimeError):
     pass
@@ -59,7 +87,7 @@ class SimulationConfig:
 class AtpgConfig:
     tool: str = "native"
     mode: str = "comb"
-    output: Path = Path("atpg.test")
+    output: Path = Path("patterns.test")
     random_vectors: int = 64
     sat_conflict_limit: int = 100000
     max_rounds: int = 20
@@ -68,7 +96,7 @@ class AtpgConfig:
 
 @dataclass(frozen=True)
 class ReportConfig:
-    output: Path = Path("coverage_report.json")
+    output: Path = Path("coverage.rpt")
     threshold: float = 95.0
 
 
@@ -102,8 +130,80 @@ class FaultflowConfig:
         return Path("output") / self.top
 
     @property
+    def workspace_dir(self) -> Path:
+        return self.output_dir / FAULTFLOW_WORKSPACE
+
+    @property
     def db_path(self) -> Path:
-        return self.output_dir / "faultflow.sqlite"
+        return self.workspace_dir / "faultflow.sqlite"
+
+    @property
+    def logs_dir(self) -> Path:
+        return self.workspace_dir / "logs"
+
+    @property
+    def manifests_dir(self) -> Path:
+        return self.workspace_dir / "manifests"
+
+    @property
+    def intermediate_dir(self) -> Path:
+        return self.workspace_dir / "intermediate"
+
+    @property
+    def verification_dir(self) -> Path:
+        return self.workspace_dir / "verification"
+
+    @property
+    def generated_scripts_dir(self) -> Path:
+        return self.workspace_dir / "generated_scripts"
+
+    @property
+    def scan_json_path(self) -> Path:
+        return self.output_dir / f"{self.top}_scan.json"
+
+    @property
+    def scan_verilog_path(self) -> Path:
+        return self.output_dir / f"{self.top}_scan.v"
+
+    @property
+    def scan_report_path(self) -> Path:
+        return self.output_dir / "scan.rpt"
+
+    @property
+    def scan_manifest_path(self) -> Path:
+        return self.manifests_dir / "scan_manifest.json"
+
+    @property
+    def coverage_report_path(self) -> Path:
+        if self.report.output.is_absolute():
+            return self.report.output
+        if self.report.output.parent == Path("."):
+            return self.output_dir / self.report.output.name
+        return self.report.output
+
+    @property
+    def coverage_json_path(self) -> Path:
+        return self.intermediate_dir / "coverage_report.json"
+
+    @property
+    def patterns_path(self) -> Path:
+        path = self.atpg.output
+        if path.is_absolute():
+            return path
+        if path.parent == Path("."):
+            return self.output_dir / path.name
+        return path
+
+    def ensure_workspace(self) -> None:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        for directory in (
+            self.logs_dir,
+            self.manifests_dir,
+            self.intermediate_dir,
+            self.verification_dir,
+            self.generated_scripts_dir,
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
 
 
 LEGACY_SCAN_DB_NAME = "faultflow_scan.sqlite"
@@ -122,7 +222,7 @@ def _verilog_models(parser: ConfigParser) -> Path:
     value = parser.get("simulation", "verilog_models", fallback="").strip()
     if not value:
         value = parser.get("design", "verilog_models", fallback="").strip()
-    return Path(value) if value else Path("cells/osu/osu035_stdcells.v")
+    return Path(value) if value else SKY130_VERILOG_MODELS
 
 
 def load_config(path: str | Path, top: str) -> FaultflowConfig:
@@ -155,8 +255,8 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         path=cfg_path,
         top=top,
         netlist=_path(parser, "design", "netlist", "design.json"),
-        cell_lib=_path(parser, "design", "cell_lib", "cells/osu/osu035.json"),
-        liberty=_optional_path(parser, "design", "liberty"),
+        cell_lib=_path(parser, "design", "cell_lib", str(SKY130_CELL_LIB)),
+        liberty=_optional_path(parser, "design", "liberty") or SKY130_LIBERTY,
         verilog_models=_verilog_models(parser),
         yosys_ver=parser.get("design", "yosys_ver", fallback=""),
         fault_model=FaultModelConfig(
@@ -176,14 +276,14 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         atpg=AtpgConfig(
             tool=atpg_tool,
             mode=atpg_mode,
-            output=_path(parser, "atpg", "output", f"{top}atpg.test"),
+            output=_path(parser, "atpg", "output", "patterns.test"),
             random_vectors=_int(parser, "atpg", "random_vectors", 64),
             sat_conflict_limit=_int(parser, "atpg", "sat_conflict_limit", 100000),
             max_rounds=_int(parser, "atpg", "max_rounds", 20),
             sat_timeout_seconds=_int(parser, "atpg", "sat_timeout_seconds", 10),
         ),
         report=ReportConfig(
-            output=_path(parser, "report", "output", "coverage_report.json"),
+            output=_path(parser, "report", "output", "coverage.rpt"),
             threshold=_float(parser, "report", "threshold", 95.0),
         ),
         scan=ScanConfig(

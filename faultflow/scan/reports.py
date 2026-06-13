@@ -216,12 +216,13 @@ def write_scan_report(path: Path, manifest: dict[str, object]) -> None:
 
 
 def write_scan_artifacts(
-    scan_dir: Path,
+    manifests_dir: Path,
+    scan_report_path: Path,
     manifest: dict[str, object],
 ) -> None:
-    write_manifest(scan_dir / "scan_manifest.json", manifest)
-    write_scan_chains(scan_dir / "scan_chains.txt", manifest)
-    write_scan_report(scan_dir / "scan.rpt", manifest)
+    write_manifest(manifests_dir / "scan_manifest.json", manifest)
+    write_scan_chains(manifests_dir / "scan_chains.txt", manifest)
+    write_scan_report(scan_report_path, manifest)
 
 
 def format_dry_run(plan: ScanPlan) -> str:

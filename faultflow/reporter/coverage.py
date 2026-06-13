@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
+from faultflow.config import FaultflowConfig
 from faultflow.db import latest_campaign_id, summary
 
 
@@ -181,12 +182,12 @@ def _translate_scan_net_name(
 
 def write_reports(
     conn: sqlite3.Connection,
-    output_dir: Path,
-    top: str,
+    cfg: FaultflowConfig,
     scan_context: dict[str, Any] | None = None,
     campaign_id: int | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
-    output_dir.mkdir(parents=True, exist_ok=True)
+    cfg.ensure_workspace()
+    top = cfg.top
     if campaign_id is None:
         campaign_type = "scan" if scan_context is not None else "comb"
         resolved = latest_campaign_id(conn, campaign_type)
@@ -248,8 +249,8 @@ def write_reports(
         run["scan_manifest_hash"] = scan_context.get("manifest_hash", "")
     _validate_report(report)
     run = cast(dict[str, Any], report["run"])
-    json_path = output_dir / "coverage_report.json"
-    txt_path = output_dir / "fault_report.txt"
+    json_path = cfg.coverage_json_path
+    txt_path = cfg.coverage_report_path
     json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
     txt = [

@@ -57,7 +57,7 @@ def test_init_creates_top_output_dir(
     (tmp_path / "missing.json").write_text("{}", encoding="utf-8")
 
     assert main(["init", "--top", "demo", "-c", str(cfg)]) == 0
-    assert (tmp_path / "output" / "demo" / "faultflow.sqlite").exists()
+    assert (tmp_path / "output" / "demo" / ".faultflow" / "faultflow.sqlite").exists()
 
 
 def test_init_rejects_fingerprint_mismatch_by_field(
@@ -103,7 +103,7 @@ def test_sim_requires_cpp_extension(
         )
 
 
-def test_clean_db_removes_only_sqlite_files(
+def test_clean_workspace_removes_internal_state_keeps_deliverables(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -111,22 +111,23 @@ def test_clean_db_removes_only_sqlite_files(
     _config(cfg_path)
     runner = Runner(load_config(cfg_path, "demo"))
     out = tmp_path / "output" / "demo"
-    out.mkdir(parents=True)
-    keep = out / "coverage_report.json"
-    keep.write_text("{}", encoding="utf-8")
+    workspace = out / ".faultflow"
+    workspace.mkdir(parents=True)
+    keep = out / "coverage.rpt"
+    keep.write_text("deliverable", encoding="utf-8")
     db_files = [
-        out / "faultflow.sqlite",
-        out / "faultflow.sqlite-wal",
-        out / "faultflow.sqlite-shm",
-        out / "faultflow.sqlite-journal",
+        workspace / "faultflow.sqlite",
+        workspace / "faultflow.sqlite-wal",
+        workspace / "faultflow.sqlite-shm",
+        workspace / "faultflow.sqlite-journal",
     ]
     for path in db_files:
         path.write_text("db", encoding="utf-8")
 
-    assert runner._clean_db() == 4
+    assert runner._clean_workspace() >= 1
 
     assert keep.exists()
-    assert all(not path.exists() for path in db_files)
+    assert not (workspace / "faultflow.sqlite").exists()
 
 
 def test_missing_nl2bench_fails_cleanly(
@@ -146,7 +147,9 @@ def test_missing_nl2bench_fails_cleanly(
     (tmp_path / "cells.lib").write_text("", encoding="utf-8")
     out = tmp_path / "output" / "demo"
     out.mkdir(parents=True)
-    (out / "demo_gate.v").write_text("module demo; endmodule\n", encoding="utf-8")
+    intermediate = out / ".faultflow" / "intermediate"
+    intermediate.mkdir(parents=True)
+    (intermediate / "demo_gate.v").write_text("module demo; endmodule\n", encoding="utf-8")
     monkeypatch.setattr(runner_mod.shutil, "which", lambda _name: None)
 
     with pytest.raises(RunnerError, match="nl2bench"):
@@ -161,7 +164,9 @@ def test_quaigh_receives_bench_only(
     _config(cfg)
     out = tmp_path / "output" / "demo"
     out.mkdir(parents=True)
-    (out / "demo.bench").write_text(
+    intermediate = out / ".faultflow" / "intermediate"
+    intermediate.mkdir(parents=True)
+    (intermediate / "demo.bench").write_text(
         "INPUT(a)\nOUTPUT(y)\ny = BUFF(a)\n", encoding="utf-8"
     )
     seen: dict[str, list[str]] = {}
@@ -174,7 +179,7 @@ def test_quaigh_receives_bench_only(
 
     vector_path = Runner(load_config(cfg, "demo"))._run_quaigh()
 
-    assert vector_path == Path("output/demo/demoatpg.test")
+    assert vector_path == Path("output/demo/patterns.test")
     assert seen["cmd"][2].endswith(".bench")
     assert all(not arg.endswith(".blif") for arg in seen["cmd"])
 
@@ -194,7 +199,7 @@ def test_verilog_netlist_runs_yosys_instead_of_simulating_source(
         encoding="utf-8",
     )
     runner = Runner(load_config(cfg, "demo"))
-    generated = Path("output/demo/demo.json")
+    generated = Path("output/demo/.faultflow/intermediate/demo.json")
     monkeypatch.setattr(runner, "_run_yosys", lambda: generated)
 
     assert runner._find_netlist() == generated
@@ -216,7 +221,7 @@ def test_init_without_json_defers_fingerprint_until_sim(
     )
 
     assert main(["init", "--top", "demo", "-c", str(cfg)]) == 0
-    with connect(tmp_path / "output/demo/faultflow.sqlite") as conn:
+    with connect(tmp_path / "output/demo/.faultflow/faultflow.sqlite") as conn:
         init_schema(conn)
         row = conn.execute("SELECT COUNT(*) FROM campaigns").fetchone()
 
@@ -231,8 +236,8 @@ def test_yosys_version_extraction_ignores_banner(
     cfg = tmp_path / "config.ofs"
     _config(cfg)
     runner = Runner(load_config(cfg, "demo"))
-    runner.cfg.output_dir.mkdir(parents=True)
-    (runner.cfg.output_dir / "yosys.log").write_text(
+    runner.cfg.ensure_workspace()
+    (runner.cfg.logs_dir / "yosys.log").write_text(
         """
  /----------------------------------------------------------------------------\\
  |  yosys -- Yosys Open SYnthesis Suite                                       |
@@ -245,8 +250,14 @@ def test_yosys_version_extraction_ignores_banner(
     assert runner._extract_yosys_version().startswith("0.61+129")
 
 
-def test_coverage_report_schema_and_denominator_invariant(tmp_path: Path) -> None:
-    db_path = tmp_path / "faultflow.sqlite"
+def test_coverage_report_schema_and_denominator_invariant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg_path = tmp_path / "config.ofs"
+    _config(cfg_path)
+    cfg = load_config(cfg_path, "demo")
+    db_path = cfg.db_path
     conn = connect(db_path)
     try:
         init_schema(conn)
@@ -301,7 +312,7 @@ def test_coverage_report_schema_and_denominator_invariant(tmp_path: Path) -> Non
         conn.commit()
 
         json_path, txt_path, report = write_reports(
-            conn, tmp_path, "demo", campaign_id=campaign_id
+            conn, cfg, campaign_id=campaign_id
         )
 
         assert json_path.exists()
@@ -317,8 +328,14 @@ def test_coverage_report_schema_and_denominator_invariant(tmp_path: Path) -> Non
         conn.close()
 
 
-def test_coverage_report_text_includes_protocol_fields(tmp_path: Path) -> None:
-    db_path = tmp_path / "faultflow.sqlite"
+def test_coverage_report_text_includes_protocol_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg_path = tmp_path / "config.ofs"
+    _config(cfg_path)
+    cfg = load_config(cfg_path, "scan_top")
+    db_path = cfg.db_path
     conn = connect(db_path)
     try:
         init_schema(conn)
@@ -342,7 +359,7 @@ def test_coverage_report_text_includes_protocol_fields(tmp_path: Path) -> None:
         conn.commit()
 
         _, txt_path, report = write_reports(
-            conn, tmp_path, "scan_top", campaign_id=campaign_id
+            conn, cfg, campaign_id=campaign_id
         )
         text = txt_path.read_text(encoding="utf-8")
         assert report["summary"]["protocol_unresolved"] == 1
@@ -381,15 +398,21 @@ unsupported_cells = fail
     ext.write_text("vector\na=0\n", encoding="utf-8")
 
     runner = Runner(load_config(cfg, "demo"))
-    runner.cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    (runner.cfg.output_dir / "faultflow.sqlite").write_bytes(b"")
+    runner.cfg.ensure_workspace()
+    runner.cfg.db_path.write_bytes(b"")
 
     with pytest.raises(RunnerError, match="BENCH sidecar"):
         runner.sim(ext=ext)
 
 
-def test_coverage_report_rejects_denominator_invariant(tmp_path: Path) -> None:
-    db_path = tmp_path / "faultflow.sqlite"
+def test_coverage_report_rejects_denominator_invariant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg_path = tmp_path / "config.ofs"
+    _config(cfg_path)
+    cfg = load_config(cfg_path, "demo")
+    db_path = cfg.db_path
     conn = connect(db_path)
     try:
         init_schema(conn)
@@ -426,6 +449,6 @@ def test_coverage_report_rejects_denominator_invariant(tmp_path: Path) -> None:
         conn.commit()
 
         with pytest.raises(CoverageError, match="denominator invariant"):
-            write_reports(conn, tmp_path, "demo", campaign_id=campaign_id)
+            write_reports(conn, cfg, campaign_id=campaign_id)
     finally:
         conn.close()

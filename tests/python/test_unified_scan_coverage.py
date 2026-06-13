@@ -325,10 +325,9 @@ max_rounds = 3
         encoding="utf-8",
     )
     cfg = load_config(cfg_path, "tiny_dff")
-    scan_dir = cfg.output_dir / "scan"
-    scan_dir.mkdir(parents=True, exist_ok=True)
-    generic = scan_dir / "tiny_dff_scan_generic.json"
-    techmap = scan_dir / "faultflow_scanff_map.v"
+    cfg.ensure_workspace()
+    generic = cfg.scan_json_path
+    techmap = cfg.generated_scripts_dir / "faultflow_scanff_map.v"
     techmap.write_text("// test\n", encoding="utf-8")
     result = stitch_scan_json(source, CELL_MAP, "tiny_dff", generic)
     manifest = manifest_from_result(result, source, techmap, None)
@@ -340,13 +339,13 @@ max_rounds = 3
         "normal_mode": {"vector_count": 0},
         "generic_json_hash": hash_file(generic),
     }
-    manifest_path = scan_dir / "scan_manifest.json"
+    manifest_path = cfg.scan_manifest_path
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     view, pseudo_port_map = build_scan_atpg_view(
         json.loads(generic.read_text(encoding="utf-8")), manifest
     )
-    atpg_view = cfg.output_dir / "scan_atpg_view.json"
+    atpg_view = cfg.intermediate_dir / "scan_atpg_view.json"
     atpg_view.write_text(json.dumps(view, indent=2) + "\n", encoding="utf-8")
 
     from faultflow.runner.runner import _port_names

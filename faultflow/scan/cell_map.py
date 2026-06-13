@@ -26,8 +26,8 @@ def resolve_scan_cell_map(cfg: FaultflowConfig) -> Path:
     for key in required:
         if key in osu and key not in merged:
             merged[key] = osu[key]
-    cache = cfg.output_dir / "scan_merged_cell_map.json"
-    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache = cfg.intermediate_dir / "scan_merged_cell_map.json"
+    cfg.ensure_workspace()
     cache.write_text(
         json.dumps(merged, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

@@ -491,7 +491,7 @@ def test_cli_ext_vectors_end_to_end_c17(
         == 0
     )
 
-    report_path = tmp_path / "output/c17/coverage_report.json"
+    report_path = tmp_path / "output/c17/.faultflow/intermediate/coverage_report.json"
     assert report_path.exists()
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["summary"]["denominator"] > 0
@@ -536,7 +536,7 @@ def test_cli_progressive_sim_writes_atpg_terminal_to_report(
     )
 
     report = json.loads(
-        (tmp_path / "output/tiny_inv/coverage_report.json").read_text(encoding="utf-8")
+        (tmp_path / "output/tiny_inv/.faultflow/intermediate/coverage_report.json").read_text(encoding="utf-8")
     )
     assert report["run"]["atpg_terminal_reason"] in {
         "COMPLETE",
@@ -565,7 +565,7 @@ def test_native_c17_reaches_complete_or_threshold(
     runner.sim(clean=True, max_rounds=20, target_coverage=100.0)
 
     report = json.loads(
-        (tmp_path / "output/c17/coverage_report.json").read_text(encoding="utf-8")
+        (tmp_path / "output/c17/.faultflow/intermediate/coverage_report.json").read_text(encoding="utf-8")
     )
     assert report["run"]["vector_source"] == "native_sat_atpg"
     assert report["run"]["atpg_terminal_reason"] in {"COMPLETE", "THRESHOLD_MET"}
@@ -600,7 +600,7 @@ def test_native_c499_improves_coverage_with_clean_terminal(
     runner.sim(max_rounds=10, target_coverage=100.0)
 
     report = json.loads(
-        (tmp_path / "output/c499/coverage_report.json").read_text(encoding="utf-8")
+        (tmp_path / "output/c499/.faultflow/intermediate/coverage_report.json").read_text(encoding="utf-8")
     )
     assert report["run"]["vector_source"] == "native_sat_atpg"
     assert report["run"]["atpg_terminal_reason"] in {

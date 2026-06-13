@@ -197,13 +197,14 @@ def test_scan_cli_writes_manifest_and_artifacts(
 
     assert main(["scan", "--top", "tiny_dff", "-c", str(cfg), "--no-techmap"]) == 0
 
-    scan_dir = tmp_path / "output/tiny_dff/scan"
-    assert (scan_dir / "tiny_dff_scan_generic.json").exists()
-    assert (scan_dir / "faultflow_scanff_map.v").exists()
-    manifest = json.loads((scan_dir / "scan_manifest.json").read_text())
+    out = tmp_path / "output/tiny_dff"
+    assert (out / "tiny_dff_scan.json").exists()
+    workspace = out / ".faultflow"
+    assert (workspace / "generated_scripts" / "faultflow_scanff_map.v").exists()
+    manifest = json.loads((workspace / "manifests" / "scan_manifest.json").read_text())
     assert manifest["cell_count"] == 1
-    assert (scan_dir / "scan_chains.txt").exists()
-    assert (scan_dir / "scan.rpt").exists()
+    assert (workspace / "manifests" / "scan_chains.txt").exists()
+    assert (out / "scan.rpt").exists()
     assert manifest["sky130_verilog"] is None
 
 
@@ -233,7 +234,7 @@ def test_scan_cli_dry_run_writes_no_artifacts(
     text = capsys.readouterr().out
     assert "scan dry-run top=tiny_dff" in text
     assert "eligible_ffs=1" in text
-    assert not (tmp_path / "output/tiny_dff/scan/scan_manifest.json").exists()
+    assert not (tmp_path / "output/tiny_dff/.faultflow/manifests/scan_manifest.json").exists()
 
 
 def test_scan_check_writes_fail_result_on_structural_error(
@@ -244,7 +245,7 @@ def test_scan_check_writes_fail_result_on_structural_error(
     cfg = _write_config(tmp_path / "config.ofs", source)
 
     assert main(["scan", "--top", "tiny_dff", "-c", str(cfg), "--no-techmap"]) == 0
-    generic = tmp_path / "output/tiny_dff/scan/tiny_dff_scan_generic.json"
+    generic = tmp_path / "output/tiny_dff/tiny_dff_scan.json"
     generic.write_text(generic.read_text(encoding="utf-8") + "\n", encoding="utf-8")
 
     with pytest.raises(SystemExit) as exc:
@@ -252,7 +253,7 @@ def test_scan_check_writes_fail_result_on_structural_error(
 
     assert exc.value.code == 2
     manifest = json.loads(
-        (tmp_path / "output/tiny_dff/scan/scan_manifest.json").read_text()
+        (tmp_path / "output/tiny_dff/.faultflow/manifests/scan_manifest.json").read_text()
     )
     assert manifest["latest_check"]["status"] == "FAIL"
     assert "generic JSON hash" in manifest["latest_check"]["errors"][0]
@@ -265,7 +266,7 @@ def test_yosys_scan_techmap_produces_sky130_cell(tmp_path: Path) -> None:
     source = _write_json(tmp_path / "tiny_dff.json", _tiny_dff_json())
     generic = tmp_path / "tiny_dff_scan_generic.json"
     techmap = tmp_path / "faultflow_scanff_map.v"
-    out_v = tmp_path / "tiny_dff_scan_sky130.v"
+    out_v = tmp_path / "tiny_dff_scan.v"
     stitch_scan_json(source, CELL_MAP, "tiny_dff", generic)
     write_scan_techmap(techmap)
 

@@ -80,10 +80,9 @@ def _install_passing_scan_workspace(
     source.write_text(json.dumps(_tiny_dff_json(), indent=2) + "\n", encoding="utf-8")
     cfg_path = _write_config(tmp_path / "config.ofs", source)
     cfg = load_config(cfg_path, "tiny_dff")
-    scan_dir = cfg.output_dir / "scan"
-    scan_dir.mkdir(parents=True, exist_ok=True)
-    generic = scan_dir / "tiny_dff_scan_generic.json"
-    techmap = scan_dir / "faultflow_scanff_map.v"
+    cfg.ensure_workspace()
+    generic = cfg.scan_json_path
+    techmap = cfg.generated_scripts_dir / "faultflow_scanff_map.v"
     techmap.write_text("// test techmap\n", encoding="utf-8")
     result = stitch_scan_json(source, CELL_MAP, "tiny_dff", generic)
     manifest = manifest_from_result(result, source, techmap, None)
@@ -96,7 +95,7 @@ def _install_passing_scan_workspace(
         "normal_mode": {"vector_count": 0},
         "generic_json_hash": generic_hash,
     }
-    manifest_path = scan_dir / "scan_manifest.json"
+    manifest_path = cfg.scan_manifest_path
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return Runner(cfg), generic, manifest
 
@@ -154,9 +153,9 @@ def test_sim_scan_passes_scan_db_to_progressive_atpg(
     )
     monkeypatch.setattr(
         "faultflow.runner.runner.write_reports",
-        lambda conn, output_dir, top, scan_context=None, campaign_id=None: (
-            output_dir / "coverage_report.json",
-            output_dir / "fault_report.txt",
+        lambda conn, cfg, scan_context=None, campaign_id=None: (
+            cfg.coverage_json_path,
+            cfg.coverage_report_path,
             {
                 "summary": {"coverage_percent": 0.0},
                 "metadata": {"scan_mode": bool(scan_context)},
@@ -192,7 +191,7 @@ def test_preflight_sim_scan_requires_passing_scan_check(
     monkeypatch.chdir(tmp_path)
     runner, _generic, manifest = _install_passing_scan_workspace(tmp_path)
     manifest["latest_check"] = {"status": "FAIL", "errors": ["boom"]}
-    manifest_path = runner.cfg.output_dir / "scan" / "scan_manifest.json"
+    manifest_path = runner.cfg.scan_manifest_path
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     with pytest.raises(RunnerError, match="scan-check has not passed"):
         runner._preflight_sim_scan()
@@ -206,7 +205,7 @@ def test_preflight_sim_scan_rejects_stale_check_hash(
     latest = manifest["latest_check"]
     assert isinstance(latest, dict)
     latest["generic_json_hash"] = "stale-hash"
-    manifest_path = runner.cfg.output_dir / "scan" / "scan_manifest.json"
+    manifest_path = runner.cfg.scan_manifest_path
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     assert hash_file(generic) != "stale-hash"
     with pytest.raises(RunnerError, match="scan-check is stale"):
@@ -221,7 +220,7 @@ def test_preflight_sim_scan_rejects_ineligible_ffs(
     manifest["ineligible_ffs"] = [
         {"instance": "u_bad", "cell_type": "DFFPOSX1", "reason": "unsupported_ff_shape"}
     ]
-    manifest_path = runner.cfg.output_dir / "scan" / "scan_manifest.json"
+    manifest_path = runner.cfg.scan_manifest_path
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     with pytest.raises(RunnerError, match="ineligible FFs remain"):
         runner._preflight_sim_scan()
@@ -232,4 +231,4 @@ def test_comb_and_scan_share_unified_db_path(tmp_path: Path) -> None:
     source.write_text(json.dumps(_tiny_dff_json(), indent=2) + "\n", encoding="utf-8")
     cfg = load_config(_write_config(tmp_path / "config.ofs", source), "tiny_dff")
     assert cfg.db_path.name == "faultflow.sqlite"
-    assert cfg.db_path == cfg.output_dir / "faultflow.sqlite"
+    assert cfg.db_path == cfg.workspace_dir / "faultflow.sqlite"

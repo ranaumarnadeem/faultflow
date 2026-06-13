@@ -21,13 +21,34 @@ python3 ff.py sim --top <top> --ext vectors.test
 
 `vectors.test` requires a same-stem `vectors.bench` sidecar for PI order.
 
-To reset only the SQLite database (not the whole output tree):
+To reset internal workspace state (keeps deliverables in `output/<top>/`):
 
 ```bash
 python3 ff.py sim --top <top> --clean
 ```
 
-Comb and scan campaigns share `output/<top>/faultflow.sqlite`. Scan ATPG:
+## Output layout
+
+```
+output/<top>/
+├── <top>_scan.v          # scan deliverable (after scan + techmap)
+├── <top>_scan.json       # scanned generic JSON
+├── scan.rpt
+├── coverage.rpt          # human-readable coverage report
+├── patterns.test         # ATPG patterns (when generated)
+└── .faultflow/           # internal workspace (removed by --clean)
+    ├── faultflow.sqlite  # unified comb + scan campaigns
+    ├── logs/
+    ├── manifests/
+    ├── intermediate/
+    ├── verification/
+    └── generated_scripts/
+```
+
+Synth JSON for ISCAS benchmarks is read from `tests/benchmarks/iscas85/synth/` and
+`tests/benchmarks/iscas89/synth/`. Default PDK is Sky130 HD.
+
+Comb and scan campaigns share `output/<top>/.faultflow/faultflow.sqlite`. Scan ATPG:
 
 ```bash
 python3 ff.py scan --top <top> -c config.ofs

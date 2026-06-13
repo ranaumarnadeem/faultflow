@@ -404,12 +404,12 @@ def test_runner_verification_failure_aborts_before_sim(
 
     def fake_write_reports(*_args: object, **_kwargs: object) -> tuple[object, ...]:
         called["report"] = True
-        report_path = tmp_path / "output" / "demo" / "coverage_report.json"
+        report_path = tmp_path / "output" / "demo" / ".faultflow" / "intermediate" / "coverage_report.json"
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text("{}", encoding="utf-8")
         return (
             report_path,
-            tmp_path / "output" / "demo" / "fault_report.txt",
+            tmp_path / "output" / "demo" / "coverage.rpt",
             {"summary": {"coverage_percent": 100.0}},
         )
 
@@ -419,7 +419,7 @@ def test_runner_verification_failure_aborts_before_sim(
         runner.sim()
 
     assert called["report"] is False
-    assert not (tmp_path / "output" / "demo" / "coverage_report.json").exists()
+    assert not (tmp_path / "output" / "demo" / ".faultflow" / "intermediate" / "coverage_report.json").exists()
 
 
 def test_runner_verification_dependency_failure_writes_report(

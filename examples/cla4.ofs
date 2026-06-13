@@ -1,8 +1,8 @@
 [design]
 netlist = examples/cla4.v
-cell_lib = cells/osu/osu035.json
-liberty = cells/osu/osu035_stdcells.lib
-verilog_models = cells/osu/osu035_stdcells.v
+cell_lib = cells/sky130/sky130_fd_sc_hd.json
+liberty = cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib
+verilog_models = cells/sky130/sky130_fd_sc_hd.v
 yosys_ver = 0.61+129
 
 [fault_model]
@@ -19,8 +19,8 @@ verify_tool = iverilog
 [atpg]
 tool = quaigh
 mode = comb
-output = output/cla4/cla4atpg.test
+output = patterns.test
 
 [report]
-output = coverage_report.json
+output = coverage.rpt
 threshold = 95.0

@@ -20,7 +20,7 @@ verilog_models    = cells/sky130/sky130_fd_sc_hd.v
 [atpg]
 tool                 = native
 mode                 = comb
-output               = output/serial_adder/serial_adder.test
+output               = patterns.test
 random_vectors       = 64
 max_rounds           = 20
 sat_timeout_seconds  = 10

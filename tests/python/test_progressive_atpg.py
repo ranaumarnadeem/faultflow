@@ -445,7 +445,7 @@ def test_coverage_report_includes_atpg_stats(
 
     with connect(cfg.db_path) as conn:
         init_schema(conn)
-        _, _, report = write_reports(conn, cfg.output_dir, cfg.top)
+        _, _, report = write_reports(conn, cfg)
 
     run = report["run"]
     assert run["id"] == run_id
@@ -611,16 +611,16 @@ unsupported_cells = fail
     )
     monkeypatch.setattr(
         "faultflow.runner.runner.write_reports",
-        lambda conn, output_dir, top, scan_context=None, campaign_id=None: (
-            output_dir / "coverage_report.json",
-            output_dir / "fault_report.txt",
+        lambda conn, cfg, scan_context=None, campaign_id=None: (
+            cfg.coverage_json_path,
+            cfg.coverage_report_path,
             {"summary": {"coverage_percent": 50.0}},
         ),
     )
 
     cfg = load_config(cfg_path, "demo")
-    cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    (cfg.output_dir / "faultflow.sqlite").write_bytes(b"")
+    cfg.ensure_workspace()
+    cfg.db_path.write_bytes(b"")
 
     Runner(cfg).sim(ext=ext)
     assert not progressive_called

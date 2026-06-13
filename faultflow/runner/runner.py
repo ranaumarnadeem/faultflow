@@ -19,7 +19,14 @@ from faultflow.atpg import (
     parse_bench_outputs,
     parse_quaigh_test,
 )
-from faultflow.config import FaultflowConfig, LEGACY_SCAN_DB_NAME
+from faultflow.config import (
+    FaultflowConfig,
+    LEGACY_SCAN_DB_NAME,
+    benchmark_synth_bench,
+    benchmark_synth_gate_verilog,
+    benchmark_synth_json,
+    benchmark_synth_test,
+)
 from faultflow.db import (
     CAMPAIGN_TYPE_COMB,
     CAMPAIGN_TYPE_SCAN,
@@ -239,8 +246,8 @@ class Runner:
             verilog=src if src is not None else self.cfg.netlist,
             top=self.cfg.top,
             liberty=self.cfg.liberty or "",
-            json=self.cfg.output_dir / f"{self.cfg.top}.json",
-            gate_verilog=self.cfg.output_dir / f"{self.cfg.top}_gate.v",
+            json=self.cfg.intermediate_dir / f"{self.cfg.top}.json",
+            gate_verilog=self.cfg.intermediate_dir / f"{self.cfg.top}_gate.v",
         )
 
     def _existing_verilog_source(self) -> Path | None:
@@ -259,7 +266,7 @@ class Runner:
         return None
 
     def _extract_yosys_version(self) -> str:
-        log = self.cfg.output_dir / "yosys.log"
+        log = self.cfg.logs_dir / "yosys.log"
         if log.exists():
             for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
                 match = re.match(r"^Yosys\s+(.+)$", line.strip())
@@ -311,7 +318,7 @@ class Runner:
             raise FingerprintMismatchError(str(exc)) from exc
 
     def init(self) -> str:
-        self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
+        self.cfg.ensure_workspace()
         with self._db() as conn:
             existing_netlist = self._existing_json_netlist()
             if existing_netlist is not None:
@@ -323,14 +330,8 @@ class Runner:
         candidates: list[Path] = []
         if _is_json(self.cfg.netlist):
             candidates.append(self.cfg.netlist)
-        candidates.extend(
-            [
-                self.cfg.output_dir / f"{self.cfg.top}.json",
-                self.cfg.output_dir / "design.json",
-                Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}.json",
-                Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}.json",
-            ]
-        )
+        candidates.extend(benchmark_synth_json(self.cfg.top))
+        candidates.append(self.cfg.intermediate_dir / f"{self.cfg.top}.json")
         return candidates
 
     def _existing_json_netlist(self) -> Path | None:
@@ -366,10 +367,11 @@ class Runner:
     def _run_yosys(self) -> Path:
         if self.cfg.liberty is None or not self.cfg.liberty.exists():
             raise RunnerError("Yosys generation requires an existing liberty file")
+        self.cfg.ensure_workspace()
         source = self._find_verilog_source()
-        json_path = self.cfg.output_dir / f"{self.cfg.top}.json"
-        gate_v = self.cfg.output_dir / f"{self.cfg.top}_gate.v"
-        script = self.cfg.output_dir / "yosys_synth.tcl"
+        json_path = self.cfg.intermediate_dir / f"{self.cfg.top}.json"
+        gate_v = self.cfg.intermediate_dir / f"{self.cfg.top}_gate.v"
+        script = self.cfg.generated_scripts_dir / "yosys_synth.tcl"
         script.write_text(
             YOSYS_TEMPLATE.format(
                 verilog=source,
@@ -387,16 +389,13 @@ class Runner:
             stderr=subprocess.STDOUT,
             check=False,
         )
-        (self.cfg.output_dir / "yosys.log").write_text(proc.stdout, encoding="utf-8")
+        (self.cfg.logs_dir / "yosys.log").write_text(proc.stdout, encoding="utf-8")
         if proc.returncode != 0:
-            raise RunnerError(f"Yosys failed; see {self.cfg.output_dir / 'yosys.log'}")
+            raise RunnerError(f"Yosys failed; see {self.cfg.logs_dir / 'yosys.log'}")
         return json_path
 
-    def _scan_dir(self) -> Path:
-        return self.cfg.output_dir / "scan"
-
     def _scan_manifest_path(self) -> Path:
-        return self._scan_dir() / "scan_manifest.json"
+        return self.cfg.scan_manifest_path
 
     def scan(
         self,
@@ -408,9 +407,7 @@ class Runner:
         scan_enable: str | None = None,
         dry_run: bool = False,
     ) -> str:
-        self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
-        scan_dir = self._scan_dir()
-        scan_dir.mkdir(parents=True, exist_ok=True)
+        self.cfg.ensure_workspace()
         netlist = self._find_netlist()
         chains = self.cfg.scan.chains if scan_chains is None else scan_chains
         max_len = (
@@ -439,9 +436,9 @@ class Runner:
                 raise RunnerError(str(exc)) from exc
             return format_dry_run(plan)
 
-        generic_json = scan_dir / f"{self.cfg.top}_scan_generic.json"
-        techmap_v = scan_dir / "faultflow_scanff_map.v"
-        sky130_v = scan_dir / f"{self.cfg.top}_scan_sky130.v"
+        generic_json = self.cfg.scan_json_path
+        techmap_v = self.cfg.generated_scripts_dir / "faultflow_scanff_map.v"
+        sky130_v = self.cfg.scan_verilog_path
         try:
             result = stitch_scan_json(
                 netlist_json=netlist,
@@ -462,14 +459,18 @@ class Runner:
                     techmap_verilog=techmap_v,
                     output_verilog=sky130_v,
                     top=result.top,
-                    log_path=scan_dir / "yosys_scan.log",
-                    script_path=scan_dir / "yosys_scan.ys",
+                    log_path=self.cfg.logs_dir / "yosys_scan.log",
+                    script_path=self.cfg.generated_scripts_dir / "yosys_scan.ys",
                 )
         except ScanError as exc:
             raise RunnerError(str(exc)) from exc
 
         manifest = manifest_from_result(result, netlist, techmap_v, techmapped)
-        write_scan_artifacts(scan_dir, manifest)
+        write_scan_artifacts(
+            self.cfg.manifests_dir,
+            self.cfg.scan_report_path,
+            manifest,
+        )
         manifest_path = self._scan_manifest_path()
         tech_note = f" sky130={sky130_v}" if do_techmap else " sky130=skipped"
         return (
@@ -503,7 +504,7 @@ class Runner:
         if _hash_file(generic_json) != str(manifest.get("generic_json_hash", "")):
             raise RunnerError("generic scan JSON hash does not match manifest")
         techmap_v = Path(str(manifest["techmap_verilog"]))
-        sky130_v = self._scan_dir() / f"{self.cfg.top}_scan_sky130.v"
+        sky130_v = self.cfg.scan_verilog_path
         write_scan_techmap(techmap_v)
         try:
             techmapped = run_scan_techmap(
@@ -511,13 +512,17 @@ class Runner:
                 techmap_verilog=techmap_v,
                 output_verilog=sky130_v,
                 top=str(manifest["top"]),
-                log_path=self._scan_dir() / "yosys_scan.log",
-                script_path=self._scan_dir() / "yosys_scan.ys",
+                log_path=self.cfg.logs_dir / "yosys_scan.log",
+                script_path=self.cfg.generated_scripts_dir / "yosys_scan.ys",
             )
         except ScanError as exc:
             raise RunnerError(str(exc)) from exc
         manifest["sky130_verilog"] = str(techmapped)
-        write_scan_artifacts(self._scan_dir(), manifest)
+        write_scan_artifacts(
+            self.cfg.manifests_dir,
+            self.cfg.scan_report_path,
+            manifest,
+        )
         return f"scan techmap complete top={manifest['top']} sky130={techmapped}"
 
     def _scan_vector_source(
@@ -534,11 +539,8 @@ class Runner:
             return vectors, str(vectors_path)
 
         candidates = [
-            self.cfg.atpg.output,
-            self.cfg.output_dir / f"{self.cfg.top}atpg.test",
-            self.cfg.output_dir / "atpg.test",
-            (Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}atpg.test"),
-            (Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}atpg.test"),
+            self.cfg.patterns_path,
+            *benchmark_synth_test(self.cfg.top),
         ]
         for path in candidates:
             if path.exists():
@@ -577,10 +579,8 @@ class Runner:
     ) -> list[str]:
         input_names = set(_port_names(source_json, self.cfg.top, "input"))
         candidates = [
-            self.cfg.output_dir / f"{self.cfg.top}.bench",
-            self.cfg.output_dir / "design.bench",
-            Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}.bench",
-            Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}.bench",
+            self.cfg.intermediate_dir / f"{self.cfg.top}.bench",
+            *benchmark_synth_bench(self.cfg.top),
         ]
         for path in candidates:
             if not path.exists():
@@ -731,7 +731,11 @@ class Runner:
             "generic_json_hash": hash_file(Path(str(manifest["generic_json"]))),
         }
         manifest["latest_check"] = latest_check
-        write_scan_artifacts(self._scan_dir(), manifest)
+        write_scan_artifacts(
+            self.cfg.manifests_dir,
+            self.cfg.scan_report_path,
+            manifest,
+        )
         if errors:
             raise RunnerError("scan-check failed: " + "; ".join(errors))
         return (
@@ -742,10 +746,8 @@ class Runner:
 
     def _find_bench_sidecar(self) -> tuple[Path, list[str]]:
         candidates = [
-            self.cfg.output_dir / f"{self.cfg.top}.bench",
-            self.cfg.output_dir / "design.bench",
-            Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}.bench",
-            Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}.bench",
+            self.cfg.intermediate_dir / f"{self.cfg.top}.bench",
+            *benchmark_synth_bench(self.cfg.top),
         ]
         for path in candidates:
             if path.exists():
@@ -753,7 +755,7 @@ class Runner:
         return self._run_nl2bench()
 
     def _run_nl2bench(self) -> tuple[Path, list[str]]:
-        gate_v = self.cfg.output_dir / f"{self.cfg.top}_gate.v"
+        gate_v = self.cfg.intermediate_dir / f"{self.cfg.top}_gate.v"
         if not gate_v.exists():
             self._run_yosys()
         if not gate_v.exists():
@@ -761,7 +763,7 @@ class Runner:
         if self.cfg.liberty is None or not self.cfg.liberty.exists():
             raise RunnerError("BENCH generation requires an existing liberty file")
 
-        bench = self.cfg.output_dir / f"{self.cfg.top}.bench"
+        bench = self.cfg.intermediate_dir / f"{self.cfg.top}.bench"
         nl2bench = Path("venv/bin/nl2bench")
         tool = str(nl2bench) if nl2bench.exists() else shutil.which("nl2bench")
         if tool is None:
@@ -778,10 +780,10 @@ class Runner:
             stderr=subprocess.STDOUT,
             check=False,
         )
-        (self.cfg.output_dir / "nl2bench.log").write_text(proc.stdout, encoding="utf-8")
+        (self.cfg.logs_dir / "nl2bench.log").write_text(proc.stdout, encoding="utf-8")
         if proc.returncode != 0:
             raise RunnerError(
-                f"nl2bench failed; see {self.cfg.output_dir / 'nl2bench.log'}"
+                f"nl2bench failed; see {self.cfg.logs_dir / 'nl2bench.log'}"
             )
         return bench, parse_bench_inputs(bench)
 
@@ -790,14 +792,8 @@ class Runner:
 
     def _gate_verilog_candidates(self) -> list[Path]:
         return [
-            self.cfg.output_dir / f"{self.cfg.top}_gate.v",
-            self.cfg.output_dir / f"{self.cfg.top}_synth.v",
-            Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}_synth.v",
-            Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}.nl.v",
-            Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}.cut.v",
-            Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}_synth.v",
-            Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}.nl.v",
-            Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}.cut.v",
+            self.cfg.intermediate_dir / f"{self.cfg.top}_gate.v",
+            *benchmark_synth_gate_verilog(self.cfg.top),
         ]
 
     def _find_gate_verilog(self) -> Path:
@@ -815,11 +811,8 @@ class Runner:
 
     def _find_vectors(self) -> Path:
         candidates = [
-            self.cfg.atpg.output,
-            self.cfg.output_dir / f"{self.cfg.top}atpg.test",
-            self.cfg.output_dir / "atpg.test",
-            (Path("tests/benchmarks/iscas85/synth") / f"{self.cfg.top}atpg.test"),
-            (Path("tests/benchmarks/iscas89/synth") / f"{self.cfg.top}atpg.test"),
+            self.cfg.patterns_path,
+            *benchmark_synth_test(self.cfg.top),
         ]
         for path in candidates:
             if path.exists():
@@ -830,7 +823,7 @@ class Runner:
         sidecar, _ = self._find_bench_sidecar()
         if sidecar.suffix != ".bench":
             raise RunnerError("Quaigh ATPG input must be .bench")
-        output = self.cfg.output_dir / f"{self.cfg.top}atpg.test"
+        output = self.cfg.patterns_path
         proc = subprocess.run(
             ["quaigh", "atpg", str(sidecar), "-o", str(output)],
             text=True,
@@ -838,18 +831,18 @@ class Runner:
             stderr=subprocess.STDOUT,
             check=False,
         )
-        (self.cfg.output_dir / "quaigh.log").write_text(proc.stdout, encoding="utf-8")
+        (self.cfg.logs_dir / "quaigh.log").write_text(proc.stdout, encoding="utf-8")
         if proc.returncode != 0:
             raise RunnerError(
-                f"Quaigh failed; see {self.cfg.output_dir / 'quaigh.log'}"
+                f"Quaigh failed; see {self.cfg.logs_dir / 'quaigh.log'}"
             )
         return output
 
     def _purge_transients(self) -> int:
         removed = 0
-        if not self.cfg.output_dir.exists():
+        if not self.cfg.workspace_dir.exists():
             return removed
-        for path in self.cfg.output_dir.rglob("*"):
+        for path in self.cfg.workspace_dir.rglob("*"):
             if path.name not in TRANSIENT_NAMES and path.suffix not in {".pyc", ".pyo"}:
                 continue
             if path.is_dir():
@@ -859,14 +852,12 @@ class Runner:
             removed += 1
         return removed
 
-    def _clean_db(self, scan: bool = False) -> int:
+    def _clean_workspace(self, scan: bool = False) -> int:
         del scan
         removed = 0
-        db_paths = [
-            self.cfg.db_path,
-            self.cfg.output_dir / LEGACY_SCAN_DB_NAME,
-        ]
-        for base in db_paths:
+        legacy_db_names = ("faultflow.sqlite", LEGACY_SCAN_DB_NAME)
+        for name in legacy_db_names:
+            base = self.cfg.output_dir / name
             for path in [
                 base,
                 base.with_name(base.name + "-wal"),
@@ -876,6 +867,14 @@ class Runner:
                 if path.exists():
                     path.unlink()
                     removed += 1
+        legacy_scan = self.cfg.output_dir / "scan"
+        if legacy_scan.exists():
+            shutil.rmtree(legacy_scan)
+            removed += 1
+        if self.cfg.workspace_dir.exists():
+            shutil.rmtree(self.cfg.workspace_dir)
+            removed += 1
+        self.cfg.ensure_workspace()
         return removed
 
     def _simulate_with_core(
@@ -1021,7 +1020,7 @@ class Runner:
         output_order: list[str],
         expected_outputs: list[dict[str, bool]],
     ) -> Path:
-        path = self.cfg.output_dir / "verified_vectors.json"
+        path = self.cfg.intermediate_dir / "verified_vectors.json"
         rows = []
         for index, (inputs, expected) in enumerate(
             zip(vectors.vectors, expected_outputs), 1
@@ -1048,7 +1047,7 @@ class Runner:
         return path
 
     def _mark_verification_failure(self, error: str) -> None:
-        verify_dir = self.cfg.output_dir / "verify"
+        verify_dir = self.cfg.verification_dir
         json_path = verify_dir / "verification_report.json"
         txt_path = verify_dir / "verification_report.txt"
         if json_path.exists():
@@ -1087,7 +1086,7 @@ class Runner:
         output_order = parse_bench_outputs(sidecar)
         verifier = IverilogVerifier(
             top=self.cfg.top,
-            work_dir=self.cfg.output_dir / "verify",
+            work_dir=self.cfg.verification_dir,
             gate_verilog=self._find_gate_verilog(),
             verilog_models=[self.cfg.verilog_models],
         )
@@ -1100,7 +1099,7 @@ class Runner:
         cpp_outputs = self._fault_free_outputs_with_core(netlist, vectors, output_order)
         if cpp_outputs != result.expected_outputs:
             error = "C++ fault-free outputs did not match Iverilog golden outputs"
-            mismatch_path = self.cfg.output_dir / "verify" / "cpp_crosscheck.txt"
+            mismatch_path = self.cfg.verification_dir / "cpp_crosscheck.txt"
             mismatch_path.parent.mkdir(parents=True, exist_ok=True)
             mismatch_path.write_text(
                 error + "\n",
@@ -1181,8 +1180,8 @@ class Runner:
             )
 
         total_start = time.perf_counter()
-        self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
-        cleaned = self._clean_db() if clean else 0
+        self.cfg.ensure_workspace()
+        cleaned = self._clean_workspace() if clean else 0
         removed = self._purge_transients() if purge else 0
         netlist = self._find_netlist()
         verify_enabled = self.cfg.simulation.verify if verify is None else verify
@@ -1234,7 +1233,7 @@ class Runner:
                     target_coverage=target_coverage,
                 )
             )
-            sidecar = self.cfg.output_dir / "native_sat_atpg"
+            sidecar = self.cfg.intermediate_dir / "native_sat_atpg"
             vector_source = "native_sat_atpg"
             atpg_terminal = atpg_stats.terminal_reason
             if verify_enabled:
@@ -1251,8 +1250,7 @@ class Runner:
         with self._db() as conn:
             json_path, txt_path, report = write_reports(
                 conn,
-                self.cfg.output_dir,
-                self.cfg.top,
+                self.cfg,
                 campaign_id=campaign_id,
             )
 
@@ -1282,8 +1280,8 @@ class Runner:
         )
 
         total_start = time.perf_counter()
-        self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
-        cleaned = self._clean_db() if clean else 0
+        self.cfg.ensure_workspace()
+        cleaned = self._clean_workspace() if clean else 0
         removed = self._purge_transients() if purge else 0
         from faultflow.scan.detection_pipeline import build_scan_pipeline_context
 
@@ -1292,8 +1290,8 @@ class Runner:
         view, pseudo_port_map = build_scan_atpg_view(
             _load_json_object(generic_json), manifest
         )
-        atpg_view_path = self.cfg.output_dir / "scan_atpg_view.json"
-        pseudo_map_path = self.cfg.output_dir / "scan_pseudo_port_map.json"
+        atpg_view_path = self.cfg.intermediate_dir / "scan_atpg_view.json"
+        pseudo_map_path = self.cfg.intermediate_dir / "scan_pseudo_port_map.json"
         atpg_view_path.write_text(
             json.dumps(view, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -1349,8 +1347,7 @@ class Runner:
         with self._db(scan=True) as conn:
             json_path, txt_path, report = write_reports(
                 conn,
-                self.cfg.output_dir,
-                self.cfg.top,
+                self.cfg,
                 scan_context=scan_context,
                 campaign_id=campaign_id,
             )
