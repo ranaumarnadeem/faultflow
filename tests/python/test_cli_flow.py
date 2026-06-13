@@ -296,6 +296,40 @@ def test_coverage_report_schema_and_denominator_invariant(tmp_path: Path) -> Non
         conn.close()
 
 
+def test_ext_without_bench_sidecar_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    netlist = tmp_path / "demo.json"
+    netlist.write_text(
+        '{"creator":"yosys","modules":{"demo":{"attributes":{"top":1},'
+        '"ports":{"a":{"direction":"input","bits":[2]},'
+        '"y":{"direction":"output","bits":[3]}},"cells":{}}}}',
+        encoding="utf-8",
+    )
+    cfg.write_text(
+        f"""
+[design]
+netlist = {netlist}
+cell_lib = {Path(__file__).resolve().parents[2] / "cells/osu/osu035.json"}
+
+[simulation]
+unsupported_cells = fail
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    ext = tmp_path / "vectors.test"
+    ext.write_text("vector\na=0\n", encoding="utf-8")
+
+    runner = Runner(load_config(cfg, "demo"))
+    runner.cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    (runner.cfg.output_dir / "faultflow.sqlite").write_bytes(b"")
+
+    with pytest.raises(RunnerError, match="BENCH sidecar"):
+        runner.sim(ext=ext)
+
+
 def test_coverage_report_rejects_denominator_invariant(tmp_path: Path) -> None:
     db_path = tmp_path / "faultflow.sqlite"
     conn = connect(db_path)
