@@ -46,4 +46,11 @@ std::vector<ProgressiveDetection> simulate_incremental(
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
     const std::string& unsupported_policy);
 
+std::vector<int64_t> simulate_tentative_detections(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, const std::map<std::string, bool>& vector,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids,
+    const std::string& unsupported_policy);
+
 }  // namespace faultflow::atpg

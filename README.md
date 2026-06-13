@@ -27,6 +27,14 @@ To reset only the SQLite database (not the whole output tree):
 python3 ff.py sim --top <top> --clean
 ```
 
+Comb and scan campaigns share `output/<top>/faultflow.sqlite`. Scan ATPG:
+
+```bash
+python3 ff.py scan --top <top> -c config.ofs
+python3 ff.py scan-check --top <top> -c config.ofs
+python3 ff.py sim --scan --top <top> -c config.ofs
+```
+
 ## Build
 
 ```bash

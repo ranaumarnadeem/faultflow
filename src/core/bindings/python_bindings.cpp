@@ -309,6 +309,23 @@ py::list simulate_incremental_py(
   return out;
 }
 
+py::list simulate_tentative_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path,
+    const std::map<std::string, bool>& vector,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids,
+    const std::string& unsupported_policy) {
+  const std::vector<int64_t> detected = atpg::simulate_tentative_detections(
+      json_path, cell_map_path, db_path, vector, input_order, fault_ids,
+      unsupported_policy);
+  py::list out;
+  for (int64_t fault_id : detected) {
+    out.append(fault_id);
+  }
+  return out;
+}
+
 void invalidate_stale_redundant_py(const std::string& db_path,
                                    int64_t campaign_id,
                                    const std::string& redundancy_model_id) {
@@ -386,6 +403,64 @@ py::dict simulate_scan_pattern_py(
   return out;
 }
 
+py::dict simulate_scan_protocol_faults_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& clock_port, const std::string& scan_enable_port,
+    const std::vector<std::string>& scan_input_ports,
+    const std::vector<std::string>& scan_output_ports,
+    const std::vector<std::string>& functional_output_ports,
+    int max_chain_length,
+    const std::map<int, std::vector<bool>>& load_seqs,
+    const std::map<std::string, bool>& capture_pi_values,
+    const std::vector<std::pair<uint32_t, uint8_t>>& faults,
+    const std::string& unsupported_policy) {
+  scan::ScanProtocolFaultRequest request;
+  request.pattern.clock_port = clock_port;
+  request.pattern.scan_enable_port = scan_enable_port;
+  request.pattern.scan_input_ports = scan_input_ports;
+  request.pattern.scan_output_ports = scan_output_ports;
+  request.pattern.functional_output_ports = functional_output_ports;
+  request.pattern.max_chain_length = max_chain_length;
+  request.pattern.load_seqs = load_seqs;
+  request.pattern.capture_pi_values = capture_pi_values;
+  request.faults.reserve(faults.size());
+  for (const auto& [net_index, fault_type] : faults) {
+    scan::ScanProtocolFaultSpec spec;
+    spec.compiled_net_index = net_index;
+    spec.fault_type = fault_type;
+    request.faults.push_back(spec);
+  }
+  const scan::ScanProtocolFaultSimResult result =
+      scan::simulate_scan_protocol_faults(
+      json_path, cell_map_path, request, unsupported_policy);
+  py::dict out;
+  out["golden_real_po_values"] = result.golden.real_po_values;
+  py::dict golden_unload;
+  for (const auto& [chain_id, bits] : result.golden.unload_seqs) {
+    golden_unload[py::int_(chain_id)] = bits;
+  }
+  out["golden_unload_seqs"] = golden_unload;
+  py::list batches;
+  for (const auto& batch : result.batches) {
+    py::dict batch_dict;
+    batch_dict["batch_index"] = batch.batch_index;
+    py::list lanes;
+    for (const auto& lane : batch.lanes) {
+      py::dict lane_dict;
+      lane_dict["fault_index"] = lane.fault_index;
+      lane_dict["outcome"] =
+          lane.outcome == scan::ScanProtocolFaultOutcome::PASS
+              ? "pass"
+              : "no_capture_or_unload_effect";
+      lanes.append(lane_dict);
+    }
+    batch_dict["lanes"] = lanes;
+    batches.append(batch_dict);
+  }
+  out["batches"] = batches;
+  return out;
+}
+
 py::list list_site_keys_py(const std::string& json_path,
                            const std::string& cell_map_path,
                            const std::string& unsupported_policy) {
@@ -451,6 +526,10 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("campaign_id"), py::arg("run_id"), py::arg("new_vectors"),
         py::arg("input_order"), py::arg("fault_ids"),
         py::arg("vector_start_index"), py::arg("unsupported_policy") = "fail");
+  m.def("simulate_tentative", &faultflow::simulate_tentative_py,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
+        py::arg("vector"), py::arg("input_order"), py::arg("fault_ids"),
+        py::arg("unsupported_policy") = "fail");
   m.def("invalidate_stale_redundant", &faultflow::invalidate_stale_redundant_py,
         py::arg("db_path"), py::arg("campaign_id"),
         py::arg("redundancy_model_id"));
@@ -475,6 +554,14 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("scan_output_ports"), py::arg("functional_output_ports"),
         py::arg("max_chain_length"), py::arg("load_seqs"),
         py::arg("capture_pi_values"), py::arg("unsupported_policy") = "fail");
+  m.def("simulate_scan_protocol_faults",
+        &faultflow::simulate_scan_protocol_faults_py,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("clock_port"),
+        py::arg("scan_enable_port"), py::arg("scan_input_ports"),
+        py::arg("scan_output_ports"), py::arg("functional_output_ports"),
+        py::arg("max_chain_length"), py::arg("load_seqs"),
+        py::arg("capture_pi_values"), py::arg("faults"),
+        py::arg("unsupported_policy") = "fail");
   m.def("list_site_keys", &faultflow::list_site_keys_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail");
 }

@@ -3,7 +3,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from faultflow.config import ConfigError, load_config, parse_bool_value
+from faultflow.config import (
+    ConfigError,
+    LEGACY_SCAN_DB_NAME,
+    load_config,
+    parse_bool_value,
+)
 from faultflow.runner import Runner, RunnerError
 
 
@@ -28,7 +33,10 @@ def _parser() -> argparse.ArgumentParser:
     sim.add_argument(
         "--clean",
         action="store_true",
-        help="Remove output/<top>/faultflow.sqlite (or faultflow_scan.sqlite with --scan) before sim",
+        help=(
+            "Remove output/<top>/faultflow.sqlite (and legacy "
+            f"{LEGACY_SCAN_DB_NAME} if present) before sim"
+        ),
     )
     sim.add_argument(
         "-v",
@@ -64,7 +72,7 @@ def _parser() -> argparse.ArgumentParser:
     status.add_argument(
         "--scan",
         action="store_true",
-        help="Read status from output/<top>/faultflow_scan.sqlite",
+        help="Read status from the scan campaign in output/<top>/faultflow.sqlite",
     )
 
     scan = sub.add_parser("scan", help="Insert generic scan chains")

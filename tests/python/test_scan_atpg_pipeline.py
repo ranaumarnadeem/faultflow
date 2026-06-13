@@ -133,7 +133,7 @@ def test_sim_scan_passes_scan_db_to_progressive_atpg(
         captured["campaign_id"] = kwargs.get("campaign_id")
         captured["netlist"] = netlist
         captured["vector_source"] = kwargs.get("vector_source")
-        captured["on_vector_accepted"] = kwargs.get("on_vector_accepted")
+        captured["scan_ctx"] = kwargs.get("scan_ctx")
         return (
             VectorSet("scan_native_sat_atpg", ["D"], [{"D": False}]),
             AtpgStats(terminal_reason="COMPLETE"),
@@ -167,7 +167,7 @@ def test_sim_scan_passes_scan_db_to_progressive_atpg(
     result = runner.sim(scan=True)
     assert captured["campaign_id"] == 1
     assert captured["vector_source"] == "scan_native_sat_atpg"
-    assert captured["on_vector_accepted"] is not None
+    assert captured["scan_ctx"] is not None
     netlist = captured["netlist"]
     assert isinstance(netlist, Path)
     assert netlist.name == "scan_atpg_view.json"
@@ -232,6 +232,4 @@ def test_comb_and_scan_share_unified_db_path(tmp_path: Path) -> None:
     source.write_text(json.dumps(_tiny_dff_json(), indent=2) + "\n", encoding="utf-8")
     cfg = load_config(_write_config(tmp_path / "config.ofs", source), "tiny_dff")
     assert cfg.db_path.name == "faultflow.sqlite"
-    # scan_db_path remains as a legacy alias path; runner uses db_path for both modes.
-    assert cfg.scan_db_path.name == "faultflow_scan.sqlite"
-    assert cfg.db_path.parent == cfg.scan_db_path.parent
+    assert cfg.db_path == cfg.output_dir / "faultflow.sqlite"

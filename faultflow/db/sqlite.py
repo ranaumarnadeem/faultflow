@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS atpg_candidates (
         REFERENCES vectors(campaign_id, id)
 );
 
-CREATE TABLE IF NOT EXISTS tier_b_rejections (
+CREATE TABLE IF NOT EXISTS candidate_rejections (
     campaign_id INTEGER NOT NULL,
     run_id INTEGER NOT NULL,
     candidate_id INTEGER NOT NULL,
@@ -177,7 +177,11 @@ def _is_legacy_schema(conn: sqlite3.Connection) -> bool:
     if not _table_exists(conn, "faults"):
         return False
     version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    return version < EXPECTED_USER_VERSION or not _table_exists(conn, "campaigns")
+    if version < EXPECTED_USER_VERSION:
+        return True
+    if _table_exists(conn, "tier_b_rejections"):
+        return True
+    return not _table_exists(conn, "campaigns")
 
 
 def init_schema(conn: sqlite3.Connection) -> None:

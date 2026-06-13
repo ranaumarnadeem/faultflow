@@ -17,7 +17,7 @@ PPO_PREFIX = "__ppo_"
 OBSERVE_BUF_CELL = "$faultflow_observe_buf"
 D_BRANCH_BUF_CELL = "$faultflow_d_branch_buf"
 DATA_PIN = "D"
-ATPG_VIEW_SCHEMA_VER = "v4-observe-buf-1"
+ATPG_VIEW_SCHEMA_VER = "scan-atpg-view-observe-buf-1"
 
 
 def _ppi_name(instance: str) -> str:

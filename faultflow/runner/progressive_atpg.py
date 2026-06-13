@@ -9,7 +9,13 @@ from typing import Any
 
 from faultflow.atpg import VectorSet
 from faultflow.config import FaultflowConfig
-from faultflow.db import CAMPAIGN_TYPE_COMB, connect, init_schema, summary
+from faultflow.db import (
+    CAMPAIGN_TYPE_COMB,
+    CAMPAIGN_TYPE_SCAN,
+    connect,
+    init_schema,
+    summary,
+)
 from faultflow.runner.runner import RunnerError
 
 DEFAULT_MAX_ATPG_ROUNDS = 20
@@ -185,10 +191,29 @@ def run_progressive_native_atpg(
     vector_source: str = "native_sat_atpg",
     campaign_type: str = CAMPAIGN_TYPE_COMB,
     on_vector_accepted: Callable[[dict[str, bool], int | None], None] | None = None,
+    scan_ctx: Any | None = None,
 ) -> tuple[VectorSet, AtpgStats, int, float, float]:
     from faultflow.runner.runner import _load_core, _port_names
 
-    del campaign_type  # reserved for scan-specific candidate pipeline wiring
+    if campaign_type == CAMPAIGN_TYPE_SCAN:
+        if scan_ctx is None:
+            raise RunnerError("scan_ctx is required for scan progressive ATPG")
+        from faultflow.scan.detection_pipeline import run_progressive_scan_atpg
+
+        return run_progressive_scan_atpg(
+            cfg,
+            netlist,
+            redundancy_model,
+            campaign_id=campaign_id,
+            scan_ctx=scan_ctx,
+            max_rounds=max_rounds,
+            target_coverage=target_coverage,
+            db_path=db_path,
+            cell_map_path=cell_map_path,
+            vector_source=vector_source,
+        )
+
+    del scan_ctx
 
     core = _load_core()
     if core is None:

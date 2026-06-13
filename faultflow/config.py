@@ -105,9 +105,8 @@ class FaultflowConfig:
     def db_path(self) -> Path:
         return self.output_dir / "faultflow.sqlite"
 
-    @property
-    def scan_db_path(self) -> Path:
-        return self.output_dir / "faultflow_scan.sqlite"
+
+LEGACY_SCAN_DB_NAME = "faultflow_scan.sqlite"
 
 
 def _path(parser: ConfigParser, section: str, key: str, default: str) -> Path:

@@ -124,7 +124,7 @@ CREATE TABLE atpg_candidates (
     REFERENCES vectors(campaign_id, id)
 );
 
-CREATE TABLE tier_b_rejections (
+CREATE TABLE candidate_rejections (
   campaign_id INTEGER NOT NULL,
   run_id INTEGER NOT NULL,
   candidate_id INTEGER NOT NULL,

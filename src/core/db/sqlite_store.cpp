@@ -262,7 +262,7 @@ CREATE TABLE IF NOT EXISTS atpg_candidates (
     FOREIGN KEY (campaign_id, accepted_vector_id)
         REFERENCES vectors(campaign_id, id)
 );
-CREATE TABLE IF NOT EXISTS tier_b_rejections (
+CREATE TABLE IF NOT EXISTS candidate_rejections (
     campaign_id INTEGER NOT NULL,
     run_id INTEGER NOT NULL,
     candidate_id INTEGER NOT NULL,

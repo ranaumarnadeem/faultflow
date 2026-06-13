@@ -4,12 +4,36 @@ from pathlib import Path
 from typing import Any
 
 from faultflow.config import FaultflowConfig
-from faultflow.scan.atpg_view import PPO_PREFIX
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.protocol import ScanPattern, serialize_vector
 
 
-def verify_scan_pattern_tier_b(
+def reduced_protocol_matches(
+    cfg: FaultflowConfig,
+    manifest: dict[str, Any],
+    generic_json: Path,
+    pattern: ScanPattern,
+    *,
+    reduced_vector: dict[str, bool],
+    functional_output_order: list[str],
+) -> bool:
+    try:
+        verify_golden_scan_protocol(
+            cfg,
+            manifest,
+            generic_json,
+            pattern,
+            vector_index=0,
+            fault_id=None,
+            reduced_vector=reduced_vector,
+            functional_output_order=functional_output_order,
+        )
+    except Exception:
+        return False
+    return True
+
+
+def verify_golden_scan_protocol(
     cfg: FaultflowConfig,
     manifest: dict[str, Any],
     generic_json: Path,
@@ -75,7 +99,7 @@ def verify_scan_pattern_tier_b(
         actual = bool(real_po_values.get(port, False))
         if expected != actual:
             raise RunnerError(
-                "Tier B scan protocol mismatch on functional PO "
+                "golden scan protocol mismatch on functional PO "
                 f"vector_index={vector_index} fault_id={fault_id} "
                 f"port={port} expected={expected} actual={actual}"
             )
@@ -84,36 +108,7 @@ def verify_scan_pattern_tier_b(
         actual_bits = unload_seqs.get(chain_id, [])
         if actual_bits != expected_bits:
             raise RunnerError(
-                "Tier B scan protocol mismatch on unload sequence "
+                "golden scan protocol mismatch on unload sequence "
                 f"vector_index={vector_index} fault_id={fault_id} "
                 f"chain_id={chain_id} expected={expected_bits} actual={actual_bits}"
             )
-
-
-def make_tier_b_verifier(
-    cfg: FaultflowConfig,
-    manifest: dict[str, Any],
-    generic_json: Path,
-    pseudo_port_map: dict[str, dict[str, Any]],
-    reduced_output_order: list[str],
-):
-    functional_output_order = [
-        port for port in reduced_output_order if not port.startswith(PPO_PREFIX)
-    ]
-    state = {"vector_index": 0}
-
-    def _verify(vector: dict[str, bool], fault_id: int | None) -> None:
-        state["vector_index"] += 1
-        pattern = serialize_vector(vector, pseudo_port_map, manifest)
-        verify_scan_pattern_tier_b(
-            cfg,
-            manifest,
-            generic_json,
-            pattern,
-            vector_index=state["vector_index"],
-            fault_id=fault_id,
-            reduced_vector=vector,
-            functional_output_order=functional_output_order,
-        )
-
-    return _verify

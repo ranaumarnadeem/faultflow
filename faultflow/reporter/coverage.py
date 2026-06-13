@@ -144,6 +144,7 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         raise CoverageError(f"coverage report missing keys: {sorted(missing)}")
     summary_required = {
         "total_raw_faults",
+        "structural_eligible",
         "denominator",
         "detected",
         "undetected",
@@ -152,6 +153,9 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         "excluded_blackbox",
         "excluded_clock",
         "excluded_reset",
+        "protocol_unresolved",
+        "fault_coverage_percent",
+        "test_coverage_percent",
         "coverage_percent",
     }
     summary_missing = summary_required - set(report["summary"])
@@ -263,6 +267,7 @@ def write_reports(
         [
             "",
             f"total_raw_faults:    {data['total_raw_faults']}",
+            f"structural_eligible: {data['structural_eligible']}",
             f"denominator:         {data['denominator']}",
             f"detected:            {data['detected']}",
             f"undetected:          {data['undetected']}",
@@ -271,6 +276,9 @@ def write_reports(
             f"excluded_blackbox:   {data['excluded_blackbox']}",
             f"excluded_clock:      {data['excluded_clock']}",
             f"excluded_reset:      {data['excluded_reset']}",
+            f"protocol_unresolved: {data['protocol_unresolved']}",
+            f"fault_coverage_%:    {data['fault_coverage_percent']:.3f}",
+            f"test_coverage_%:     {data['test_coverage_percent']:.3f}",
             f"coverage_percent:    {data['coverage_percent']:.3f}",
             "",
             "run:",
@@ -299,9 +307,11 @@ def write_reports(
         ]
     )
     for fault in cast(list[dict[str, Any]], report["undetected_faults"]):
+        proto = " protocol_unresolved" if fault.get("protocol_unresolved") else ""
         txt.append(
             f"- id={fault['id']} net={fault['net_id']} "
             f"name={fault['net_name']} type={fault['fault_type']}"
+            f" site={fault.get('fault_site_key', '')}{proto}"
         )
     txt.append("")
     txt_path.write_text("\n".join(txt), encoding="utf-8")

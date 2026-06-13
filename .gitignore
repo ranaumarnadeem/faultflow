@@ -29,3 +29,5 @@ cells/
 parser.out
 parsetab.py
 config.ofs.example*
+
+docs/

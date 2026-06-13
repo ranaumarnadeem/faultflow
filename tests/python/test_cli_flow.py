@@ -317,6 +317,43 @@ def test_coverage_report_schema_and_denominator_invariant(tmp_path: Path) -> Non
         conn.close()
 
 
+def test_coverage_report_text_includes_protocol_fields(tmp_path: Path) -> None:
+    db_path = tmp_path / "faultflow.sqlite"
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        campaign_id = insert_campaign(conn, campaign_type="scan", top="scan_top")
+        insert_run(conn, campaign_id)
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=9,
+            net_name="__ppo_u0",
+            compiled_net_index=9,
+            fault_type="sa0",
+            status="undetected",
+            fault_site_key="net:9:stem",
+        )
+        fault_id = int(conn.execute("SELECT id FROM faults").fetchone()[0])
+        conn.execute(
+            "UPDATE faults SET protocol_unresolved = 1 WHERE id = ?",
+            (fault_id,),
+        )
+        conn.commit()
+
+        _, txt_path, report = write_reports(
+            conn, tmp_path, "scan_top", campaign_id=campaign_id
+        )
+        text = txt_path.read_text(encoding="utf-8")
+        assert report["summary"]["protocol_unresolved"] == 1
+        assert "protocol_unresolved: 1" in text
+        assert "fault_coverage_%:" in text
+        assert "test_coverage_%:" in text
+        assert "protocol_unresolved" in text.split("undetected faults:")[-1]
+    finally:
+        conn.close()
+
+
 def test_ext_without_bench_sidecar_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1,10 +1,13 @@
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
 
 namespace faultflow::scan {
+
+constexpr int kScanProtocolFaultBatchSize = 63;
 
 struct ScanPatternRequest {
   std::string clock_port;
@@ -22,8 +25,47 @@ struct ScanPatternResult {
   std::map<int, std::vector<bool>> unload_seqs;
 };
 
+enum class ScanProtocolFaultOutcome : uint8_t {
+  PASS = 0,
+  NO_CAPTURE_OR_UNLOAD_EFFECT = 1,
+};
+
+struct ScanProtocolFaultSpec {
+  uint32_t compiled_net_index = 0;
+  uint8_t fault_type = 0;  // 0=SA0, 1=SA1
+};
+
+struct ScanProtocolFaultRequest {
+  ScanPatternRequest pattern;
+  std::vector<ScanProtocolFaultSpec> faults;
+};
+
+struct ScanProtocolFaultLaneResult {
+  size_t fault_index = 0;
+  ScanProtocolFaultOutcome outcome =
+      ScanProtocolFaultOutcome::NO_CAPTURE_OR_UNLOAD_EFFECT;
+};
+
+struct ScanProtocolFaultBatchResult {
+  int batch_index = 0;
+  std::vector<ScanProtocolFaultLaneResult> lanes;
+};
+
+struct ScanProtocolFaultSimResult {
+  ScanPatternResult golden;
+  std::vector<ScanProtocolFaultBatchResult> batches;
+};
+
 ScanPatternResult simulate_scan_pattern(
     const std::string& json_path, const std::string& cell_map_path,
     const ScanPatternRequest& request, const std::string& unsupported_policy);
+
+ScanProtocolFaultSimResult simulate_scan_protocol_faults(
+    const std::string& json_path, const std::string& cell_map_path,
+    const ScanProtocolFaultRequest& request,
+    const std::string& unsupported_policy);
+
+bool scan_observations_equal(const ScanPatternResult& lhs,
+                             const ScanPatternResult& rhs);
 
 }  // namespace faultflow::scan

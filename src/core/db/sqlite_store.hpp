@@ -10,7 +10,7 @@
 
 namespace faultflow::db {
 
-constexpr int kSchemaUserVersion = 3;
+constexpr int kSchemaUserVersion = 4;
 
 struct CoverageSummary {
   int64_t total_raw_faults = 0;

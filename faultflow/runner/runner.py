@@ -19,7 +19,7 @@ from faultflow.atpg import (
     parse_bench_outputs,
     parse_quaigh_test,
 )
-from faultflow.config import FaultflowConfig
+from faultflow.config import FaultflowConfig, LEGACY_SCAN_DB_NAME
 from faultflow.db import (
     CAMPAIGN_TYPE_COMB,
     CAMPAIGN_TYPE_SCAN,
@@ -862,7 +862,11 @@ class Runner:
     def _clean_db(self, scan: bool = False) -> int:
         del scan
         removed = 0
-        for base in [self.cfg.db_path, self.cfg.scan_db_path]:
+        db_paths = [
+            self.cfg.db_path,
+            self.cfg.output_dir / LEGACY_SCAN_DB_NAME,
+        ]
+        for base in db_paths:
             for path in [
                 base,
                 base.with_name(base.name + "-wal"),
@@ -1281,7 +1285,7 @@ class Runner:
         self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
         cleaned = self._clean_db() if clean else 0
         removed = self._purge_transients() if purge else 0
-        from faultflow.scan.verify import make_tier_b_verifier
+        from faultflow.scan.detection_pipeline import build_scan_pipeline_context
 
         manifest = self._preflight_sim_scan()
         generic_json = Path(str(manifest["generic_json"]))
@@ -1299,13 +1303,17 @@ class Runner:
             encoding="utf-8",
         )
         netlist = atpg_view_path
-        reduced_output_order = _port_names(netlist, self.cfg.top, "output")
-        tier_b = make_tier_b_verifier(
+        functional_output_order = [
+            port
+            for port in _port_names(netlist, self.cfg.top, "output")
+            if not port.startswith("__ppo_")
+        ]
+        scan_pipeline_ctx = build_scan_pipeline_context(
             self.cfg,
             manifest,
             generic_json,
             pseudo_port_map,
-            reduced_output_order,
+            functional_output_order,
         )
 
         from faultflow.scan.atpg_view import ATPG_VIEW_SCHEMA_VER
@@ -1327,8 +1335,8 @@ class Runner:
                 max_rounds=max_rounds,
                 target_coverage=target_coverage,
                 vector_source="scan_native_sat_atpg",
-                on_vector_accepted=tier_b,
                 campaign_type=CAMPAIGN_TYPE_SCAN,
+                scan_ctx=scan_pipeline_ctx,
             )
         )
         total_seconds = time.perf_counter() - total_start
@@ -1402,6 +1410,7 @@ class Runner:
                 f"top={self.cfg.top} scan_mode={str(scan).lower()} coverage={cov_text} "
                 f"detected={data['detected']} denominator={data['denominator']} "
                 f"undetected={data['undetected']} redundant={data.get('redundant', 0)} "
+                f"protocol_unresolved={data.get('protocol_unresolved', 0)} "
                 f"collapsed={data['collapsed']} "
                 f"excluded_blackbox={data['excluded_blackbox']} "
                 f"excluded_clock={data['excluded_clock']} "

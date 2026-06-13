@@ -221,4 +221,31 @@ std::vector<ProgressiveDetection> simulate_incremental(
   return detections;
 }
 
+std::vector<int64_t> simulate_tentative_detections(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, const std::map<std::string, bool>& vector,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids,
+    const std::string& unsupported_policy) {
+  if (fault_ids.empty()) {
+    return {};
+  }
+  const GraphContext ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const TestVector tv = vector_from_map(ctx.parsed, vector, input_order);
+  BitParallelSim sim;
+  std::vector<int64_t> detected;
+  for (int64_t fault_id : fault_ids) {
+    const db::FaultRecord rec = db::load_fault(db_path, fault_id);
+    if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
+        rec.status != FaultStatus::UNDETECTED || rec.protocol_unresolved) {
+      continue;
+    }
+    CompactFault fault = fault_from_record(rec);
+    if (sim.simulate_single_fault(ctx.cg, tv, fault)) {
+      detected.push_back(fault_id);
+    }
+  }
+  return detected;
+}
+
 }  // namespace faultflow::atpg
