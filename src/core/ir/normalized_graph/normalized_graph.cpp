@@ -201,6 +201,7 @@ NormalizedGraph NormalizedGraph::from_parsed(const ParsedGraph& parsed,
 
     NormNode node;
     node.id = next_node_id++;
+    node.instance = inst;
     node.type = entry->node_type;
     node.gate_type =
         entry->node_type == NodeType::FF ? GateType::DFF : entry->gate_type;

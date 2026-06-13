@@ -3,13 +3,13 @@ from __future__ import annotations
 import sqlite3
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from faultflow.atpg import VectorSet
 from faultflow.config import FaultflowConfig
-from faultflow.db import connect, init_schema, summary
+from faultflow.db import CAMPAIGN_TYPE_COMB, connect, init_schema, summary
 from faultflow.runner.runner import RunnerError
 
 DEFAULT_MAX_ATPG_ROUNDS = 20
@@ -26,7 +26,13 @@ class AtpgStats:
     rejected_candidates: int = 0
     generated_vectors: int = 0
     accepted_vectors: int = 0
+    protocol_no_progress_rounds: int = 0
     terminal_reason: str = "COMPLETE"
+
+
+@dataclass
+class _RoundTracker:
+    sat_outcomes: list[str] = field(default_factory=list)
 
 
 def pattern_key(vector: dict[str, bool], input_order: list[str]) -> str:
@@ -46,26 +52,35 @@ def redundancy_model_id(fp: dict[str, Any]) -> str:
     )
 
 
-def _active_fault_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return conn.execute("""
+def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
         SELECT id
         FROM faults
-        WHERE status = 'undetected'
+        WHERE campaign_id = ?
+          AND status = 'undetected'
           AND exclusion = 'none'
           AND collapsed_into IS NULL
+          AND protocol_unresolved = 0
         ORDER BY id
-        """).fetchall()
+        """,
+        (campaign_id,),
+    ).fetchall()
 
 
-def _fault_counts(conn: sqlite3.Connection) -> tuple[int, int]:
-    row = conn.execute("""
+def _fault_counts(conn: sqlite3.Connection, campaign_id: int) -> tuple[int, int]:
+    row = conn.execute(
+        """
         SELECT
           SUM(CASE WHEN status = 'detected' AND exclusion = 'none'
                     AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS detected,
           SUM(CASE WHEN status = 'redundant' AND exclusion = 'none'
                     AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS redundant
         FROM faults
-        """).fetchone()
+        WHERE campaign_id = ?
+        """,
+        (campaign_id,),
+    ).fetchone()
     return int(row["detected"] or 0), int(row["redundant"] or 0)
 
 
@@ -92,6 +107,7 @@ def _accept_and_simulate(
     json_path: str,
     cell_map_path: str,
     db_path: str,
+    campaign_id: int,
     run_id: int,
     vector_source: str,
     vector: dict[str, bool],
@@ -102,15 +118,17 @@ def _accept_and_simulate(
     on_vector_accepted: Callable[[dict[str, bool], int | None], None] | None,
 ) -> None:
     fault_id = fault_ids[0] if len(fault_ids) == 1 else None
-    # Tier B must run before any DB write for this vector.
     if on_vector_accepted is not None:
         on_vector_accepted(vector, fault_id)
     key = pattern_key(vector, input_order)
-    core.append_vectors(db_path, run_id, vector_source, [key], vector_index)
+    core.append_vectors(
+        db_path, campaign_id, run_id, vector_source, [key], vector_index
+    )
     core.simulate_incremental(
         json_path,
         cell_map_path,
         db_path,
+        campaign_id,
         run_id,
         [vector],
         input_order,
@@ -121,19 +139,56 @@ def _accept_and_simulate(
     core.update_run_vector_count(db_path, run_id, vector_index)
 
 
+def _termination_sweep_q_stems(conn: sqlite3.Connection, campaign_id: int) -> int:
+    cur = conn.execute(
+        """
+        UPDATE faults
+        SET protocol_unresolved = 1
+        WHERE campaign_id = ?
+          AND status = 'undetected'
+          AND exclusion = 'none'
+          AND collapsed_into IS NULL
+          AND fault_site_key LIKE 'net:%:stem'
+        """,
+        (campaign_id,),
+    )
+    conn.commit()
+    return int(cur.rowcount)
+
+
+def _should_stall(
+    *,
+    detected: int,
+    redundant: int,
+    prev_detected: int,
+    prev_redundant: int,
+    round_outcomes: list[str],
+) -> bool:
+    if detected != prev_detected or redundant != prev_redundant:
+        return False
+    if not round_outcomes:
+        return True
+    allowed = {"TIMEOUT", "UNKNOWN", "protocol_no_progress"}
+    return all(outcome in allowed for outcome in round_outcomes)
+
+
 def run_progressive_native_atpg(
     cfg: FaultflowConfig,
     netlist: Path,
     redundancy_model: str,
     *,
+    campaign_id: int,
     max_rounds: int | None = None,
     target_coverage: float | None = None,
     db_path: Path | None = None,
     cell_map_path: Path | None = None,
     vector_source: str = "native_sat_atpg",
+    campaign_type: str = CAMPAIGN_TYPE_COMB,
     on_vector_accepted: Callable[[dict[str, bool], int | None], None] | None = None,
 ) -> tuple[VectorSet, AtpgStats, int, float, float]:
     from faultflow.runner.runner import _load_core, _port_names
+
+    del campaign_type  # reserved for scan-specific candidate pipeline wiring
 
     core = _load_core()
     if core is None:
@@ -154,19 +209,22 @@ def run_progressive_native_atpg(
     input_order = _port_names(netlist, cfg.top, "input")
     effective_db_path = str(db_path if db_path is not None else cfg.db_path)
     json_path = str(netlist)
-    effective_cell_map = str(cell_map_path if cell_map_path is not None else cfg.cell_lib)
+    effective_cell_map = str(
+        cell_map_path if cell_map_path is not None else cfg.cell_lib
+    )
     unsupported = cfg.simulation.unsupported_cells
 
     core.ensure_faults_enumerated(
         json_path,
         effective_cell_map,
         effective_db_path,
+        campaign_id,
         cfg.fault_model.include_clock_faults,
         cfg.fault_model.include_reset_faults,
         cfg.fault_model.collapsing,
         unsupported,
     )
-    core.invalidate_stale_redundant(effective_db_path, redundancy_model)
+    core.invalidate_stale_redundant(effective_db_path, campaign_id, redundancy_model)
 
     stats = AtpgStats()
     vectors: list[dict[str, bool]] = []
@@ -180,10 +238,10 @@ def run_progressive_native_atpg(
         init_schema(conn)
         conn.execute(
             """
-            INSERT INTO runs(status, vector_source, vector_count)
-            VALUES ('running', ?, 0)
+            INSERT INTO runs(campaign_id, status, vector_source, vector_count)
+            VALUES (?, 'running', ?, 0)
             """,
-            (vector_source,),
+            (campaign_id, vector_source),
         )
         conn.commit()
         run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -191,17 +249,16 @@ def run_progressive_native_atpg(
     terminal = "MAX_ROUNDS"
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
+        round_tracker = _RoundTracker()
         with connect(effective_db_path) as conn:
             init_schema(conn)
-            prev_detected, prev_redundant = _fault_counts(conn)
-            active_rows = _active_fault_rows(conn)
+            prev_detected, prev_redundant = _fault_counts(conn, campaign_id)
+            active_rows = _active_fault_rows(conn, campaign_id)
             active_ids = [int(row["id"]) for row in active_rows]
 
         if not active_ids:
             terminal = "COMPLETE"
             break
-
-        round_sat_outcomes: list[str] = []
 
         random_batch = core.atpg_random_vectors(
             input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
@@ -220,6 +277,7 @@ def run_progressive_native_atpg(
                     json_path=json_path,
                     cell_map_path=effective_cell_map,
                     db_path=effective_db_path,
+                    campaign_id=campaign_id,
                     run_id=run_id,
                     vector_source=vector_source,
                     vector=vector,
@@ -232,7 +290,7 @@ def run_progressive_native_atpg(
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
-            active_rows = _active_fault_rows(conn)
+            active_rows = _active_fault_rows(conn, campaign_id)
             active_ids = [int(row["id"]) for row in active_rows]
 
         for fault_id in active_ids:
@@ -250,13 +308,14 @@ def run_progressive_native_atpg(
                 )
             )
             result = str(solved["result"])
-            round_sat_outcomes.append(result)
             if result == "SAT":
                 stats.sat += 1
                 candidate = dict(solved["vector"])
                 stats.generated_vectors += 1
                 key = pattern_key(candidate, input_order)
                 if key in seen_patterns:
+                    round_tracker.sat_outcomes.append("protocol_no_progress")
+                    stats.protocol_no_progress_rounds += 1
                     continue
                 if core.verify_fault_candidate(
                     json_path,
@@ -275,6 +334,7 @@ def run_progressive_native_atpg(
                         json_path=json_path,
                         cell_map_path=effective_cell_map,
                         db_path=effective_db_path,
+                        campaign_id=campaign_id,
                         run_id=run_id,
                         vector_source=vector_source,
                         vector=candidate,
@@ -284,24 +344,27 @@ def run_progressive_native_atpg(
                         unsupported=unsupported,
                         on_vector_accepted=on_vector_accepted,
                     )
+                    round_tracker.sat_outcomes.append("SAT")
                 else:
                     stats.rejected_candidates += 1
                     rejected_patterns.setdefault(fault_id, set()).add(key)
+                    round_tracker.sat_outcomes.append("protocol_no_progress")
+                    stats.protocol_no_progress_rounds += 1
             elif result == "UNSAT":
                 stats.unsat += 1
-                core.mark_fault_redundant(
-                    effective_db_path, fault_id, redundancy_model
-                )
+                core.mark_fault_redundant(effective_db_path, fault_id, redundancy_model)
             elif result == "TIMEOUT":
                 stats.timeout += 1
+                round_tracker.sat_outcomes.append("TIMEOUT")
             else:
                 stats.unknown += 1
+                round_tracker.sat_outcomes.append("UNKNOWN")
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
-            data = summary(conn)
-            detected, redundant = _fault_counts(conn)
-            active_remaining = len(_active_fault_rows(conn))
+            data = summary(conn, campaign_id=campaign_id)
+            detected, redundant = _fault_counts(conn, campaign_id)
+            active_remaining = len(_active_fault_rows(conn, campaign_id))
             coverage = data["coverage_percent"]
 
         if active_remaining == 0:
@@ -310,12 +373,16 @@ def run_progressive_native_atpg(
         if coverage is not None and coverage >= effective_target:
             terminal = "THRESHOLD_MET"
             break
-        if (
-            detected == prev_detected
-            and redundant == prev_redundant
-            and round_sat_outcomes
-            and all(outcome in {"TIMEOUT", "UNKNOWN"} for outcome in round_sat_outcomes)
+        if _should_stall(
+            detected=detected,
+            redundant=redundant,
+            prev_detected=prev_detected,
+            prev_redundant=prev_redundant,
+            round_outcomes=round_tracker.sat_outcomes,
         ):
+            with connect(effective_db_path) as conn:
+                init_schema(conn)
+                _termination_sweep_q_stems(conn, campaign_id)
             terminal = "STALLED"
             break
 
@@ -324,7 +391,9 @@ def run_progressive_native_atpg(
 
     with connect(effective_db_path) as conn:
         init_schema(conn)
-        data = summary(conn)
+        if terminal == "MAX_ROUNDS":
+            _termination_sweep_q_stems(conn, campaign_id)
+        data = summary(conn, campaign_id=campaign_id)
         if data["denominator"] == 0:
             raise RunnerError("denominator is zero after progressive ATPG")
         core.complete_run_with_atpg(

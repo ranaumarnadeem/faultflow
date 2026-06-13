@@ -83,7 +83,14 @@ def test_dangling_scan_ports_removed() -> None:
     generic, manifest = _manifest_for_fixture()
     view, _ = build_scan_atpg_view(generic, manifest)
     module = view["modules"]["tiny_scan_multichain"]
-    for name in ("scan_in_0", "scan_in_1", "scan_out_0", "scan_out_1", "scan_en", "CLK"):
+    for name in (
+        "scan_in_0",
+        "scan_in_1",
+        "scan_out_0",
+        "scan_out_1",
+        "scan_en",
+        "CLK",
+    ):
         assert name not in module["ports"]
 
 
@@ -140,9 +147,7 @@ def test_stitched_single_chain_view_is_valid(tmp_path: Path) -> None:
     source.write_text(json.dumps(tiny_dff, indent=2) + "\n", encoding="utf-8")
     output = tmp_path / "tiny_dff_scan.json"
     result = stitch_scan_json(source, CELL_MAP, "tiny_dff", output)
-    manifest = manifest_from_result(
-        result, source, tmp_path / "map.v", None
-    )
+    manifest = manifest_from_result(result, source, tmp_path / "map.v", None)
     generic = json.loads(output.read_text(encoding="utf-8"))
     view, port_map = build_scan_atpg_view(generic, manifest)
     module = view["modules"]["tiny_dff"]

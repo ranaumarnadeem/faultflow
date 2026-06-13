@@ -6,29 +6,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from faultflow.db import summary
+from faultflow.db import latest_campaign_id, summary
 
 
 class CoverageError(RuntimeError):
     pass
 
 
-def _fingerprint(conn: sqlite3.Connection) -> dict[str, Any]:
-    row = conn.execute("SELECT * FROM design_fingerprint WHERE id = 1").fetchone()
+def _fingerprint(conn: sqlite3.Connection, campaign_id: int) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT * FROM campaigns WHERE id = ?",
+        (campaign_id,),
+    ).fetchone()
     return dict(row) if row is not None else {}
 
 
-def _policy(fp: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "unsupported_cells": fp.get("unsupported_cells", "fail"),
-        "include_clock_faults": bool(fp.get("include_clock_faults", 0)),
-        "include_reset_faults": bool(fp.get("include_reset_faults", 0)),
-        "collapsing": bool(fp.get("collapsing", 0)),
-    }
-
-
-def _per_node(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    rows = conn.execute("""
+def _per_node(conn: sqlite3.Connection, campaign_id: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
         SELECT
           net_id,
           MIN(net_name) AS net_name,
@@ -39,9 +34,12 @@ def _per_node(conn: sqlite3.Connection) -> list[dict[str, Any]]:
           SUM(CASE WHEN collapsed_into IS NOT NULL THEN 1 ELSE 0 END) AS collapsed,
           SUM(CASE WHEN exclusion != 'none' THEN 1 ELSE 0 END) AS excluded
         FROM faults
+        WHERE campaign_id = ?
         GROUP BY net_id
         ORDER BY net_id
-        """).fetchall()
+        """,
+        (campaign_id,),
+    ).fetchall()
     nodes: list[dict[str, Any]] = []
     for row in rows:
         total = int(row["total_faults"] or 0)
@@ -63,37 +61,59 @@ def _per_node(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return nodes
 
 
-def _undetected_faults(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    rows = conn.execute("""
-        SELECT id, net_id, net_name, fault_type
+def _policy(fp: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "unsupported_cells": fp.get("unsupported_cells", "fail"),
+        "include_clock_faults": bool(fp.get("include_clock_faults", 0)),
+        "include_reset_faults": bool(fp.get("include_reset_faults", 0)),
+        "collapsing": bool(fp.get("collapsing", 0)),
+    }
+
+
+def _undetected_faults(
+    conn: sqlite3.Connection, campaign_id: int
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT id, net_id, net_name, fault_type, fault_site_key, protocol_unresolved
         FROM faults
-        WHERE status = 'undetected'
+        WHERE campaign_id = ?
+          AND status = 'undetected'
           AND exclusion = 'none'
           AND collapsed_into IS NULL
         ORDER BY net_id, fault_type
-        """).fetchall()
+        """,
+        (campaign_id,),
+    ).fetchall()
     return [
         {
             "id": int(row["id"]),
             "net_id": int(row["net_id"]),
             "net_name": row["net_name"],
             "fault_type": row["fault_type"],
+            "fault_site_key": row["fault_site_key"],
+            "protocol_unresolved": bool(row["protocol_unresolved"]),
         }
         for row in rows
     ]
 
 
-def _latest_run(conn: sqlite3.Connection) -> dict[str, Any]:
-    row = conn.execute("""
+def _latest_run(conn: sqlite3.Connection, campaign_id: int) -> dict[str, Any]:
+    row = conn.execute(
+        """
         SELECT id, vector_source, vector_count, atpg_generation_seconds,
                fault_simulation_seconds, total_sim_seconds, coverage,
                atpg_terminal_reason, atpg_rounds, atpg_sat, atpg_unsat,
                atpg_timeout, atpg_unknown, atpg_rejected_candidates,
-               atpg_generated_vectors, atpg_accepted_vectors
+               atpg_generated_vectors, atpg_accepted_vectors,
+               protocol_no_progress_rounds, candidates_aborted
         FROM runs
+        WHERE campaign_id = ?
         ORDER BY id DESC
         LIMIT 1
-        """).fetchone()
+        """,
+        (campaign_id,),
+    ).fetchone()
     return dict(row) if row is not None else {}
 
 
@@ -160,9 +180,16 @@ def write_reports(
     output_dir: Path,
     top: str,
     scan_context: dict[str, Any] | None = None,
+    campaign_id: int | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    data = summary(conn)
+    if campaign_id is None:
+        campaign_type = "scan" if scan_context is not None else "comb"
+        resolved = latest_campaign_id(conn, campaign_type)
+        if resolved is None:
+            raise CoverageError(f"no {campaign_type} campaign in database")
+        campaign_id = resolved
+    data = summary(conn, campaign_id=campaign_id)
     if data["denominator"] == 0:
         raise CoverageError("denominator is zero")
     invariant = (
@@ -179,9 +206,9 @@ def write_reports(
             f"total_raw_faults={data['total_raw_faults']} invariant={invariant}"
         )
 
-    fp = _fingerprint(conn)
-    per_node = _per_node(conn)
-    undetected = _undetected_faults(conn)
+    fp = _fingerprint(conn, campaign_id)
+    per_node = _per_node(conn, campaign_id)
+    undetected = _undetected_faults(conn, campaign_id)
     if scan_context is not None:
         pseudo_port_map = scan_context.get("pseudo_port_map", {})
         if isinstance(pseudo_port_map, dict):
@@ -207,7 +234,7 @@ def write_reports(
         },
         "policy": _policy(fp),
         "summary": data,
-        "run": _latest_run(conn),
+        "run": _latest_run(conn, campaign_id),
         "per_node": per_node,
         "undetected_faults": undetected,
     }
@@ -234,41 +261,43 @@ def write_reports(
         )
     txt.extend(
         [
-        "",
-        f"total_raw_faults:    {data['total_raw_faults']}",
-        f"denominator:         {data['denominator']}",
-        f"detected:            {data['detected']}",
-        f"undetected:          {data['undetected']}",
-        f"redundant:           {data.get('redundant', 0)}",
-        f"collapsed:           {data['collapsed']}",
-        f"excluded_blackbox:   {data['excluded_blackbox']}",
-        f"excluded_clock:      {data['excluded_clock']}",
-        f"excluded_reset:      {data['excluded_reset']}",
-        f"coverage_percent:    {data['coverage_percent']:.3f}",
-        "",
-        "run:",
-        f"vector_source:       {run.get('vector_source', '')}",
-        f"vector_count:        {run.get('vector_count', 0)}",
-        "atpg_seconds:        " f"{float(run.get('atpg_generation_seconds', 0.0)):.3f}",
-        "fault_sim_seconds:   "
-        f"{float(run.get('fault_simulation_seconds', 0.0)):.3f}",
-        "total_sim_seconds:   " f"{float(run.get('total_sim_seconds', 0.0)):.3f}",
-        f"atpg_terminal:       {run.get('atpg_terminal_reason', '') or 'n/a'}",
-        f"atpg_rounds:         {run.get('atpg_rounds', 0)}",
-        f"atpg_sat:            {run.get('atpg_sat', 0)}",
-        f"atpg_unsat:          {run.get('atpg_unsat', 0)}",
-        f"atpg_timeout:        {run.get('atpg_timeout', 0)}",
-        f"atpg_unknown:        {run.get('atpg_unknown', 0)}",
-        f"atpg_rejected:       {run.get('atpg_rejected_candidates', 0)}",
-        "",
-        "policy:",
-        f"unsupported_cells:   {_policy_text(report, 'unsupported_cells')}",
-        f"include_clock_faults:{_policy_text(report, 'include_clock_faults')}",
-        f"include_reset_faults:{_policy_text(report, 'include_reset_faults')}",
-        f"collapsing:          {_policy_text(report, 'collapsing')}",
-        "",
-        "undetected faults:",
-    ])
+            "",
+            f"total_raw_faults:    {data['total_raw_faults']}",
+            f"denominator:         {data['denominator']}",
+            f"detected:            {data['detected']}",
+            f"undetected:          {data['undetected']}",
+            f"redundant:           {data.get('redundant', 0)}",
+            f"collapsed:           {data['collapsed']}",
+            f"excluded_blackbox:   {data['excluded_blackbox']}",
+            f"excluded_clock:      {data['excluded_clock']}",
+            f"excluded_reset:      {data['excluded_reset']}",
+            f"coverage_percent:    {data['coverage_percent']:.3f}",
+            "",
+            "run:",
+            f"vector_source:       {run.get('vector_source', '')}",
+            f"vector_count:        {run.get('vector_count', 0)}",
+            "atpg_seconds:        "
+            f"{float(run.get('atpg_generation_seconds', 0.0)):.3f}",
+            "fault_sim_seconds:   "
+            f"{float(run.get('fault_simulation_seconds', 0.0)):.3f}",
+            "total_sim_seconds:   " f"{float(run.get('total_sim_seconds', 0.0)):.3f}",
+            f"atpg_terminal:       {run.get('atpg_terminal_reason', '') or 'n/a'}",
+            f"atpg_rounds:         {run.get('atpg_rounds', 0)}",
+            f"atpg_sat:            {run.get('atpg_sat', 0)}",
+            f"atpg_unsat:          {run.get('atpg_unsat', 0)}",
+            f"atpg_timeout:        {run.get('atpg_timeout', 0)}",
+            f"atpg_unknown:        {run.get('atpg_unknown', 0)}",
+            f"atpg_rejected:       {run.get('atpg_rejected_candidates', 0)}",
+            "",
+            "policy:",
+            f"unsupported_cells:   {_policy_text(report, 'unsupported_cells')}",
+            f"include_clock_faults:{_policy_text(report, 'include_clock_faults')}",
+            f"include_reset_faults:{_policy_text(report, 'include_reset_faults')}",
+            f"collapsing:          {_policy_text(report, 'collapsing')}",
+            "",
+            "undetected faults:",
+        ]
+    )
     for fault in cast(list[dict[str, Any]], report["undetected_faults"]):
         txt.append(
             f"- id={fault['id']} net={fault['net_id']} "

@@ -379,9 +379,9 @@ def test_runner_verification_failure_aborts_before_sim(
     )
 
     monkeypatch.setattr(runner, "_find_netlist", lambda: tmp_path / "demo.json")
-    monkeypatch.setattr(runner, "_check_fingerprint", lambda _conn, _fp: None)
-    monkeypatch.setattr(runner, "_stored_fingerprint", lambda _conn: None)
-    monkeypatch.setattr(runner, "_write_fingerprint", lambda _conn, _fp: None)
+    monkeypatch.setattr(
+        Runner, "_ensure_campaign", lambda self, conn, fp, scan=False: 1
+    )
     monkeypatch.setattr(runner, "_find_order_sidecar", lambda: (bench, ["a"]))
     monkeypatch.setattr(
         runner,

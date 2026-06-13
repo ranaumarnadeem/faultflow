@@ -20,7 +20,17 @@ from faultflow.atpg import (
     parse_quaigh_test,
 )
 from faultflow.config import FaultflowConfig
-from faultflow.db import connect, init_schema, summary
+from faultflow.db import (
+    CAMPAIGN_TYPE_COMB,
+    CAMPAIGN_TYPE_SCAN,
+    SchemaError,
+    abort_pending_candidates,
+    connect,
+    ensure_campaign,
+    init_schema,
+    latest_campaign_id,
+    summary,
+)
 from faultflow.reporter import write_reports
 from faultflow.scan import (
     ScanError,
@@ -186,8 +196,8 @@ class Runner:
         self.cfg = cfg
 
     def _conn(self, scan: bool = False) -> sqlite3.Connection:
-        db_path = self.cfg.scan_db_path if scan else self.cfg.db_path
-        conn = connect(db_path)
+        del scan  # unified DB; campaign_type selects scope
+        conn = connect(self.cfg.db_path)
         init_schema(conn)
         return conn
 
@@ -198,6 +208,18 @@ class Runner:
             yield conn
         finally:
             conn.close()
+
+    def _campaign_type(self, scan: bool = False) -> str:
+        return CAMPAIGN_TYPE_SCAN if scan else CAMPAIGN_TYPE_COMB
+
+    def _ensure_campaign(
+        self, conn: sqlite3.Connection, fp: dict[str, object], *, scan: bool = False
+    ) -> int:
+        payload = dict(fp)
+        if scan:
+            payload.setdefault("manifest_hash", "")
+            payload.setdefault("atpg_view_schema_ver", "")
+        return ensure_campaign(conn, self._campaign_type(scan), payload)
 
     def _config_fingerprint_payload(self) -> dict[str, object]:
         return {
@@ -264,58 +286,29 @@ class Runner:
             "include_reset_faults": int(self.cfg.fault_model.include_reset_faults),
         }
 
-    def _stored_fingerprint(self, conn: sqlite3.Connection) -> dict[str, object] | None:
-        row = conn.execute("SELECT * FROM design_fingerprint WHERE id = 1").fetchone()
+    def _stored_fingerprint(
+        self, conn: sqlite3.Connection, *, scan: bool = False
+    ) -> dict[str, object] | None:
+        campaign_id = latest_campaign_id(conn, self._campaign_type(scan))
+        if campaign_id is None:
+            return None
+        row = conn.execute(
+            "SELECT * FROM campaigns WHERE id = ?",
+            (campaign_id,),
+        ).fetchone()
         return dict(row) if row is not None else None
 
     def _check_fingerprint(
-        self, conn: sqlite3.Connection, current: dict[str, object]
-    ) -> None:
-        stored = self._stored_fingerprint(conn)
-        if stored is None:
-            return
-        fields = [
-            "top",
-            "netlist_hash",
-            "cell_lib_hash",
-            "collapsing",
-            "unsupported_cells",
-            "include_clock_faults",
-            "include_reset_faults",
-            "config_hash",
-            "template_hash",
-            "yosys_version",
-            "faultflow_version",
-        ]
-        for field in fields:
-            if str(stored[field]) != str(current[field]):
-                raise FingerprintMismatchError(
-                    f"Fingerprint mismatch on {field}; run with a clean output DB"
-                )
-
-    def _write_fingerprint(
-        self, conn: sqlite3.Connection, fp: dict[str, object]
-    ) -> None:
-        from faultflow.runner.progressive_atpg import redundancy_model_id
-
-        payload = dict(fp)
-        payload["redundancy_model_id"] = redundancy_model_id(payload)
-        conn.execute("DELETE FROM design_fingerprint")
-        conn.execute(
-            """
-            INSERT INTO design_fingerprint (
-              id, top, netlist_hash, cell_lib_hash, config_hash, template_hash,
-              yosys_version, faultflow_version, collapsing, unsupported_cells,
-              include_clock_faults, include_reset_faults, redundancy_model_id
-            ) VALUES (
-              1, :top, :netlist_hash, :cell_lib_hash, :config_hash, :template_hash,
-              :yosys_version, :faultflow_version, :collapsing, :unsupported_cells,
-              :include_clock_faults, :include_reset_faults, :redundancy_model_id
-            )
-            """,
-            payload,
-        )
-        conn.commit()
+        self,
+        conn: sqlite3.Connection,
+        current: dict[str, object],
+        *,
+        scan: bool = False,
+    ) -> int:
+        try:
+            return self._ensure_campaign(conn, current, scan=scan)
+        except SchemaError as exc:
+            raise FingerprintMismatchError(str(exc)) from exc
 
     def init(self) -> str:
         self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
@@ -324,8 +317,6 @@ class Runner:
             if existing_netlist is not None:
                 fp = self._fingerprint(existing_netlist)
                 self._check_fingerprint(conn, fp)
-                if self._stored_fingerprint(conn) is None:
-                    self._write_fingerprint(conn, fp)
         return f"initialized {self.cfg.output_dir}"
 
     def _json_netlist_candidates(self) -> list[Path]:
@@ -869,17 +860,18 @@ class Runner:
         return removed
 
     def _clean_db(self, scan: bool = False) -> int:
+        del scan
         removed = 0
-        base = self.cfg.scan_db_path if scan else self.cfg.db_path
-        for path in [
-            base,
-            base.with_name(base.name + "-wal"),
-            base.with_name(base.name + "-shm"),
-            base.with_name(base.name + "-journal"),
-        ]:
-            if path.exists():
-                path.unlink()
-                removed += 1
+        for base in [self.cfg.db_path, self.cfg.scan_db_path]:
+            for path in [
+                base,
+                base.with_name(base.name + "-wal"),
+                base.with_name(base.name + "-shm"),
+                base.with_name(base.name + "-journal"),
+            ]:
+                if path.exists():
+                    path.unlink()
+                    removed += 1
         return removed
 
     def _simulate_with_core(
@@ -887,6 +879,7 @@ class Runner:
         netlist: Path,
         vectors: VectorSet,
         vector_source: str,
+        campaign_id: int,
     ) -> dict[str, object]:
         core = _load_core()
         if core is None:
@@ -899,6 +892,7 @@ class Runner:
                 str(netlist),
                 str(self.cfg.cell_lib),
                 str(self.cfg.db_path),
+                campaign_id,
                 vectors.vectors,
                 vectors.input_order,
                 vector_source,
@@ -1147,7 +1141,11 @@ class Runner:
         ineligible = manifest.get("ineligible_ffs", [])
         if isinstance(ineligible, list) and ineligible:
             names = ", ".join(
-                sorted(str(item.get("instance", "?")) for item in ineligible if isinstance(item, dict))
+                sorted(
+                    str(item.get("instance", "?"))
+                    for item in ineligible
+                    if isinstance(item, dict)
+                )
             )
             raise RunnerError(
                 f"sim --scan requires full scan; ineligible FFs remain: {names}"
@@ -1188,9 +1186,7 @@ class Runner:
 
         with self._db() as conn:
             fp = self._fingerprint(netlist)
-            self._check_fingerprint(conn, fp)
-            if self._stored_fingerprint(conn) is None:
-                self._write_fingerprint(conn, fp)
+            campaign_id = self._check_fingerprint(conn, fp)
 
         if ext is not None:
             vectors, sidecar = self._external_vectors(ext, netlist)
@@ -1201,7 +1197,9 @@ class Runner:
                     netlist, sidecar, vectors, vectors.input_order
                 )
             sim_start = time.perf_counter()
-            sim_result = self._simulate_with_core(netlist, vectors, vector_source)
+            sim_result = self._simulate_with_core(
+                netlist, vectors, vector_source, campaign_id
+            )
             fault_sim_seconds = time.perf_counter() - sim_start
             if verified_outputs is not None:
                 run_id = sim_result["run_id"]
@@ -1221,11 +1219,13 @@ class Runner:
             with self._db() as conn:
                 fp = self._fingerprint(netlist)
                 model_id = redundancy_model_id(fp)
+                campaign_id = self._check_fingerprint(conn, fp)
             vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
                 run_progressive_native_atpg(
                     self.cfg,
                     netlist,
                     model_id,
+                    campaign_id=campaign_id,
                     max_rounds=max_rounds,
                     target_coverage=target_coverage,
                 )
@@ -1246,7 +1246,10 @@ class Runner:
 
         with self._db() as conn:
             json_path, txt_path, report = write_reports(
-                conn, self.cfg.output_dir, self.cfg.top
+                conn,
+                self.cfg.output_dir,
+                self.cfg.top,
+                campaign_id=campaign_id,
             )
 
         purge_note = f" purged_transients={removed}" if purge else ""
@@ -1276,7 +1279,7 @@ class Runner:
 
         total_start = time.perf_counter()
         self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
-        cleaned = self._clean_db(scan=True) if clean else 0
+        cleaned = self._clean_db() if clean else 0
         removed = self._purge_transients() if purge else 0
         from faultflow.scan.verify import make_tier_b_verifier
 
@@ -1305,25 +1308,24 @@ class Runner:
             reduced_output_order,
         )
 
+        fp = self._fingerprint(netlist)
+        fp["manifest_hash"] = str(manifest.get("generic_json_hash", ""))
         with self._db(scan=True) as conn:
-            fp = self._fingerprint(netlist)
-            self._check_fingerprint(conn, fp)
-            if self._stored_fingerprint(conn) is None:
-                self._write_fingerprint(conn, fp)
+            campaign_id = self._check_fingerprint(conn, fp, scan=True)
+            abort_pending_candidates(conn, campaign_id)
 
-        with self._db(scan=True) as conn:
-            model_id = redundancy_model_id(self._fingerprint(netlist))
-
+        model_id = redundancy_model_id(fp)
         vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
             run_progressive_native_atpg(
                 self.cfg,
                 netlist,
                 model_id,
+                campaign_id=campaign_id,
                 max_rounds=max_rounds,
                 target_coverage=target_coverage,
-                db_path=self.cfg.scan_db_path,
                 vector_source="scan_native_sat_atpg",
                 on_vector_accepted=tier_b,
+                campaign_type=CAMPAIGN_TYPE_SCAN,
             )
         )
         total_seconds = time.perf_counter() - total_start
@@ -1339,6 +1341,7 @@ class Runner:
                 self.cfg.output_dir,
                 self.cfg.top,
                 scan_context=scan_context,
+                campaign_id=campaign_id,
             )
 
         purge_note = f" purged_transients={removed}" if purge else ""
@@ -1355,19 +1358,26 @@ class Runner:
 
     def status(self, scan: bool = False) -> str:
         with self._db(scan=scan) as conn:
-            data = summary(conn)
+            campaign_id = latest_campaign_id(conn, self._campaign_type(scan))
+            if campaign_id is None:
+                return f"top={self.cfg.top} scan_mode={str(scan).lower()} coverage=n/a"
+            data = summary(conn, campaign_id=campaign_id)
             cov = data["coverage_percent"]
             cov_text = "n/a" if cov is None else f"{cov:.3f}%"
-            run = conn.execute("""
+            run = conn.execute(
+                """
                 SELECT atpg_terminal_reason, atpg_rounds, atpg_sat, atpg_unsat,
                        atpg_timeout, atpg_unknown, atpg_rejected_candidates,
                        atpg_generated_vectors, atpg_accepted_vectors,
                        atpg_generation_seconds, fault_simulation_seconds,
                        total_sim_seconds
                 FROM runs
+                WHERE campaign_id = ?
                 ORDER BY id DESC
                 LIMIT 1
-                """).fetchone()
+                """,
+                (campaign_id,),
+            ).fetchone()
             atpg_note = ""
             if run is not None:
                 atpg_seconds = float(run["atpg_generation_seconds"] or 0.0)

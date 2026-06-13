@@ -1,3 +1,5 @@
+#include <stdexcept>
+
 #include "ir/compiled_graph/compiled_graph.hpp"
 
 #include <algorithm>
@@ -204,20 +206,37 @@ uint32_t* input_slot(SimNode& sn, int slot) {
   }
 }
 
-void split_fanout_branches(CompiledSimGraph& cg, std::map<int, int>& y2c,
-                           std::vector<int>& c2y, std::vector<int>& node_levels) {
+std::string pin_for_compiled_input(const NormNode& norm,
+                                   const std::map<int, int>& y2c,
+                                   uint32_t compiled_in) {
+  for (const auto& [pin, yid] : norm.input_pins) {
+    const auto it = y2c.find(yid);
+    if (it != y2c.end() &&
+        static_cast<uint32_t>(it->second) == compiled_in) {
+      return pin;
+    }
+  }
+  return "";
+}
+
+void split_fanout_branches(CompiledSimGraph& cg, const NormalizedGraph& ng,
+                           const std::vector<int>& sim_owner_norm_id,
+                           std::map<int, int>& y2c, std::vector<int>& c2y,
+                           std::vector<int>& node_levels) {
   const uint32_t net_count = static_cast<uint32_t>(c2y.size());
   std::vector<std::vector<FanoutEdge>> fanout_edges(net_count);
 
   for (size_t ni = 0; ni < cg.nodes.size(); ++ni) {
-    SimNode& sn = cg.nodes[ni];
+    const SimNode& sn = cg.nodes[ni];
     for (int slot = 0; slot < 6; ++slot) {
-      uint32_t* in = input_slot(sn, slot);
+      const uint32_t* in = input_slot(const_cast<SimNode&>(sn), slot);
       if (in != nullptr && *in != UNUSED_INPUT) {
         fanout_edges[*in].push_back({ni, slot});
       }
     }
   }
+
+  cg.net_sites.assign(net_count, NetSiteInfo{});
 
   for (uint32_t stem = 0; stem < net_count; ++stem) {
     if (fanout_edges[stem].size() <= 1) {
@@ -227,6 +246,25 @@ void split_fanout_branches(CompiledSimGraph& cg, std::map<int, int>& y2c,
       const int consumer_level = static_cast<int>(node_levels[edge.node_idx]);
       const int source_yosys_id = c2y.at(stem);
       const uint32_t branch = append_branch_alias(c2y, source_yosys_id);
+
+      if (edge.node_idx < sim_owner_norm_id.size()) {
+        const int norm_id = sim_owner_norm_id[edge.node_idx];
+        if (ng.nodes.count(norm_id)) {
+          const NormNode& norm = ng.nodes.at(norm_id);
+          const std::string input_pin = pin_for_compiled_input(norm, y2c, stem);
+          if (!input_pin.empty()) {
+            if (branch >= cg.net_sites.size()) {
+              cg.net_sites.resize(branch + 1);
+            }
+            NetSiteInfo site;
+            site.kind = SiteKind::BRANCH;
+            site.consumer_instance = norm.instance;
+            site.input_pin = input_pin;
+            cg.net_sites[branch] = std::move(site);
+          }
+        }
+      }
+
       SimNode buf;
       buf.type = GateType::BUF;
       buf.in0 = stem;
@@ -332,6 +370,7 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
             });
 
   std::vector<int> node_levels;
+  std::vector<int> sim_owner_norm_id;
   for (const auto& [nid, node] : ordered) {
     (void)nid;
     if (node->type != NodeType::GATE && node->type != NodeType::CONST &&
@@ -373,6 +412,7 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
       cg.ff_configs.push_back(cfg);
       node_levels.push_back(0);
       cg.nodes.push_back(sn);
+      sim_owner_norm_id.push_back(nid);
       continue;
     }
 
@@ -391,6 +431,7 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
         sn.out = map_net(out_net, y2c, c2y);
         node_levels.push_back(node->level);
         cg.nodes.push_back(sn);
+        sim_owner_norm_id.push_back(nid);
       }
       continue;
     }
@@ -403,12 +444,16 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
       sn.out = map_net(out_net, y2c, c2y);
       node_levels.push_back(node->level);
       cg.nodes.push_back(sn);
+      sim_owner_norm_id.push_back(nid);
     }
   }
 
-  split_fanout_branches(cg, y2c, c2y, node_levels);
+  split_fanout_branches(cg, ng, sim_owner_norm_id, y2c, c2y, node_levels);
   rebuild_level_starts(cg, node_levels);
   cg.net_count = static_cast<int>(c2y.size());
+  if (cg.net_sites.size() < static_cast<size_t>(cg.net_count)) {
+    cg.net_sites.resize(static_cast<size_t>(cg.net_count));
+  }
   cg.yosys_to_compiled = std::move(y2c);
   cg.compiled_to_yosys = std::move(c2y);
 
@@ -425,6 +470,24 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
 
   rebuild_fanout_csr(cg);
   return cg;
+}
+
+std::string canonical_site_key(const CompiledSimGraph& cg, uint32_t cidx) {
+  if (cidx >= static_cast<uint32_t>(cg.net_count)) {
+    throw std::runtime_error("compiled net index out of range");
+  }
+  const int yid = cg.compiled_to_yosys[cidx];
+  if (cidx < cg.net_sites.size()) {
+    const NetSiteInfo& site = cg.net_sites[cidx];
+    if (site.kind == SiteKind::BRANCH) {
+      if (site.consumer_instance.empty() || site.input_pin.empty()) {
+        throw std::runtime_error("branch site missing consumer or pin");
+      }
+      return "net:" + std::to_string(yid) + ":branch:" + site.consumer_instance +
+             ":" + site.input_pin;
+    }
+  }
+  return "net:" + std::to_string(yid) + ":stem";
 }
 
 }  // namespace faultflow

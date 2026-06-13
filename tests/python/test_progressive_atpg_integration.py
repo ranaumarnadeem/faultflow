@@ -14,10 +14,20 @@ from faultflow.runner.progressive_atpg import (
     redundancy_model_id,
     run_progressive_native_atpg,
 )
+from campaign_fixtures import campaign_id_for_cfg
 from faultflow.runner.runner import FingerprintMismatchError, RunnerError
 import faultflow.runner.runner as runner_mod
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _run_atpg(cfg, netlist, model: str, **kwargs: object):
+    campaign_id = campaign_id_for_cfg(cfg, netlist)
+    return run_progressive_native_atpg(
+        cfg, netlist, model, campaign_id=campaign_id, **kwargs
+    )
+
+
 FIXTURES = ROOT / "tests/cpp/fixtures"
 C17_JSON = ROOT / "tests/benchmarks/iscas85/synth/c17.json"
 C17_BENCH = ROOT / "tests/benchmarks/iscas85/synth/c17.bench"
@@ -170,7 +180,7 @@ def test_runner_fingerprint_mismatch_blocks_resume(
     )
     runner = Runner(load_config(cfg_path, "tiny_inv"))
 
-    with pytest.raises(FingerprintMismatchError, match="unsupported_cells"):
+    with pytest.raises(FingerprintMismatchError, match="changed"):
         runner.sim(max_rounds=1, target_coverage=100.0)
 
 
@@ -210,7 +220,7 @@ def test_real_circuit_timeouts_persist_without_redundant_classification(
         "include_clock_faults": 0,
         "include_reset_faults": 0,
     }
-    _, stats, _, _, _ = run_progressive_native_atpg(
+    _, stats, _, _, _ = _run_atpg(
         cfg, netlist, redundancy_model_id(fp), max_rounds=2, target_coverage=100.0
     )
 
@@ -268,9 +278,7 @@ def test_timeout_and_unknown_faults_never_marked_redundant(
             "include_reset_faults": 0,
         }
     )
-    run_progressive_native_atpg(
-        cfg, netlist, model, max_rounds=1, target_coverage=100.0
-    )
+    _run_atpg(cfg, netlist, model, max_rounds=1, target_coverage=100.0)
 
     with connect(cfg.db_path) as conn:
         init_schema(conn)
@@ -319,7 +327,7 @@ def test_redundant_faults_excluded_from_denominator_tiny_const(
             "include_reset_faults": 0,
         }
     )
-    _, stats, _, _, _ = run_progressive_native_atpg(cfg, netlist, model)
+    _, stats, _, _, _ = _run_atpg(cfg, netlist, model)
 
     with connect(cfg.db_path) as conn:
         init_schema(conn)
@@ -372,7 +380,7 @@ def test_stale_redundant_reactivated_when_model_changes(
             "include_reset_faults": 0,
         }
     )
-    run_progressive_native_atpg(cfg, netlist, model)
+    _run_atpg(cfg, netlist, model)
 
     with connect(cfg.db_path) as conn:
         init_schema(conn)
@@ -386,7 +394,7 @@ def test_stale_redundant_reactivated_when_model_changes(
         ).fetchone()[0]
         assert stale > 0
 
-    run_progressive_native_atpg(cfg, netlist, model)
+    _run_atpg(cfg, netlist, model)
 
     with connect(cfg.db_path) as conn:
         init_schema(conn)
@@ -421,7 +429,7 @@ def test_vector_patterns_are_deduplicated_in_db(
         atpg_overrides={"random_vectors": 16},
     )
     cfg = load_config(cfg_path, "tiny_inv")
-    vectors, stats, run_id, _, _ = run_progressive_native_atpg(
+    vectors, stats, run_id, _, _ = _run_atpg(
         cfg,
         netlist,
         redundancy_model_id(

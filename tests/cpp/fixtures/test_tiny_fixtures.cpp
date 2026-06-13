@@ -1,9 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <set>
 
 #include "fault/enumerator/fault_enumerator.hpp"
 #include "helpers/test_helpers.hpp"
+#include "ir/compiled_graph/compiled_graph.hpp"
 
 using namespace faultflow;
 
@@ -95,4 +97,17 @@ TEST_CASE("CompiledSimGraph fanout split tiny_reconverge", "[tiny_fixtures][comp
     }
   }
   REQUIRE(buf_count >= 1);
+}
+
+TEST_CASE("Canonical site keys tiny_reconverge fanout branches",
+          "[tiny_fixtures][compiled][site_key]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_reconverge.json");
+  std::set<std::string> keys;
+  for (uint32_t cidx = 0; cidx < static_cast<uint32_t>(cg.net_count); ++cidx) {
+    keys.insert(canonical_site_key(cg, cidx));
+  }
+  REQUIRE(keys.count("net:2:stem") == 1);
+  REQUIRE(keys.count("net:2:branch:u0:A") == 1);
+  REQUIRE(keys.count("net:2:branch:u1:A") == 1);
+  REQUIRE(keys.size() == static_cast<size_t>(cg.net_count));
 }

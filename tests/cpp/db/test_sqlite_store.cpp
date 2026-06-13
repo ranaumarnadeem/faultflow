@@ -29,6 +29,22 @@ bool has_column(SQLite::Database& db, const std::string& table,
   return false;
 }
 
+int64_t insert_test_campaign(const std::string& path) {
+  SQLite::Database db(path, SQLite::OPEN_READWRITE);
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec(R"sql(
+INSERT INTO campaigns(
+  campaign_type, top, netlist_hash, cell_lib_hash, config_hash, template_hash,
+  yosys_version, faultflow_version, collapsing, unsupported_cells,
+  include_clock_faults, include_reset_faults
+) VALUES (
+  'comb', 'demo', 'net', 'cell', 'cfg', 'tmpl', 'yosys', 'pipeline-v1',
+  0, 'fail', 0, 0
+)
+)sql");
+  return db.getLastInsertRowid();
+}
+
 CompactFault fault(uint32_t net_index, FaultType type, FaultStatus status) {
   CompactFault f;
   f.net_index = net_index;
@@ -43,30 +59,27 @@ TEST_CASE("SQLite store initializes schema", "[db]") {
   const auto path = db_path("faultflow_sqlite_store_test.sqlite");
 
   db::init_database(path.string());
-  const db::CoverageSummary s = db::summarize(path.string());
+  const int64_t campaign_id = insert_test_campaign(path.string());
+  const db::CoverageSummary s = db::summarize(path.string(), campaign_id);
 
   REQUIRE(s.total_raw_faults == 0);
   REQUIRE(s.denominator == 0);
   SQLite::Database sqlite(path.string(), SQLite::OPEN_READONLY);
-  REQUIRE(has_column(sqlite, "design_fingerprint", "netlist_hash"));
-  REQUIRE(has_column(sqlite, "design_fingerprint", "yosys_version"));
-  REQUIRE(has_column(sqlite, "faults", "net_name"));
-  REQUIRE(has_column(sqlite, "faults", "node_id"));
-  REQUIRE(has_column(sqlite, "faults", "type"));
-  REQUIRE(has_column(sqlite, "faults", "excluded"));
-  REQUIRE(has_column(sqlite, "faults", "collapsed_to"));
-  REQUIRE(has_column(sqlite, "runs", "initial_ff_state"));
-  REQUIRE(has_column(sqlite, "vectors", "inputs"));
-  REQUIRE(has_column(sqlite, "vectors", "expected"));
-  REQUIRE(has_column(sqlite, "vectors", "verified"));
+  REQUIRE(has_column(sqlite, "campaigns", "netlist_hash"));
+  REQUIRE(has_column(sqlite, "campaigns", "yosys_version"));
+  REQUIRE(has_column(sqlite, "faults", "fault_site_key"));
+  REQUIRE(has_column(sqlite, "faults", "protocol_unresolved"));
+  REQUIRE(has_column(sqlite, "runs", "campaign_id"));
+  REQUIRE(has_column(sqlite, "vectors", "campaign_id"));
   std::filesystem::remove(path);
 }
 
 TEST_CASE("SQLite store freezes run initial FF state", "[db][sequential]") {
   const auto path = db_path("faultflow_sqlite_store_initial_ff.sqlite");
   db::init_database(path.string());
-  const int64_t run_id =
-      db::start_run(path.string(), "seq_vectors.json", 3, "{\"0\":true}");
+  const int64_t campaign_id = insert_test_campaign(path.string());
+  const int64_t run_id = db::start_run(path.string(), campaign_id,
+                                       "seq_vectors.json", 3, "{\"0\":true}");
 
   SQLite::Database sqlite(path.string(), SQLite::OPEN_READONLY);
   SQLite::Statement q(sqlite,
@@ -80,8 +93,11 @@ TEST_CASE("SQLite store freezes run initial FF state", "[db][sequential]") {
 TEST_CASE("SQLite store writes detections and excludes collapsed faults", "[db]") {
   const auto path = db_path("faultflow_sqlite_store_write_test.sqlite");
   db::init_database(path.string());
-  const int64_t run_id = db::start_run(path.string(), "vectors.test", 2);
-  db::write_vectors(path.string(), run_id, "vectors.test", {"00", "11"});
+  const int64_t campaign_id = insert_test_campaign(path.string());
+  const int64_t run_id =
+      db::start_run(path.string(), campaign_id, "vectors.test", 2);
+  db::write_vectors(path.string(), campaign_id, run_id, "vectors.test",
+                    {"00", "11"});
 
   const NormalizedGraph ng = test::load_normalized("tiny_and2.json");
   const CompiledSimGraph cg = GraphCompiler::compile(ng);
@@ -99,8 +115,8 @@ TEST_CASE("SQLite store writes detections and excludes collapsed faults", "[db]"
   clock.exclusion = FaultExclusion::CLOCK;
   faults.push_back(clock);
 
-  db::write_faults(path.string(), run_id, ng, cg, faults);
-  const db::CoverageSummary s = db::summarize(path.string());
+  db::write_faults(path.string(), campaign_id, run_id, ng, cg, faults);
+  const db::CoverageSummary s = db::summarize(path.string(), campaign_id);
 
   REQUIRE(s.total_raw_faults == 4);
   REQUIRE(s.denominator == 2);
@@ -119,15 +135,18 @@ TEST_CASE("SQLite store writes detections and excludes collapsed faults", "[db]"
 TEST_CASE("SQLite store fault writes roll back on insertion failure", "[db]") {
   const auto path = db_path("faultflow_sqlite_store_rollback_test.sqlite");
   db::init_database(path.string());
-  const int64_t run_id = db::start_run(path.string(), "vectors.test", 1);
+  const int64_t campaign_id = insert_test_campaign(path.string());
+  const int64_t run_id =
+      db::start_run(path.string(), campaign_id, "vectors.test", 1);
   const NormalizedGraph ng = test::load_normalized("tiny_and2.json");
   const CompiledSimGraph cg = GraphCompiler::compile(ng);
 
   const auto original = fault(0, FaultType::SA0, FaultStatus::UNDETECTED);
-  db::write_faults(path.string(), run_id, ng, cg, {original});
+  db::write_faults(path.string(), campaign_id, run_id, ng, cg, {original});
 
   REQUIRE_THROWS_AS(
-      db::write_faults(path.string(), run_id, ng, cg, {original, original}),
+      db::write_faults(path.string(), campaign_id, run_id, ng, cg,
+                       {original, original}),
       std::exception);
 
   SQLite::Database sqlite(path.string(), SQLite::OPEN_READONLY);

@@ -1,11 +1,20 @@
 #pragma once
 
 #include <map>
+#include <string>
 #include <vector>
 
 #include "common/types.hpp"
 
 namespace faultflow {
+
+enum class SiteKind : uint8_t { STEM, BRANCH };
+
+struct NetSiteInfo {
+  SiteKind kind = SiteKind::STEM;
+  std::string consumer_instance;
+  std::string input_pin;
+};
 
 struct SimNode {
   GateType type = GateType::BUF;
@@ -31,7 +40,10 @@ struct CompiledSimGraph {
   int net_count = 0;
   std::map<int, int> yosys_to_compiled;
   std::vector<int> compiled_to_yosys;
+  std::vector<NetSiteInfo> net_sites;
 };
+
+std::string canonical_site_key(const CompiledSimGraph& cg, uint32_t cidx);
 
 class GraphCompiler {
  public:

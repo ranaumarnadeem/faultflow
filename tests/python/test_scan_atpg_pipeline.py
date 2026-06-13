@@ -130,7 +130,7 @@ def test_sim_scan_passes_scan_db_to_progressive_atpg(
         **kwargs: object,
     ) -> tuple[VectorSet, AtpgStats, int, float, float]:
         del cfg, model_id
-        captured["db_path"] = kwargs.get("db_path")
+        captured["campaign_id"] = kwargs.get("campaign_id")
         captured["netlist"] = netlist
         captured["vector_source"] = kwargs.get("vector_source")
         captured["on_vector_accepted"] = kwargs.get("on_vector_accepted")
@@ -149,12 +149,12 @@ def test_sim_scan_passes_scan_db_to_progressive_atpg(
     monkeypatch.setattr(
         Runner, "_fingerprint", lambda self, netlist: _stub_fingerprint(netlist)
     )
-    monkeypatch.setattr(Runner, "_check_fingerprint", lambda self, conn, fp: None)
-    monkeypatch.setattr(Runner, "_stored_fingerprint", lambda self, conn: None)
-    monkeypatch.setattr(Runner, "_write_fingerprint", lambda self, conn, fp: None)
+    monkeypatch.setattr(
+        Runner, "_ensure_campaign", lambda self, conn, fp, scan=False: 1
+    )
     monkeypatch.setattr(
         "faultflow.runner.runner.write_reports",
-        lambda conn, output_dir, top, scan_context=None: (
+        lambda conn, output_dir, top, scan_context=None, campaign_id=None: (
             output_dir / "coverage_report.json",
             output_dir / "fault_report.txt",
             {
@@ -165,14 +165,13 @@ def test_sim_scan_passes_scan_db_to_progressive_atpg(
     )
 
     result = runner.sim(scan=True)
-    assert captured["db_path"] == runner.cfg.scan_db_path
+    assert captured["campaign_id"] == 1
     assert captured["vector_source"] == "scan_native_sat_atpg"
     assert captured["on_vector_accepted"] is not None
     netlist = captured["netlist"]
     assert isinstance(netlist, Path)
     assert netlist.name == "scan_atpg_view.json"
     assert "mode=scan" in result
-    assert runner.cfg.db_path != runner.cfg.scan_db_path
 
 
 def test_preflight_sim_scan_missing_manifest(
@@ -228,11 +227,11 @@ def test_preflight_sim_scan_rejects_ineligible_ffs(
         runner._preflight_sim_scan()
 
 
-def test_comb_and_scan_databases_are_distinct_paths(tmp_path: Path) -> None:
+def test_comb_and_scan_share_unified_db_path(tmp_path: Path) -> None:
     source = tmp_path / "tiny_dff.json"
     source.write_text(json.dumps(_tiny_dff_json(), indent=2) + "\n", encoding="utf-8")
     cfg = load_config(_write_config(tmp_path / "config.ofs", source), "tiny_dff")
     assert cfg.db_path.name == "faultflow.sqlite"
+    # scan_db_path remains as a legacy alias path; runner uses db_path for both modes.
     assert cfg.scan_db_path.name == "faultflow_scan.sqlite"
     assert cfg.db_path.parent == cfg.scan_db_path.parent
-    assert cfg.db_path != cfg.scan_db_path

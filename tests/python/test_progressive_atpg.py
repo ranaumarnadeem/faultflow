@@ -14,6 +14,7 @@ from faultflow.runner.progressive_atpg import (
     redundancy_model_id,
     run_progressive_native_atpg,
 )
+from campaign_fixtures import campaign_id_for_cfg
 
 
 def test_pattern_key_matches_cpp_order() -> None:
@@ -38,17 +39,37 @@ def test_summary_includes_redundant(tmp_path: Path) -> None:
     db = tmp_path / "faultflow.sqlite"
     with connect(db) as conn:
         init_schema(conn)
-        conn.execute("""
-            INSERT INTO faults (
-              net_id, net_name, node_id, compiled_net_index, type, fault_type,
-              status, excluded, exclusion
-            ) VALUES
-              (1, 'n1', 0, 0, 'sa0', 'sa0', 'detected', 'none', 'none'),
-              (2, 'n2', 1, 1, 'sa1', 'sa1', 'undetected', 'none', 'none'),
-              (3, 'n3', 2, 2, 'sa0', 'sa0', 'redundant', 'none', 'none')
-            """)
-        conn.commit()
-        data = summary(conn)
+        from db_v3_helpers import insert_campaign, insert_fault_row
+
+        campaign_id = insert_campaign(conn)
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=1,
+            net_name="n1",
+            compiled_net_index=0,
+            fault_type="sa0",
+            status="detected",
+        )
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=2,
+            net_name="n2",
+            compiled_net_index=1,
+            fault_type="sa1",
+            status="undetected",
+        )
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=3,
+            net_name="n3",
+            compiled_net_index=2,
+            fault_type="sa0",
+            status="redundant",
+        )
+        data = summary(conn, campaign_id=campaign_id)
     assert data["detected"] == 1
     assert data["undetected"] == 1
     assert data["redundant"] == 1
@@ -117,14 +138,19 @@ def _model_id() -> str:
     return redundancy_model_id(fp)
 
 
+def _run_atpg(cfg, netlist, model_id: str, **kwargs: object):
+    campaign_id = campaign_id_for_cfg(cfg, netlist)
+    return run_progressive_native_atpg(
+        cfg, netlist, model_id, campaign_id=campaign_id, **kwargs
+    )
+
+
 @pytest.mark.unit
 def test_progressive_native_atpg_tiny_inv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg, netlist = _tiny_inv_cfg(tmp_path, monkeypatch)
-    vectors, stats, run_id, _, _ = run_progressive_native_atpg(
-        cfg, netlist, _model_id()
-    )
+    vectors, stats, run_id, _, _ = _run_atpg(cfg, netlist, _model_id())
     assert vectors.count > 0
     assert stats.terminal_reason in {
         "COMPLETE",
@@ -185,9 +211,7 @@ threshold = 95.0
     cfg = load_config(cfg_path, top="c432")
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
 
-    _, stats, _, _, _ = run_progressive_native_atpg(
-        cfg, netlist, _model_id(), target_coverage=95.0
-    )
+    _, stats, _, _, _ = _run_atpg(cfg, netlist, _model_id(), target_coverage=95.0)
     assert stats.terminal_reason == "THRESHOLD_MET"
     with connect(cfg.db_path) as conn:
         init_schema(conn)
@@ -199,7 +223,7 @@ threshold = 95.0
 @pytest.mark.unit
 def test_max_rounds_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg, netlist = _tiny_inv_cfg(tmp_path, monkeypatch)
-    _, stats, _, _, _ = run_progressive_native_atpg(
+    _, stats, _, _, _ = _run_atpg(
         cfg, netlist, _model_id(), max_rounds=1, target_coverage=100.0
     )
     assert stats.rounds == 1
@@ -222,6 +246,7 @@ def test_verify_fault_candidate_rejects_non_detecting_vector(
         str(netlist),
         str(cfg.cell_lib),
         str(cfg.db_path),
+        campaign_id_for_cfg(cfg, netlist),
         cfg.fault_model.include_clock_faults,
         cfg.fault_model.include_reset_faults,
         cfg.fault_model.collapsing,
@@ -276,6 +301,7 @@ def test_rejected_sat_candidate_increments_stats_and_keeps_fault_undetected(
         str(netlist),
         str(cfg.cell_lib),
         str(cfg.db_path),
+        campaign_id_for_cfg(cfg, netlist),
         cfg.fault_model.include_clock_faults,
         cfg.fault_model.include_reset_faults,
         cfg.fault_model.collapsing,
@@ -302,7 +328,7 @@ def test_rejected_sat_candidate_increments_stats_and_keeps_fault_undetected(
     monkeypatch.setattr(core, "solve_fault_atpg", rejectable_sat_solve)
     monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
 
-    _, stats, run_id, _, _ = run_progressive_native_atpg(
+    _, stats, run_id, _, _ = _run_atpg(
         cfg, netlist, _model_id(), max_rounds=1, target_coverage=100.0
     )
 
@@ -357,7 +383,7 @@ def test_stalled_when_sat_only_returns_timeout(
     monkeypatch.setattr(core, "solve_fault_atpg", timeout_solve)
     monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
 
-    _, stats, _, _, _ = run_progressive_native_atpg(
+    _, stats, _, _, _ = _run_atpg(
         cfg, netlist, _model_id(), max_rounds=3, target_coverage=100.0
     )
     assert stats.terminal_reason == "STALLED"
@@ -377,7 +403,7 @@ def test_resume_preserves_detected_faults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg, netlist = _tiny_inv_cfg(tmp_path, monkeypatch)
-    _, first_stats, _, _, _ = run_progressive_native_atpg(
+    _, first_stats, _, _, _ = _run_atpg(
         cfg, netlist, _model_id(), max_rounds=1, target_coverage=100.0
     )
 
@@ -386,7 +412,7 @@ def test_resume_preserves_detected_faults(
         before = summary(conn)
         fault_count = conn.execute("SELECT COUNT(*) FROM faults").fetchone()[0]
 
-    _, second_stats, _, _, _ = run_progressive_native_atpg(
+    _, second_stats, _, _, _ = _run_atpg(
         cfg, netlist, _model_id(), max_rounds=20, target_coverage=100.0
     )
 
@@ -407,7 +433,7 @@ def test_coverage_report_includes_atpg_stats(
 ) -> None:
     root = Path(__file__).resolve().parents[2]
     cfg, netlist = _tiny_inv_cfg(tmp_path, monkeypatch)
-    _, stats, run_id, _, _ = run_progressive_native_atpg(cfg, netlist, _model_id())
+    _, stats, run_id, _, _ = _run_atpg(cfg, netlist, _model_id())
 
     from faultflow.reporter import write_reports
 
@@ -567,13 +593,13 @@ unsupported_cells = fail
             "include_reset_faults": 0,
         },
     )
-    monkeypatch.setattr(Runner, "_check_fingerprint", lambda self, conn, fp: None)
-    monkeypatch.setattr(Runner, "_stored_fingerprint", lambda self, conn: None)
-    monkeypatch.setattr(Runner, "_write_fingerprint", lambda self, conn, fp: None)
+    monkeypatch.setattr(
+        Runner, "_ensure_campaign", lambda self, conn, fp, scan=False: 1
+    )
     monkeypatch.setattr(
         Runner,
         "_simulate_with_core",
-        lambda self, _netlist, vectors, source: {"run_id": 1},
+        lambda self, _netlist, vectors, source, campaign_id: {"run_id": 1},
     )
     monkeypatch.setattr(
         Runner,
@@ -585,7 +611,7 @@ unsupported_cells = fail
     )
     monkeypatch.setattr(
         "faultflow.runner.runner.write_reports",
-        lambda conn, output_dir, top: (
+        lambda conn, output_dir, top, scan_context=None, campaign_id=None: (
             output_dir / "coverage_report.json",
             output_dir / "fault_report.txt",
             {"summary": {"coverage_percent": 50.0}},

@@ -28,6 +28,7 @@ struct NormNet {
 
 struct NormNode {
   int id = 0;
+  std::string instance;
   NodeType type = NodeType::GATE;
   GateType gate_type = GateType::BUF;
   std::map<std::string, int> input_pins;

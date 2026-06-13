@@ -76,9 +76,10 @@ mode = comb
     assert "pseudo-PI semantics" in capsys.readouterr().err
 
 
-def test_sim_scan_clean_only_touches_scan_db(
+def test_clean_db_removes_unified_and_legacy_scan_db(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """--clean removes the unified DB and any legacy faultflow_scan.sqlite sidecar."""
     monkeypatch.chdir(tmp_path)
     out = tmp_path / "output/tiny_dff"
     out.mkdir(parents=True)
@@ -104,9 +105,9 @@ mode = comb
     runner_cfg = load_config(cfg, "tiny_dff")
     from faultflow.runner.runner import Runner
 
-    removed = Runner(runner_cfg)._clean_db(scan=True)
-    assert removed == 1
-    assert comb_db.exists()
+    removed = Runner(runner_cfg)._clean_db()
+    assert removed == 2
+    assert not comb_db.exists()
     assert not scan_db.exists()
 
 

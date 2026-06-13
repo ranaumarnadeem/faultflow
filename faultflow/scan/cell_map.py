@@ -21,5 +21,7 @@ def resolve_scan_cell_map(cfg: FaultflowConfig) -> Path:
             merged[key] = osu[key]
     cache = cfg.output_dir / "scan_merged_cell_map.json"
     cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps(merged, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    cache.write_text(
+        json.dumps(merged, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return cache

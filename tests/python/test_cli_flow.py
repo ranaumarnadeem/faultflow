@@ -7,6 +7,7 @@ from faultflow.atpg import VectorSet
 from faultflow.cli import main
 from faultflow.config import load_config
 from faultflow.db import connect, init_schema
+from db_v3_helpers import insert_campaign, insert_fault_row, insert_run
 from faultflow.reporter import CoverageError, write_reports
 from faultflow.runner import Runner, RunnerError
 import faultflow.runner.runner as runner_mod
@@ -79,7 +80,9 @@ def test_init_rejects_fingerprint_mismatch_by_field(
         main(["init", "--top", "demo", "-c", str(cfg)])
 
     assert exc.value.code == 2
-    assert "unsupported_cells" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "changed" in err
+    assert "--clean" in err
 
 
 def test_sim_requires_cpp_extension(
@@ -96,6 +99,7 @@ def test_sim_requires_cpp_extension(
             Path("missing.json"),
             VectorSet(source="vectors.test", input_order=[], vectors=[]),
             "vectors.test",
+            1,
         )
 
 
@@ -213,7 +217,8 @@ def test_init_without_json_defers_fingerprint_until_sim(
 
     assert main(["init", "--top", "demo", "-c", str(cfg)]) == 0
     with connect(tmp_path / "output/demo/faultflow.sqlite") as conn:
-        row = conn.execute("SELECT COUNT(*) FROM design_fingerprint").fetchone()
+        init_schema(conn)
+        row = conn.execute("SELECT COUNT(*) FROM campaigns").fetchone()
 
     assert row is not None
     assert row[0] == 0
@@ -245,50 +250,66 @@ def test_coverage_report_schema_and_denominator_invariant(tmp_path: Path) -> Non
     conn = connect(db_path)
     try:
         init_schema(conn)
-        conn.execute("""
-            INSERT INTO design_fingerprint(
-              id, top, netlist_hash, cell_lib_hash, config_hash, template_hash,
-              yosys_version, faultflow_version, collapsing, unsupported_cells,
-              include_clock_faults, include_reset_faults
-            ) VALUES (
-              1, 'demo', 'net', 'cell', 'cfg', 'tmpl', 'yosys', 'pipeline-v1',
-              0, 'fail', 0, 0
-            )
-            """)
-        conn.execute("""
-            INSERT INTO runs(
-              status, vector_source, vector_count, atpg_terminal_reason,
-              atpg_rounds, atpg_sat, atpg_unsat, atpg_timeout, atpg_unknown
-            ) VALUES (
-              'complete', 'native_sat_atpg', 3, 'THRESHOLD_MET',
-              2, 4, 1, 0, 0
-            )
-            """)
-        conn.executemany(
-            """
-            INSERT INTO faults(
-              net_id, net_name, node_id, compiled_net_index, type, fault_type,
-              status, excluded, exclusion, collapsed_to, collapsed_into
-            ) VALUES (?, ?, -1, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (1, "a", 1, "sa0", "sa0", "detected", "none", "none", None, None),
-                (1, "a", 1, "sa1", "sa1", "undetected", "none", "none", None, None),
-                (2, "b", 2, "sa0", "sa0", "undetected", "none", "none", 1, 1),
-                (3, "clk", 3, "sa0", "sa0", "excluded", "clock", "clock", None, None),
-            ],
+        campaign_id = insert_campaign(conn)
+        insert_run(
+            conn,
+            campaign_id,
+            vector_count=3,
+            atpg_terminal_reason="THRESHOLD_MET",
+            atpg_rounds=2,
+            atpg_sat=4,
+            atpg_unsat=1,
+        )
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=1,
+            net_name="a",
+            compiled_net_index=1,
+            fault_type="sa0",
+            status="detected",
+        )
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=1,
+            net_name="a",
+            compiled_net_index=1,
+            fault_type="sa1",
+            status="undetected",
+        )
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=2,
+            net_name="b",
+            compiled_net_index=2,
+            fault_type="sa0",
+            status="undetected",
+            collapsed_into=1,
+        )
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=3,
+            net_name="clk",
+            compiled_net_index=3,
+            fault_type="sa0",
+            status="excluded",
+            exclusion="clock",
         )
         conn.commit()
 
-        json_path, txt_path, report = write_reports(conn, tmp_path, "demo")
+        json_path, txt_path, report = write_reports(
+            conn, tmp_path, "demo", campaign_id=campaign_id
+        )
 
         assert json_path.exists()
         assert txt_path.exists()
         assert report["policy"]["unsupported_cells"] == "fail"
         assert report["summary"]["denominator"] == 2
-        assert report["undetected_faults"] == [
-            {"id": 2, "net_id": 1, "net_name": "a", "fault_type": "sa1"}
-        ]
+        assert report["undetected_faults"][0]["fault_site_key"] == "net:1:stem"
+        assert report["undetected_faults"][0]["protocol_unresolved"] is False
         assert report["run"]["atpg_terminal_reason"] == "THRESHOLD_MET"
         assert report["run"]["atpg_rounds"] == 2
         assert report["run"]["atpg_sat"] == 4
@@ -335,24 +356,39 @@ def test_coverage_report_rejects_denominator_invariant(tmp_path: Path) -> None:
     conn = connect(db_path)
     try:
         init_schema(conn)
-        conn.execute("""
-            INSERT INTO faults(
-              net_id, net_name, compiled_net_index, fault_type, status, exclusion
-            ) VALUES (1, 'a', 1, 'sa0', 'detected', 'none')
-            """)
-        conn.execute("""
-            INSERT INTO faults(
-              net_id, net_name, compiled_net_index, fault_type, status, exclusion
-            ) VALUES (2, 'bb', 2, 'sa0', 'excluded', 'blackbox')
-            """)
-        conn.execute("""
-            INSERT INTO faults(
-              net_id, net_name, compiled_net_index, fault_type, status, exclusion
-            ) VALUES (3, 'mystery', 3, 'sa0', 'excluded', 'other')
-            """)
+        campaign_id = insert_campaign(conn)
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=1,
+            net_name="a",
+            compiled_net_index=1,
+            fault_type="sa0",
+            status="detected",
+        )
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=2,
+            net_name="bb",
+            compiled_net_index=2,
+            fault_type="sa0",
+            status="excluded",
+            exclusion="blackbox",
+        )
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=3,
+            net_name="mystery",
+            compiled_net_index=3,
+            fault_type="sa0",
+            status="excluded",
+            exclusion="other",
+        )
         conn.commit()
 
         with pytest.raises(CoverageError, match="denominator invariant"):
-            write_reports(conn, tmp_path, "demo")
+            write_reports(conn, tmp_path, "demo", campaign_id=campaign_id)
     finally:
         conn.close()

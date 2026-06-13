@@ -130,7 +130,7 @@ py::dict summary_to_dict(const db::CoverageSummary& s) {
 
 py::dict simulate_to_db(
     const std::string& json_path, const std::string& cell_map_path,
-    const std::string& db_path,
+    const std::string& db_path, int64_t campaign_id,
     const std::vector<std::map<std::string, bool>>& raw_vectors,
     const std::vector<std::string>& input_order, const std::string& vector_source,
     bool include_clock_faults, bool include_reset_faults, bool collapsing,
@@ -168,12 +168,12 @@ py::dict simulate_to_db(
   }
 
   db::init_database(db_path);
-  const int64_t run_id =
-      db::start_run(db_path, vector_source, static_cast<int64_t>(vectors.size()));
-  db::write_vectors(db_path, run_id, vector_source,
+  const int64_t run_id = db::start_run(
+      db_path, campaign_id, vector_source, static_cast<int64_t>(vectors.size()));
+  db::write_vectors(db_path, campaign_id, run_id, vector_source,
                     vector_patterns(raw_vectors, input_order));
-  db::write_faults(db_path, run_id, ng, cg, faults);
-  const db::CoverageSummary summary = db::summarize(db_path);
+  db::write_faults(db_path, campaign_id, run_id, ng, cg, faults);
+  const db::CoverageSummary summary = db::summarize(db_path, campaign_id);
   db::complete_run(db_path, run_id, summary.coverage_percent);
   py::dict result = summary_to_dict(summary);
   result["run_id"] = run_id;
@@ -257,10 +257,10 @@ std::vector<std::map<std::string, bool>> atpg_random_vectors(
 
 void ensure_faults_enumerated_py(
     const std::string& json_path, const std::string& cell_map_path,
-    const std::string& db_path, bool include_clock_faults,
+    const std::string& db_path, int64_t campaign_id, bool include_clock_faults,
     bool include_reset_faults, bool collapsing,
     const std::string& unsupported_policy) {
-  atpg::ensure_faults_enumerated(json_path, cell_map_path, db_path,
+  atpg::ensure_faults_enumerated(json_path, cell_map_path, db_path, campaign_id,
                                  include_clock_faults, include_reset_faults,
                                  collapsing, unsupported_policy);
 }
@@ -290,14 +290,14 @@ bool verify_fault_candidate(
 
 py::list simulate_incremental_py(
     const std::string& json_path, const std::string& cell_map_path,
-    const std::string& db_path, int64_t run_id,
+    const std::string& db_path, int64_t campaign_id, int64_t run_id,
     const std::vector<std::map<std::string, bool>>& new_vectors,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
     const std::string& unsupported_policy) {
   const std::vector<atpg::ProgressiveDetection> detections =
-      atpg::simulate_incremental(json_path, cell_map_path, db_path, run_id,
-                                 new_vectors, input_order, fault_ids,
+      atpg::simulate_incremental(json_path, cell_map_path, db_path, campaign_id,
+                                 run_id, new_vectors, input_order, fault_ids,
                                  vector_start_index, unsupported_policy);
   py::list out;
   for (const auto& det : detections) {
@@ -310,20 +310,26 @@ py::list simulate_incremental_py(
 }
 
 void invalidate_stale_redundant_py(const std::string& db_path,
+                                   int64_t campaign_id,
                                    const std::string& redundancy_model_id) {
-  db::invalidate_stale_redundant(db_path, redundancy_model_id);
+  db::invalidate_stale_redundant(db_path, campaign_id, redundancy_model_id);
 }
 
-void append_vectors_py(const std::string& db_path, int64_t run_id,
-                       const std::string& source,
+void append_vectors_py(const std::string& db_path, int64_t campaign_id,
+                       int64_t run_id, const std::string& source,
                        const std::vector<std::string>& patterns,
                        int64_t start_index) {
-  db::append_vectors(db_path, run_id, source, patterns, start_index);
+  db::append_vectors(db_path, campaign_id, run_id, source, patterns, start_index);
 }
 
 void mark_fault_redundant_py(const std::string& db_path, int64_t fault_id,
                              const std::string& redundancy_model_id) {
   db::mark_fault_redundant(db_path, fault_id, redundancy_model_id);
+}
+
+void mark_fault_protocol_unresolved_py(const std::string& db_path,
+                                       int64_t fault_id) {
+  db::mark_fault_protocol_unresolved(db_path, fault_id);
 }
 
 void complete_run_with_atpg_py(const std::string& db_path, int64_t run_id,
@@ -380,13 +386,40 @@ py::dict simulate_scan_pattern_py(
   return out;
 }
 
+py::list list_site_keys_py(const std::string& json_path,
+                           const std::string& cell_map_path,
+                           const std::string& unsupported_policy) {
+  const ParsedGraph parsed = ParsedGraph::from_file(json_path);
+  const CellMap cell_map = CellMap::load(cell_map_path);
+  const NormalizedGraph ng =
+      NormalizedGraph::from_parsed(parsed, cell_map, unsupported_policy);
+  const CompiledSimGraph cg = GraphCompiler::compile(ng);
+  py::list out;
+  for (uint32_t cidx = 0; cidx < static_cast<uint32_t>(cg.net_count); ++cidx) {
+    py::dict row;
+    row["compiled_net_index"] = cidx;
+    row["yosys_net_id"] = cg.compiled_to_yosys[cidx];
+    row["site_key"] = canonical_site_key(cg, cidx);
+    if (cidx < cg.net_sites.size() &&
+        cg.net_sites[cidx].kind == SiteKind::BRANCH) {
+      row["kind"] = "branch";
+      row["consumer_instance"] = cg.net_sites[cidx].consumer_instance;
+      row["input_pin"] = cg.net_sites[cidx].input_pin;
+    } else {
+      row["kind"] = "stem";
+    }
+    out.append(row);
+  }
+  return out;
+}
+
 }  // namespace faultflow
 
 PYBIND11_MODULE(_faultflow_core, m) {
   m.doc() = "faultflow C++ data-plane bindings";
   m.def("simulate_to_db", &faultflow::simulate_to_db, py::arg("json_path"),
-        py::arg("cell_map_path"), py::arg("db_path"), py::arg("vectors"),
-        py::arg("input_order"), py::arg("vector_source"),
+        py::arg("cell_map_path"), py::arg("db_path"), py::arg("campaign_id"),
+        py::arg("vectors"), py::arg("input_order"), py::arg("vector_source"),
         py::arg("include_clock_faults") = false,
         py::arg("include_reset_faults") = false, py::arg("collapsing") = false,
         py::arg("unsupported_policy") = "fail");
@@ -401,7 +434,7 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("input_order"), py::arg("count"), py::arg("seed"));
   m.def("ensure_faults_enumerated", &faultflow::ensure_faults_enumerated_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
-        py::arg("include_clock_faults") = false,
+        py::arg("campaign_id"), py::arg("include_clock_faults") = false,
         py::arg("include_reset_faults") = false, py::arg("collapsing") = false,
         py::arg("unsupported_policy") = "fail");
   m.def("solve_fault_atpg", &faultflow::solve_fault_atpg, py::arg("json_path"),
@@ -415,16 +448,20 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("unsupported_policy") = "fail");
   m.def("simulate_incremental", &faultflow::simulate_incremental_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
-        py::arg("run_id"), py::arg("new_vectors"), py::arg("input_order"),
-        py::arg("fault_ids"), py::arg("vector_start_index"),
-        py::arg("unsupported_policy") = "fail");
+        py::arg("campaign_id"), py::arg("run_id"), py::arg("new_vectors"),
+        py::arg("input_order"), py::arg("fault_ids"),
+        py::arg("vector_start_index"), py::arg("unsupported_policy") = "fail");
   m.def("invalidate_stale_redundant", &faultflow::invalidate_stale_redundant_py,
-        py::arg("db_path"), py::arg("redundancy_model_id"));
+        py::arg("db_path"), py::arg("campaign_id"),
+        py::arg("redundancy_model_id"));
   m.def("append_vectors", &faultflow::append_vectors_py, py::arg("db_path"),
-        py::arg("run_id"), py::arg("source"), py::arg("patterns"),
-        py::arg("start_index"));
+        py::arg("campaign_id"), py::arg("run_id"), py::arg("source"),
+        py::arg("patterns"), py::arg("start_index"));
   m.def("mark_fault_redundant", &faultflow::mark_fault_redundant_py,
         py::arg("db_path"), py::arg("fault_id"), py::arg("redundancy_model_id"));
+  m.def("mark_fault_protocol_unresolved",
+        &faultflow::mark_fault_protocol_unresolved_py, py::arg("db_path"),
+        py::arg("fault_id"));
   m.def("complete_run_with_atpg", &faultflow::complete_run_with_atpg_py,
         py::arg("db_path"), py::arg("run_id"), py::arg("coverage_percent"),
         py::arg("terminal_reason"), py::arg("rounds"), py::arg("sat"),
@@ -438,4 +475,6 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("scan_output_ports"), py::arg("functional_output_ports"),
         py::arg("max_chain_length"), py::arg("load_seqs"),
         py::arg("capture_pi_values"), py::arg("unsupported_policy") = "fail");
+  m.def("list_site_keys", &faultflow::list_site_keys_py, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail");
 }

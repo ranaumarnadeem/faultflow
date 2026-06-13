@@ -77,83 +77,78 @@ std::string net_name(const NormalizedGraph& ng, int yid) {
   return it->second.names.front();
 }
 
+std::string site_key_for_fault(const CompiledSimGraph& cg, uint32_t cidx) {
+  return canonical_site_key(cg, cidx);
+}
+
 SQLite::Database open_db(const std::string& db_path) {
   SQLite::Database db(db_path, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
   db.exec("PRAGMA busy_timeout = 5000");
+  db.exec("PRAGMA foreign_keys = ON");
   return db;
 }
 
-bool has_column(SQLite::Database& db, const std::string& table,
-                const std::string& column) {
-  SQLite::Statement q(db, "PRAGMA table_info(" + table + ")");
-  while (q.executeStep()) {
-    if (q.getColumn(1).getString() == column) {
-      return true;
-    }
-  }
-  return false;
+bool table_exists(SQLite::Database& db, const std::string& table) {
+  SQLite::Statement q(db,
+                      "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                      "name=?");
+  q.bind(1, table);
+  return q.executeStep();
 }
 
-void ensure_column(SQLite::Database& db, const std::string& table,
-                   const std::string& column, const std::string& spec) {
-  if (!has_column(db, table, column)) {
-    db.exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + spec);
+void require_v3_schema(SQLite::Database& db) {
+  const int version = db.execAndGet("PRAGMA user_version").getInt();
+  if (!table_exists(db, "campaigns") || version < kSchemaUserVersion) {
+    throw std::runtime_error(
+        "Legacy database schema detected. Re-run with --clean.");
   }
 }
 
-void ensure_v2_schema(SQLite::Database& db) {
-  ensure_column(db, "design_fingerprint", "redundancy_model_id",
-                "TEXT NOT NULL DEFAULT ''");
-  ensure_column(db, "faults", "redundancy_model_id", "TEXT");
-  ensure_column(db, "runs", "atpg_terminal_reason", "TEXT");
-  ensure_column(db, "runs", "atpg_rounds", "INTEGER NOT NULL DEFAULT 0");
-  ensure_column(db, "runs", "atpg_sat", "INTEGER NOT NULL DEFAULT 0");
-  ensure_column(db, "runs", "atpg_unsat", "INTEGER NOT NULL DEFAULT 0");
-  ensure_column(db, "runs", "atpg_timeout", "INTEGER NOT NULL DEFAULT 0");
-  ensure_column(db, "runs", "atpg_unknown", "INTEGER NOT NULL DEFAULT 0");
-  ensure_column(db, "runs", "atpg_rejected_candidates",
-                "INTEGER NOT NULL DEFAULT 0");
-  ensure_column(db, "runs", "atpg_generated_vectors",
-                "INTEGER NOT NULL DEFAULT 0");
-  ensure_column(db, "runs", "atpg_accepted_vectors",
-                "INTEGER NOT NULL DEFAULT 0");
-  db.exec("PRAGMA user_version = 2");
-}
-
-void bind_fault_insert(SQLite::Statement& q, const NormalizedGraph& ng,
-                       const CompiledSimGraph& cg, const CompactFault& f) {
+void bind_fault_insert(SQLite::Statement& q, int64_t campaign_id,
+                       const NormalizedGraph& ng, const CompiledSimGraph& cg,
+                       const CompactFault& f) {
   const int yid = cg.compiled_to_yosys.at(f.net_index);
-  q.bind(1, yid);
-  q.bind(2, net_name(ng, yid));
-  q.bind(3, static_cast<int64_t>(f.net_index));
-  q.bind(4, static_cast<int64_t>(f.net_index));
-  q.bind(5, type_name(f.type));
-  q.bind(6, type_name(f.type));
-  q.bind(7, status_name(f.status, f.exclusion));
-  q.bind(8, exclusion_name(f.exclusion));
-  q.bind(9, exclusion_name(f.exclusion));
+  const std::string site_key = site_key_for_fault(cg, f.net_index);
+  q.bind(1, campaign_id);
+  q.bind(2, site_key);
+  q.bind(3, yid);
+  q.bind(4, net_name(ng, yid));
+  q.bind(5, static_cast<int64_t>(f.net_index));
+  q.bind(6, static_cast<int64_t>(f.net_index));
+  q.bind(7, type_name(f.type));
+  q.bind(8, type_name(f.type));
+  q.bind(9, status_name(f.status, f.exclusion));
+  q.bind(10, exclusion_name(f.exclusion));
+  q.bind(11, exclusion_name(f.exclusion));
   if (f.collapsed_into == UINT32_MAX) {
-    q.bind(10);
-    q.bind(11);
+    q.bind(12);
+    q.bind(13);
   } else {
-    q.bind(10, static_cast<int64_t>(f.collapsed_into));
-    q.bind(11, static_cast<int64_t>(f.collapsed_into));
+    q.bind(12, static_cast<int64_t>(f.collapsed_into));
+    q.bind(13, static_cast<int64_t>(f.collapsed_into));
   }
   if (f.detected_by_vector == 0) {
-    q.bind(12);
+    q.bind(14);
   } else {
-    q.bind(12, static_cast<int64_t>(f.detected_by_vector));
+    q.bind(14, static_cast<int64_t>(f.detected_by_vector));
   }
-  q.bind(13);
+  q.bind(15);
 }
 
 }  // namespace
 
 void init_database(const std::string& db_path) {
   SQLite::Database db = open_db(db_path);
+  if (table_exists(db, "faults") &&
+      (!table_exists(db, "campaigns") ||
+       db.execAndGet("PRAGMA user_version").getInt() < kSchemaUserVersion)) {
+    throw std::runtime_error(
+        "Legacy database schema detected. Re-run with --clean.");
+  }
   db.exec(R"sql(
-CREATE TABLE IF NOT EXISTS design_fingerprint (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
+CREATE TABLE IF NOT EXISTS campaigns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_type TEXT NOT NULL CHECK (campaign_type IN ('comb', 'scan')),
     top TEXT NOT NULL,
     netlist_hash TEXT NOT NULL,
     cell_lib_hash TEXT NOT NULL,
@@ -166,10 +161,13 @@ CREATE TABLE IF NOT EXISTS design_fingerprint (
     include_clock_faults INTEGER NOT NULL,
     include_reset_faults INTEGER NOT NULL,
     redundancy_model_id TEXT NOT NULL DEFAULT '',
+    manifest_hash TEXT NOT NULL DEFAULT '',
+    atpg_view_schema_ver TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at TEXT,
     status TEXT NOT NULL,
@@ -188,10 +186,14 @@ CREATE TABLE IF NOT EXISTS runs (
     atpg_unknown INTEGER NOT NULL DEFAULT 0,
     atpg_rejected_candidates INTEGER NOT NULL DEFAULT 0,
     atpg_generated_vectors INTEGER NOT NULL DEFAULT 0,
-    atpg_accepted_vectors INTEGER NOT NULL DEFAULT 0
+    atpg_accepted_vectors INTEGER NOT NULL DEFAULT 0,
+    protocol_no_progress_rounds INTEGER NOT NULL DEFAULT 0,
+    candidates_aborted INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
 );
 CREATE TABLE IF NOT EXISTS vectors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
     run_id INTEGER NOT NULL,
     source TEXT NOT NULL,
     vector_index INTEGER NOT NULL,
@@ -199,10 +201,15 @@ CREATE TABLE IF NOT EXISTS vectors (
     inputs TEXT NOT NULL DEFAULT '{}',
     expected TEXT NOT NULL DEFAULT '{}',
     verified INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(run_id, vector_index)
+    UNIQUE (campaign_id, id),
+    UNIQUE (campaign_id, run_id, vector_index),
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id),
+    FOREIGN KEY (run_id) REFERENCES runs(id)
 );
 CREATE TABLE IF NOT EXISTS faults (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
+    fault_site_key TEXT NOT NULL,
     net_id INTEGER NOT NULL,
     net_name TEXT NOT NULL,
     node_id INTEGER NOT NULL DEFAULT -1,
@@ -216,159 +223,212 @@ CREATE TABLE IF NOT EXISTS faults (
     collapsed_into INTEGER,
     detected_by_vector INTEGER,
     redundancy_model_id TEXT,
-    UNIQUE(compiled_net_index, fault_type)
+    protocol_unresolved INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (campaign_id, fault_site_key, fault_type),
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
 );
 CREATE TABLE IF NOT EXISTS fault_detections (
     fault_id INTEGER NOT NULL,
+    campaign_id INTEGER NOT NULL,
     run_id INTEGER NOT NULL,
     vector_index INTEGER NOT NULL,
     obs_net INTEGER,
-    PRIMARY KEY(fault_id, run_id, vector_index)
+    PRIMARY KEY (fault_id, run_id, vector_index),
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id),
+    FOREIGN KEY (fault_id) REFERENCES faults(id),
+    FOREIGN KEY (run_id) REFERENCES runs(id)
 );
 CREATE TABLE IF NOT EXISTS node_coverage (
-    net_id INTEGER PRIMARY KEY,
+    campaign_id INTEGER NOT NULL,
+    net_id INTEGER NOT NULL,
     total INTEGER NOT NULL,
     detected INTEGER NOT NULL,
-    coverage REAL NOT NULL
+    coverage REAL NOT NULL,
+    PRIMARY KEY (campaign_id, net_id),
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
+);
+CREATE TABLE IF NOT EXISTS atpg_candidates (
+    campaign_id INTEGER NOT NULL,
+    run_id INTEGER NOT NULL,
+    candidate_id INTEGER NOT NULL,
+    pattern TEXT NOT NULL,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    sat_target_fault_id INTEGER,
+    accepted_vector_id INTEGER,
+    PRIMARY KEY (campaign_id, run_id, candidate_id),
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id),
+    FOREIGN KEY (run_id) REFERENCES runs(id),
+    FOREIGN KEY (campaign_id, accepted_vector_id)
+        REFERENCES vectors(campaign_id, id)
+);
+CREATE TABLE IF NOT EXISTS tier_b_rejections (
+    campaign_id INTEGER NOT NULL,
+    run_id INTEGER NOT NULL,
+    candidate_id INTEGER NOT NULL,
+    fault_id INTEGER NOT NULL,
+    reason_code TEXT NOT NULL,
+    PRIMARY KEY (campaign_id, run_id, candidate_id, fault_id),
+    FOREIGN KEY (campaign_id, run_id, candidate_id)
+        REFERENCES atpg_candidates(campaign_id, run_id, candidate_id),
+    FOREIGN KEY (fault_id) REFERENCES faults(id)
+);
+CREATE TABLE IF NOT EXISTS blocked_patterns (
+    campaign_id INTEGER NOT NULL,
+    fault_id INTEGER NOT NULL,
+    pattern TEXT NOT NULL,
+    PRIMARY KEY (campaign_id, fault_id, pattern),
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id),
+    FOREIGN KEY (fault_id) REFERENCES faults(id)
 );
 )sql");
-  ensure_column(db, "vectors", "inputs", "TEXT NOT NULL DEFAULT '{}'");
-  ensure_column(db, "runs", "initial_ff_state",
-                "TEXT NOT NULL DEFAULT 'all_zero'");
-  ensure_column(db, "runs", "atpg_generation_seconds",
-                "REAL NOT NULL DEFAULT 0.0");
-  ensure_column(db, "runs", "fault_simulation_seconds",
-                "REAL NOT NULL DEFAULT 0.0");
-  ensure_column(db, "runs", "total_sim_seconds", "REAL NOT NULL DEFAULT 0.0");
-  ensure_column(db, "vectors", "expected", "TEXT NOT NULL DEFAULT '{}'");
-  ensure_column(db, "vectors", "verified", "INTEGER NOT NULL DEFAULT 0");
-  ensure_column(db, "faults", "net_name", "TEXT NOT NULL DEFAULT ''");
-  ensure_column(db, "faults", "node_id", "INTEGER NOT NULL DEFAULT -1");
-  ensure_column(db, "faults", "type", "TEXT NOT NULL DEFAULT ''");
-  ensure_column(db, "faults", "excluded", "TEXT NOT NULL DEFAULT 'none'");
-  ensure_column(db, "faults", "collapsed_to", "INTEGER");
-  ensure_v2_schema(db);
+  db.exec("PRAGMA user_version = " + std::to_string(kSchemaUserVersion));
 }
 
-int64_t fault_count(const std::string& db_path) {
+int64_t fault_count(const std::string& db_path, int64_t campaign_id) {
   SQLite::Database db = open_db(db_path);
-  SQLite::Statement q(db, "SELECT COUNT(*) FROM faults");
+  require_v3_schema(db);
+  SQLite::Statement q(db,
+                      "SELECT COUNT(*) FROM faults WHERE campaign_id = ?");
+  q.bind(1, campaign_id);
   if (!q.executeStep()) {
     return 0;
   }
   return q.getColumn(0).getInt64();
 }
 
-int64_t start_run(const std::string& db_path, const std::string& vector_source,
-                  int64_t vector_count,
+int64_t start_run(const std::string& db_path, int64_t campaign_id,
+                  const std::string& vector_source, int64_t vector_count,
                   const std::string& initial_ff_state) {
   SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
   SQLite::Transaction txn(db);
-  SQLite::Statement q(db,
-                      "INSERT INTO runs(status, vector_source, vector_count, "
-                      "initial_ff_state) VALUES ('running', ?, ?, ?)");
-  q.bind(1, vector_source);
-  q.bind(2, vector_count);
-  q.bind(3, initial_ff_state);
+  SQLite::Statement q(
+      db, "INSERT INTO runs(campaign_id, status, vector_source, vector_count, "
+          "initial_ff_state) VALUES (?, 'running', ?, ?, ?)");
+  q.bind(1, campaign_id);
+  q.bind(2, vector_source);
+  q.bind(3, vector_count);
+  q.bind(4, initial_ff_state);
   q.exec();
   const int64_t id = db.getLastInsertRowid();
   txn.commit();
   return id;
 }
 
-void write_vectors(const std::string& db_path, int64_t run_id,
-                   const std::string& source,
+void write_vectors(const std::string& db_path, int64_t campaign_id,
+                   int64_t run_id, const std::string& source,
                    const std::vector<std::string>& patterns) {
   SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
   SQLite::Transaction txn(db);
-  SQLite::Statement clear(db, "DELETE FROM vectors WHERE run_id = ?");
+  SQLite::Statement clear(db,
+                          "DELETE FROM vectors WHERE run_id = ? AND campaign_id "
+                          "= ?");
   clear.bind(1, run_id);
+  clear.bind(2, campaign_id);
   clear.exec();
-  SQLite::Statement q(db,
-                      "INSERT INTO vectors(run_id, source, vector_index, pattern) "
-                      "VALUES (?, ?, ?, ?)");
+  SQLite::Statement q(
+      db, "INSERT INTO vectors(campaign_id, run_id, source, vector_index, "
+          "pattern) VALUES (?, ?, ?, ?, ?)");
   for (size_t i = 0; i < patterns.size(); ++i) {
-    q.bind(1, run_id);
-    q.bind(2, source);
-    q.bind(3, static_cast<int64_t>(i + 1));
-    q.bind(4, patterns[i]);
+    q.bind(1, campaign_id);
+    q.bind(2, run_id);
+    q.bind(3, source);
+    q.bind(4, static_cast<int64_t>(i + 1));
+    q.bind(5, patterns[i]);
     q.exec();
     q.reset();
   }
   txn.commit();
 }
 
-void append_vectors(const std::string& db_path, int64_t run_id,
-                    const std::string& source,
+void append_vectors(const std::string& db_path, int64_t campaign_id,
+                    int64_t run_id, const std::string& source,
                     const std::vector<std::string>& patterns,
                     int64_t start_index) {
   if (patterns.empty()) {
     return;
   }
   SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
   SQLite::Transaction txn(db);
-  SQLite::Statement q(db,
-                      "INSERT INTO vectors(run_id, source, vector_index, pattern) "
-                      "VALUES (?, ?, ?, ?)");
+  SQLite::Statement q(
+      db, "INSERT INTO vectors(campaign_id, run_id, source, vector_index, "
+          "pattern) VALUES (?, ?, ?, ?, ?)");
   for (size_t i = 0; i < patterns.size(); ++i) {
-    q.bind(1, run_id);
-    q.bind(2, source);
-    q.bind(3, start_index + static_cast<int64_t>(i));
-    q.bind(4, patterns[i]);
+    q.bind(1, campaign_id);
+    q.bind(2, run_id);
+    q.bind(3, source);
+    q.bind(4, start_index + static_cast<int64_t>(i));
+    q.bind(5, patterns[i]);
     q.exec();
     q.reset();
   }
   txn.commit();
 }
 
-void insert_faults_if_empty(const std::string& db_path,
-                            const NormalizedGraph& ng, const CompiledSimGraph& cg,
+void insert_faults_if_empty(const std::string& db_path, int64_t campaign_id,
+                            const NormalizedGraph& ng,
+                            const CompiledSimGraph& cg,
                             const std::vector<CompactFault>& faults) {
-  if (fault_count(db_path) > 0) {
+  if (fault_count(db_path, campaign_id) > 0) {
     return;
   }
   SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
   SQLite::Transaction txn(db);
   SQLite::Statement q(
       db,
-      "INSERT INTO faults(net_id, net_name, node_id, compiled_net_index, type, "
-      "fault_type, status, excluded, exclusion, collapsed_to, collapsed_into, "
-      "detected_by_vector, redundancy_model_id) "
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      "INSERT INTO faults(campaign_id, fault_site_key, net_id, net_name, "
+      "node_id, compiled_net_index, type, fault_type, status, excluded, "
+      "exclusion, collapsed_to, collapsed_into, detected_by_vector, "
+      "redundancy_model_id) "
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   for (const CompactFault& f : faults) {
-    bind_fault_insert(q, ng, cg, f);
+    bind_fault_insert(q, campaign_id, ng, cg, f);
     q.exec();
     q.reset();
   }
   txn.commit();
 }
 
-void write_faults(const std::string& db_path, int64_t run_id,
-                  const NormalizedGraph& ng, const CompiledSimGraph& cg,
+void write_faults(const std::string& db_path, int64_t campaign_id,
+                  int64_t run_id, const NormalizedGraph& ng,
+                  const CompiledSimGraph& cg,
                   const std::vector<CompactFault>& faults) {
   SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
   SQLite::Transaction txn(db);
-  db.exec("DELETE FROM fault_detections");
-  db.exec("DELETE FROM faults");
+  SQLite::Statement clear_det(
+      db, "DELETE FROM fault_detections WHERE campaign_id = ?");
+  clear_det.bind(1, campaign_id);
+  clear_det.exec();
+  SQLite::Statement clear_faults(db,
+                                 "DELETE FROM faults WHERE campaign_id = ?");
+  clear_faults.bind(1, campaign_id);
+  clear_faults.exec();
   SQLite::Statement q(
       db,
-      "INSERT INTO faults(net_id, net_name, node_id, compiled_net_index, type, "
-      "fault_type, status, excluded, exclusion, collapsed_to, collapsed_into, "
-      "detected_by_vector, redundancy_model_id) "
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      "INSERT INTO faults(campaign_id, fault_site_key, net_id, net_name, "
+      "node_id, compiled_net_index, type, fault_type, status, excluded, "
+      "exclusion, collapsed_to, collapsed_into, detected_by_vector, "
+      "redundancy_model_id) "
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   SQLite::Statement det(
       db,
-      "INSERT INTO fault_detections(fault_id, run_id, vector_index, obs_net) "
-      "VALUES (?, ?, ?, NULL)");
+      "INSERT INTO fault_detections(fault_id, campaign_id, run_id, "
+      "vector_index, obs_net) VALUES (?, ?, ?, ?, NULL)");
   for (const CompactFault& f : faults) {
-    bind_fault_insert(q, ng, cg, f);
+    bind_fault_insert(q, campaign_id, ng, cg, f);
     q.exec();
     const int64_t fault_id = db.getLastInsertRowid();
     q.reset();
     if (f.status == FaultStatus::DETECTED && f.detected_by_vector != 0) {
       det.bind(1, fault_id);
-      det.bind(2, run_id);
-      det.bind(3, static_cast<int64_t>(f.detected_by_vector));
+      det.bind(2, campaign_id);
+      det.bind(3, run_id);
+      det.bind(4, static_cast<int64_t>(f.detected_by_vector));
       det.exec();
       det.reset();
     }
@@ -378,44 +438,51 @@ void write_faults(const std::string& db_path, int64_t run_id,
 
 FaultRecord load_fault(const std::string& db_path, int64_t fault_id) {
   SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
   SQLite::Statement q(
-      db, "SELECT id, compiled_net_index, fault_type, status, exclusion, "
-          "collapsed_into FROM faults WHERE id = ?");
+      db, "SELECT id, campaign_id, compiled_net_index, fault_type, status, "
+          "exclusion, collapsed_into, protocol_unresolved FROM faults WHERE "
+          "id = ?");
   q.bind(1, fault_id);
   if (!q.executeStep()) {
     throw std::runtime_error("fault not found: " + std::to_string(fault_id));
   }
   FaultRecord rec;
   rec.id = q.getColumn(0).getInt64();
-  rec.compiled_net_index = static_cast<uint32_t>(q.getColumn(1).getInt64());
-  rec.type = type_from_name(q.getColumn(2).getString());
-  rec.status = status_from_name(q.getColumn(3).getString());
-  rec.exclusion = exclusion_from_name(q.getColumn(4).getString());
-  if (q.getColumn(5).isNull()) {
+  rec.campaign_id = q.getColumn(1).getInt64();
+  rec.compiled_net_index = static_cast<uint32_t>(q.getColumn(2).getInt64());
+  rec.type = type_from_name(q.getColumn(3).getString());
+  rec.status = status_from_name(q.getColumn(4).getString());
+  rec.exclusion = exclusion_from_name(q.getColumn(5).getString());
+  if (q.getColumn(6).isNull()) {
     rec.collapsed_into = UINT32_MAX;
   } else {
-    rec.collapsed_into = static_cast<uint32_t>(q.getColumn(5).getInt64());
+    rec.collapsed_into = static_cast<uint32_t>(q.getColumn(6).getInt64());
   }
+  rec.protocol_unresolved = q.getColumn(7).getInt() != 0;
   return rec;
 }
 
-void mark_fault_detected(const std::string& db_path, int64_t run_id,
-                         int64_t fault_id, int64_t vector_index) {
+void mark_fault_detected(const std::string& db_path, int64_t campaign_id,
+                         int64_t run_id, int64_t fault_id,
+                         int64_t vector_index) {
   SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
   SQLite::Transaction txn(db);
   SQLite::Statement q(db,
-                      "UPDATE faults SET status='detected', detected_by_vector=? "
-                      "WHERE id=?");
+                      "UPDATE faults SET status='detected', detected_by_vector=?, "
+                      "protocol_unresolved=0 WHERE id=?");
   q.bind(1, vector_index);
   q.bind(2, fault_id);
   q.exec();
   SQLite::Statement det(
       db,
-      "INSERT OR IGNORE INTO fault_detections(fault_id, run_id, vector_index, "
-      "obs_net) VALUES (?, ?, ?, NULL)");
+      "INSERT OR IGNORE INTO fault_detections(fault_id, campaign_id, run_id, "
+      "vector_index, obs_net) VALUES (?, ?, ?, ?, NULL)");
   det.bind(1, fault_id);
-  det.bind(2, run_id);
-  det.bind(3, vector_index);
+  det.bind(2, campaign_id);
+  det.bind(3, run_id);
+  det.bind(4, vector_index);
   det.exec();
   txn.commit();
 }
@@ -423,6 +490,7 @@ void mark_fault_detected(const std::string& db_path, int64_t run_id,
 void mark_fault_redundant(const std::string& db_path, int64_t fault_id,
                           const std::string& redundancy_model_id) {
   SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
   SQLite::Statement q(
       db, "UPDATE faults SET status='redundant', redundancy_model_id=?, "
           "detected_by_vector=NULL WHERE id=?");
@@ -431,29 +499,45 @@ void mark_fault_redundant(const std::string& db_path, int64_t fault_id,
   q.exec();
 }
 
+void mark_fault_protocol_unresolved(const std::string& db_path,
+                                    int64_t fault_id) {
+  SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
+  SQLite::Statement q(
+      db, "UPDATE faults SET protocol_unresolved=1 WHERE id=? AND status != "
+          "'detected'");
+  q.bind(1, fault_id);
+  q.exec();
+}
+
 void invalidate_stale_redundant(const std::string& db_path,
+                                int64_t campaign_id,
                                 const std::string& redundancy_model_id) {
   SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
   SQLite::Statement q(
       db,
       "UPDATE faults SET status='undetected', redundancy_model_id=NULL "
-      "WHERE status='redundant' AND (redundancy_model_id IS NULL OR "
-      "redundancy_model_id != ?)");
-  q.bind(1, redundancy_model_id);
+      "WHERE campaign_id = ? AND status='redundant' AND "
+      "(redundancy_model_id IS NULL OR redundancy_model_id != ?)");
+  q.bind(1, campaign_id);
+  q.bind(2, redundancy_model_id);
   q.exec();
 }
 
 void update_run_vector_count(const std::string& db_path, int64_t run_id,
                              int64_t vector_count) {
   SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
   SQLite::Statement q(db, "UPDATE runs SET vector_count=? WHERE id=?");
   q.bind(1, vector_count);
   q.bind(2, run_id);
   q.exec();
 }
 
-CoverageSummary summarize(const std::string& db_path) {
+CoverageSummary summarize(const std::string& db_path, int64_t campaign_id) {
   SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
   SQLite::Statement q(db, R"sql(
 SELECT
   COUNT(*) AS total_raw_faults,
@@ -466,7 +550,9 @@ SELECT
   SUM(CASE WHEN exclusion = 'clock' THEN 1 ELSE 0 END) AS excluded_clock,
   SUM(CASE WHEN exclusion = 'reset' THEN 1 ELSE 0 END) AS excluded_reset
 FROM faults
+WHERE campaign_id = ?
 )sql");
+  q.bind(1, campaign_id);
   if (!q.executeStep()) {
     throw std::runtime_error("coverage summary query returned no row");
   }
@@ -496,6 +582,7 @@ void complete_run(const std::string& db_path, int64_t run_id,
 void complete_run_with_atpg(const std::string& db_path, int64_t run_id,
                             double coverage_percent, const AtpgRunStats& stats) {
   SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
   SQLite::Statement q(
       db,
       "UPDATE runs SET status='complete', completed_at=CURRENT_TIMESTAMP, "
