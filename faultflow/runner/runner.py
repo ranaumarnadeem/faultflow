@@ -1308,8 +1308,11 @@ class Runner:
             reduced_output_order,
         )
 
+        from faultflow.scan.atpg_view import ATPG_VIEW_SCHEMA_VER
+
         fp = self._fingerprint(netlist)
         fp["manifest_hash"] = str(manifest.get("generic_json_hash", ""))
+        fp["atpg_view_schema_ver"] = ATPG_VIEW_SCHEMA_VER
         with self._db(scan=True) as conn:
             campaign_id = self._check_fingerprint(conn, fp, scan=True)
             abort_pending_candidates(conn, campaign_id)

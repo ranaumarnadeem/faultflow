@@ -167,6 +167,30 @@
       "scan": {"in": "SDI", "enable": "SE", "enable_polarity": "HIGH"}
     }
   },
+  "$faultflow_observe_buf": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"Y": "Y"}
+  },
+  "\\$faultflow_observe_buf": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"Y": "Y"}
+  },
+  "$faultflow_d_branch_buf": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"Y": "Y"}
+  },
+  "\\$faultflow_d_branch_buf": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"Y": "Y"}
+  },
   "LATCH": {"node_type": "LATCH"},
   "TBUFX*": {"node_type": "TBUF"},
   "PAD*": {"node_type": "GATE", "gate_type": "BUF", "unsupported": true}

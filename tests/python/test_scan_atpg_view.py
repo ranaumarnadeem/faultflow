@@ -7,7 +7,14 @@ from typing import Any
 import pytest
 
 from faultflow.scan import ScanError, stitch_scan_json
-from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX, build_scan_atpg_view
+from faultflow.scan.atpg_view import (
+    ATPG_VIEW_SCHEMA_VER,
+    D_BRANCH_BUF_CELL,
+    OBSERVE_BUF_CELL,
+    PPI_PREFIX,
+    PPO_PREFIX,
+    build_scan_atpg_view,
+)
 from faultflow.scan.reports import manifest_from_result
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -154,3 +161,108 @@ def test_stitched_single_chain_view_is_valid(tmp_path: Path) -> None:
     assert len(port_map) == 1
     assert "scan_in" not in module["ports"]
     assert port_map["u0"]["ppi_port"] == "__ppi_u0"
+
+
+def _d_fanout_fixture() -> tuple[dict[str, Any], dict[str, Any]]:
+    """D net fans out to scan FF D pin and a combinational sink."""
+    generic = {
+        "modules": {
+            "tiny_d_fanout": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "CLK": {"direction": "input", "bits": [2]},
+                    "scan_in": {"direction": "input", "bits": [3]},
+                    "scan_en": {"direction": "input", "bits": [4]},
+                    "D": {"direction": "input", "bits": [5]},
+                    "B": {"direction": "input", "bits": [6]},
+                    "Q": {"direction": "output", "bits": [7]},
+                    "scan_out": {"direction": "output", "bits": [8]},
+                    "Y": {"direction": "output", "bits": [9]},
+                },
+                "cells": {
+                    "u0": {
+                        "type": "$scanff_faultflow",
+                        "parameters": {},
+                        "attributes": {},
+                        "connections": {
+                            "CLK": [2],
+                            "D": [5],
+                            "SDI": [3],
+                            "SE": [4],
+                            "Q": [7],
+                        },
+                    },
+                    "u_and": {
+                        "type": "AND2X1",
+                        "parameters": {},
+                        "attributes": {},
+                        "connections": {"A": [5], "B": [6], "Y": [9]},
+                    },
+                },
+                "netnames": {
+                    "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+                    "D": {"hide_name": 0, "bits": [5], "attributes": {}},
+                    "B": {"hide_name": 0, "bits": [6], "attributes": {}},
+                    "Q": {"hide_name": 0, "bits": [7], "attributes": {}},
+                    "Y": {"hide_name": 0, "bits": [9], "attributes": {}},
+                },
+            }
+        }
+    }
+    manifest = {
+        "top": "tiny_d_fanout",
+        "clock_net": 2,
+        "scan_enable": "scan_en",
+        "scan_inputs": ["scan_in"],
+        "scan_outputs": ["scan_out"],
+        "cells": [
+            {
+                "instance": "u0",
+                "chain_index": 0,
+                "chain_position": 0,
+                "q_net": 7,
+                "data_net": 5,
+            }
+        ],
+    }
+    return generic, manifest
+
+
+def test_observe_buf_cell_present_per_scan_ff() -> None:
+    generic, manifest = _manifest_for_fixture()
+    view, _ = build_scan_atpg_view(generic, manifest)
+    cells = view["modules"]["tiny_scan_multichain"]["cells"]
+    for instance in ("ff0", "ff1", "ff2", "ff3"):
+        assert f"$ffobserve_{instance}" in cells
+        assert cells[f"$ffobserve_{instance}"]["type"] == OBSERVE_BUF_CELL
+
+
+def test_boundary_sidecar_single_fanout_d_stem() -> None:
+    generic, manifest = _manifest_for_fixture()
+    _, port_map = build_scan_atpg_view(generic, manifest)
+    boundary = port_map["ff0"]["boundary"]
+    assert boundary["atpg_view_schema_ver"] == ATPG_VIEW_SCHEMA_VER
+    assert boundary["d_boundary_site_key"] == "net:6:stem"
+    assert boundary["d_observe_net_id"] == 6
+    assert boundary["q_stem_site_key"] == "net:10:stem"
+    assert boundary["unload_capable"] is True
+
+
+def test_boundary_sidecar_multi_fanout_d_branch() -> None:
+    generic, manifest = _d_fanout_fixture()
+    view, port_map = build_scan_atpg_view(generic, manifest)
+    module = view["modules"]["tiny_d_fanout"]
+    cells = module["cells"]
+    boundary = port_map["u0"]["boundary"]
+    assert boundary["d_boundary_site_key"] == "net:5:branch:u0:D"
+    assert boundary["d_observe_net_id"] != 5
+    assert "$ffbranch_u0" in cells
+    assert cells["$ffbranch_u0"]["type"] == D_BRANCH_BUF_CELL
+    assert cells["u_and"]["connections"]["A"] == [5]
+
+
+def test_schema_version_on_module_attributes() -> None:
+    generic, manifest = _manifest_for_fixture()
+    view, _ = build_scan_atpg_view(generic, manifest)
+    attrs = view["modules"]["tiny_scan_multichain"]["attributes"]
+    assert attrs["faultflow_atpg_view_schema_ver"] == ATPG_VIEW_SCHEMA_VER
