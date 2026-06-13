@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from faultflow.config import ConfigError, load_config
+from faultflow.config import ConfigError, load_config, parse_bool_value
 from faultflow.runner import Runner, RunnerError
 
 

@@ -45,6 +45,8 @@ from faultflow.scan import (
     stitch_scan_json,
     write_scan_techmap,
     run_scan_techmap,
+    run_scan_techmap_json,
+    verilog_to_json,
 )
 from faultflow.scan.checks import check_scan_structure
 from faultflow.scan.atpg_view import build_scan_atpg_view
@@ -639,11 +641,11 @@ class Runner:
             )
         )
 
-    def _run_scan_normal_mode_check(
+    def _scan_normal_mode_context(
         self,
         manifest: dict[str, object],
         vectors_path: Path | None,
-    ) -> tuple[list[str], dict[str, object]]:
+    ) -> tuple[VectorSet, VectorSet, list[str], str, dict[str, bool], str]:
         source_json = Path(str(manifest["source_json"]))
         generic_json = Path(str(manifest["generic_json"]))
         output_order = _port_names(source_json, str(manifest["top"]), "output")
@@ -652,17 +654,14 @@ class Runner:
         clock_net_raw = manifest["clock_net"]
         if not isinstance(clock_net_raw, int):
             raise RunnerError("scan manifest clock_net must be an integer")
-        clock_net = clock_net_raw
         clock_name = _port_name_for_net(
-            source_json, str(manifest["top"]), clock_net, "input"
+            source_json, str(manifest["top"]), clock_net_raw, "input"
         )
         if clock_name is None:
-            raise RunnerError(f"cannot map scan clock net {clock_net} to an input port")
+            raise RunnerError(
+                f"cannot map scan clock net {clock_net_raw} to an input port"
+            )
         vectors, vector_source = self._scan_vector_source(source_json, vectors_path)
-
-        original = self._sequence_outputs(
-            source_json, vectors, output_order, clock_name
-        )
         raw_scan_inputs = manifest.get("scan_inputs", [])
         scan_inputs = (
             [str(name) for name in raw_scan_inputs]
@@ -682,6 +681,34 @@ class Runner:
                 for vector in vectors.vectors
             ],
         )
+        return (
+            vectors,
+            scanned_vectors,
+            output_order,
+            clock_name,
+            scan_extra,
+            vector_source,
+        )
+
+    def _run_scan_normal_mode_check(
+        self,
+        manifest: dict[str, object],
+        vectors_path: Path | None,
+    ) -> tuple[list[str], dict[str, object]]:
+        source_json = Path(str(manifest["source_json"]))
+        generic_json = Path(str(manifest["generic_json"]))
+        (
+            vectors,
+            scanned_vectors,
+            output_order,
+            clock_name,
+            scan_extra,
+            vector_source,
+        ) = self._scan_normal_mode_context(manifest, vectors_path)
+
+        original = self._sequence_outputs(
+            source_json, vectors, output_order, clock_name
+        )
         scanned = self._sequence_outputs(
             generic_json,
             scanned_vectors,
@@ -700,6 +727,60 @@ class Runner:
             "output_order": output_order,
         }
 
+    def _run_scan_techmap_equivalence_check(
+        self,
+        manifest: dict[str, object],
+        scanned_vectors: VectorSet,
+        output_order: list[str],
+        clock_name: str,
+        scan_extra: dict[str, bool],
+    ) -> dict[str, object]:
+        sky = manifest.get("sky130_verilog")
+        if not isinstance(sky, str) or not sky:
+            raise RunnerError("techmap equivalence check requires sky130_verilog")
+        sky130_v = Path(sky)
+        if not sky130_v.exists():
+            raise RunnerError(f"techmap verilog not found: {sky130_v}")
+        generic_json = Path(str(manifest["generic_json"]))
+        techmap_v = Path(str(manifest["techmap_verilog"]))
+        techmap_json = self.cfg.intermediate_dir / "scan_techmap_check.json"
+        try:
+            run_scan_techmap_json(
+                generic_json,
+                techmap_v,
+                techmap_json,
+                self.cfg.logs_dir / "yosys_scan_check.log",
+                self.cfg.generated_scripts_dir / "yosys_scan_check.ys",
+            )
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+
+        generic_out = self._sequence_outputs(
+            generic_json,
+            scanned_vectors,
+            output_order,
+            clock_name,
+            extra_inputs=scan_extra,
+            cell_map_path=resolve_scan_cell_map(self.cfg),
+        )
+        techmap_out = self._sequence_outputs(
+            techmap_json,
+            scanned_vectors,
+            output_order,
+            clock_name,
+            extra_inputs=scan_extra,
+            cell_map_path=self.cfg.cell_lib,
+        )
+        if generic_out != techmap_out:
+            raise RunnerError(
+                "normal-mode generic scan outputs differ from techmapped scan outputs"
+            )
+        return {
+            "vector_count": scanned_vectors.count,
+            "techmap_json": str(techmap_json),
+            "sky130_verilog": str(sky130_v),
+        }
+
     def scan_check(
         self,
         vectors_path: Path | None = None,
@@ -713,6 +794,7 @@ class Runner:
         errors = list(structural.errors)
         warnings = list(structural.warnings)
         normal_mode: dict[str, object] | None = None
+        techmap_equivalence: dict[str, object] | None = None
         if not errors:
             try:
                 extra_warnings, normal_mode = self._run_scan_normal_mode_check(
@@ -722,12 +804,37 @@ class Runner:
             except Exception as exc:
                 errors.append(str(exc))
 
+        sky = manifest.get("sky130_verilog")
+        run_techmap_check = require_techmap or (
+            isinstance(sky, str) and bool(sky) and Path(sky).exists()
+        )
+        if not errors and run_techmap_check:
+            try:
+                (
+                    _vectors,
+                    scanned_vectors,
+                    output_order,
+                    clock_name,
+                    scan_extra,
+                    _vector_source,
+                ) = self._scan_normal_mode_context(manifest, vectors_path)
+                techmap_equivalence = self._run_scan_techmap_equivalence_check(
+                    manifest,
+                    scanned_vectors,
+                    output_order,
+                    clock_name,
+                    scan_extra,
+                )
+            except Exception as exc:
+                errors.append(str(exc))
+
         latest_check = {
             "timestamp": utc_timestamp(),
             "status": "PASS" if not errors else "FAIL",
             "warnings": warnings,
             "errors": errors,
             "normal_mode": normal_mode,
+            "techmap_equivalence": techmap_equivalence,
             "generic_json_hash": hash_file(Path(str(manifest["generic_json"]))),
         }
         manifest["latest_check"] = latest_check
@@ -738,10 +845,15 @@ class Runner:
         )
         if errors:
             raise RunnerError("scan-check failed: " + "; ".join(errors))
+        tech_note = (
+            " techmap_equiv=PASS"
+            if techmap_equivalence is not None
+            else ""
+        )
         return (
             f"scan-check PASS top={manifest.get('top')} "
-            f"vectors={normal_mode.get('vector_count') if normal_mode else 0} "
-            f"manifest={manifest_path}"
+            f"vectors={normal_mode.get('vector_count') if normal_mode else 0}"
+            f"{tech_note} manifest={manifest_path}"
         )
 
     def _find_bench_sidecar(self) -> tuple[Path, list[str]]:
@@ -824,6 +936,7 @@ class Runner:
         if sidecar.suffix != ".bench":
             raise RunnerError("Quaigh ATPG input must be .bench")
         output = self.cfg.patterns_path
+        self.cfg.ensure_workspace()
         proc = subprocess.run(
             ["quaigh", "atpg", str(sidecar), "-o", str(output)],
             text=True,

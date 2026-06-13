@@ -1,4 +1,5 @@
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -30,7 +31,7 @@ unsupported_cells = fail
 
 [atpg]
 mode = comb
-output = missing.test
+output = patterns.test
 
 [report]
 threshold = 95.0
@@ -254,6 +255,12 @@ def test_coverage_report_schema_and_denominator_invariant(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    schema_dir = tmp_path / "schemas"
+    schema_dir.mkdir(parents=True)
+    shutil.copy(
+        Path(__file__).resolve().parents[2] / "schemas/coverage.schema.json",
+        schema_dir / "coverage.schema.json",
+    )
     cfg_path = tmp_path / "config.ofs"
     _config(cfg_path)
     cfg = load_config(cfg_path, "demo")
@@ -332,6 +339,12 @@ def test_coverage_report_text_includes_protocol_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    schema_dir = tmp_path / "schemas"
+    schema_dir.mkdir(parents=True)
+    shutil.copy(
+        Path(__file__).resolve().parents[2] / "schemas/coverage.schema.json",
+        schema_dir / "coverage.schema.json",
+    )
     cfg_path = tmp_path / "config.ofs"
     _config(cfg_path)
     cfg = load_config(cfg_path, "scan_top")

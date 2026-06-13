@@ -5,11 +5,14 @@
 # deliverables (coverage.rpt, patterns.test, scan artifacts) stay in output/<top>/.
 # --purge deletes transient junk inside .faultflow/.
 
+# ISCAS benchmark synth JSON under tests/benchmarks/*/synth is OSU035-mapped.
+# Use Sky130 cell_lib for Sky130-synthesized netlists (see examples/serial_adder_sky130.ofs).
+
 [design]
 netlist   = tests/benchmarks/iscas85/synth/c17.json
 top       = c17
-cell_lib  = cells/sky130/sky130_fd_sc_hd.json
-liberty   = cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib
+cell_lib  = cells/osu/osu035.json
+liberty   = cells/osu/osu035_stdcells.lib
 yosys_ver = 0.61+129
 
 [fault_model]
@@ -22,7 +25,7 @@ include_reset_faults = false
 unsupported_cells = fail
 verify            = false
 verify_tool       = iverilog
-verilog_models    = cells/sky130/sky130_fd_sc_hd.v
+verilog_models    = cells/osu/osu035_stdcells.v
 tp_file           =
 
 [atpg]

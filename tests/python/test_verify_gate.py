@@ -63,7 +63,7 @@ def test_config_verify_defaults(tmp_path: Path) -> None:
 
     assert cfg.simulation.verify is False
     assert cfg.simulation.verify_tool == "iverilog"
-    assert cfg.verilog_models == Path("cells/osu/osu035_stdcells.v")
+    assert cfg.verilog_models == Path("cells/sky130/sky130_fd_sc_hd.v")
 
 
 def test_cli_verify_override_reaches_runner(
@@ -444,7 +444,14 @@ def test_runner_verification_dependency_failure_writes_report(
     with pytest.raises(RunnerError, match="missing verilog_models"):
         runner._run_verification(tmp_path / "demo.json", bench, vectors, ["a"])
 
-    report = tmp_path / "output" / "demo" / "verify" / "verification_report.json"
+    report = (
+        tmp_path
+        / "output"
+        / "demo"
+        / ".faultflow"
+        / "verification"
+        / "verification_report.json"
+    )
     assert report.exists()
     assert '"passed": false' in report.read_text(encoding="utf-8")
 
@@ -457,7 +464,7 @@ def test_runner_updates_verified_vectors_after_sim(
     _config(cfg_path, "verify = true")
     cfg = load_config(cfg_path, "demo")
     runner = Runner(cfg)
-    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    cfg.ensure_workspace()
     conn = sqlite3.connect(cfg.db_path)
     conn.execute("""
         CREATE TABLE vectors (

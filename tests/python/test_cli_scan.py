@@ -111,7 +111,8 @@ mode = comb
 
     removed = Runner(runner_cfg)._clean_workspace()
     assert removed >= 2
-    assert not workspace.exists()
+    assert workspace.exists()
+    assert not (workspace / "faultflow.sqlite").exists()
     assert not legacy_comb.exists()
     assert not scan_db.exists()
     assert (out / "coverage.rpt").exists()

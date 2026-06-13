@@ -202,6 +202,12 @@ def render_scan_report(manifest: dict[str, object]) -> str:
     if isinstance(latest, dict):
         lines.append(f"  status: {latest.get('status')}")
         lines.append(f"  timestamp: {latest.get('timestamp')}")
+        techmap_equiv = latest.get("techmap_equivalence")
+        if isinstance(techmap_equiv, dict):
+            lines.append(
+                f"  techmap equivalence: PASS "
+                f"vectors={techmap_equiv.get('vector_count', 0)}"
+            )
         for error in _list(latest.get("errors", [])):
             lines.append(f"  error: {error}")
         for warning in _list(latest.get("warnings", [])):
