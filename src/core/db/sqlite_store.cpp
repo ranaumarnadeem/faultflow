@@ -83,7 +83,7 @@ std::string site_key_for_fault(const CompiledSimGraph& cg, uint32_t cidx) {
 
 SQLite::Database open_db(const std::string& db_path) {
   SQLite::Database db(db_path, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
-  db.exec("PRAGMA busy_timeout = 5000");
+  db.exec("PRAGMA busy_timeout = 30000");
   db.exec("PRAGMA foreign_keys = ON");
   return db;
 }
@@ -214,6 +214,7 @@ CREATE TABLE IF NOT EXISTS faults (
     net_name TEXT NOT NULL,
     node_id INTEGER NOT NULL DEFAULT -1,
     compiled_net_index INTEGER NOT NULL,
+    atpg_compiled_net_index INTEGER,
     type TEXT NOT NULL DEFAULT '',
     fault_type TEXT NOT NULL,
     status TEXT NOT NULL,
@@ -440,7 +441,9 @@ FaultRecord load_fault(const std::string& db_path, int64_t fault_id) {
   SQLite::Database db = open_db(db_path);
   require_v3_schema(db);
   SQLite::Statement q(
-      db, "SELECT id, campaign_id, compiled_net_index, fault_type, status, "
+      db, "SELECT id, campaign_id, "
+          "COALESCE(atpg_compiled_net_index, compiled_net_index), "
+          "fault_type, status, "
           "exclusion, collapsed_into, protocol_unresolved FROM faults WHERE "
           "id = ?");
   q.bind(1, fault_id);
@@ -548,7 +551,13 @@ SELECT
   SUM(CASE WHEN collapsed_into IS NOT NULL THEN 1 ELSE 0 END) AS collapsed,
   SUM(CASE WHEN exclusion = 'blackbox' THEN 1 ELSE 0 END) AS excluded_blackbox,
   SUM(CASE WHEN exclusion = 'clock' THEN 1 ELSE 0 END) AS excluded_clock,
-  SUM(CASE WHEN exclusion = 'reset' THEN 1 ELSE 0 END) AS excluded_reset
+  SUM(CASE WHEN exclusion = 'reset' THEN 1 ELSE 0 END) AS excluded_reset,
+  SUM(CASE WHEN exclusion IN ('scan', 'scan_internal', 'scan_chain')
+           THEN 1 ELSE 0 END) AS excluded_scan,
+  SUM(CASE WHEN exclusion = 'scan_internal'
+           THEN 1 ELSE 0 END) AS excluded_scan_internal,
+  SUM(CASE WHEN exclusion = 'scan_chain'
+           THEN 1 ELSE 0 END) AS excluded_scan_chain
 FROM faults
 WHERE campaign_id = ?
 )sql");
@@ -566,6 +575,9 @@ WHERE campaign_id = ?
   s.excluded_blackbox = q.getColumn(6).getInt64();
   s.excluded_clock = q.getColumn(7).getInt64();
   s.excluded_reset = q.getColumn(8).getInt64();
+  s.excluded_scan = q.getColumn(9).getInt64();
+  s.excluded_scan_internal = q.getColumn(10).getInt64();
+  s.excluded_scan_chain = q.getColumn(11).getInt64();
   s.coverage_percent =
       s.denominator == 0 ? 0.0
                          : 100.0 * static_cast<double>(s.detected) /
