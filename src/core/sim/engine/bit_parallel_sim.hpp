@@ -34,6 +34,10 @@ class BitParallelSim {
   uint64_t simulate_batch(const CompiledSimGraph& cg, const TestVector& vec,
                           const FaultBatch& batch) const;
 
+  std::vector<std::vector<uint64_t>> simulate_batch_samples(
+      const CompiledSimGraph& cg, const TestVector& vec,
+      const FaultBatch& batch) const;
+
   void seed_ff_outputs(SimState& state, const CompiledSimGraph& cg,
                        const FaultBatch& batch) const;
 

@@ -191,6 +191,21 @@ bool BitParallelSim::simulate_single_fault(const CompiledSimGraph& cg,
 uint64_t BitParallelSim::simulate_batch(const CompiledSimGraph& cg,
                                         const TestVector& vec,
                                         const FaultBatch& batch) const {
+  const auto samples = simulate_batch_samples(cg, vec, batch);
+  uint64_t detected = 0ULL;
+  for (const auto& values : samples) {
+    for (int obs : cg.observable) {
+      const uint64_t word = values.at(obs);
+      const uint64_t golden = (word & 1ULL) ? ~0ULL : 0ULL;
+      detected |= word ^ golden;
+    }
+  }
+  return detected & batch.mask;
+}
+
+std::vector<std::vector<uint64_t>> BitParallelSim::simulate_batch_samples(
+    const CompiledSimGraph& cg, const TestVector& vec,
+    const FaultBatch& batch) const {
   SimState state;
   state.init(cg.net_count, 1, static_cast<int>(cg.ff_configs.size()));
   for (const auto& [idx, value] : vec.initial_ff_state) {
@@ -200,27 +215,30 @@ uint64_t BitParallelSim::simulate_batch(const CompiledSimGraph& cg,
   }
   state.reset_ff_states();
 
-  uint64_t detected = 0ULL;
+  std::vector<std::vector<uint64_t>> samples;
   for (const TestCycle& cycle : cycles_for(vec)) {
+    FaultBatch inactive_batch;
+    const FaultBatch& active_batch = cycle.fault_active ? batch : inactive_batch;
     broadcast_cycle_inputs(state, cg, cycle);
-    for (int i = 0; i < batch.size; ++i) {
-      inject_faults(state.current_values(), batch, batch.faults[i].net_index);
+    for (int i = 0; i < active_batch.size; ++i) {
+      inject_faults(state.current_values(), active_batch,
+                    active_batch.faults[i].net_index);
     }
-    seed_ff_outputs(state, cg, batch);
-    evaluate_combinational(state, cg, batch);
+    seed_ff_outputs(state, cg, active_batch);
+    evaluate_combinational(state, cg, active_batch);
     update_ff_states(state, cg);
-    seed_ff_outputs(state, cg, batch);
-    evaluate_combinational(state, cg, batch);
+    seed_ff_outputs(state, cg, active_batch);
+    evaluate_combinational(state, cg, active_batch);
     for (int i = 0; i < cycle.settle_cycles; ++i) {
-      seed_ff_outputs(state, cg, batch);
-      evaluate_combinational(state, cg, batch);
+      seed_ff_outputs(state, cg, active_batch);
+      evaluate_combinational(state, cg, active_batch);
     }
     if (cycle.sample_outputs) {
-      detected |= check_observation(state, cg, batch);
+      samples.push_back(state.current_values());
     }
     state.prev_values = state.current_values();
   }
-  return detected & batch.mask;
+  return samples;
 }
 
 }  // namespace faultflow
