@@ -27,13 +27,14 @@ struct GraphContext {
 
 GraphContext load_graph(const std::string& json_path,
                         const std::string& cell_map_path,
-                        const std::string& unsupported_policy) {
+                        const std::string& unsupported_policy,
+                        bool require_combinational = true) {
   GraphContext ctx;
   ctx.parsed = ParsedGraph::from_file(json_path);
   const CellMap cell_map = CellMap::load(cell_map_path);
   ctx.ng = NormalizedGraph::from_parsed(ctx.parsed, cell_map, unsupported_policy);
   ctx.cg = GraphCompiler::compile(ctx.ng);
-  if (!ctx.cg.ff_nodes.empty()) {
+  if (require_combinational && !ctx.cg.ff_nodes.empty()) {
     throw std::runtime_error("progressive native ATPG is combinational-only");
   }
   return ctx;
@@ -124,7 +125,8 @@ void ensure_faults_enumerated(
   if (db::fault_count(db_path, campaign_id) > 0) {
     return;
   }
-  const GraphContext ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const GraphContext ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, false);
   const std::vector<CompactFault> faults =
       enumerate_all(ctx.ng, ctx.cg, include_clock_faults, include_reset_faults,
                     collapsing);
