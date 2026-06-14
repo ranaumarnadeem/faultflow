@@ -5,7 +5,7 @@ from typing import Any
 
 CAMPAIGN_TYPE_COMB = "comb"
 CAMPAIGN_TYPE_SCAN = "scan"
-EXPECTED_USER_VERSION = 4
+EXPECTED_USER_VERSION = 5
 
 
 class SchemaError(RuntimeError):

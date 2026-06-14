@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS faults (
     net_name TEXT NOT NULL,
     node_id INTEGER NOT NULL DEFAULT -1,
     compiled_net_index INTEGER NOT NULL,
+    atpg_compiled_net_index INTEGER,
     type TEXT NOT NULL DEFAULT '',
     fault_type TEXT NOT NULL,
     status TEXT NOT NULL,
@@ -160,7 +161,7 @@ def connect(path: str | Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -214,6 +215,9 @@ def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[st
                 "excluded_blackbox": 0,
                 "excluded_clock": 0,
                 "excluded_reset": 0,
+                "excluded_scan": 0,
+                "excluded_scan_internal": 0,
+                "excluded_scan_chain": 0,
                 "protocol_unresolved": 0,
                 "coverage_percent": None,
                 "fault_coverage_percent": None,
@@ -239,6 +243,12 @@ def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[st
           SUM(CASE WHEN exclusion = 'blackbox' THEN 1 ELSE 0 END) AS excluded_blackbox,
           SUM(CASE WHEN exclusion = 'clock' THEN 1 ELSE 0 END) AS excluded_clock,
           SUM(CASE WHEN exclusion = 'reset' THEN 1 ELSE 0 END) AS excluded_reset,
+          SUM(CASE WHEN exclusion IN ('scan', 'scan_internal', 'scan_chain')
+                    THEN 1 ELSE 0 END) AS excluded_scan,
+          SUM(CASE WHEN exclusion = 'scan_internal'
+                    THEN 1 ELSE 0 END) AS excluded_scan_internal,
+          SUM(CASE WHEN exclusion = 'scan_chain'
+                    THEN 1 ELSE 0 END) AS excluded_scan_chain,
           SUM(CASE WHEN protocol_unresolved = 1 AND exclusion = 'none'
                     AND collapsed_into IS NULL AND status != 'detected'
                     THEN 1 ELSE 0 END) AS protocol_unresolved
