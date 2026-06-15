@@ -5,11 +5,19 @@ from pathlib import Path
 
 from faultflow.config import ConfigError, load_config, parse_bool_value
 from faultflow.runner import Runner, RunnerError
+from faultflow.service import FlowService
+from faultflow.shell.repl import run_shell
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python3 ff.py")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    shell = sub.add_parser("shell", help="Start the Faultflow Tcl shell")
+    shell.add_argument("-f", "--file", type=Path, help="Execute a Tcl script")
+    shell.add_argument("-c", "--config", type=Path, help="Preload a project config")
+    shell.add_argument("--out", type=Path, default=Path("output"), help="Output root")
+    shell.add_argument("--verbose", action="store_true")
 
     def add_common(p: argparse.ArgumentParser) -> None:
         p.add_argument("--top", required=True, help="Top module name")
@@ -128,10 +136,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "shell":
+            return run_shell(
+                script=args.file,
+                config=args.config,
+                output_root=args.out,
+                verbose=args.verbose,
+            )
         cfg = load_config(Path(args.config), args.top)
-        runner = Runner(cfg)
+        service = FlowService(runner_factory=Runner)
         if args.command == "init":
-            print(runner.init())
+            print(service.initialize(cfg).message)
         elif args.command == "sim":
             verify = (
                 parse_bool_value(args.verify, "verify")
@@ -153,17 +168,18 @@ def main(argv: list[str] | None = None) -> int:
                 "scan": args.scan,
             }
             if args.ext is None:
-                print(runner.sim(**sim_kwargs))
+                print(service.run_atpg(cfg, **sim_kwargs).message)
             else:
-                print(runner.sim(**sim_kwargs, ext=args.ext))
+                print(service.run_atpg(cfg, **sim_kwargs, ext=args.ext).message)
         elif args.command == "status":
-            print(runner.status(scan=args.scan))
+            print(service.status(cfg, scan=args.scan).message)
         elif args.command == "scan":
             run_techmap = args.techmap
             if args.skip_techmap:
                 run_techmap = False
             print(
-                runner.scan(
+                service.insert_scan(
+                    cfg,
                     run_techmap=run_techmap,
                     scan_chains=args.scan_chains,
                     max_chain_length=args.max_chain_length,
@@ -171,19 +187,20 @@ def main(argv: list[str] | None = None) -> int:
                     scan_out=args.scan_out,
                     scan_enable=args.scan_enable,
                     dry_run=args.dry_run,
-                )
+                ).message
             )
         elif args.command == "scan-status":
-            print(runner.scan_status())
+            print(service.scan_status(cfg).message)
         elif args.command == "scan-check":
             print(
-                runner.scan_check(
+                service.check_scan(
+                    cfg,
                     vectors_path=args.vectors,
                     require_techmap=args.require_techmap,
-                )
+                ).message
             )
         elif args.command == "scan-techmap":
-            print(runner.scan_techmap())
+            print(service.regenerate_scan_techmap(cfg).message)
         else:
             parser.error(f"unknown command {args.command}")
     except (ConfigError, RunnerError) as exc:
