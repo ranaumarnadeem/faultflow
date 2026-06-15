@@ -122,6 +122,9 @@ py::dict summary_to_dict(const db::CoverageSummary& s) {
   d["excluded_blackbox"] = s.excluded_blackbox;
   d["excluded_clock"] = s.excluded_clock;
   d["excluded_reset"] = s.excluded_reset;
+  d["excluded_scan"] = s.excluded_scan;
+  d["excluded_scan_internal"] = s.excluded_scan_internal;
+  d["excluded_scan_chain"] = s.excluded_scan_chain;
   d["coverage_percent"] = s.coverage_percent;
   return d;
 }

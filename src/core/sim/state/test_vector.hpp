@@ -10,6 +10,7 @@ struct TestCycle {
   std::map<int, bool> inputs;  // YosysNetID -> value
   bool sample_outputs = true;
   int settle_cycles = 0;
+  bool fault_active = true;
 };
 
 struct TestVector {

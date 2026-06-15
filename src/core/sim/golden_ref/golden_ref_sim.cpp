@@ -354,15 +354,16 @@ std::vector<std::map<int, bool>> GoldenRefSim::simulate_sequence_with_fault(
   std::vector<std::map<int, bool>> samples;
 
   for (const TestCycle& cycle : cycles_for(vec)) {
-    broadcast_inputs(cg, cycle, values, active_fault);
-    seed_ff_outputs(cg, ff_states, values, active_fault);
-    evaluate_combinational(cg, values, active_fault);
+    const CompactFault* cycle_fault = cycle.fault_active ? active_fault : nullptr;
+    broadcast_inputs(cg, cycle, values, cycle_fault);
+    seed_ff_outputs(cg, ff_states, values, cycle_fault);
+    evaluate_combinational(cg, values, cycle_fault);
     update_ff_states(cg, values, prev_values, ff_states);
-    seed_ff_outputs(cg, ff_states, values, active_fault);
-    evaluate_combinational(cg, values, active_fault);
+    seed_ff_outputs(cg, ff_states, values, cycle_fault);
+    evaluate_combinational(cg, values, cycle_fault);
     for (int i = 0; i < cycle.settle_cycles; ++i) {
-      seed_ff_outputs(cg, ff_states, values, active_fault);
-      evaluate_combinational(cg, values, active_fault);
+      seed_ff_outputs(cg, ff_states, values, cycle_fault);
+      evaluate_combinational(cg, values, cycle_fault);
     }
     if (cycle.sample_outputs) {
       samples.push_back(snapshot(cg, values));
