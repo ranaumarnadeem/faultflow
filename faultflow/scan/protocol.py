@@ -172,6 +172,9 @@ def serialize_vector(
     manifest: dict[str, Any],
 ) -> ScanPattern:
     lengths = _chain_lengths(manifest)
+    max_chain_length = int(
+        manifest.get("max_chain_length", max(lengths.values(), default=0))
+    )
     load_by_chain: dict[int, dict[int, bool]] = {}
     unload_by_chain: dict[int, dict[int, bool]] = {}
     for entry in pseudo_port_map.values():
@@ -183,14 +186,26 @@ def serialize_vector(
         unload_by_chain.setdefault(chain_id, {})[position] = bool(
             vector.get(str(entry["ppo_port"]), False)
         )
-    load_seqs = {
-        chain_id: load_sequence(targets, lengths.get(chain_id, len(targets)))
-        for chain_id, targets in load_by_chain.items()
-    }
-    expected_unload = {
-        chain_id: unload_sequence(targets, lengths.get(chain_id, len(targets)))
-        for chain_id, targets in unload_by_chain.items()
-    }
+    load_seqs: dict[int, list[bool]] = {}
+    expected_unload: dict[int, list[bool]] = {}
+    for chain_id, targets in load_by_chain.items():
+        chain_length = lengths.get(chain_id, len(targets))
+        padding = max_chain_length - chain_length
+        if padding < 0:
+            raise ValueError("chain length exceeds manifest max_chain_length")
+        load_seqs[chain_id] = [
+            *([False] * padding),
+            *load_sequence(targets, chain_length),
+        ]
+    for chain_id, targets in unload_by_chain.items():
+        chain_length = lengths.get(chain_id, len(targets))
+        padding = max_chain_length - chain_length
+        if padding < 0:
+            raise ValueError("chain length exceeds manifest max_chain_length")
+        expected_unload[chain_id] = [
+            *unload_sequence(targets, chain_length),
+            *([False] * padding),
+        ]
     capture_pi_values = {
         name: bool(value)
         for name, value in vector.items()

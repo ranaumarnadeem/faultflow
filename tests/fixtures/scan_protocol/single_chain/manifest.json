@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "top": "scan_protocol_single",
+  "clock_net": 2,
+  "scan_enable": "scan_en",
+  "scan_inputs": ["scan_in"],
+  "scan_outputs": ["scan_out"],
+  "chain_count": 1,
+  "cell_count": 2,
+  "min_chain_length": 2,
+  "max_chain_length": 2,
+  "chains": [
+    {
+      "index": 0,
+      "scan_in": "scan_in",
+      "scan_out": "scan_out",
+      "scan_in_net": 3,
+      "scan_out_net": 9,
+      "length": 2,
+      "cells": ["ff0", "ff1"]
+    }
+  ],
+  "cells": [
+    {
+      "instance": "ff0",
+      "original_type": "DFFPOSX1",
+      "chain_index": 0,
+      "chain_position": 0,
+      "clock_net": 2,
+      "data_net": 6,
+      "scan_in_net": 3,
+      "scan_enable_net": 4,
+      "q_net": 8
+    },
+    {
+      "instance": "ff1",
+      "original_type": "DFFPOSX1",
+      "chain_index": 0,
+      "chain_position": 1,
+      "clock_net": 2,
+      "data_net": 7,
+      "scan_in_net": 8,
+      "scan_enable_net": 4,
+      "q_net": 9
+    }
+  ],
+  "ineligible_ffs": []
+}

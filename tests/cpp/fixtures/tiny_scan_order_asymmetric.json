@@ -1,0 +1,156 @@
+{
+  "modules": {
+    "tiny_scan_order_asymmetric": {
+      "attributes": {
+        "top": "1"
+      },
+      "ports": {
+        "CLK": {
+          "direction": "input",
+          "bits": [2]
+        },
+        "scan_in": {
+          "direction": "input",
+          "bits": [3]
+        },
+        "scan_en": {
+          "direction": "input",
+          "bits": [4]
+        },
+        "D0": {
+          "direction": "input",
+          "bits": [5]
+        },
+        "D1": {
+          "direction": "input",
+          "bits": [6]
+        },
+        "D2": {
+          "direction": "input",
+          "bits": [7]
+        },
+        "Q0": {
+          "direction": "output",
+          "bits": [8]
+        },
+        "Q1": {
+          "direction": "output",
+          "bits": [9]
+        },
+        "scan_out": {
+          "direction": "output",
+          "bits": [10]
+        }
+      },
+      "cells": {
+        "ff0": {
+          "hide_name": 0,
+          "type": "$scanff_faultflow",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "SDI": "input",
+            "SE": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [2],
+            "D": [5],
+            "SDI": [3],
+            "SE": [4],
+            "Q": [8]
+          }
+        },
+        "ff1": {
+          "hide_name": 0,
+          "type": "$scanff_faultflow",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "SDI": "input",
+            "SE": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [2],
+            "D": [6],
+            "SDI": [8],
+            "SE": [4],
+            "Q": [9]
+          }
+        },
+        "ff2": {
+          "hide_name": 0,
+          "type": "$scanff_faultflow",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "SDI": "input",
+            "SE": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [2],
+            "D": [7],
+            "SDI": [9],
+            "SE": [4],
+            "Q": [10]
+          }
+        }
+      },
+      "netnames": {
+        "CLK": {
+          "hide_name": 0,
+          "bits": [2],
+          "attributes": {}
+        },
+        "scan_in": {
+          "hide_name": 0,
+          "bits": [3],
+          "attributes": {}
+        },
+        "scan_en": {
+          "hide_name": 0,
+          "bits": [4],
+          "attributes": {}
+        },
+        "D0": {
+          "hide_name": 0,
+          "bits": [5],
+          "attributes": {}
+        },
+        "D1": {
+          "hide_name": 0,
+          "bits": [6],
+          "attributes": {}
+        },
+        "D2": {
+          "hide_name": 0,
+          "bits": [7],
+          "attributes": {}
+        },
+        "Q0": {
+          "hide_name": 0,
+          "bits": [8],
+          "attributes": {}
+        },
+        "Q1": {
+          "hide_name": 0,
+          "bits": [9],
+          "attributes": {}
+        },
+        "scan_out": {
+          "hide_name": 0,
+          "bits": [10],
+          "attributes": {}
+        }
+      }
+    }
+  }
+}

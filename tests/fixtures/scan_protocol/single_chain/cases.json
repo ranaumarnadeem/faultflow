@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "top": "scan_protocol_single",
+  "cases": [
+    {
+      "name": "pre_capture_output_differs_from_post_capture",
+      "reduced_vector": {
+        "__ppi_ff0": true,
+        "__ppi_ff1": false,
+        "__ppo_ff0": false,
+        "__ppo_ff1": true,
+        "A": false,
+        "D0": false,
+        "D1": true,
+        "Y": true
+      },
+      "load_seqs": {"0": [false, true]},
+      "pre_capture_outputs": {"Y": true},
+      "post_capture_outputs": {"Y": false},
+      "captured_ppo": {"__ppo_ff0": false, "__ppo_ff1": true},
+      "expected_unload": {"0": [true, false]},
+      "faults": [
+        {
+          "site_key": "net:8:stem",
+          "fault_type": "sa0",
+          "exclusion": "none",
+          "expected_tier_a": true,
+          "expected_tier_b": true
+        },
+        {
+          "site_key": "net:8:branch:ff1:SDI",
+          "fault_type": "sa0",
+          "exclusion": "scan_internal",
+          "expected_tier_a": false,
+          "expected_tier_b": false
+        }
+      ]
+    }
+  ]
+}

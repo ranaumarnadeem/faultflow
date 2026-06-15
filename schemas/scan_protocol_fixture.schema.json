@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://faultflow.local/schemas/scan_protocol_fixture.schema.json",
+  "title": "faultflow scan protocol fixture cases",
+  "type": "object",
+  "required": ["version", "top", "cases"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {"const": 1},
+    "top": {"type": "string", "minLength": 1},
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/case"}
+    }
+  },
+  "$defs": {
+    "bool_map": {
+      "type": "object",
+      "additionalProperties": {"type": "boolean"}
+    },
+    "chain_bits": {
+      "type": "object",
+      "patternProperties": {
+        "^[0-9]+$": {
+          "type": "array",
+          "items": {"type": "boolean"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "fault": {
+      "type": "object",
+      "required": ["site_key", "fault_type", "expected_tier_a", "expected_tier_b"],
+      "additionalProperties": false,
+      "properties": {
+        "site_key": {"type": "string", "minLength": 1},
+        "fault_type": {"enum": ["sa0", "sa1"]},
+        "exclusion": {
+          "enum": ["none", "scan_internal", "scan_chain", "blackbox", "clock", "reset"]
+        },
+        "expected_tier_a": {"type": "boolean"},
+        "expected_tier_b": {"type": "boolean"}
+      }
+    },
+    "case": {
+      "type": "object",
+      "required": [
+        "name",
+        "reduced_vector",
+        "load_seqs",
+        "pre_capture_outputs",
+        "captured_ppo",
+        "expected_unload"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "reduced_vector": {"$ref": "#/$defs/bool_map"},
+        "load_seqs": {"$ref": "#/$defs/chain_bits"},
+        "pre_capture_outputs": {"$ref": "#/$defs/bool_map"},
+        "post_capture_outputs": {"$ref": "#/$defs/bool_map"},
+        "captured_ppo": {"$ref": "#/$defs/bool_map"},
+        "expected_unload": {"$ref": "#/$defs/chain_bits"},
+        "faults": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/fault"}
+        }
+      }
+    }
+  }
+}
