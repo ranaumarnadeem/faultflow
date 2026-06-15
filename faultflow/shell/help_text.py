@@ -1,0 +1,190 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class CommandHelp:
+    category: str
+    usage: str
+    summary: str
+    details: str = ""
+    requires: str = ""
+    example: str = ""
+
+
+COMMAND_HELP = {
+    "read_netlist": CommandHelp(
+        "Project",
+        "read_netlist PATH -top MODULE",
+        "Load Verilog or Yosys JSON",
+        "Verilog is synthesized later with synth. Yosys JSON is already synthesized.",
+        "No design may already be loaded.",
+        "read_netlist examples/serial_adder.v -top serial_adder",
+    ),
+    "use_lib_cells": CommandHelp(
+        "Project",
+        "use_lib_cells PROFILE",
+        "Select sky130 or osu035",
+        "Select the registered runtime cell semantics and technology files.",
+        "A registered PDK profile.",
+        "use_lib_cells sky130",
+    ),
+    "synth": CommandHelp(
+        "Project",
+        "synth",
+        "Synthesize loaded Verilog",
+        "Runs Yosys for Verilog. For Yosys JSON this validates and returns "
+        "already_synthesized.",
+        "A loaded design and selected PDK profile.",
+        "synth",
+    ),
+    "add_scan": CommandHelp(
+        "Scan",
+        "add_scan -chains N [-max_length N] [-SI NAME] [-SO NAME] "
+        "[-SE NAME] [-dry_run]",
+        "Insert generic scan chains",
+        "Inserts and stitches generic $scanff_faultflow cells. This command "
+        "does not run scan checking or techmap.",
+        "A synthesized design and selected PDK profile.",
+        "add_scan -chains 4 -SI scan_in -SO scan_out -SE scan_en",
+    ),
+    "check_scan": CommandHelp(
+        "Scan",
+        "check_scan",
+        "Validate current scan insertion",
+        "Runs structural and normal-mode checks and records the result.",
+        "A current generic scan insertion.",
+        "check_scan",
+    ),
+    "run_atpg": CommandHelp(
+        "Run",
+        "run_atpg [-sa] [-scan] [-max ROUNDS] [-target PERCENT]",
+        "Run native stuck-at ATPG",
+        "Runs combinational ATPG by default. Use -scan for scan-protocol ATPG.",
+        "A synthesized design; scan ATPG additionally requires a fresh scan check.",
+        "run_atpg -sa -scan -max 20 -target 95",
+    ),
+    "status": CommandHelp(
+        "Run",
+        "status [-scan]",
+        "Show campaign status",
+        "Returns coverage, classification, terminal reason, and timing fields.",
+        "A loaded project.",
+        "status -scan",
+    ),
+    "report": CommandHelp(
+        "Run",
+        "report",
+        "Regenerate unified report",
+        "Writes report.rpt with scan headline and optional combinational comparison.",
+        "A loaded project.",
+        "report",
+    ),
+    "write_netlist": CommandHelp(
+        "Output",
+        "write_netlist [-scan] [-techmap|-notech] [-o PATH] [-verify]",
+        "Publish a functional or scanned netlist",
+        "-scan writes generic scan Verilog. -techmap binds supported physical "
+        "scan cells. -verify is currently unsupported.",
+        "A synthesized design; scanned writes require add_scan.",
+        "write_netlist -scan -techmap",
+    ),
+    "write_patterns": CommandHelp(
+        "Output",
+        "write_patterns",
+        "Export ATPG patterns",
+        "Reserved for future scan-aware STIL/WGL export and currently unsupported.",
+    ),
+    "set_option": CommandHelp(
+        "Options",
+        "set_option KEY VALUE",
+        "Set a persistent flow option",
+        "Supported keys are shown by show_config.",
+        "",
+        "set_option atpg.max_rounds 40",
+    ),
+    "unset_option": CommandHelp(
+        "Options",
+        "unset_option KEY",
+        "Remove a persistent option override",
+    ),
+    "show_config": CommandHelp(
+        "Options",
+        "show_config",
+        "Show current option overrides",
+    ),
+    "save_session": CommandHelp(
+        "Session",
+        "save_session",
+        "Validate and checkpoint the session",
+    ),
+    "load_session": CommandHelp(
+        "Session",
+        "load_session TOP",
+        "Load saved project definition",
+        "Restores project identity and options without trusting derived run state.",
+    ),
+    "resume": CommandHelp(
+        "Session",
+        "resume TOP",
+        "Resume validated project state",
+        "Reloads available synthesis, scan, check, and campaign state.",
+    ),
+    "clean": CommandHelp(
+        "Session",
+        "clean",
+        "Remove campaign database state",
+        "Preserves manifests, session, logs, netlists, and other project artifacts.",
+    ),
+    "reset": CommandHelp(
+        "Session",
+        "reset",
+        "Clear the in-memory project",
+    ),
+    "help": CommandHelp(
+        "Shell",
+        "help [COMMAND]",
+        "Show command help",
+    ),
+    "quit": CommandHelp(
+        "Shell",
+        "quit",
+        "Exit the interactive shell",
+    ),
+    "exit": CommandHelp(
+        "Shell",
+        "exit",
+        "Exit the interactive shell",
+    ),
+}
+
+
+CATEGORY_ORDER = ("Project", "Scan", "Run", "Output", "Options", "Session", "Shell")
+
+
+def render_help_overview() -> str:
+    width = max(len(item.usage) for item in COMMAND_HELP.values())
+    lines = ["Faultflow commands", ""]
+    for category in CATEGORY_ORDER:
+        entries = [item for item in COMMAND_HELP.values() if item.category == category]
+        if not entries:
+            continue
+        lines.append(category)
+        for item in entries:
+            lines.append(f"  {item.usage:<{width}}  {item.summary}")
+        lines.append("")
+    lines.append('Use "help <command>" for details.')
+    return "\n".join(lines)
+
+
+def render_command_help(command: str) -> str:
+    item = COMMAND_HELP[command]
+    lines = [command, "", f"Usage: {item.usage}", "", item.summary + "."]
+    if item.details:
+        lines.extend(["", item.details])
+    if item.requires:
+        lines.extend(["", "Requires:", f"  {item.requires}"])
+    if item.example:
+        lines.extend(["", "Example:", f"  {item.example}"])
+    return "\n".join(lines)

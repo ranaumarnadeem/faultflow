@@ -1,0 +1,400 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
+from typing import Any
+
+from faultflow.config import (
+    AtpgConfig,
+    FaultflowConfig,
+    FaultModelConfig,
+    ReportConfig,
+    ScanConfig,
+    SimulationConfig,
+)
+from faultflow.project.profiles import TechnologyProfile, get_profile
+from faultflow.service import ArtifactPolicy, FlowService, OperationResult
+from faultflow.shell.errors import ShellError, precondition, unsupported
+
+
+@dataclass(frozen=True)
+class SessionSnapshot:
+    top: str | None
+    source: str | None
+    source_kind: str | None
+    profile: str | None
+    synthesized: bool
+    scan_inserted: bool
+    scan_checked: bool
+    scan_campaign_stale: bool
+    options: tuple[tuple[str, str], ...]
+
+
+class ProjectSession:
+    def __init__(
+        self,
+        *,
+        output_root: Path = Path("output"),
+        service: Any | None = None,
+        baseline_config: FaultflowConfig | None = None,
+    ) -> None:
+        self.output_root = output_root
+        self.service = service or FlowService(
+            artifact_policy=ArtifactPolicy.WORKSPACE_ONLY
+        )
+        self.baseline_config = baseline_config
+        self.top: str | None = None
+        self.source: Path | None = None
+        self.source_kind: str | None = None
+        self.profile: TechnologyProfile | None = None
+        self.synthesized = False
+        self.scan_inserted = False
+        self.scan_checked = False
+        self.scan_campaign_stale = False
+        self.options: dict[str, str] = {}
+
+    @property
+    def checkpoint_path(self) -> Path:
+        if self.top is None:
+            raise precondition("no design loaded", "NO_DESIGN")
+        return self.output_root / self.top / ".faultflow" / "session.json"
+
+    def snapshot(self) -> SessionSnapshot:
+        return SessionSnapshot(
+            top=self.top,
+            source=str(self.source) if self.source is not None else None,
+            source_kind=self.source_kind,
+            profile=self.profile.name if self.profile is not None else None,
+            synthesized=self.synthesized,
+            scan_inserted=self.scan_inserted,
+            scan_checked=self.scan_checked,
+            scan_campaign_stale=self.scan_campaign_stale,
+            options=tuple(sorted(self.options.items())),
+        )
+
+    def _checkpoint_payload(self) -> dict[str, object]:
+        snap = asdict(self.snapshot())
+        snap["output_root"] = str(self.output_root)
+        return snap
+
+    def checkpoint(self) -> tuple[Path, str]:
+        path = self.checkpoint_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(self._checkpoint_payload(), indent=2, sort_keys=True) + "\n"
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(temporary, path)
+        return path, hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def read_netlist(self, path: Path, top: str) -> OperationResult:
+        if self.top is not None:
+            raise precondition(
+                f"design '{self.top}' already loaded; use reset first",
+                "NO_DESIGN",
+            )
+        if not path.exists():
+            raise ShellError(f"netlist not found: {path}", "INPUT", "FILE_NOT_FOUND")
+        suffix = path.suffix.lower()
+        if suffix == ".sv":
+            raise unsupported("SystemVerilog is not supported", "SYSTEMVERILOG")
+        if suffix not in {".v", ".json"}:
+            raise ShellError(
+                f"unsupported netlist extension: {suffix}",
+                "INPUT",
+                "UNSUPPORTED_EXTENSION",
+            )
+        if suffix == ".json":
+            data = json.loads(path.read_text(encoding="utf-8"))
+            modules = data.get("modules", {})
+            if not isinstance(modules, dict) or top not in modules:
+                raise ShellError(
+                    f"top module '{top}' not found in {path}",
+                    "INPUT",
+                    "TOP_NOT_FOUND",
+                )
+        self.top = top
+        self.source = path
+        self.source_kind = "yosys_json" if suffix == ".json" else "verilog"
+        self.synthesized = suffix == ".json"
+        self.checkpoint()
+        return OperationResult("read_netlist", top, f"loaded {path}")
+
+    def use_lib_cells(self, name: str) -> OperationResult:
+        profile = get_profile(name)
+        self.profile = profile
+        if self.top is not None:
+            self.scan_checked = False
+            self.checkpoint()
+        return OperationResult(
+            "use_lib_cells",
+            self.top or "",
+            f"using technology profile {profile.name}",
+        )
+
+    def materialize_config(self) -> FaultflowConfig:
+        if self.top is None or self.source is None:
+            raise precondition("run read_netlist first", "NO_DESIGN")
+        if self.profile is None:
+            raise precondition("run use_lib_cells first", "PROFILE_REQUIRED")
+        if self.baseline_config is not None:
+            cfg = replace(
+                self.baseline_config,
+                top=self.top,
+                netlist=self.source,
+                cell_lib=self.profile.cell_map,
+                liberty=self.profile.liberty,
+                verilog_models=self.profile.verilog_models,
+                output_root=self.output_root,
+            )
+        else:
+            cfg = FaultflowConfig(
+                path=Path("<shell>"),
+                top=self.top,
+                netlist=self.source,
+                cell_lib=self.profile.cell_map,
+                liberty=self.profile.liberty,
+                verilog_models=self.profile.verilog_models,
+                yosys_ver="",
+                fault_model=FaultModelConfig(),
+                simulation=SimulationConfig(),
+                atpg=AtpgConfig(),
+                report=ReportConfig(output=Path("coverage.rpt")),
+                scan=ScanConfig(run_techmap=False),
+                output_root=self.output_root,
+            )
+        for key, value in self.options.items():
+            if key == "atpg.max_rounds":
+                cfg = replace(cfg, atpg=replace(cfg.atpg, max_rounds=int(value)))
+            elif key == "atpg.sat_timeout_seconds":
+                cfg = replace(
+                    cfg,
+                    atpg=replace(cfg.atpg, sat_timeout_seconds=int(value)),
+                )
+            elif key == "report.threshold":
+                cfg = replace(cfg, report=replace(cfg.report, threshold=float(value)))
+            elif key == "simulation.unsupported_cells":
+                if value not in {"fail", "blackbox"}:
+                    raise ShellError(
+                        "unsupported_cells must be fail or blackbox",
+                        "CONFIG",
+                        "INVALID_VALUE",
+                    )
+                cfg = replace(
+                    cfg,
+                    simulation=replace(cfg.simulation, unsupported_cells=value),
+                )
+        return cfg
+
+    def synthesize(self) -> OperationResult:
+        cfg = self.materialize_config()
+        result = self.service.synthesize(cfg)
+        self.synthesized = True
+        self.scan_inserted = False
+        self.scan_checked = False
+        self.checkpoint()
+        self._refresh_report()
+        return result
+
+    def add_scan(self, **options: object) -> OperationResult:
+        if not self.synthesized:
+            raise precondition("run synth first", "SYNTH_REQUIRED")
+        cfg = self.materialize_config()
+        result = self.service.insert_scan(cfg, **options)
+        if bool(options.get("dry_run", False)):
+            return result
+        self.scan_inserted = True
+        self.scan_checked = False
+        if hasattr(self.service, "has_campaign"):
+            self.scan_campaign_stale = bool(self.service.has_campaign(cfg, "scan"))
+        self.checkpoint()
+        self._refresh_report()
+        return result
+
+    def check_scan(self, **options: object) -> OperationResult:
+        if not self.scan_inserted:
+            raise precondition("run add_scan first", "SCAN_REQUIRED")
+        try:
+            result = self.service.check_scan(self.materialize_config(), **options)
+        except Exception as exc:
+            self._refresh_report()
+            raise ShellError(str(exc), "RUNNER", "SCAN_CHECK_FAILED") from exc
+        self.scan_checked = True
+        self.checkpoint()
+        self._refresh_report()
+        return result
+
+    def run_atpg(self, *, scan: bool = False, **options: object) -> OperationResult:
+        if self.top is None:
+            raise precondition("run read_netlist first", "NO_DESIGN")
+        if not self.synthesized:
+            raise precondition("run synth first", "SYNTH_REQUIRED")
+        if scan and not self.scan_inserted:
+            raise precondition("run add_scan first", "SCAN_REQUIRED")
+        if scan and not self.scan_checked:
+            raise precondition("run check_scan first", "SCAN_CHECK_REQUIRED")
+        if scan and self.scan_campaign_stale:
+            raise precondition(
+                "scan campaign belongs to a previous scan configuration; "
+                "run clean before ATPG. This also clears any combinational "
+                "campaign; rerun run_atpg -sa if comparison is needed.",
+                "CAMPAIGN_STALE",
+            )
+        if scan and not self._scan_check_is_fresh():
+            self.scan_checked = False
+            raise precondition(
+                "scan check does not match the current scanned netlist",
+                "SCAN_CHECK_STALE",
+            )
+        result = self.service.run_atpg(self.materialize_config(), scan=scan, **options)
+        self._refresh_report()
+        return result
+
+    def status(self, *, scan: bool = False) -> OperationResult:
+        return self.service.status(self.materialize_config(), scan=scan)
+
+    def report(self) -> OperationResult:
+        return self.service.write_report(self.materialize_config())
+
+    def clean(self) -> OperationResult:
+        result = self.service.clean_campaigns(self.materialize_config())
+        self.scan_campaign_stale = False
+        self.checkpoint()
+        self._refresh_report()
+        return result
+
+    def write_netlist(
+        self,
+        *,
+        scan: bool = False,
+        techmap: bool = False,
+        verify: bool = False,
+        output: Path | None = None,
+    ) -> OperationResult:
+        if verify:
+            raise unsupported(
+                "techmap verification is not implemented",
+                "TECHMAP_VERIFICATION",
+            )
+        if scan and not self.scan_inserted:
+            raise precondition("run add_scan first", "SCAN_REQUIRED")
+        if (
+            scan
+            and techmap
+            and (self.profile is None or not self.profile.supports_physical_scan)
+        ):
+            raise unsupported(
+                "selected PDK has no physical scan-cell binding",
+                "PHYSICAL_SCAN_BINDING",
+            )
+        return self.service.write_netlist(
+            self.materialize_config(),
+            scan=scan,
+            techmap=techmap,
+            output=output,
+        )
+
+    def set_option(self, key: str, value: str) -> OperationResult:
+        allowed = {
+            "atpg.max_rounds",
+            "atpg.sat_timeout_seconds",
+            "report.threshold",
+            "simulation.unsupported_cells",
+        }
+        if key not in allowed:
+            raise ShellError(f"unsupported option: {key}", "CONFIG", "INVALID_OPTION")
+        self.options[key] = value
+        if self.top is not None:
+            self.checkpoint()
+        return OperationResult("set_option", self.top or "", f"{key}={value}")
+
+    def unset_option(self, key: str) -> OperationResult:
+        self.options.pop(key, None)
+        if self.top is not None:
+            self.checkpoint()
+        return OperationResult("unset_option", self.top or "", key)
+
+    def save_session(self) -> OperationResult:
+        path, digest = self.checkpoint()
+        return OperationResult(
+            "save_session",
+            self.top or "",
+            f"session saved: {path}",
+            artifacts={"session": path},
+            metrics={"sha256": digest},
+        )
+
+    def load_session(self, top: str, *, resume: bool = False) -> OperationResult:
+        if self.top is not None:
+            raise precondition("reset the current design first", "NO_DESIGN")
+        path = self.output_root / top / ".faultflow" / "session.json"
+        if not path.exists():
+            raise ShellError(
+                f"session not found: {path}",
+                "PRECONDITION",
+                "CAMPAIGN_MISSING",
+            )
+        data = json.loads(path.read_text(encoding="utf-8"))
+        source = Path(str(data["source"]))
+        if not source.exists():
+            raise ShellError(f"netlist not found: {source}", "INPUT", "FILE_NOT_FOUND")
+        profile = get_profile(str(data["profile"]))
+        self.top = top
+        self.source = source
+        self.source_kind = str(data["source_kind"])
+        self.profile = profile
+        self.synthesized = (
+            bool(data["synthesized"]) if resume else self.source_kind == "yosys_json"
+        )
+        self.scan_inserted = bool(data["scan_inserted"]) if resume else False
+        self.scan_checked = bool(data["scan_checked"]) if resume else False
+        self.scan_campaign_stale = (
+            bool(data.get("scan_campaign_stale", False)) if resume else False
+        )
+        self.options = dict(data.get("options", ()))
+        if resume and self.scan_inserted:
+            cfg = self.materialize_config()
+            if not cfg.scan_manifest_path.exists():
+                self.scan_inserted = False
+                self.scan_checked = False
+            elif self.scan_checked and not self._scan_check_is_fresh():
+                self.scan_checked = False
+        return OperationResult(
+            "resume" if resume else "load_session",
+            top,
+            f"session {'resumed' if resume else 'loaded'}: {top}",
+        )
+
+    def _refresh_report(self) -> None:
+        if (
+            self.top is not None
+            and self.profile is not None
+            and hasattr(self.service, "write_report")
+        ):
+            self.service.write_report(self.materialize_config())
+
+    def _scan_check_is_fresh(self) -> bool:
+        try:
+            cfg = self.materialize_config()
+            manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+            latest = manifest.get("latest_check")
+            generic = Path(str(manifest["generic_json"]))
+            if not isinstance(latest, dict) or latest.get("status") != "PASS":
+                return False
+            digest = hashlib.sha256(generic.read_bytes()).hexdigest()
+            return latest.get("generic_json_hash") == digest
+        except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            return False
+
+    def reset(self) -> None:
+        self.top = None
+        self.source = None
+        self.source_kind = None
+        self.profile = None
+        self.synthesized = False
+        self.scan_inserted = False
+        self.scan_checked = False
+        self.scan_campaign_stale = False
+        self.options.clear()
