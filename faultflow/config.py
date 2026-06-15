@@ -124,10 +124,11 @@ class FaultflowConfig:
     atpg: AtpgConfig
     report: ReportConfig
     scan: ScanConfig
+    output_root: Path = Path("output")
 
     @property
     def output_dir(self) -> Path:
-        return Path("output") / self.top
+        return self.output_root / self.top
 
     @property
     def workspace_dir(self) -> Path:

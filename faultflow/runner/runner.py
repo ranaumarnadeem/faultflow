@@ -355,6 +355,12 @@ class Runner:
                 return path
         return self._run_yosys()
 
+    def find_netlist(self) -> Path:
+        return self._find_netlist()
+
+    def synth(self) -> Path:
+        return self._run_yosys()
+
     def _find_verilog_source(self) -> Path:
         if self.cfg.netlist.suffix == ".sv":
             raise RunnerError("SystemVerilog (.sv) is not supported yet")
@@ -407,6 +413,8 @@ class Runner:
         scan_out: str | None = None,
         scan_enable: str | None = None,
         dry_run: bool = False,
+        generic_json_path: Path | None = None,
+        scan_report_path: Path | None = None,
     ) -> str:
         self.cfg.ensure_workspace()
         netlist = self._find_netlist()
@@ -437,7 +445,7 @@ class Runner:
                 raise RunnerError(str(exc)) from exc
             return format_dry_run(plan)
 
-        generic_json = self.cfg.scan_json_path
+        generic_json = generic_json_path or self.cfg.scan_json_path
         techmap_v = self.cfg.generated_scripts_dir / "faultflow_scanff_map.v"
         sky130_v = self.cfg.scan_verilog_path
         try:
@@ -469,7 +477,7 @@ class Runner:
         manifest = manifest_from_result(result, netlist, techmap_v, techmapped)
         write_scan_artifacts(
             self.cfg.manifests_dir,
-            self.cfg.scan_report_path,
+            scan_report_path or self.cfg.scan_report_path,
             manifest,
         )
         manifest_path = self._scan_manifest_path()
