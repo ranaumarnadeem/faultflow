@@ -50,8 +50,8 @@ def test_serialize_vector_asymmetric_chains() -> None:
         "D0": True,
     }
     pattern = serialize_vector(vector, PSEUDO_MAP, MULTICHAIN_MANIFEST)
-    assert pattern.load_seqs[0] == [True, False]
-    assert pattern.load_seqs[1] == [False, True]
+    assert pattern.load_seqs[0] == [False, True]
+    assert pattern.load_seqs[1] == [True, False]
     assert pattern.expected_unload[0] == [False, True]
     assert pattern.expected_unload[1] == [False, True]
     assert pattern.capture_pi_values == {"D0": True}
@@ -67,7 +67,68 @@ def test_real_pi_values_pass_through() -> None:
     assert pattern.capture_pi_values == {"A": False, "B": True}
 
 
-def test_single_chain_load_unload_reverse() -> None:
-    targets = {0: True, 1: False, 2: True}
-    assert load_sequence(targets, 3) == [True, False, True]
-    assert unload_sequence(targets, 3) == list(reversed(load_sequence(targets, 3)))
+def test_single_chain_load_and_unload_share_physical_order() -> None:
+    targets = {0: True, 1: False, 2: False}
+    assert load_sequence(targets, 3) == [False, False, True]
+    assert unload_sequence(targets, 3) == load_sequence(targets, 3)
+
+
+def test_serialize_vector_pads_unequal_chains_for_common_shift_count() -> None:
+    manifest = {
+        "max_chain_length": 3,
+        "chains": [
+            {"index": 0, "length": 3},
+            {"index": 1, "length": 2},
+        ],
+    }
+    pseudo_map = {
+        "ff0": {
+            "ppi_port": "__ppi_ff0",
+            "ppo_port": "__ppo_ff0",
+            "chain_id": 0,
+            "position_in_chain": 0,
+        },
+        "ff1": {
+            "ppi_port": "__ppi_ff1",
+            "ppo_port": "__ppo_ff1",
+            "chain_id": 0,
+            "position_in_chain": 1,
+        },
+        "ff2": {
+            "ppi_port": "__ppi_ff2",
+            "ppo_port": "__ppo_ff2",
+            "chain_id": 0,
+            "position_in_chain": 2,
+        },
+        "ff3": {
+            "ppi_port": "__ppi_ff3",
+            "ppo_port": "__ppo_ff3",
+            "chain_id": 1,
+            "position_in_chain": 0,
+        },
+        "ff4": {
+            "ppi_port": "__ppi_ff4",
+            "ppo_port": "__ppo_ff4",
+            "chain_id": 1,
+            "position_in_chain": 1,
+        },
+    }
+    vector = {
+        "__ppi_ff0": True,
+        "__ppi_ff1": False,
+        "__ppi_ff2": True,
+        "__ppi_ff3": True,
+        "__ppi_ff4": False,
+        "__ppo_ff0": False,
+        "__ppo_ff1": True,
+        "__ppo_ff2": False,
+        "__ppo_ff3": True,
+        "__ppo_ff4": False,
+    }
+
+    pattern = serialize_vector(vector, pseudo_map, manifest)
+
+    assert pattern.load_seqs[0] == [True, False, True]
+    assert pattern.load_seqs[1] == [False, False, True]
+    assert pattern.expected_unload[0] == [False, True, False]
+    assert pattern.expected_unload[1] == [False, True, False]

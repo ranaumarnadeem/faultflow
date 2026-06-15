@@ -9,6 +9,7 @@
 #include "ir/normalized_graph/normalized_graph.hpp"
 #include "ir/parsed_graph/parsed_graph.hpp"
 #include "sim/golden_ref/golden_ref_sim.hpp"
+#include "sim/engine/bit_parallel_sim.hpp"
 #include "sim/state/test_vector.hpp"
 
 namespace faultflow::scan {
@@ -16,9 +17,10 @@ namespace {
 
 TestCycle make_cycle(const ParsedGraph& parsed, const std::string& clock_port,
                      const std::map<std::string, bool>& values,
-                     bool sample_outputs) {
+                     bool sample_outputs, bool fault_active) {
   TestCycle cycle;
   cycle.sample_outputs = sample_outputs;
+  cycle.fault_active = fault_active;
   for (const auto& [name, value] : values) {
     cycle.inputs[parsed.net_id_by_name(name)] = value;
   }
@@ -30,20 +32,34 @@ TestCycle make_cycle(const ParsedGraph& parsed, const std::string& clock_port,
 
 void append_clock_pulse(TestVector& vec, const ParsedGraph& parsed,
                         const std::string& clock_port,
-                        std::map<std::string, bool> values, bool sample) {
+                        std::map<std::string, bool> values, bool sample,
+                        bool fault_active) {
   values[clock_port] = false;
-  vec.cycles.push_back(make_cycle(parsed, clock_port, values, false));
+  vec.cycles.push_back(
+      make_cycle(parsed, clock_port, values, false, fault_active));
   values[clock_port] = true;
-  vec.cycles.push_back(make_cycle(parsed, clock_port, values, sample));
+  vec.cycles.push_back(
+      make_cycle(parsed, clock_port, values, sample, fault_active));
+}
+
+void append_capture_pulse(TestVector& vec, const ParsedGraph& parsed,
+                          const std::string& clock_port,
+                          std::map<std::string, bool> values) {
+  // Functional POs belong to the loaded-state combinational response. Sample
+  // after settling at the inactive clock level, then capture PPO values.
+  values[clock_port] = false;
+  vec.cycles.push_back(make_cycle(parsed, clock_port, values, true, true));
+  values[clock_port] = true;
+  vec.cycles.push_back(make_cycle(parsed, clock_port, values, false, true));
 }
 
 void append_unload_pulse(TestVector& vec, const ParsedGraph& parsed,
                          const std::string& clock_port,
                          std::map<std::string, bool> values) {
   values[clock_port] = false;
-  vec.cycles.push_back(make_cycle(parsed, clock_port, values, true));
+  vec.cycles.push_back(make_cycle(parsed, clock_port, values, true, true));
   values[clock_port] = true;
-  vec.cycles.push_back(make_cycle(parsed, clock_port, values, false));
+  vec.cycles.push_back(make_cycle(parsed, clock_port, values, false, true));
 }
 
 std::map<std::string, bool> base_values(const ScanPatternRequest& request) {
@@ -88,7 +104,7 @@ TestVector build_scan_pattern_vector(const ParsedGraph& parsed,
           offset < static_cast<int>(bits.size()) ? bits[offset] : false;
       values[request.scan_input_ports[chain_id]] = bit;
     }
-    append_clock_pulse(vec, parsed, request.clock_port, values, false);
+    append_clock_pulse(vec, parsed, request.clock_port, values, false, false);
   }
 
   {
@@ -98,7 +114,7 @@ TestVector build_scan_pattern_vector(const ParsedGraph& parsed,
     for (const auto& scan_in : request.scan_input_ports) {
       values[scan_in] = false;
     }
-    append_clock_pulse(vec, parsed, request.clock_port, values, true);
+    append_capture_pulse(vec, parsed, request.clock_port, values);
   }
 
   for (int offset = 0; offset < request.max_chain_length; ++offset) {
@@ -148,6 +164,48 @@ CompactFault make_compact_fault(const ScanProtocolFaultSpec& spec) {
   return fault;
 }
 
+uint64_t sample_word(const std::vector<uint64_t>& sample,
+                     const ParsedGraph& parsed, const CompiledSimGraph& cg,
+                     const std::string& port) {
+  const int yid = parsed.net_id_by_name(port);
+  const auto it = cg.yosys_to_compiled.find(yid);
+  if (it == cg.yosys_to_compiled.end()) {
+    throw std::runtime_error("scan pattern sample missing port: " + port);
+  }
+  return sample.at(static_cast<size_t>(it->second));
+}
+
+bool lane_bit(uint64_t word, int bit) {
+  return ((word >> bit) & 1ULL) != 0;
+}
+
+ScanPatternResult extract_scan_lane_observations(
+    const ParsedGraph& parsed, const CompiledSimGraph& cg,
+    const ScanPatternRequest& request,
+    const std::vector<std::vector<uint64_t>>& samples, int bit) {
+  if (static_cast<int>(samples.size()) != request.max_chain_length + 1) {
+    throw std::runtime_error("scan pattern sample count mismatch");
+  }
+  ScanPatternResult result;
+  for (const auto& port : request.functional_output_ports) {
+    result.real_po_values[port] =
+        lane_bit(sample_word(samples.front(), parsed, cg, port), bit);
+  }
+  for (size_t chain_id = 0; chain_id < request.scan_output_ports.size();
+       ++chain_id) {
+    std::vector<bool> bits;
+    bits.reserve(request.max_chain_length);
+    for (int offset = 1; offset <= request.max_chain_length; ++offset) {
+      bits.push_back(lane_bit(
+          sample_word(samples.at(offset), parsed, cg,
+                      request.scan_output_ports.at(chain_id)),
+          bit));
+    }
+    result.unload_seqs[static_cast<int>(chain_id)] = std::move(bits);
+  }
+  return result;
+}
+
 }  // namespace
 
 bool scan_observations_equal(const ScanPatternResult& lhs,
@@ -182,8 +240,8 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
   const CompiledSimGraph cg = GraphCompiler::compile(ng);
 
   const TestVector vec = build_scan_pattern_vector(parsed, request.pattern);
-  GoldenRefSim sim;
-  const auto golden_samples = sim.simulate_sequence_fault_free(cg, vec);
+  GoldenRefSim golden_sim;
+  const auto golden_samples = golden_sim.simulate_sequence_fault_free(cg, vec);
 
   ScanProtocolFaultSimResult result;
   result.golden =
@@ -207,6 +265,8 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
                                 request.faults.size());
     batch.lanes.reserve(end - begin);
 
+    FaultBatch fault_batch;
+    fault_batch.size = static_cast<int>(end - begin);
     for (size_t fault_idx = begin; fault_idx < end; ++fault_idx) {
       const ScanProtocolFaultSpec& spec = request.faults[fault_idx];
       if (spec.compiled_net_index >=
@@ -215,13 +275,23 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
             "scan protocol fault compiled_net_index out of range");
       }
 
+      CompactFault fault = make_compact_fault(spec);
+      const int lane_bit_index = static_cast<int>(fault_idx - begin) + 1;
+      fault.bit = static_cast<uint8_t>(lane_bit_index);
+      fault.sa_mask = 1ULL << lane_bit_index;
+      fault_batch.faults[fault_idx - begin] = fault;
+      fault_batch.mask |= fault.sa_mask;
+    }
+
+    BitParallelSim parallel;
+    const auto batch_samples =
+        parallel.simulate_batch_samples(cg, vec, fault_batch);
+    for (size_t fault_idx = begin; fault_idx < end; ++fault_idx) {
       ScanProtocolFaultLaneResult lane;
       lane.fault_index = fault_idx;
-      const CompactFault fault = make_compact_fault(spec);
-      const auto faulty_samples =
-          sim.simulate_sequence_with_fault(cg, vec, fault);
-      const ScanPatternResult faulty_obs = extract_scan_observations(
-          parsed, request.pattern, faulty_samples);
+      const int lane_bit_index = static_cast<int>(fault_idx - begin) + 1;
+      const ScanPatternResult faulty_obs = extract_scan_lane_observations(
+          parsed, cg, request.pattern, batch_samples, lane_bit_index);
       lane.outcome = scan_observations_equal(result.golden, faulty_obs)
                          ? ScanProtocolFaultOutcome::NO_CAPTURE_OR_UNLOAD_EFFECT
                          : ScanProtocolFaultOutcome::PASS;
