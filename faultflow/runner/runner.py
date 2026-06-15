@@ -46,7 +46,6 @@ from faultflow.scan import (
     write_scan_techmap,
     run_scan_techmap,
     run_scan_techmap_json,
-    verilog_to_json,
 )
 from faultflow.scan.checks import check_scan_structure
 from faultflow.scan.atpg_view import build_scan_atpg_view
@@ -647,7 +646,6 @@ class Runner:
         vectors_path: Path | None,
     ) -> tuple[VectorSet, VectorSet, list[str], str, dict[str, bool], str]:
         source_json = Path(str(manifest["source_json"]))
-        generic_json = Path(str(manifest["generic_json"]))
         output_order = _port_names(source_json, str(manifest["top"]), "output")
         if not output_order:
             raise RunnerError("normal-mode scan check requires at least one PO")
@@ -982,11 +980,17 @@ class Runner:
                     removed += 1
         legacy_scan = self.cfg.output_dir / "scan"
         if legacy_scan.exists():
-            shutil.rmtree(legacy_scan)
+            shutil.rmtree(legacy_scan, ignore_errors=True)
             removed += 1
         if self.cfg.workspace_dir.exists():
-            shutil.rmtree(self.cfg.workspace_dir)
-            removed += 1
+            for child in self.cfg.workspace_dir.iterdir():
+                if child.resolve() == self.cfg.manifests_dir.resolve():
+                    continue
+                if child.is_dir():
+                    shutil.rmtree(child, ignore_errors=True)
+                else:
+                    child.unlink(missing_ok=True)
+                removed += 1
         self.cfg.ensure_workspace()
         return removed
 
@@ -1318,13 +1322,20 @@ class Runner:
             )
             fault_sim_seconds = time.perf_counter() - sim_start
             if verified_outputs is not None:
-                run_id = sim_result["run_id"]
-                if not isinstance(run_id, (int, str)):
+                raw_run_id = sim_result["run_id"]
+                if not isinstance(raw_run_id, (int, str)):
                     raise RunnerError(
                         "C++ simulation result did not include a valid run_id"
                     )
-                self._write_verified_vectors(int(run_id), vectors, verified_outputs)
-            run_id = int(sim_result["run_id"])
+                self._write_verified_vectors(
+                    int(raw_run_id), vectors, verified_outputs
+                )
+            raw_run_id = sim_result["run_id"]
+            if not isinstance(raw_run_id, (int, str)):
+                raise RunnerError(
+                    "C++ simulation result did not include a valid run_id"
+                )
+            run_id = int(raw_run_id)
             atpg_terminal = ""
         else:
             from faultflow.runner.progressive_atpg import (

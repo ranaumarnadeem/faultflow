@@ -29,7 +29,11 @@ from faultflow.scan.techmap import (
     render_scan_techmap,
     write_scan_techmap,
 )
-from faultflow.scan.yosys import run_scan_techmap, run_scan_techmap_json, verilog_to_json
+from faultflow.scan.yosys import (
+    run_scan_techmap,
+    run_scan_techmap_json,
+    verilog_to_json,
+)
 
 __all__ = [
     "DEFAULT_SCAN_ENABLE",

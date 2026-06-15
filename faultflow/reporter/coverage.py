@@ -154,6 +154,9 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         "excluded_blackbox",
         "excluded_clock",
         "excluded_reset",
+        "excluded_scan",
+        "excluded_scan_internal",
+        "excluded_scan_chain",
         "protocol_unresolved",
         "fault_coverage_percent",
         "test_coverage_percent",
@@ -204,6 +207,7 @@ def write_reports(
         + data["excluded_blackbox"]
         + data["excluded_clock"]
         + data["excluded_reset"]
+        + data["excluded_scan"]
     )
     if data["total_raw_faults"] != invariant:
         raise CoverageError(
@@ -277,6 +281,9 @@ def write_reports(
             f"excluded_blackbox:   {data['excluded_blackbox']}",
             f"excluded_clock:      {data['excluded_clock']}",
             f"excluded_reset:      {data['excluded_reset']}",
+            f"excluded_scan:       {data['excluded_scan']}",
+            f"excluded_scan_internal:{data['excluded_scan_internal']}",
+            f"excluded_scan_chain:{data['excluded_scan_chain']}",
             f"protocol_unresolved: {data['protocol_unresolved']}",
             f"fault_coverage_%:    {data['fault_coverage_percent']:.3f}",
             f"test_coverage_%:     {data['test_coverage_percent']:.3f}",

@@ -21,7 +21,6 @@ from faultflow.runner.progressive_atpg import (
     ATPGRANDOM_SEED,
     AtpgStats,
     _RoundTracker,
-    _append_unique_vectors,
     _fault_counts,
     _should_stall,
     pattern_key,
@@ -30,6 +29,10 @@ from faultflow.runner.runner import RunnerError
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.protocol import serialize_vector
 from faultflow.scan.site_resolution import build_site_key_index, fault_type_to_sa_code
+from faultflow.scan.site_resolution import (
+    apply_scan_execution_map,
+    build_scan_execution_map,
+)
 from faultflow.scan.verify import reduced_protocol_matches
 
 
@@ -126,7 +129,9 @@ def _termination_sweep_q_stems(
     return int(cur.rowcount)
 
 
-def _protocol_fault_sim_kwargs(ctx: ScanPipelineContext, pattern: Any) -> dict[str, object]:
+def _protocol_fault_sim_kwargs(
+    ctx: ScanPipelineContext, pattern: Any
+) -> dict[str, object]:
     clock_net = ctx.manifest.get("clock_net")
     if not isinstance(clock_net, int):
         raise RunnerError("scan manifest clock_net must be an integer")
@@ -153,6 +158,40 @@ def _protocol_fault_sim_kwargs(ctx: ScanPipelineContext, pattern: Any) -> dict[s
     }
 
 
+def _materialize_reduced_outputs(
+    core: Any,
+    reduced_json_path: str,
+    reduced_cell_map: str,
+    vector: dict[str, bool],
+    input_order: list[str],
+    functional_output_order: list[str],
+    pseudo_port_map: dict[str, dict[str, Any]],
+    unsupported: str,
+) -> dict[str, bool]:
+    ppo_order = [str(entry["ppo_port"]) for _, entry in sorted(pseudo_port_map.items())]
+    output_order = [*functional_output_order, *ppo_order]
+    samples = list(
+        core.fault_free_outputs(
+            reduced_json_path,
+            reduced_cell_map,
+            [vector],
+            input_order,
+            output_order,
+            unsupported,
+        )
+    )
+    if len(samples) != 1:
+        raise RunnerError(
+            "simulator_error: reduced fault-free simulation returned "
+            f"{len(samples)} samples for one candidate"
+        )
+    materialized = dict(vector)
+    materialized.update(
+        {str(name): bool(value) for name, value in dict(samples[0]).items()}
+    )
+    return materialized
+
+
 def _process_scan_candidate(
     core: Any,
     conn: sqlite3.Connection,
@@ -176,7 +215,21 @@ def _process_scan_candidate(
 ) -> tuple[bool, bool]:
     """Return (accepted, protocol_no_progress)."""
     pattern_key_str = pattern_key(vector, input_order)
-    scan_pattern = serialize_vector(vector, scan_ctx.pseudo_port_map, scan_ctx.manifest)
+    materialized_vector = _materialize_reduced_outputs(
+        core,
+        reduced_json_path,
+        reduced_cell_map,
+        vector,
+        input_order,
+        scan_ctx.functional_output_order,
+        scan_ctx.pseudo_port_map,
+        unsupported,
+    )
+    scan_pattern = serialize_vector(
+        materialized_vector,
+        scan_ctx.pseudo_port_map,
+        scan_ctx.manifest,
+    )
     insert_pending_candidate(
         conn,
         campaign_id=campaign_id,
@@ -188,43 +241,36 @@ def _process_scan_candidate(
     )
     conn.commit()
 
-    protocol_ok = reduced_protocol_matches(
-        scan_ctx.cfg,
-        scan_ctx.manifest,
-        scan_ctx.generic_json,
-        scan_pattern,
-        reduced_vector=vector,
-        functional_output_order=scan_ctx.functional_output_order,
-    )
+    try:
+        reduced_protocol_matches(
+            scan_ctx.cfg,
+            scan_ctx.manifest,
+            scan_ctx.generic_json,
+            scan_pattern,
+            reduced_vector=materialized_vector,
+            functional_output_order=scan_ctx.functional_output_order,
+        )
+    except Exception as exc:
+        conn.execute(
+            """
+            UPDATE atpg_candidates
+            SET status = 'aborted'
+            WHERE campaign_id = ? AND run_id = ? AND candidate_id = ?
+            """,
+            (campaign_id, run_id, candidate_id),
+        )
+        conn.execute(
+            """
+            UPDATE runs
+            SET status = 'aborted', completed_at = CURRENT_TIMESTAMP,
+                candidates_aborted = candidates_aborted + 1
+            WHERE id = ? AND campaign_id = ?
+            """,
+            (run_id, campaign_id),
+        )
+        conn.commit()
+        raise RunnerError(f"golden_sequence_failed: {exc}") from exc
     reduced_view_rejections: list[CandidateRejection] = []
-    if not protocol_ok and source == "sat" and sat_target_fault_id is not None:
-        reduced_view_rejections.append(
-            CandidateRejection(sat_target_fault_id, "reduced_view_mismatch")
-        )
-        commit = CandidateCommit(
-            status="rejected",
-            vector_index=vector_index,
-            reduced_view_rejections=reduced_view_rejections,
-        )
-        commit_candidate(
-            conn,
-            campaign_id=campaign_id,
-            run_id=run_id,
-            candidate_id=candidate_id,
-            commit=commit,
-        )
-        return False, True
-
-    if not protocol_ok and source == "random":
-        commit = CandidateCommit(status="rejected", vector_index=vector_index)
-        commit_candidate(
-            conn,
-            campaign_id=campaign_id,
-            run_id=run_id,
-            candidate_id=candidate_id,
-            commit=commit,
-        )
-        return False, False
 
     if source == "sat" and sat_target_fault_id is not None:
         if not core.verify_fault_candidate(
@@ -236,7 +282,7 @@ def _process_scan_candidate(
             unsupported,
         ):
             reduced_view_rejections.append(
-                CandidateRejection(sat_target_fault_id, "reduced_view_mismatch")
+                CandidateRejection(sat_target_fault_id, "tier_a_reduced_mismatch")
             )
             commit = CandidateCommit(
                 status="rejected",
@@ -272,7 +318,7 @@ def _process_scan_candidate(
     if not protocol_sim_fault_ids:
         if source == "sat" and sat_target_fault_id is not None:
             reduced_view_rejections.append(
-                CandidateRejection(sat_target_fault_id, "reduced_view_mismatch")
+                CandidateRejection(sat_target_fault_id, "tier_a_reduced_mismatch")
             )
             commit = CandidateCommit(
                 status="rejected",
@@ -303,7 +349,9 @@ def _process_scan_candidate(
                 f"generic compiled index missing for site {row.fault_site_key}"
             )
         simulated_fault_ids.append(fault_id)
-        protocol_fault_specs.append((generic_cidx, fault_type_to_sa_code(row.fault_type)))
+        protocol_fault_specs.append(
+            (generic_cidx, fault_type_to_sa_code(row.fault_type))
+        )
 
     protocol_fault_sim_kwargs = _protocol_fault_sim_kwargs(scan_ctx, scan_pattern)
     protocol_fault_sim_result = dict(
@@ -372,7 +420,11 @@ def _process_scan_candidate(
         candidate_id=candidate_id,
         commit=commit,
     )
-    core.update_run_vector_count(db_path, run_id, vector_index)
+    conn.execute(
+        "UPDATE runs SET vector_count = ? WHERE id = ?",
+        (vector_index, run_id),
+    )
+    conn.commit()
     return True, False
 
 
@@ -410,13 +462,16 @@ def run_progressive_scan_atpg(
     input_order = _port_names(netlist, cfg.top, "input")
     effective_db_path = str(db_path if db_path is not None else cfg.db_path)
     reduced_json_path = str(netlist)
-    reduced_cell_map = str(cell_map_path if cell_map_path is not None else cfg.cell_lib)
-    generic_cell_map = str(resolve_scan_cell_map(cfg))
+    scan_cell_map = resolve_scan_cell_map(cfg)
+    reduced_cell_map = str(
+        cell_map_path if cell_map_path is not None else scan_cell_map
+    )
+    generic_cell_map = str(scan_cell_map)
     unsupported = cfg.simulation.unsupported_cells
 
     core.ensure_faults_enumerated(
-        reduced_json_path,
-        reduced_cell_map,
+        str(scan_ctx.generic_json),
+        generic_cell_map,
         effective_db_path,
         campaign_id,
         cfg.fault_model.include_clock_faults,
@@ -424,6 +479,24 @@ def run_progressive_scan_atpg(
         cfg.fault_model.collapsing,
         unsupported,
     )
+    execution_map, exclusions = build_scan_execution_map(
+        core,
+        scan_ctx.generic_json,
+        reduced_json_path,
+        generic_cell_map,
+        reduced_cell_map,
+        unsupported,
+        scan_ctx.pseudo_port_map,
+        scan_ctx.manifest,
+    )
+    with connect(effective_db_path) as conn:
+        init_schema(conn)
+        apply_scan_execution_map(
+            conn,
+            campaign_id,
+            execution_map,
+            exclusions,
+        )
     core.invalidate_stale_redundant(effective_db_path, campaign_id, redundancy_model)
 
     generic_site_index = build_site_key_index(
@@ -436,8 +509,8 @@ def run_progressive_scan_atpg(
     rejected_patterns: dict[int, set[str]] = {}
     candidate_counter = 0
 
-    atpg_start = time.perf_counter()
-    sim_start = time.perf_counter()
+    atpg_seconds = 0.0
+    fault_sim_seconds = 0.0
 
     with connect(effective_db_path) as conn:
         init_schema(conn)
@@ -466,16 +539,23 @@ def run_progressive_scan_atpg(
             terminal = "COMPLETE"
             break
 
+        random_started = time.perf_counter()
         random_batch = core.atpg_random_vectors(
             input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
         )
-        new_random = _append_unique_vectors(
-            vectors, seen_patterns, input_order, list(random_batch)
-        )
+        atpg_seconds += time.perf_counter() - random_started
+        new_random: list[dict[str, bool]] = []
+        for vector in list(random_batch):
+            key = pattern_key(vector, input_order)
+            if key in seen_patterns:
+                continue
+            seen_patterns.add(key)
+            new_random.append(vector)
         for vector in new_random:
             stats.generated_vectors += 1
             candidate_counter += 1
             vector_index = len(vectors) + 1
+            sim_started = time.perf_counter()
             with connect(effective_db_path) as conn:
                 init_schema(conn)
                 accepted, protocol_no_progress = _process_scan_candidate(
@@ -498,25 +578,30 @@ def run_progressive_scan_atpg(
                     generic_site_index=generic_site_index,
                     unsupported=unsupported,
                 )
+            fault_sim_seconds += time.perf_counter() - sim_started
             if accepted:
-                seen_patterns.add(pattern_key(vector, input_order))
                 vectors.append(vector)
                 stats.accepted_vectors += 1
-            elif protocol_no_progress:
-                round_tracker.sat_outcomes.append("protocol_no_progress")
-                stats.protocol_no_progress_rounds += 1
+            else:
                 stats.rejected_candidates += 1
+                if protocol_no_progress:
+                    round_tracker.sat_outcomes.append("protocol_no_progress")
+                    stats.protocol_no_progress_rounds += 1
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
             active_rows = _active_fault_rows(conn, campaign_id)
             db_blocked = load_blocked_patterns(conn, campaign_id)
 
+        current_active_ids = {row.fault_id for row in active_rows}
         for row in active_rows:
             fault_id = row.fault_id
+            if fault_id not in current_active_ids:
+                continue
             blocked = sorted(
                 db_blocked.get(fault_id, set()) | rejected_patterns.get(fault_id, set())
             )
+            solve_started = time.perf_counter()
             solved = dict(
                 core.solve_fault_atpg(
                     reduced_json_path,
@@ -529,6 +614,7 @@ def run_progressive_scan_atpg(
                     unsupported,
                 )
             )
+            atpg_seconds += time.perf_counter() - solve_started
             result = str(solved["result"])
             if result == "SAT":
                 stats.sat += 1
@@ -541,6 +627,7 @@ def run_progressive_scan_atpg(
                     continue
                 candidate_counter += 1
                 vector_index = len(vectors) + 1
+                sim_started = time.perf_counter()
                 with connect(effective_db_path) as conn:
                     init_schema(conn)
                     accepted, protocol_no_progress = _process_scan_candidate(
@@ -563,11 +650,18 @@ def run_progressive_scan_atpg(
                         generic_site_index=generic_site_index,
                         unsupported=unsupported,
                     )
+                fault_sim_seconds += time.perf_counter() - sim_started
                 if accepted:
                     seen_patterns.add(key)
                     vectors.append(candidate)
                     stats.accepted_vectors += 1
                     round_tracker.sat_outcomes.append("SAT")
+                    with connect(effective_db_path) as conn:
+                        init_schema(conn)
+                        current_active_ids = {
+                            active.fault_id
+                            for active in _active_fault_rows(conn, campaign_id)
+                        }
                 else:
                     stats.rejected_candidates += 1
                     rejected_patterns.setdefault(fault_id, set()).add(key)
@@ -616,9 +710,6 @@ def run_progressive_scan_atpg(
                 _termination_sweep_q_stems(conn, campaign_id, scan_ctx.q_stem_site_keys)
             terminal = "STALLED"
             break
-
-    atpg_seconds = time.perf_counter() - atpg_start
-    fault_sim_seconds = time.perf_counter() - sim_start
 
     with connect(effective_db_path) as conn:
         init_schema(conn)

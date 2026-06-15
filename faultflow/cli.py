@@ -67,7 +67,10 @@ def _parser() -> argparse.ArgumentParser:
     status.add_argument(
         "--scan",
         action="store_true",
-        help="Read status from the scan campaign in output/<top>/.faultflow/faultflow.sqlite",
+        help=(
+            "Read status from the scan campaign in "
+            "output/<top>/.faultflow/faultflow.sqlite"
+        ),
     )
 
     scan = sub.add_parser("scan", help="Insert generic scan chains")
