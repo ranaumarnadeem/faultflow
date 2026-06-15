@@ -171,7 +171,16 @@ def _net_name_for_bit(module: dict[str, Any], bit: int) -> str | None:
     return None
 
 
-def _rewire_net_in_cells(cells: dict[str, Any], old_bit: int, new_bit: int) -> None:
+def _rewire_net_in_module(
+    module: dict[str, Any],
+    old_bit: int,
+    new_bit: int,
+    *,
+    excluded_ports: set[str],
+) -> None:
+    cells = module.get("cells", {})
+    if not isinstance(cells, dict):
+        raise ScanError("top module cells must be an object")
     for cell in cells.values():
         if not isinstance(cell, dict):
             continue
@@ -183,6 +192,22 @@ def _rewire_net_in_cells(cells: dict[str, Any], old_bit: int, new_bit: int) -> N
             if not raw_bits:
                 continue
             conns[pin] = [new_bit if bit == old_bit else bit for bit in raw_bits]
+    ports = module.get("ports", {})
+    if isinstance(ports, dict):
+        for name, port in ports.items():
+            if name in excluded_ports or not isinstance(port, dict):
+                continue
+            bits = port.get("bits")
+            if isinstance(bits, list):
+                port["bits"] = [new_bit if bit == old_bit else bit for bit in bits]
+    netnames = module.get("netnames", {})
+    if isinstance(netnames, dict):
+        for name, net in netnames.items():
+            if name in excluded_ports or not isinstance(net, dict):
+                continue
+            bits = net.get("bits")
+            if isinstance(bits, list):
+                net["bits"] = [new_bit if bit == old_bit else bit for bit in bits]
 
 
 def _consumers_of_net(cells: dict[str, Any], net_bit: int) -> list[tuple[str, str]]:
@@ -276,6 +301,7 @@ def build_scan_atpg_view(
 
     pseudo_port_map: dict[str, dict[str, Any]] = {}
     next_id = _next_net_id(module)
+    scan_port_names = _manifest_scan_port_names(manifest)
 
     for record in records:
         instance = str(record["instance"])
@@ -296,7 +322,12 @@ def build_scan_atpg_view(
 
         _add_port(module, ppi_port, "input", ppi_bit)
         _add_port(module, ppo_port, "output", ppo_bit)
-        _rewire_net_in_cells(cells, q_net, ppi_bit)
+        _rewire_net_in_module(
+            module,
+            q_net,
+            ppi_bit,
+            excluded_ports=scan_port_names,
+        )
 
         observe_input, d_boundary_site_key, next_id, d_observe_net_id = (
             _resolve_d_observe_boundary(
@@ -318,6 +349,8 @@ def build_scan_atpg_view(
         pseudo_port_map[instance] = {
             "ppi_port": ppi_port,
             "ppo_port": ppo_port,
+            "ppi_net_id": ppi_bit,
+            "ppo_net_id": ppo_bit,
             "original_q_net": _net_name_for_bit(source_module, q_net) or str(q_net),
             "original_d_net": _net_name_for_bit(source_module, d_net) or str(d_net),
             "chain_id": int(record["chain_index"]),

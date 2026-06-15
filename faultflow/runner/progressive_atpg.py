@@ -256,8 +256,8 @@ def run_progressive_native_atpg(
     seen_patterns: set[str] = set()
     rejected_patterns: dict[int, set[str]] = {}
 
-    atpg_start = time.perf_counter()
-    sim_start = time.perf_counter()
+    atpg_seconds = 0.0
+    fault_sim_seconds = 0.0
 
     with connect(effective_db_path) as conn:
         init_schema(conn)
@@ -285,9 +285,11 @@ def run_progressive_native_atpg(
             terminal = "COMPLETE"
             break
 
+        atpg_started = time.perf_counter()
         random_batch = core.atpg_random_vectors(
             input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
         )
+        atpg_seconds += time.perf_counter() - atpg_started
         new_random = _append_unique_vectors(
             vectors, seen_patterns, input_order, list(random_batch)
         )
@@ -297,6 +299,7 @@ def run_progressive_native_atpg(
             base_index = len(vectors) - len(new_random) + 1
             for offset, vector in enumerate(new_random):
                 vector_index = base_index + offset
+                sim_started = time.perf_counter()
                 _accept_and_simulate(
                     core,
                     json_path=json_path,
@@ -312,6 +315,7 @@ def run_progressive_native_atpg(
                     unsupported=unsupported,
                     on_vector_accepted=on_vector_accepted,
                 )
+                fault_sim_seconds += time.perf_counter() - sim_started
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
@@ -320,6 +324,7 @@ def run_progressive_native_atpg(
 
         for fault_id in active_ids:
             blocked = sorted(rejected_patterns.get(fault_id, set()))
+            atpg_started = time.perf_counter()
             solved = dict(
                 core.solve_fault_atpg(
                     json_path,
@@ -332,6 +337,7 @@ def run_progressive_native_atpg(
                     unsupported,
                 )
             )
+            atpg_seconds += time.perf_counter() - atpg_started
             result = str(solved["result"])
             if result == "SAT":
                 stats.sat += 1
@@ -342,18 +348,22 @@ def run_progressive_native_atpg(
                     round_tracker.sat_outcomes.append("protocol_no_progress")
                     stats.protocol_no_progress_rounds += 1
                     continue
-                if core.verify_fault_candidate(
+                sim_started = time.perf_counter()
+                verified = core.verify_fault_candidate(
                     json_path,
                     effective_cell_map,
                     effective_db_path,
                     fault_id,
                     candidate,
                     unsupported,
-                ):
+                )
+                fault_sim_seconds += time.perf_counter() - sim_started
+                if verified:
                     seen_patterns.add(key)
                     vectors.append(candidate)
                     stats.accepted_vectors += 1
                     vector_index = len(vectors)
+                    sim_started = time.perf_counter()
                     _accept_and_simulate(
                         core,
                         json_path=json_path,
@@ -369,6 +379,7 @@ def run_progressive_native_atpg(
                         unsupported=unsupported,
                         on_vector_accepted=on_vector_accepted,
                     )
+                    fault_sim_seconds += time.perf_counter() - sim_started
                     round_tracker.sat_outcomes.append("SAT")
                 else:
                     stats.rejected_candidates += 1
@@ -410,9 +421,6 @@ def run_progressive_native_atpg(
                 _termination_sweep_q_stems(conn, campaign_id)
             terminal = "STALLED"
             break
-
-    atpg_seconds = time.perf_counter() - atpg_start
-    fault_sim_seconds = time.perf_counter() - sim_start
 
     with connect(effective_db_path) as conn:
         init_schema(conn)
