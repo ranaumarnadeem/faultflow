@@ -5,7 +5,7 @@ from typing import Any
 
 from faultflow.config import FaultflowConfig
 from faultflow.scan.cell_map import resolve_scan_cell_map
-from faultflow.scan.protocol import ScanPattern, serialize_vector
+from faultflow.scan.protocol import ScanPattern
 
 
 def reduced_protocol_matches(
@@ -17,19 +17,16 @@ def reduced_protocol_matches(
     reduced_vector: dict[str, bool],
     functional_output_order: list[str],
 ) -> bool:
-    try:
-        verify_golden_scan_protocol(
-            cfg,
-            manifest,
-            generic_json,
-            pattern,
-            vector_index=0,
-            fault_id=None,
-            reduced_vector=reduced_vector,
-            functional_output_order=functional_output_order,
-        )
-    except Exception:
-        return False
+    verify_golden_scan_protocol(
+        cfg,
+        manifest,
+        generic_json,
+        pattern,
+        vector_index=0,
+        fault_id=None,
+        reduced_vector=reduced_vector,
+        functional_output_order=functional_output_order,
+    )
     return True
 
 

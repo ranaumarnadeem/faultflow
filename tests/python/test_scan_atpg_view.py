@@ -77,6 +77,14 @@ def test_pseudo_port_naming_and_direction() -> None:
     assert port_map["ff0"]["ppo_port"] == "__ppo_ff0"
 
 
+def test_q_primary_output_is_rewired_to_ppi() -> None:
+    generic, manifest = _manifest_for_fixture()
+    view, port_map = build_scan_atpg_view(generic, manifest)
+    module = view["modules"]["tiny_scan_multichain"]
+    ppi_bit = module["ports"][port_map["ff0"]["ppi_port"]]["bits"][0]
+    assert module["ports"]["Q0"]["bits"] == [ppi_bit]
+
+
 def test_collision_detection_aborts() -> None:
     generic, manifest = _manifest_for_fixture()
     module = generic["modules"]["tiny_scan_multichain"]

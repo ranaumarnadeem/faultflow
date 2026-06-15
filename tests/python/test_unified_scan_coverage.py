@@ -22,6 +22,10 @@ from faultflow.scan.detection_pipeline import (
     run_progressive_scan_atpg,
 )
 from faultflow.scan.site_resolution import build_site_key_index
+from faultflow.scan.site_resolution import (
+    apply_scan_execution_map,
+    build_scan_execution_map,
+)
 from db_v3_helpers import insert_campaign, insert_fault_row, insert_run
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -167,7 +171,7 @@ def _d_fanout_generic_and_manifest() -> tuple[dict[str, Any], dict[str, Any]]:
                     "D": {"direction": "input", "bits": [5]},
                     "B": {"direction": "input", "bits": [6]},
                     "Q": {"direction": "output", "bits": [7]},
-                    "scan_out": {"direction": "output", "bits": [8]},
+                    "scan_out": {"direction": "output", "bits": [7]},
                     "Y": {"direction": "output", "bits": [9]},
                 },
                 "cells": {
@@ -248,6 +252,119 @@ def test_fanout_branch_site_keys_end_to_end_on_generic(
 
 
 @pytest.mark.golden
+def test_reduced_only_pseudo_sites_never_become_canonical_faults(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    import _faultflow_core as core  # type: ignore[import-not-found]
+
+    generic, manifest = _d_fanout_generic_and_manifest()
+    generic_path = tmp_path / "generic.json"
+    generic_path.write_text(json.dumps(generic, indent=2) + "\n", encoding="utf-8")
+    reduced, port_map = build_scan_atpg_view(generic, manifest)
+    reduced_path = tmp_path / "reduced.json"
+    reduced_path.write_text(json.dumps(reduced, indent=2) + "\n", encoding="utf-8")
+
+    generic_keys = {
+        str(row["site_key"])
+        for row in core.list_site_keys(str(generic_path), str(CELL_MAP), "fail")
+    }
+    reduced_rows = core.list_site_keys(str(reduced_path), str(CELL_MAP), "fail")
+    ppi_net_ids = {int(entry["ppi_net_id"]) for entry in port_map.values()}
+    reduced_only = [
+        row
+        for row in reduced_rows
+        if str(row["site_key"]) not in generic_keys
+        and int(row["yosys_net_id"]) in ppi_net_ids
+    ]
+    assert reduced_only
+    assert all(str(row["site_key"]) not in generic_keys for row in reduced_only)
+
+
+@pytest.mark.golden
+def test_generic_canonical_faults_map_to_reduced_execution_sites(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    import _faultflow_core as core  # type: ignore[import-not-found]
+
+    generic, manifest = _d_fanout_generic_and_manifest()
+    generic_path = tmp_path / "generic.json"
+    generic_path.write_text(json.dumps(generic, indent=2) + "\n", encoding="utf-8")
+    reduced, port_map = build_scan_atpg_view(generic, manifest)
+    reduced_path = tmp_path / "reduced.json"
+    reduced_path.write_text(json.dumps(reduced, indent=2) + "\n", encoding="utf-8")
+
+    execution, exclusions = build_scan_execution_map(
+        core,
+        generic_path,
+        reduced_path,
+        CELL_MAP,
+        CELL_MAP,
+        "fail",
+        port_map,
+        manifest,
+    )
+    assert "net:7:stem" in execution
+    assert "net:5:branch:u0:D" in execution
+    assert exclusions["net:3:stem"] == "scan_chain"
+    assert exclusions["net:4:stem"] == "scan_internal"
+
+    db = tmp_path / "mapping.sqlite"
+    with connect(db) as conn:
+        init_schema(conn)
+        campaign_id = insert_campaign(conn, campaign_type="scan")
+    core.ensure_faults_enumerated(
+        str(generic_path),
+        str(CELL_MAP),
+        str(db),
+        campaign_id,
+        False,
+        False,
+        False,
+        "fail",
+    )
+    with connect(db) as conn:
+        init_schema(conn)
+        apply_scan_execution_map(conn, campaign_id, execution, exclusions)
+        missing = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM faults
+            WHERE campaign_id = ? AND exclusion = 'none'
+              AND atpg_compiled_net_index IS NULL
+            """,
+            (campaign_id,),
+        ).fetchone()
+        reduced_only_count = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM faults
+            WHERE campaign_id = ? AND net_id IN (?, ?)
+            """,
+            (
+                campaign_id,
+                int(port_map["u0"]["ppi_net_id"]),
+                int(port_map["u0"]["ppo_net_id"]),
+            ),
+        ).fetchone()
+        exclusion_rows = conn.execute(
+            """
+            SELECT fault_site_key, exclusion
+            FROM faults
+            WHERE campaign_id = ?
+              AND exclusion IN ('scan_internal', 'scan_chain')
+            """,
+            (campaign_id,),
+        ).fetchall()
+    assert missing is not None and int(missing["n"]) == 0
+    assert reduced_only_count is not None and int(reduced_only_count["n"]) == 0
+    tagged = {
+        str(row["fault_site_key"]): str(row["exclusion"]) for row in exclusion_rows
+    }
+    assert tagged["net:3:stem"] == "scan_chain"
+    assert tagged["net:4:stem"] == "scan_internal"
+
+
+@pytest.mark.golden
 def test_reconverge_fanout_branches_enumerate_distinct_site_keys(
     require_cpp_core: None,
 ) -> None:
@@ -320,8 +437,7 @@ unsupported_cells = fail
 mode = comb
 random_vectors = 0
 max_rounds = 3
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
     cfg = load_config(cfg_path, "tiny_dff")
@@ -403,9 +519,8 @@ def test_scan_stalled_when_protocol_sim_never_passes(
 
     def failing_protocol_sim(*_args: object, **kwargs: object) -> dict[str, object]:
         faults = kwargs.get("faults", [])
-        lanes = [
-            {"outcome": "no_capture_or_unload_effect"} for _ in faults
-        ]
+        assert isinstance(faults, list)
+        lanes = [{"outcome": "no_capture_or_unload_effect"} for _ in faults]
         return {"batches": [{"lanes": lanes}]}
 
     monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
@@ -414,7 +529,8 @@ def test_scan_stalled_when_protocol_sim_never_passes(
     monkeypatch.setattr(core, "simulate_scan_protocol_faults", failing_protocol_sim)
     monkeypatch.setattr(core, "verify_fault_candidate", lambda *_a, **_k: True)
     monkeypatch.setattr(
-        "faultflow.scan.verify.reduced_protocol_matches", lambda *_a, **_k: True
+        "faultflow.scan.detection_pipeline.reduced_protocol_matches",
+        lambda *_a, **_k: True,
     )
 
     with connect(cfg.db_path) as conn:
@@ -462,6 +578,215 @@ def test_scan_stalled_when_protocol_sim_never_passes(
     assert any(
         row["reason_code"] == "no_capture_or_unload_effect" for row in rejections
     )
+
+
+@pytest.mark.unit
+@pytest.mark.golden
+def test_golden_sequence_failure_aborts_candidate_and_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    import faultflow.runner.runner as runner_mod
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(tmp_path)
+    core = runner_mod._load_core()
+    assert core is not None
+
+    from faultflow.runner.runner import RunnerError, _port_names
+
+    input_order = _port_names(atpg_view, cfg.top, "input")
+    candidate = {name: False for name in input_order}
+
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        core,
+        "solve_fault_atpg",
+        lambda *_a, **_k: {"result": "SAT", "vector": candidate},
+    )
+    monkeypatch.setattr(
+        "faultflow.scan.detection_pipeline.reduced_protocol_matches",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            RunnerError("port=Q expected=0 actual=1")
+        ),
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    with pytest.raises(RunnerError, match="golden_sequence_failed"):
+        run_progressive_scan_atpg(
+            cfg,
+            atpg_view,
+            redundancy_model_id(fp),
+            campaign_id=campaign_id,
+            scan_ctx=scan_ctx,
+            max_rounds=1,
+            target_coverage=100.0,
+        )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        candidate_row = conn.execute(
+            """
+            SELECT status FROM atpg_candidates
+            WHERE campaign_id = ? ORDER BY candidate_id LIMIT 1
+            """,
+            (campaign_id,),
+        ).fetchone()
+        run_row = conn.execute(
+            """
+            SELECT status, candidates_aborted, vector_count
+            FROM runs WHERE campaign_id = ? ORDER BY id DESC LIMIT 1
+            """,
+            (campaign_id,),
+        ).fetchone()
+        detections = conn.execute(
+            "SELECT COUNT(*) AS n FROM fault_detections WHERE campaign_id = ?",
+            (campaign_id,),
+        ).fetchone()
+
+    assert candidate_row is not None and candidate_row["status"] == "aborted"
+    assert run_row is not None and run_row["status"] == "aborted"
+    assert int(run_row["candidates_aborted"]) == 1
+    assert int(run_row["vector_count"]) == 0
+    assert detections is not None and int(detections["n"]) == 0
+
+
+@pytest.mark.unit
+@pytest.mark.golden
+def test_tier_a_failure_uses_locked_rejection_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    import faultflow.runner.runner as runner_mod
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(tmp_path)
+    core = runner_mod._load_core()
+    assert core is not None
+
+    from faultflow.runner.runner import _port_names
+
+    input_order = _port_names(atpg_view, cfg.top, "input")
+    candidate = {name: False for name in input_order}
+
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        core,
+        "solve_fault_atpg",
+        lambda *_a, **_k: {"result": "SAT", "vector": candidate},
+    )
+    monkeypatch.setattr(core, "verify_fault_candidate", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        "faultflow.scan.detection_pipeline.reduced_protocol_matches",
+        lambda *_a, **_k: True,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        redundancy_model_id(fp),
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=1,
+        target_coverage=100.0,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT reason_code FROM candidate_rejections
+            WHERE campaign_id = ?
+            """,
+            (campaign_id,),
+        ).fetchall()
+    assert rows
+    assert {str(row["reason_code"]) for row in rows} == {"tier_a_reduced_mismatch"}
+
+
+@pytest.mark.unit
+@pytest.mark.golden
+def test_fault_dropping_skips_faults_detected_by_an_earlier_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    import faultflow.runner.runner as runner_mod
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(tmp_path)
+    core = runner_mod._load_core()
+    assert core is not None
+
+    from faultflow.runner.runner import _port_names
+
+    input_order = _port_names(atpg_view, cfg.top, "input")
+    candidate = {name: False for name in input_order}
+    solve_calls: list[int] = []
+
+    def solve_once(
+        _json: str,
+        _cell: str,
+        _db: str,
+        fault_id: int,
+        *_rest: object,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        with connect(cfg.db_path) as conn:
+            init_schema(conn)
+            row = conn.execute(
+                "SELECT status FROM faults WHERE id = ?",
+                (fault_id,),
+            ).fetchone()
+        assert row is not None and row["status"] == "undetected"
+        solve_calls.append(fault_id)
+        return {"result": "SAT", "vector": candidate}
+
+    def detect_every_active(*_args: object, **_kwargs: object) -> list[int]:
+        fault_ids = _args[5]
+        assert isinstance(fault_ids, list)
+        return list(fault_ids)
+
+    def pass_every_lane(*_args: object, **kwargs: object) -> dict[str, object]:
+        faults = kwargs["faults"]
+        assert isinstance(faults, list)
+        return {"batches": [{"lanes": [{"outcome": "pass"} for _ in faults]}]}
+
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(core, "solve_fault_atpg", solve_once)
+    monkeypatch.setattr(core, "verify_fault_candidate", lambda *_a, **_k: True)
+    monkeypatch.setattr(core, "simulate_tentative", detect_every_active)
+    monkeypatch.setattr(core, "simulate_scan_protocol_faults", pass_every_lane)
+    monkeypatch.setattr(
+        "faultflow.scan.detection_pipeline.reduced_protocol_matches",
+        lambda *_a, **_k: True,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    _, stats, _, _, _ = run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        redundancy_model_id(fp),
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=1,
+        target_coverage=100.0,
+    )
+
+    assert len(solve_calls) == 1
+    assert stats.accepted_vectors == 1
 
 
 @pytest.mark.unit

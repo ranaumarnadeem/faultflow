@@ -133,6 +133,7 @@ def test_sim_scan_passes_scan_db_to_progressive_atpg(
         captured["netlist"] = netlist
         captured["vector_source"] = kwargs.get("vector_source")
         captured["scan_ctx"] = kwargs.get("scan_ctx")
+        captured["cell_map_path"] = kwargs.get("cell_map_path")
         return (
             VectorSet("scan_native_sat_atpg", ["D"], [{"D": False}]),
             AtpgStats(terminal_reason="COMPLETE"),
@@ -167,6 +168,7 @@ def test_sim_scan_passes_scan_db_to_progressive_atpg(
     assert captured["campaign_id"] == 1
     assert captured["vector_source"] == "scan_native_sat_atpg"
     assert captured["scan_ctx"] is not None
+    assert captured["cell_map_path"] is None
     netlist = captured["netlist"]
     assert isinstance(netlist, Path)
     assert netlist.name == "scan_atpg_view.json"
