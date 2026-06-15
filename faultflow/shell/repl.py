@@ -7,6 +7,8 @@ from pathlib import Path
 
 from faultflow.config import ConfigError, load_config
 from faultflow.project.profiles import profile_for_cell_map
+from faultflow.shell.external import ExternalCommandResult, run_external
+from faultflow.shell.formatting import format_error, format_prompt, format_result
 from faultflow.shell.session import ProjectSession
 from faultflow.shell.tcl_bridge import TclBridge
 
@@ -31,6 +33,22 @@ def _session_from_config(config_path: Path | None, output_root: Path) -> Project
     return session
 
 
+def _write_command_output(result: ExternalCommandResult) -> None:
+    if result.stdout:
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+    if result.stderr:
+        print(
+            result.stderr,
+            end="" if result.stderr.endswith("\n") else "\n",
+            file=sys.stderr,
+        )
+    if result.returncode:
+        print(
+            f"Command exited with status {result.returncode}.",
+            file=sys.stderr,
+        )
+
+
 def run_shell(
     *,
     script: Path | None = None,
@@ -38,7 +56,6 @@ def run_shell(
     output_root: Path = Path("output"),
     verbose: bool = False,
 ) -> int:
-    del verbose
     session = _session_from_config(config, output_root)
     bridge = TclBridge(session)
     if script is not None:
@@ -52,9 +69,8 @@ def run_shell(
 
     pending = ""
     while True:
-        prompt = f"faultflow({session.top})> " if session.top else "faultflow> "
         try:
-            line = input(prompt if not pending else "... ")
+            line = input(format_prompt(session) if not pending else "... ")
         except EOFError:
             print()
             return 0
@@ -66,7 +82,28 @@ def run_shell(
         try:
             result = bridge.eval(pending)
             if str(result):
-                print(result)
+                decoded = bridge.decode_result(result)
+                print(
+                    format_result(decoded, session, verbose=verbose)
+                    if decoded is not None
+                    else result
+                )
         except tkinter.TclError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            error_code = bridge.last_error_code()
+            external = None
+            if error_code[:3] == ("TCL", "LOOKUP", "COMMAND"):
+                try:
+                    words = tuple(
+                        str(item) for item in bridge.interp.splitlist(pending)
+                    )
+                except tkinter.TclError:
+                    words = ()
+                external = run_external(words)
+            if external is not None:
+                _write_command_output(external)
+            else:
+                print(
+                    format_error(str(exc), error_code),
+                    file=sys.stderr,
+                )
         pending = ""

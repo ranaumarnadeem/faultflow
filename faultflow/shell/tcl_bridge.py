@@ -130,6 +130,38 @@ proc {name} {{args}} {{
     def eval(self, script: str) -> Any:
         return self.interp.eval(script)
 
+    def decode_result(self, value: Any) -> dict[str, object] | None:
+        try:
+            keys = self.interp.splitlist(self.interp.call("dict", "keys", value))
+        except tkinter.TclError:
+            return None
+        if not {"status", "command", "message"}.issubset(keys):
+            return None
+        decoded: dict[str, object] = {}
+        for key in keys:
+            raw = self.interp.call("dict", "get", value, key)
+            if key in {"artifacts", "metrics"}:
+                decoded[key] = self._decode_nested_dict(raw)
+            elif key == "warnings":
+                decoded[key] = tuple(self.interp.splitlist(raw))
+            else:
+                decoded[key] = raw
+        return decoded
+
+    def last_error_code(self) -> tuple[str, ...]:
+        try:
+            value = self.interp.getvar("errorCode")
+            return tuple(str(item) for item in self.interp.splitlist(value))
+        except tkinter.TclError:
+            return ()
+
+    def _decode_nested_dict(self, value: Any) -> dict[str, object]:
+        try:
+            keys = self.interp.splitlist(self.interp.call("dict", "keys", value))
+        except tkinter.TclError:
+            return {}
+        return {str(key): self.interp.call("dict", "get", value, key) for key in keys}
+
     def call(self, command: str, *args: str) -> Any:
         if command not in self._handlers:
             raise ShellError(f"unknown command: {command}", "INPUT", "INVALID_OPTION")
