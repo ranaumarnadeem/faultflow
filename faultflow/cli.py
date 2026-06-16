@@ -63,6 +63,14 @@ def _parser() -> argparse.ArgumentParser:
         help="Run full-scan stuck-at ATPG on reduced pseudo-PI/PO view",
     )
     sim.add_argument(
+        "--serial-ref",
+        action="store_true",
+        help=(
+            "Run isolated serial reference diagnostics for an existing campaign; "
+            "does not update production coverage"
+        ),
+    )
+    sim.add_argument(
         "-t",
         dest="target_coverage",
         type=float,
@@ -153,6 +161,11 @@ def main(argv: list[str] | None = None) -> int:
                 if args.verify is not None
                 else None
             )
+            if args.serial_ref:
+                if args.ext is not None:
+                    parser.error("--serial-ref cannot be combined with --ext")
+                print(service.serial_reference(cfg, scan=args.scan).message)
+                return 0
             if args.max is not None and args.max < 1:
                 parser.error("--max must be >= 1")
             if args.target_coverage is not None and not (

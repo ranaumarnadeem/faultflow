@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <algorithm>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -154,20 +155,43 @@ py::dict simulate_to_db(
 
   const std::vector<TestVector> vectors = convert_vectors(parsed, raw_vectors);
   BitParallelSim sim;
-  for (auto& fault : faults) {
-    if (fault.exclusion != FaultExclusion::NONE ||
-        fault.collapsed_into != UINT32_MAX) {
-      fault.status = FaultStatus::UNDETECTED;
-      continue;
-    }
+  std::vector<size_t> active;
+  active.reserve(faults.size());
+  for (size_t i = 0; i < faults.size(); ++i) {
+    CompactFault& fault = faults[i];
     fault.status = FaultStatus::UNDETECTED;
-    for (size_t vi = 0; vi < vectors.size(); ++vi) {
-      if (sim.simulate_single_fault(cg, vectors[vi], fault)) {
-        fault.status = FaultStatus::DETECTED;
-        fault.detected_by_vector = static_cast<uint32_t>(vi + 1);
-        break;
+    if (fault.exclusion == FaultExclusion::NONE &&
+        fault.collapsed_into == UINT32_MAX) {
+      active.push_back(i);
+    }
+  }
+  for (size_t vi = 0; vi < vectors.size() && !active.empty(); ++vi) {
+    std::vector<size_t> still_active;
+    still_active.reserve(active.size());
+    for (size_t begin = 0; begin < active.size(); begin += kBatchSize) {
+      const size_t end = std::min(begin + kBatchSize, active.size());
+      FaultBatch batch;
+      batch.size = static_cast<int>(end - begin);
+      for (size_t i = begin; i < end; ++i) {
+        CompactFault lane = faults[active[i]];
+        lane.bit = static_cast<uint8_t>((i - begin) + 1);
+        lane.sa_mask = 1ULL << lane.bit;
+        batch.faults[i - begin] = lane;
+        batch.mask |= lane.sa_mask;
+      }
+      const uint64_t detected_mask = sim.simulate_batch(cg, vectors[vi], batch);
+      for (size_t i = begin; i < end; ++i) {
+        const CompactFault& lane = batch.faults[i - begin];
+        CompactFault& fault = faults[active[i]];
+        if ((detected_mask & lane.sa_mask) != 0) {
+          fault.status = FaultStatus::DETECTED;
+          fault.detected_by_vector = static_cast<uint32_t>(vi + 1);
+        } else {
+          still_active.push_back(active[i]);
+        }
       }
     }
+    active = std::move(still_active);
   }
 
   db::init_database(db_path);

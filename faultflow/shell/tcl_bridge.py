@@ -226,6 +226,9 @@ proc {name} {{args}} {{
             if key == "-scan":
                 scan = True
                 index += 1
+            elif key == "-serial_ref":
+                options["serial_ref"] = True
+                index += 1
             elif key == "-sa":
                 index += 1
             elif key == "-tf":

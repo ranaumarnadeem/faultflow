@@ -248,6 +248,8 @@ class ProjectSession:
                 "scan check does not match the current scanned netlist",
                 "SCAN_CHECK_STALE",
             )
+        if bool(options.pop("serial_ref", False)):
+            return self.service.serial_reference(self.materialize_config(), scan=scan)
         result = self.service.run_atpg(self.materialize_config(), scan=scan, **options)
         self._refresh_report()
         return result

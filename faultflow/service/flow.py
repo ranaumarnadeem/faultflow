@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
+import json
 import os
 from pathlib import Path
 import shutil
@@ -131,6 +132,41 @@ class FlowService:
             cfg.top,
             message,
             metrics=self._campaign_metrics(cfg, "scan" if scan else "comb"),
+        )
+
+    def serial_reference(
+        self, cfg: FaultflowConfig, *, scan: bool = False
+    ) -> OperationResult:
+        campaign_type = "scan" if scan else "comb"
+        if not cfg.db_path.exists():
+            raise RuntimeError("run normal ATPG/sim first")
+        metrics = self._campaign_metrics(cfg, campaign_type)
+        if metrics.get("campaign_state") != "available":
+            raise RuntimeError("run normal ATPG/sim first")
+        reports_dir = cfg.workspace_dir / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        path = reports_dir / "serial_ref_compare.json"
+        payload = {
+            "top": cfg.top,
+            "campaign_type": campaign_type,
+            "campaign_id": metrics.get("campaign_id"),
+            "status": "not_run",
+            "note": (
+                "Serial reference command is isolated from production coverage. "
+                "Detailed serial-vs-packed mismatch enumeration is a reference "
+                "diagnostic and does not update campaign state."
+            ),
+            "production_metrics": dict(metrics),
+        }
+        path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        return OperationResult(
+            "serial_ref",
+            cfg.top,
+            f"serial reference report written: {path}",
+            artifacts={"serial_ref": path},
+            metrics=metrics,
         )
 
     def status(self, cfg: FaultflowConfig, scan: bool = False) -> CampaignStatusResult:
