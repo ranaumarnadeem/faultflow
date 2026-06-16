@@ -17,6 +17,15 @@ struct SolveFaultResult {
   std::map<std::string, bool> vector;
 };
 
+struct SimulationInstrumentation {
+  int64_t single_fault_calls = 0;
+  int64_t batch_fault_calls = 0;
+  int64_t load_graph_calls = 0;
+};
+
+void reset_simulation_instrumentation();
+SimulationInstrumentation simulation_instrumentation();
+
 std::vector<std::map<std::string, bool>> generate_random_vectors(
     const std::vector<std::string>& input_order, int count, uint64_t seed);
 

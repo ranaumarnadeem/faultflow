@@ -1,5 +1,6 @@
 #include "atpg/progressive_atpg.hpp"
 
+#include <algorithm>
 #include <random>
 #include <stdexcept>
 
@@ -19,6 +20,10 @@
 namespace faultflow::atpg {
 namespace {
 
+constexpr size_t kFaultLanesPerWord = kBatchSize;
+
+SimulationInstrumentation g_simulation_instrumentation;
+
 struct GraphContext {
   ParsedGraph parsed;
   NormalizedGraph ng;
@@ -29,6 +34,7 @@ GraphContext load_graph(const std::string& json_path,
                         const std::string& cell_map_path,
                         const std::string& unsupported_policy,
                         bool require_combinational = true) {
+  ++g_simulation_instrumentation.load_graph_calls;
   GraphContext ctx;
   ctx.parsed = ParsedGraph::from_file(json_path);
   const CellMap cell_map = CellMap::load(cell_map_path);
@@ -71,6 +77,42 @@ CompactFault fault_from_record(const db::FaultRecord& rec) {
   return fault;
 }
 
+struct ActiveFaultRecord {
+  int64_t fault_id = 0;
+  CompactFault fault;
+};
+
+std::vector<ActiveFaultRecord> load_active_fault_records(
+    const std::string& db_path, const std::vector<int64_t>& fault_ids,
+    bool skip_protocol_unresolved) {
+  std::vector<ActiveFaultRecord> active;
+  active.reserve(fault_ids.size());
+  for (int64_t fault_id : fault_ids) {
+    const db::FaultRecord rec = db::load_fault(db_path, fault_id);
+    if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
+        rec.status != FaultStatus::UNDETECTED ||
+        (skip_protocol_unresolved && rec.protocol_unresolved)) {
+      continue;
+    }
+    active.push_back({fault_id, fault_from_record(rec)});
+  }
+  return active;
+}
+
+FaultBatch make_batch(const std::vector<ActiveFaultRecord>& active, size_t begin,
+                      size_t end) {
+  FaultBatch batch;
+  batch.size = static_cast<int>(end - begin);
+  for (size_t i = begin; i < end; ++i) {
+    CompactFault lane = active[i].fault;
+    lane.bit = static_cast<uint8_t>((i - begin) + 1);
+    lane.sa_mask = 1ULL << lane.bit;
+    batch.faults[i - begin] = lane;
+    batch.mask |= lane.sa_mask;
+  }
+  return batch;
+}
+
 TestVector vector_from_map(const ParsedGraph& parsed,
                            const std::map<std::string, bool>& values,
                            const std::vector<std::string>& input_order) {
@@ -100,6 +142,12 @@ std::string solve_result_name(SatSolveResult result) {
 }
 
 }  // namespace
+
+void reset_simulation_instrumentation() { g_simulation_instrumentation = {}; }
+
+SimulationInstrumentation simulation_instrumentation() {
+  return g_simulation_instrumentation;
+}
 
 std::vector<std::map<std::string, bool>> generate_random_vectors(
     const std::vector<std::string>& input_order, int count, uint64_t seed) {
@@ -203,22 +251,32 @@ std::vector<ProgressiveDetection> simulate_incremental(
 
   BitParallelSim sim;
   std::vector<ProgressiveDetection> detections;
-  for (int64_t fault_id : fault_ids) {
-    const db::FaultRecord rec = db::load_fault(db_path, fault_id);
-    if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
-        rec.status != FaultStatus::UNDETECTED) {
-      continue;
-    }
-    CompactFault fault = fault_from_record(rec);
-    for (size_t vi = 0; vi < vectors.size(); ++vi) {
-      if (sim.simulate_single_fault(ctx.cg, vectors[vi], fault)) {
-        const int64_t vector_index = vector_start_index + static_cast<int64_t>(vi);
-        db::mark_fault_detected(db_path, campaign_id, run_id, fault_id,
-                                vector_index);
-        detections.push_back({fault_id, vector_index});
-        break;
+  std::vector<ActiveFaultRecord> active =
+      load_active_fault_records(db_path, fault_ids, false);
+  for (size_t vi = 0; vi < vectors.size() && !active.empty(); ++vi) {
+    std::vector<ActiveFaultRecord> still_active;
+    still_active.reserve(active.size());
+    for (size_t begin = 0; begin < active.size(); begin += kFaultLanesPerWord) {
+      const size_t end =
+          std::min(begin + kFaultLanesPerWord, active.size());
+      const FaultBatch batch = make_batch(active, begin, end);
+      ++g_simulation_instrumentation.batch_fault_calls;
+      const uint64_t detected_mask =
+          sim.simulate_batch(ctx.cg, vectors[vi], batch);
+      for (size_t i = begin; i < end; ++i) {
+        const CompactFault& lane = batch.faults[i - begin];
+        if ((detected_mask & lane.sa_mask) != 0) {
+          const int64_t vector_index =
+              vector_start_index + static_cast<int64_t>(vi);
+          db::mark_fault_detected(db_path, campaign_id, run_id,
+                                  active[i].fault_id, vector_index);
+          detections.push_back({active[i].fault_id, vector_index});
+        } else {
+          still_active.push_back(active[i]);
+        }
       }
     }
+    active = std::move(still_active);
   }
   return detections;
 }
@@ -236,15 +294,18 @@ std::vector<int64_t> simulate_tentative_detections(
   const TestVector tv = vector_from_map(ctx.parsed, vector, input_order);
   BitParallelSim sim;
   std::vector<int64_t> detected;
-  for (int64_t fault_id : fault_ids) {
-    const db::FaultRecord rec = db::load_fault(db_path, fault_id);
-    if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
-        rec.status != FaultStatus::UNDETECTED || rec.protocol_unresolved) {
-      continue;
-    }
-    CompactFault fault = fault_from_record(rec);
-    if (sim.simulate_single_fault(ctx.cg, tv, fault)) {
-      detected.push_back(fault_id);
+  const std::vector<ActiveFaultRecord> active =
+      load_active_fault_records(db_path, fault_ids, true);
+  for (size_t begin = 0; begin < active.size(); begin += kFaultLanesPerWord) {
+    const size_t end = std::min(begin + kFaultLanesPerWord, active.size());
+    const FaultBatch batch = make_batch(active, begin, end);
+    ++g_simulation_instrumentation.batch_fault_calls;
+    const uint64_t detected_mask = sim.simulate_batch(ctx.cg, tv, batch);
+    for (size_t i = begin; i < end; ++i) {
+      const CompactFault& lane = batch.faults[i - begin];
+      if ((detected_mask & lane.sa_mask) != 0) {
+        detected.push_back(active[i].fault_id);
+      }
     }
   }
   return detected;
