@@ -36,6 +36,9 @@ random_vectors       = 64
 sat_conflict_limit   = 100000
 max_rounds           = 20
 sat_timeout_seconds  = 10
+# Test-set compaction after ATPG: reverse (reverse-order fault-sim static
+# compaction, coverage-preserving; default) or none.
+compaction           = reverse
 
 [report]
 output    = coverage.rpt

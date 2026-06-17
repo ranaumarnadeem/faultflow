@@ -92,6 +92,7 @@ class AtpgConfig:
     sat_conflict_limit: int = 100000
     max_rounds: int = 20
     sat_timeout_seconds: int = 10
+    compaction: str = "reverse"
 
 
 @dataclass(frozen=True)
@@ -252,6 +253,10 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     if atpg_mode != "comb":
         raise ConfigError("Only atpg.mode=comb is supported")
 
+    atpg_compaction = parser.get("atpg", "compaction", fallback="reverse")
+    if atpg_compaction not in {"none", "reverse"}:
+        raise ConfigError("atpg.compaction must be 'none' or 'reverse'")
+
     return FaultflowConfig(
         path=cfg_path,
         top=top,
@@ -282,6 +287,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             sat_conflict_limit=_int(parser, "atpg", "sat_conflict_limit", 100000),
             max_rounds=_int(parser, "atpg", "max_rounds", 20),
             sat_timeout_seconds=_int(parser, "atpg", "sat_timeout_seconds", 10),
+            compaction=atpg_compaction,
         ),
         report=ReportConfig(
             output=_path(parser, "report", "output", "coverage.rpt"),
