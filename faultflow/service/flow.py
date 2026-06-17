@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from enum import Enum
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
 import subprocess
 from typing import Any, Callable
+
+log = logging.getLogger(__name__)
 
 from faultflow.config import FaultflowConfig
 from faultflow.db import connect, latest_campaign_id, summary
@@ -83,6 +86,7 @@ class FlowService:
         if cfg.netlist.suffix == ".json":
             runner = self._runner(cfg)
             path = runner.find_netlist()
+            log.info("synth  already synthesized: %s", path)
             return SynthesisResult(
                 "synth",
                 cfg.top,
@@ -102,6 +106,7 @@ class FlowService:
     def insert_scan(
         self, cfg: FaultflowConfig, **options: object
     ) -> ScanInsertionResult:
+        log.info("scan   start  top=%s", cfg.top)
         kwargs = dict(options)
         if self.artifact_policy is ArtifactPolicy.WORKSPACE_ONLY:
             kwargs["run_techmap"] = False
@@ -117,14 +122,17 @@ class FlowService:
         )
 
     def check_scan(self, cfg: FaultflowConfig, **options: object) -> ScanCheckResult:
+        log.info("check  start  top=%s", cfg.top)
         message = str(self._runner(cfg).scan_check(**options))
         return ScanCheckResult("scan-check", cfg.top, message)
 
     def regenerate_scan_techmap(self, cfg: FaultflowConfig) -> OperationResult:
+        log.info("techmap  start  top=%s", cfg.top)
         message = str(self._runner(cfg).scan_techmap())
         return OperationResult("scan-techmap", cfg.top, message)
 
     def run_atpg(self, cfg: FaultflowConfig, **options: object) -> AtpgResult:
+        log.info("sim    start  top=%s", cfg.top)
         message = str(self._runner(cfg).sim(**options))
         scan = bool(options.get("scan", False))
         return AtpgResult(
@@ -234,7 +242,9 @@ class FlowService:
         }
 
     def write_report(self, cfg: FaultflowConfig) -> ReportResult:
+        log.info("report  writing  top=%s ...", cfg.top)
         path = write_unified_report(cfg)
+        log.info("report  done  %s", path)
         return ReportResult(
             "report",
             cfg.top,

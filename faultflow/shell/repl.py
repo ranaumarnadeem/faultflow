@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 import tkinter
 from configparser import ConfigParser
@@ -56,6 +57,7 @@ def run_shell(
     output_root: Path = Path("output"),
     verbose: bool = False,
 ) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     session = _session_from_config(config, output_root)
     bridge = TclBridge(session)
     if script is not None:

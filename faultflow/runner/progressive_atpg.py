@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 from faultflow.atpg import VectorSet
 from faultflow.config import FaultflowConfig
@@ -251,6 +254,18 @@ def run_progressive_native_atpg(
     )
     core.invalidate_stale_redundant(effective_db_path, campaign_id, redundancy_model)
 
+    with connect(effective_db_path) as conn:
+        init_schema(conn)
+        _pre = summary(conn, campaign_id=campaign_id)
+        _initial_active = _active_fault_rows(conn, campaign_id)
+    log.info(
+        "atpg   %d active faults  %d denominator  target=%.1f%%  max_rounds=%d",
+        len(_initial_active),
+        _pre.get("denominator", 0),
+        effective_target,
+        effective_max_rounds,
+    )
+
     stats = AtpgStats()
     vectors: list[dict[str, bool]] = []
     seen_patterns: set[str] = set()
@@ -258,6 +273,7 @@ def run_progressive_native_atpg(
 
     atpg_seconds = 0.0
     fault_sim_seconds = 0.0
+    prev_coverage = 0.0
 
     with connect(effective_db_path) as conn:
         init_schema(conn)
@@ -403,6 +419,21 @@ def run_progressive_native_atpg(
             active_remaining = len(_active_fault_rows(conn, campaign_id))
             coverage = data["coverage_percent"]
 
+        _cov = coverage or 0.0
+        log.info(
+            "atpg   round %2d/%d  sat=%d unsat=%d timeout=%d"
+            "  coverage=%.2f%% (%+.2f%%)  vectors=%d",
+            round_idx,
+            effective_max_rounds,
+            stats.sat,
+            stats.unsat,
+            stats.timeout,
+            _cov,
+            _cov - prev_coverage,
+            stats.accepted_vectors,
+        )
+        prev_coverage = _cov
+
         if active_remaining == 0:
             terminal = "COMPLETE"
             break
@@ -421,6 +452,8 @@ def run_progressive_native_atpg(
                 _termination_sweep_q_stems(conn, campaign_id)
             terminal = "STALLED"
             break
+
+    log.info("atpg   terminated: %s", terminal)
 
     with connect(effective_db_path) as conn:
         init_schema(conn)

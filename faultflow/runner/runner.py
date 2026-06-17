@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import shutil
 import sqlite3
@@ -11,6 +12,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
+
+log = logging.getLogger(__name__)
 
 from faultflow.atpg import (
     PatternError,
@@ -359,7 +362,12 @@ class Runner:
         return self._find_netlist()
 
     def synth(self) -> Path:
-        return self._run_yosys()
+        t0 = time.perf_counter()
+        log.info("synth  running Yosys (top=%s) ...", self.cfg.top)
+        result = self._run_yosys()
+        stat = self._yosys_stat(result)
+        log.info("synth  complete  %s  %.1fs", stat, time.perf_counter() - t0)
+        return result
 
     def _find_verilog_source(self) -> Path:
         if self.cfg.netlist.suffix == ".sv":
@@ -400,6 +408,34 @@ class Runner:
         if proc.returncode != 0:
             raise RunnerError(f"Yosys failed; see {self.cfg.logs_dir / 'yosys.log'}")
         return json_path
+
+    def _yosys_stat(self, path: Path, *, from_verilog: bool = False) -> str:
+        """Run yosys stat and return a one-line summary, e.g. '47 cells  285.6 µm²'."""
+        read_cmd = f"read_verilog {path}" if from_verilog else f"read_json {path}"
+        stat_cmd = (
+            f"stat -liberty {self.cfg.liberty}"
+            if not from_verilog
+            and self.cfg.liberty is not None
+            and self.cfg.liberty.exists()
+            else "stat"
+        )
+        proc = subprocess.run(
+            ["yosys", "-Q", "-p", f"{read_cmd}; {stat_cmd}"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        cells = area = None
+        for line in proc.stdout.splitlines():
+            if "Number of cells:" in line:
+                cells = line.split()[-1]
+            if "Chip area for module" in line:
+                area = line.split()[-1]
+        parts = [f"{cells} cells"] if cells else []
+        if area:
+            parts.append(f"{area} µm²")
+        return "  ".join(parts) if parts else "(stat unavailable)"
 
     def _scan_manifest_path(self) -> Path:
         return self.cfg.scan_manifest_path
@@ -449,6 +485,10 @@ class Runner:
         techmap_v = self.cfg.generated_scripts_dir / "faultflow_scanff_map.v"
         sky130_v = self.cfg.scan_verilog_path
         try:
+            t_stitch = time.perf_counter()
+            log.info(
+                "scan   stitching %d chains (top=%s) ...", chains, self.cfg.top
+            )
             result = stitch_scan_json(
                 netlist_json=netlist,
                 cell_map_json=self.cfg.cell_lib,
@@ -460,9 +500,17 @@ class Runner:
                 scan_out_base=so_base,
                 scan_enable=se_name,
             )
+            log.info(
+                "scan   inserted  %d chains  %d scan cells  %.1fs",
+                result.chain_count,
+                result.cell_count,
+                time.perf_counter() - t_stitch,
+            )
             write_scan_techmap(techmap_v)
             techmapped: Path | None = None
             if do_techmap:
+                t_tech = time.perf_counter()
+                log.info("scan   techmapping to Sky130 ...")
                 techmapped = run_scan_techmap(
                     generic_json=generic_json,
                     techmap_verilog=techmap_v,
@@ -470,6 +518,12 @@ class Runner:
                     top=result.top,
                     log_path=self.cfg.logs_dir / "yosys_scan.log",
                     script_path=self.cfg.generated_scripts_dir / "yosys_scan.ys",
+                )
+                stat = self._yosys_stat(techmapped, from_verilog=True)
+                log.info(
+                    "scan   techmap complete  %s  %.1fs",
+                    stat,
+                    time.perf_counter() - t_tech,
                 )
         except ScanError as exc:
             raise RunnerError(str(exc)) from exc
@@ -516,6 +570,8 @@ class Runner:
         sky130_v = self.cfg.scan_verilog_path
         write_scan_techmap(techmap_v)
         try:
+            t0 = time.perf_counter()
+            log.info("techmap  running (top=%s) ...", str(manifest["top"]))
             techmapped = run_scan_techmap(
                 generic_json=generic_json,
                 techmap_verilog=techmap_v,
@@ -523,6 +579,10 @@ class Runner:
                 top=str(manifest["top"]),
                 log_path=self.cfg.logs_dir / "yosys_scan.log",
                 script_path=self.cfg.generated_scripts_dir / "yosys_scan.ys",
+            )
+            stat = self._yosys_stat(techmapped, from_verilog=True)
+            log.info(
+                "techmap  complete  %s  %.1fs", stat, time.perf_counter() - t0
             )
         except ScanError as exc:
             raise RunnerError(str(exc)) from exc
@@ -792,6 +852,8 @@ class Runner:
         vectors_path: Path | None = None,
         require_techmap: bool = False,
     ) -> str:
+        t0 = time.perf_counter()
+        log.info("check  validating scan chains (top=%s) ...", self.cfg.top)
         manifest_path = self._scan_manifest_path()
         if not manifest_path.exists():
             raise RunnerError(f"scan manifest not found: {manifest_path}")
@@ -850,12 +912,14 @@ class Runner:
             manifest,
         )
         if errors:
+            log.info("check  FAIL  %d error(s)  %.1fs", len(errors), time.perf_counter() - t0)
             raise RunnerError("scan-check failed: " + "; ".join(errors))
         tech_note = (
             " techmap_equiv=PASS"
             if techmap_equivalence is not None
             else ""
         )
+        log.info("check  PASS%s  %.1fs", tech_note, time.perf_counter() - t0)
         return (
             f"scan-check PASS top={manifest.get('top')} "
             f"vectors={normal_mode.get('vector_count') if normal_mode else 0}"
@@ -1355,6 +1419,9 @@ class Runner:
                 fp = self._fingerprint(netlist)
                 model_id = redundancy_model_id(fp)
                 campaign_id = self._check_fingerprint(conn, fp)
+            log.info(
+                "sim    running progressive ATPG (top=%s) ...", self.cfg.top
+            )
             vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
                 run_progressive_native_atpg(
                     self.cfg,
@@ -1389,6 +1456,12 @@ class Runner:
         purge_note = f" purged_transients={removed}" if purge else ""
         clean_note = f" cleaned_db_files={cleaned}" if clean else ""
         terminal_note = f" atpg_terminal={atpg_terminal}" if ext is None else ""
+        log.info(
+            "sim    complete  coverage=%.3f%%  vectors=%d  %.1fs",
+            report["summary"]["coverage_percent"],
+            vectors.count,
+            time.perf_counter() - total_start,
+        )
         return (
             f"sim complete top={self.cfg.top} mode={mode} vectors={vectors.count} "
             f"source={vector_source} sidecar={sidecar} "
