@@ -67,6 +67,7 @@ unsupported_cells = fail
 
 [atpg]
 mode = comb
+compaction = none
 """.strip() + "\n",
         encoding="utf-8",
     )

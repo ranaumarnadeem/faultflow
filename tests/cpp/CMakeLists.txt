@@ -18,6 +18,7 @@ add_executable(
   atpg/test_cnf_truth_tables.cpp
   atpg/test_miter_sat.cpp
   atpg/test_progressive_sim.cpp
+  atpg/test_compaction.cpp
   fixtures/test_tiny_fixtures.cpp
   benchmarks/test_c17.cpp
   sim/test_golden_ref_tiny.cpp

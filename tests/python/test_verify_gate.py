@@ -47,6 +47,7 @@ unsupported_cells = fail
 [atpg]
 mode = comb
 output = missing.test
+compaction = none
 
 [report]
 threshold = 95.0

@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-log = logging.getLogger(__name__)
-
 from faultflow.atpg import VectorSet
 from faultflow.config import FaultflowConfig
 from faultflow.db import connect, init_schema, summary
@@ -37,6 +35,8 @@ from faultflow.scan.site_resolution import (
     build_scan_execution_map,
 )
 from faultflow.scan.verify import reduced_protocol_matches
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)

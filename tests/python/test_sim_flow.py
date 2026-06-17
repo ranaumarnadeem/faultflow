@@ -24,7 +24,9 @@ def test_c17_native_progressive_sim_flow() -> None:
     assert report_path.exists()
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["run"]["vector_source"] == "native_sat_atpg"
+    # config.ofs.example enables compaction (default reverse), so the reported
+    # deliverable run is the compacted one.
+    assert report["run"]["vector_source"] == "compacted_native_sat_atpg"
     assert report["run"]["atpg_terminal_reason"] in {
         "COMPLETE",
         "THRESHOLD_MET",

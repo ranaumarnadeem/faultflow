@@ -13,8 +13,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-log = logging.getLogger(__name__)
-
 from faultflow.atpg import (
     PatternError,
     VectorSet,
@@ -62,6 +60,8 @@ from faultflow.scan.reports import (
     write_scan_artifacts,
 )
 from faultflow.verify import IverilogVerifier, VerificationError
+
+log = logging.getLogger(__name__)
 
 
 class RunnerError(RuntimeError):
@@ -486,9 +486,7 @@ class Runner:
         sky130_v = self.cfg.scan_verilog_path
         try:
             t_stitch = time.perf_counter()
-            log.info(
-                "scan   stitching %d chains (top=%s) ...", chains, self.cfg.top
-            )
+            log.info("scan   stitching %d chains (top=%s) ...", chains, self.cfg.top)
             result = stitch_scan_json(
                 netlist_json=netlist,
                 cell_map_json=self.cfg.cell_lib,
@@ -581,9 +579,7 @@ class Runner:
                 script_path=self.cfg.generated_scripts_dir / "yosys_scan.ys",
             )
             stat = self._yosys_stat(techmapped, from_verilog=True)
-            log.info(
-                "techmap  complete  %s  %.1fs", stat, time.perf_counter() - t0
-            )
+            log.info("techmap  complete  %s  %.1fs", stat, time.perf_counter() - t0)
         except ScanError as exc:
             raise RunnerError(str(exc)) from exc
         manifest["sky130_verilog"] = str(techmapped)
@@ -912,13 +908,11 @@ class Runner:
             manifest,
         )
         if errors:
-            log.info("check  FAIL  %d error(s)  %.1fs", len(errors), time.perf_counter() - t0)
+            log.info(
+                "check  FAIL  %d error(s)  %.1fs", len(errors), time.perf_counter() - t0
+            )
             raise RunnerError("scan-check failed: " + "; ".join(errors))
-        tech_note = (
-            " techmap_equiv=PASS"
-            if techmap_equivalence is not None
-            else ""
-        )
+        tech_note = " techmap_equiv=PASS" if techmap_equivalence is not None else ""
         log.info("check  PASS%s  %.1fs", tech_note, time.perf_counter() - t0)
         return (
             f"scan-check PASS top={manifest.get('top')} "
@@ -1016,9 +1010,7 @@ class Runner:
         )
         (self.cfg.logs_dir / "quaigh.log").write_text(proc.stdout, encoding="utf-8")
         if proc.returncode != 0:
-            raise RunnerError(
-                f"Quaigh failed; see {self.cfg.logs_dir / 'quaigh.log'}"
-            )
+            raise RunnerError(f"Quaigh failed; see {self.cfg.logs_dir / 'quaigh.log'}")
         return output
 
     def _purge_transients(self) -> int:
@@ -1375,6 +1367,7 @@ class Runner:
         netlist = self._find_netlist()
         verify_enabled = self.cfg.simulation.verify if verify is None else verify
         verified_outputs: list[dict[str, bool]] | None = None
+        raw_vector_count: int | None = None
 
         with self._db() as conn:
             fp = self._fingerprint(netlist)
@@ -1399,9 +1392,7 @@ class Runner:
                     raise RunnerError(
                         "C++ simulation result did not include a valid run_id"
                     )
-                self._write_verified_vectors(
-                    int(raw_run_id), vectors, verified_outputs
-                )
+                self._write_verified_vectors(int(raw_run_id), vectors, verified_outputs)
             raw_run_id = sim_result["run_id"]
             if not isinstance(raw_run_id, (int, str)):
                 raise RunnerError(
@@ -1419,9 +1410,7 @@ class Runner:
                 fp = self._fingerprint(netlist)
                 model_id = redundancy_model_id(fp)
                 campaign_id = self._check_fingerprint(conn, fp)
-            log.info(
-                "sim    running progressive ATPG (top=%s) ...", self.cfg.top
-            )
+            log.info("sim    running progressive ATPG (top=%s) ...", self.cfg.top)
             vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
                 run_progressive_native_atpg(
                     self.cfg,
@@ -1435,6 +1424,19 @@ class Runner:
             sidecar = self.cfg.intermediate_dir / "native_sat_atpg"
             vector_source = "native_sat_atpg"
             atpg_terminal = atpg_stats.terminal_reason
+            if self.cfg.atpg.compaction != "none":
+                from faultflow.runner.compaction import compact_run
+
+                vectors, run_id, raw_vector_count = compact_run(
+                    json_path=str(netlist),
+                    cell_map_path=str(self.cfg.cell_lib),
+                    db_path=str(self.cfg.db_path),
+                    campaign_id=campaign_id,
+                    run_id=run_id,
+                    vectors=vectors,
+                    unsupported=self.cfg.simulation.unsupported_cells,
+                )
+                vector_source = vectors.source
             if verify_enabled:
                 sidecar, _ = self._find_order_sidecar()
                 verified_outputs = self._run_verification(
@@ -1456,6 +1458,11 @@ class Runner:
         purge_note = f" purged_transients={removed}" if purge else ""
         clean_note = f" cleaned_db_files={cleaned}" if clean else ""
         terminal_note = f" atpg_terminal={atpg_terminal}" if ext is None else ""
+        compaction_note = (
+            f" raw_vectors={raw_vector_count}"
+            if raw_vector_count is not None and raw_vector_count != vectors.count
+            else ""
+        )
         log.info(
             "sim    complete  coverage=%.3f%%  vectors=%d  %.1fs",
             report["summary"]["coverage_percent"],
@@ -1463,7 +1470,8 @@ class Runner:
             time.perf_counter() - total_start,
         )
         return (
-            f"sim complete top={self.cfg.top} mode={mode} vectors={vectors.count} "
+            f"sim complete top={self.cfg.top} mode={mode} "
+            f"vectors={vectors.count}{compaction_note} "
             f"source={vector_source} sidecar={sidecar} "
             f"coverage={report['summary']['coverage_percent']:.3f}% "
             f"atpg_seconds={atpg_seconds:.3f} "
@@ -1542,6 +1550,21 @@ class Runner:
                 scan_ctx=scan_pipeline_ctx,
             )
         )
+        if self.cfg.atpg.compaction != "none":
+            from faultflow.runner.compaction import compact_run
+            from faultflow.scan.cell_map import resolve_scan_cell_map
+
+            vectors, run_id, raw_vectors_scan = compact_run(
+                json_path=str(netlist),
+                cell_map_path=str(resolve_scan_cell_map(self.cfg)),
+                db_path=str(self.cfg.db_path),
+                campaign_id=campaign_id,
+                run_id=run_id,
+                vectors=vectors,
+                unsupported=self.cfg.simulation.unsupported_cells,
+            )
+        else:
+            raw_vectors_scan = vectors.count
         total_seconds = time.perf_counter() - total_start
         self._write_run_timings(run_id, atpg_seconds, fault_sim_seconds, total_seconds)
 
@@ -1559,9 +1582,15 @@ class Runner:
 
         purge_note = f" purged_transients={removed}" if purge else ""
         clean_note = f" cleaned_db_files={cleaned}" if clean else ""
+        scan_compaction_note = (
+            f" raw_vectors={raw_vectors_scan}"
+            if raw_vectors_scan != vectors.count
+            else ""
+        )
         return (
-            f"sim complete top={self.cfg.top} mode=scan vectors={vectors.count} "
-            f"source=scan_native_sat_atpg sidecar={atpg_view_path} "
+            f"sim complete top={self.cfg.top} mode=scan "
+            f"vectors={vectors.count}{scan_compaction_note} "
+            f"source={vectors.source} sidecar={atpg_view_path} "
             f"coverage={report['summary']['coverage_percent']:.3f}% "
             f"atpg_seconds={atpg_seconds:.3f} "
             f"fault_sim_seconds={fault_sim_seconds:.3f} "

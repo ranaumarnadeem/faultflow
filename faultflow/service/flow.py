@@ -9,8 +9,6 @@ import shutil
 import subprocess
 from typing import Any, Callable
 
-log = logging.getLogger(__name__)
-
 from faultflow.config import FaultflowConfig
 from faultflow.db import connect, latest_campaign_id, summary
 from faultflow.project.profiles import profile_for_cell_map
@@ -30,6 +28,8 @@ from faultflow.service.models import (
     Scalar,
     SynthesisResult,
 )
+
+log = logging.getLogger(__name__)
 
 
 class ArtifactPolicy(str, Enum):

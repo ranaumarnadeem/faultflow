@@ -67,6 +67,9 @@ def _write_cfg(
         "max_rounds": 20,
         "sat_timeout_seconds": 10,
         "sat_conflict_limit": 100000,
+        # These tests assert raw-ATPG run counts and the native vector_source;
+        # compaction (default reverse) is exercised separately in test_compaction.
+        "compaction": "none",
     }
     if atpg_overrides is not None:
         atpg.update(atpg_overrides)

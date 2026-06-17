@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "atpg/compaction.hpp"
 #include "atpg/progressive_atpg.hpp"
 #include "atpg/sat_atpg.hpp"
 #include "db/sqlite_store.hpp"
@@ -352,6 +353,23 @@ py::list simulate_tentative_py(
   return out;
 }
 
+py::list compaction_detections_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path,
+    const std::map<std::string, bool>& vector,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids,
+    const std::string& unsupported_policy) {
+  const std::vector<int64_t> detected = atpg::detect_with_vector_unfiltered(
+      json_path, cell_map_path, db_path, vector, input_order, fault_ids,
+      unsupported_policy);
+  py::list out;
+  for (int64_t fault_id : detected) {
+    out.append(fault_id);
+  }
+  return out;
+}
+
 void invalidate_stale_redundant_py(const std::string& db_path,
                                    int64_t campaign_id,
                                    const std::string& redundancy_model_id) {
@@ -551,6 +569,10 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("input_order"), py::arg("fault_ids"),
         py::arg("vector_start_index"), py::arg("unsupported_policy") = "fail");
   m.def("simulate_tentative", &faultflow::simulate_tentative_py,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
+        py::arg("vector"), py::arg("input_order"), py::arg("fault_ids"),
+        py::arg("unsupported_policy") = "fail");
+  m.def("compaction_detections", &faultflow::compaction_detections_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("vector"), py::arg("input_order"), py::arg("fault_ids"),
         py::arg("unsupported_policy") = "fail");

@@ -8,8 +8,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-log = logging.getLogger(__name__)
-
 from faultflow.atpg import VectorSet
 from faultflow.config import FaultflowConfig
 from faultflow.db import (
@@ -20,6 +18,8 @@ from faultflow.db import (
     summary,
 )
 from faultflow.runner.runner import RunnerError
+
+log = logging.getLogger(__name__)
 
 DEFAULT_MAX_ATPG_ROUNDS = 20
 ATPGRANDOM_SEED = 0x5EED5EED
