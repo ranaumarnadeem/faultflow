@@ -3,7 +3,10 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 
 #include <filesystem>
+#include <map>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include "db/sqlite_store.hpp"
 #include "helpers/test_helpers.hpp"
@@ -51,6 +54,48 @@ CompactFault fault(uint32_t net_index, FaultType type, FaultStatus status) {
   f.type = type;
   f.status = status;
   return f;
+}
+
+// Inserts `count` distinct fault rows (distinct site keys/nets) in one
+// transaction and returns their ids in insertion order.
+std::vector<int64_t> insert_fault_rows(const std::string& path,
+                                       int64_t campaign_id, int count) {
+  SQLite::Database db(path, SQLite::OPEN_READWRITE);
+  SQLite::Transaction txn(db);
+  SQLite::Statement q(
+      db,
+      "INSERT INTO faults(campaign_id, fault_site_key, net_id, net_name, "
+      "node_id, compiled_net_index, type, fault_type, status, excluded, "
+      "exclusion) VALUES (?, ?, ?, ?, -1, ?, ?, ?, 'undetected', 'none', "
+      "'none')");
+  std::vector<int64_t> ids;
+  ids.reserve(static_cast<size_t>(count));
+  for (int i = 0; i < count; ++i) {
+    const std::string type = (i % 2 == 0) ? "sa0" : "sa1";
+    q.bind(1, campaign_id);
+    q.bind(2, "site:" + std::to_string(i));
+    q.bind(3, i);
+    q.bind(4, "n" + std::to_string(i));
+    q.bind(5, i);
+    q.bind(6, type);
+    q.bind(7, type);
+    q.exec();
+    ids.push_back(db.getLastInsertRowid());
+    q.reset();
+  }
+  txn.commit();
+  return ids;
+}
+
+void require_records_equal(const db::FaultRecord& a, const db::FaultRecord& b) {
+  REQUIRE(a.id == b.id);
+  REQUIRE(a.campaign_id == b.campaign_id);
+  REQUIRE(a.compiled_net_index == b.compiled_net_index);
+  REQUIRE(a.type == b.type);
+  REQUIRE(a.status == b.status);
+  REQUIRE(a.exclusion == b.exclusion);
+  REQUIRE(a.collapsed_into == b.collapsed_into);
+  REQUIRE(a.protocol_unresolved == b.protocol_unresolved);
 }
 
 }  // namespace
@@ -153,5 +198,56 @@ TEST_CASE("SQLite store fault writes roll back on insertion failure", "[db]") {
   SQLite::Statement q(sqlite, "SELECT COUNT(*) FROM faults");
   REQUIRE(q.executeStep());
   REQUIRE(q.getColumn(0).getInt() == 1);
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("load_faults matches per-id load_fault", "[db]") {
+  const auto path = db_path("faultflow_load_faults_match.sqlite");
+  db::init_database(path.string());
+  const int64_t campaign_id = insert_test_campaign(path.string());
+
+  const std::vector<int64_t> ids =
+      insert_fault_rows(path.string(), campaign_id, 5);
+  // Vary the mutable fields so decoding is exercised, not just defaults.
+  db::mark_fault_redundant(path.string(), ids[1], "model-x");
+  db::mark_fault_protocol_unresolved(path.string(), ids[2]);
+
+  std::vector<int64_t> query_ids = ids;
+  const int64_t missing_id = ids.back() + 1000;
+  query_ids.push_back(missing_id);
+
+  const std::map<int64_t, db::FaultRecord> batch =
+      db::load_faults(path.string(), query_ids);
+
+  REQUIRE(batch.size() == ids.size());  // missing id omitted, not invented
+  REQUIRE(batch.find(missing_id) == batch.end());
+  for (int64_t id : ids) {
+    const auto it = batch.find(id);
+    REQUIRE(it != batch.end());
+    require_records_equal(it->second, db::load_fault(path.string(), id));
+  }
+  REQUIRE_THROWS(db::load_fault(path.string(), missing_id));
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("load_faults chunks beyond the SQLite variable limit", "[db]") {
+  const auto path = db_path("faultflow_load_faults_chunk.sqlite");
+  db::init_database(path.string());
+  const int64_t campaign_id = insert_test_campaign(path.string());
+
+  const int kCount = 950;  // > 900-id chunk size: forces multiple IN queries
+  const std::vector<int64_t> ids =
+      insert_fault_rows(path.string(), campaign_id, kCount);
+
+  const std::map<int64_t, db::FaultRecord> batch =
+      db::load_faults(path.string(), ids);
+
+  REQUIRE(batch.size() == static_cast<size_t>(kCount));
+  for (int64_t id : ids) {
+    REQUIRE(batch.find(id) != batch.end());
+  }
+  // A record from a later chunk must decode identically to the single loader.
+  require_records_equal(batch.at(ids.back()),
+                        db::load_fault(path.string(), ids.back()));
   std::filesystem::remove(path);
 }

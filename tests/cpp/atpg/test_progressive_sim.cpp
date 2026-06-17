@@ -132,3 +132,24 @@ TEST_CASE("simulate_incremental records earliest vector and batches partial tail
   REQUIRE(q.getColumn(0).getInt() == 64);
   std::filesystem::remove(path);
 }
+
+TEST_CASE("graph cache builds each netlist once across repeated sim calls",
+          "[atpg][pfs]") {
+  const auto path = db_path("faultflow_graph_cache_collapse.sqlite");
+  db::init_database(path.string());
+  const int64_t campaign_id = insert_campaign(path.string());
+  const std::vector<int64_t> fault_ids =
+      insert_duplicate_detectable_faults(path.string(), campaign_id, 8);
+
+  reset_simulation_instrumentation();
+  for (int i = 0; i < 3; ++i) {
+    const std::vector<int64_t> detected = simulate_tentative_detections(
+        test::fixture_path("tiny_inv.json"), test::cell_map_path(),
+        path.string(), detecting_tiny_inv_vector(), {"A"}, fault_ids, "fail");
+    REQUIRE(detected.size() == 8);
+  }
+  // Three sim calls on one netlist must parse/normalize/compile the graph
+  // exactly once; the shared content-keyed cache serves the rest.
+  REQUIRE(simulation_instrumentation().load_graph_calls == 1);
+  std::filesystem::remove(path);
+}
