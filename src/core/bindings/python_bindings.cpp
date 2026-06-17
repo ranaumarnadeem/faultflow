@@ -13,6 +13,7 @@
 #include "fault/collapser/fault_collapser.hpp"
 #include "fault/enumerator/fault_enumerator.hpp"
 #include "ir/compiled_graph/compiled_graph.hpp"
+#include "ir/compiled_graph/graph_cache.hpp"
 #include "ir/normalized_graph/cell_map.hpp"
 #include "ir/normalized_graph/normalized_graph.hpp"
 #include "ir/parsed_graph/parsed_graph.hpp"
@@ -139,11 +140,11 @@ py::dict simulate_to_db(
     const std::vector<std::string>& input_order, const std::string& vector_source,
     bool include_clock_faults, bool include_reset_faults, bool collapsing,
     const std::string& unsupported_policy) {
-  const ParsedGraph parsed = ParsedGraph::from_file(json_path);
-  const CellMap cell_map = CellMap::load(cell_map_path);
-  const NormalizedGraph ng =
-      NormalizedGraph::from_parsed(parsed, cell_map, unsupported_policy);
-  const CompiledSimGraph cg = GraphCompiler::compile(ng);
+  const CachedGraph& graph =
+      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+  const ParsedGraph& parsed = graph.parsed;
+  const NormalizedGraph& ng = graph.ng;
+  const CompiledSimGraph& cg = graph.cg;
 
   EnumeratorOptions options;
   options.include_clock_faults = include_clock_faults;
@@ -213,11 +214,10 @@ std::vector<std::map<std::string, bool>> fault_free_outputs(
     const std::vector<std::string>& input_order,
     const std::vector<std::string>& output_order,
     const std::string& unsupported_policy) {
-  const ParsedGraph parsed = ParsedGraph::from_file(json_path);
-  const CellMap cell_map = CellMap::load(cell_map_path);
-  const NormalizedGraph ng =
-      NormalizedGraph::from_parsed(parsed, cell_map, unsupported_policy);
-  const CompiledSimGraph cg = GraphCompiler::compile(ng);
+  const CachedGraph& graph =
+      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+  const ParsedGraph& parsed = graph.parsed;
+  const CompiledSimGraph& cg = graph.cg;
   const std::vector<TestVector> vectors =
       convert_vectors_strict(parsed, raw_vectors, input_order);
 
@@ -246,11 +246,10 @@ std::vector<std::map<std::string, bool>> fault_free_sequence_outputs(
     const std::vector<std::string>& input_order,
     const std::vector<std::string>& output_order,
     const std::string& unsupported_policy) {
-  const ParsedGraph parsed = ParsedGraph::from_file(json_path);
-  const CellMap cell_map = CellMap::load(cell_map_path);
-  const NormalizedGraph ng =
-      NormalizedGraph::from_parsed(parsed, cell_map, unsupported_policy);
-  const CompiledSimGraph cg = GraphCompiler::compile(ng);
+  const CachedGraph& graph =
+      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+  const ParsedGraph& parsed = graph.parsed;
+  const CompiledSimGraph& cg = graph.cg;
   const std::vector<TestVector> vectors =
       convert_sequence_vectors_strict(parsed, raw_sequences, input_order);
 
@@ -491,11 +490,9 @@ py::dict simulate_scan_protocol_faults_py(
 py::list list_site_keys_py(const std::string& json_path,
                            const std::string& cell_map_path,
                            const std::string& unsupported_policy) {
-  const ParsedGraph parsed = ParsedGraph::from_file(json_path);
-  const CellMap cell_map = CellMap::load(cell_map_path);
-  const NormalizedGraph ng =
-      NormalizedGraph::from_parsed(parsed, cell_map, unsupported_policy);
-  const CompiledSimGraph cg = GraphCompiler::compile(ng);
+  const CachedGraph& graph =
+      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+  const CompiledSimGraph& cg = graph.cg;
   py::list out;
   for (uint32_t cidx = 0; cidx < static_cast<uint32_t>(cg.net_count); ++cidx) {
     py::dict row;

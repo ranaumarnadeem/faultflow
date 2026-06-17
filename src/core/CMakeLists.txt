@@ -9,6 +9,7 @@ add_library(
   ir/normalized_graph/normalized_graph.cpp
   ir/normalized_graph/cell_map.cpp
   ir/compiled_graph/graph_compiler.cpp
+  ir/compiled_graph/graph_cache.cpp
   fault/enumerator/fault_enumerator.cpp
   fault/collapser/fault_collapser.cpp
   fault/batch/batch_manager.cpp

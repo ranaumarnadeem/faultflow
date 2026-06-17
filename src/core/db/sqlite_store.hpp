@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -79,6 +80,13 @@ void insert_faults_if_empty(const std::string& db_path, int64_t campaign_id,
                             const std::vector<CompactFault>& faults);
 
 FaultRecord load_fault(const std::string& db_path, int64_t fault_id);
+
+// Batch variant of load_fault: one connection + chunked "id IN (...)" queries
+// instead of a fresh connection per id. Returns a map keyed by fault id; ids
+// absent from the DB are simply absent from the map (callers decide how to
+// treat a miss). Decoding matches load_fault column-for-column.
+std::map<int64_t, FaultRecord> load_faults(
+    const std::string& db_path, const std::vector<int64_t>& fault_ids);
 
 void mark_fault_detected(const std::string& db_path, int64_t campaign_id,
                          int64_t run_id, int64_t fault_id,

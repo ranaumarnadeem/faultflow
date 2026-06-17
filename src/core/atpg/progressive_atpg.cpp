@@ -10,6 +10,7 @@
 #include "fault/collapser/fault_collapser.hpp"
 #include "fault/enumerator/fault_enumerator.hpp"
 #include "ir/compiled_graph/compiled_graph.hpp"
+#include "ir/compiled_graph/graph_cache.hpp"
 #include "ir/normalized_graph/cell_map.hpp"
 #include "ir/normalized_graph/normalized_graph.hpp"
 #include "ir/parsed_graph/parsed_graph.hpp"
@@ -24,22 +25,16 @@ constexpr size_t kFaultLanesPerWord = kBatchSize;
 
 SimulationInstrumentation g_simulation_instrumentation;
 
-struct GraphContext {
-  ParsedGraph parsed;
-  NormalizedGraph ng;
-  CompiledSimGraph cg;
-};
-
-GraphContext load_graph(const std::string& json_path,
-                        const std::string& cell_map_path,
-                        const std::string& unsupported_policy,
-                        bool require_combinational = true) {
-  ++g_simulation_instrumentation.load_graph_calls;
-  GraphContext ctx;
-  ctx.parsed = ParsedGraph::from_file(json_path);
-  const CellMap cell_map = CellMap::load(cell_map_path);
-  ctx.ng = NormalizedGraph::from_parsed(ctx.parsed, cell_map, unsupported_policy);
-  ctx.cg = GraphCompiler::compile(ctx.ng);
+// Thin wrapper over the shared, content-keyed graph cache: the netlist never
+// changes during a run, so the graph is built once and every solve/sim call
+// reuses the same immutable instance. Returns a reference into the cache (no
+// per-call copy); callers read it read-only.
+const CachedGraph& load_graph(const std::string& json_path,
+                              const std::string& cell_map_path,
+                              const std::string& unsupported_policy,
+                              bool require_combinational = true) {
+  const CachedGraph& ctx =
+      load_cached_graph(json_path, cell_map_path, unsupported_policy);
   if (require_combinational && !ctx.cg.ff_nodes.empty()) {
     throw std::runtime_error("progressive native ATPG is combinational-only");
   }
@@ -85,10 +80,19 @@ struct ActiveFaultRecord {
 std::vector<ActiveFaultRecord> load_active_fault_records(
     const std::string& db_path, const std::vector<int64_t>& fault_ids,
     bool skip_protocol_unresolved) {
+  // One batched query instead of a fresh connection per fault. Drive the loop
+  // by the original fault_ids (not the map) so `active` keeps its exact prior
+  // ordering, and throw on a missing id exactly as db::load_fault did.
+  const std::map<int64_t, db::FaultRecord> records =
+      db::load_faults(db_path, fault_ids);
   std::vector<ActiveFaultRecord> active;
   active.reserve(fault_ids.size());
   for (int64_t fault_id : fault_ids) {
-    const db::FaultRecord rec = db::load_fault(db_path, fault_id);
+    const auto it = records.find(fault_id);
+    if (it == records.end()) {
+      throw std::runtime_error("fault not found: " + std::to_string(fault_id));
+    }
+    const db::FaultRecord& rec = it->second;
     if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
         rec.status != FaultStatus::UNDETECTED ||
         (skip_protocol_unresolved && rec.protocol_unresolved)) {
@@ -143,10 +147,19 @@ std::string solve_result_name(SatSolveResult result) {
 
 }  // namespace
 
-void reset_simulation_instrumentation() { g_simulation_instrumentation = {}; }
+void reset_simulation_instrumentation() {
+  g_simulation_instrumentation = {};
+  // Drop cached graphs too so a reset gives a deterministic cold start: the
+  // next load is a guaranteed build, keeping load_graph_calls meaningful.
+  clear_graph_cache();
+}
 
 SimulationInstrumentation simulation_instrumentation() {
-  return g_simulation_instrumentation;
+  SimulationInstrumentation stats = g_simulation_instrumentation;
+  // load_graph_calls now means "graphs actually built"; the cache owns that
+  // count (it is the only thing that builds graphs).
+  stats.load_graph_calls = graph_cache_stats().builds;
+  return stats;
 }
 
 std::vector<std::map<std::string, bool>> generate_random_vectors(
@@ -173,7 +186,7 @@ void ensure_faults_enumerated(
   if (db::fault_count(db_path, campaign_id) > 0) {
     return;
   }
-  const GraphContext ctx =
+  const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, false);
   const std::vector<CompactFault> faults =
       enumerate_all(ctx.ng, ctx.cg, include_clock_faults, include_reset_faults,
@@ -186,7 +199,7 @@ SolveFaultResult solve_fault_for_db(
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy) {
-  const GraphContext ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
   if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
       rec.status != FaultStatus::UNDETECTED) {
@@ -217,7 +230,7 @@ bool verify_fault_vector(
     const std::string& db_path, int64_t fault_id,
     const std::map<std::string, bool>& vector,
     const std::string& unsupported_policy) {
-  const GraphContext ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
   CompactFault fault = fault_from_record(rec);
   GoldenRefSim golden;
@@ -242,7 +255,7 @@ std::vector<ProgressiveDetection> simulate_incremental(
   if (new_vectors.empty() || fault_ids.empty()) {
     return {};
   }
-  const GraphContext ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
   std::vector<TestVector> vectors;
   vectors.reserve(new_vectors.size());
   for (const auto& raw : new_vectors) {
@@ -290,7 +303,7 @@ std::vector<int64_t> simulate_tentative_detections(
   if (fault_ids.empty()) {
     return {};
   }
-  const GraphContext ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
   const TestVector tv = vector_from_map(ctx.parsed, vector, input_order);
   BitParallelSim sim;
   std::vector<int64_t> detected;

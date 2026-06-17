@@ -5,6 +5,7 @@
 
 #include "fault/effect/compact_fault.hpp"
 #include "ir/compiled_graph/compiled_graph.hpp"
+#include "ir/compiled_graph/graph_cache.hpp"
 #include "ir/normalized_graph/cell_map.hpp"
 #include "ir/normalized_graph/normalized_graph.hpp"
 #include "ir/parsed_graph/parsed_graph.hpp"
@@ -217,11 +218,10 @@ bool scan_observations_equal(const ScanPatternResult& lhs,
 ScanPatternResult simulate_scan_pattern(
     const std::string& json_path, const std::string& cell_map_path,
     const ScanPatternRequest& request, const std::string& unsupported_policy) {
-  const ParsedGraph parsed = ParsedGraph::from_file(json_path);
-  const CellMap cell_map = CellMap::load(cell_map_path);
-  const NormalizedGraph ng =
-      NormalizedGraph::from_parsed(parsed, cell_map, unsupported_policy);
-  const CompiledSimGraph cg = GraphCompiler::compile(ng);
+  const CachedGraph& graph =
+      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+  const ParsedGraph& parsed = graph.parsed;
+  const CompiledSimGraph& cg = graph.cg;
 
   const TestVector vec = build_scan_pattern_vector(parsed, request);
   GoldenRefSim sim;
@@ -233,11 +233,10 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
     const std::string& json_path, const std::string& cell_map_path,
     const ScanProtocolFaultRequest& request,
     const std::string& unsupported_policy) {
-  const ParsedGraph parsed = ParsedGraph::from_file(json_path);
-  const CellMap cell_map = CellMap::load(cell_map_path);
-  const NormalizedGraph ng =
-      NormalizedGraph::from_parsed(parsed, cell_map, unsupported_policy);
-  const CompiledSimGraph cg = GraphCompiler::compile(ng);
+  const CachedGraph& graph =
+      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+  const ParsedGraph& parsed = graph.parsed;
+  const CompiledSimGraph& cg = graph.cg;
 
   const TestVector vec = build_scan_pattern_vector(parsed, request.pattern);
   GoldenRefSim golden_sim;

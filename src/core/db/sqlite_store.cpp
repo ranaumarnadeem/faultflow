@@ -2,6 +2,7 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace faultflow::db {
@@ -464,6 +465,54 @@ FaultRecord load_fault(const std::string& db_path, int64_t fault_id) {
   }
   rec.protocol_unresolved = q.getColumn(7).getInt() != 0;
   return rec;
+}
+
+std::map<int64_t, FaultRecord> load_faults(
+    const std::string& db_path, const std::vector<int64_t>& fault_ids) {
+  std::map<int64_t, FaultRecord> records;
+  if (fault_ids.empty()) {
+    return records;
+  }
+  SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
+
+  // Stay under SQLITE_MAX_VARIABLE_NUMBER, which is 999 on SQLite < 3.32 and
+  // 32766 thereafter; 900 is safe on every host version.
+  constexpr size_t kChunk = 900;
+  for (size_t begin = 0; begin < fault_ids.size(); begin += kChunk) {
+    const size_t end = std::min(begin + kChunk, fault_ids.size());
+    std::string sql =
+        "SELECT id, campaign_id, "
+        "COALESCE(atpg_compiled_net_index, compiled_net_index), "
+        "fault_type, status, exclusion, collapsed_into, protocol_unresolved "
+        "FROM faults WHERE id IN (";
+    for (size_t i = begin; i < end; ++i) {
+      sql += (i == begin) ? "?" : ",?";
+    }
+    sql += ")";
+    SQLite::Statement q(db, sql);
+    int param = 1;
+    for (size_t i = begin; i < end; ++i) {
+      q.bind(param++, fault_ids[i]);
+    }
+    while (q.executeStep()) {
+      FaultRecord rec;
+      rec.id = q.getColumn(0).getInt64();
+      rec.campaign_id = q.getColumn(1).getInt64();
+      rec.compiled_net_index = static_cast<uint32_t>(q.getColumn(2).getInt64());
+      rec.type = type_from_name(q.getColumn(3).getString());
+      rec.status = status_from_name(q.getColumn(4).getString());
+      rec.exclusion = exclusion_from_name(q.getColumn(5).getString());
+      if (q.getColumn(6).isNull()) {
+        rec.collapsed_into = UINT32_MAX;
+      } else {
+        rec.collapsed_into = static_cast<uint32_t>(q.getColumn(6).getInt64());
+      }
+      rec.protocol_unresolved = q.getColumn(7).getInt() != 0;
+      records.emplace(rec.id, rec);
+    }
+  }
+  return records;
 }
 
 void mark_fault_detected(const std::string& db_path, int64_t campaign_id,
