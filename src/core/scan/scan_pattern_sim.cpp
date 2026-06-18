@@ -43,6 +43,19 @@ void append_clock_pulse(TestVector& vec, const ParsedGraph& parsed,
       make_cycle(parsed, clock_port, values, sample, fault_active));
 }
 
+void append_launch_pulse(TestVector& vec, const ParsedGraph& parsed,
+                         const std::string& clock_port,
+                         std::map<std::string, bool> values) {
+  // LOC launch: one functional clock with the fault INACTIVE establishes the
+  // launched (frame-0) state. Sample at the inactive clock level so the
+  // transition qualifier can read the good-machine pre-transition value at the
+  // fault net; functional POs are read at the capture pulse, not here.
+  values[clock_port] = false;
+  vec.cycles.push_back(make_cycle(parsed, clock_port, values, true, false));
+  values[clock_port] = true;
+  vec.cycles.push_back(make_cycle(parsed, clock_port, values, false, false));
+}
+
 void append_capture_pulse(TestVector& vec, const ParsedGraph& parsed,
                           const std::string& clock_port,
                           std::map<std::string, bool> values) {
@@ -115,6 +128,9 @@ TestVector build_scan_pattern_vector(const ParsedGraph& parsed,
     for (const auto& scan_in : request.scan_input_ports) {
       values[scan_in] = false;
     }
+    if (request.loc_two_capture) {
+      append_launch_pulse(vec, parsed, request.clock_port, values);
+    }
     append_capture_pulse(vec, parsed, request.clock_port, values);
   }
 
@@ -132,12 +148,18 @@ ScanPatternResult extract_scan_observations(
   if (samples.empty()) {
     throw std::runtime_error("scan pattern produced no samples");
   }
-  if (static_cast<int>(samples.size()) != request.max_chain_length + 1) {
+  // LOC inserts a leading launch sample (frame 0); functional POs and the
+  // unload then shift one index later. Non-LOC: functional_idx=0, unload at 1.
+  const int functional_idx = request.loc_two_capture ? 1 : 0;
+  const int unload_start = functional_idx + 1;
+  if (static_cast<int>(samples.size()) !=
+      request.max_chain_length + unload_start) {
     throw std::runtime_error("scan pattern sample count mismatch");
   }
 
   ScanPatternResult result;
-  const std::map<int, bool>& capture_sample = samples.front();
+  const std::map<int, bool>& capture_sample =
+      samples[static_cast<size_t>(functional_idx)];
   for (const auto& port : request.functional_output_ports) {
     result.real_po_values[port] = sample_bit(capture_sample, parsed, port);
   }
@@ -147,8 +169,9 @@ ScanPatternResult extract_scan_observations(
     const std::string& scan_out = request.scan_output_ports[chain_id];
     std::vector<bool> bits;
     bits.reserve(request.max_chain_length);
-    for (int offset = 1; offset <= request.max_chain_length; ++offset) {
-      bits.push_back(sample_bit(samples[offset], parsed, scan_out));
+    for (int offset = 0; offset < request.max_chain_length; ++offset) {
+      bits.push_back(sample_bit(samples[static_cast<size_t>(unload_start + offset)],
+                                parsed, scan_out));
     }
     result.unload_seqs[static_cast<int>(chain_id)] = std::move(bits);
   }
@@ -184,22 +207,27 @@ ScanPatternResult extract_scan_lane_observations(
     const ParsedGraph& parsed, const CompiledSimGraph& cg,
     const ScanPatternRequest& request,
     const std::vector<std::vector<uint64_t>>& samples, int bit) {
-  if (static_cast<int>(samples.size()) != request.max_chain_length + 1) {
+  const int functional_idx = request.loc_two_capture ? 1 : 0;
+  const int unload_start = functional_idx + 1;
+  if (static_cast<int>(samples.size()) !=
+      request.max_chain_length + unload_start) {
     throw std::runtime_error("scan pattern sample count mismatch");
   }
   ScanPatternResult result;
   for (const auto& port : request.functional_output_ports) {
-    result.real_po_values[port] =
-        lane_bit(sample_word(samples.front(), parsed, cg, port), bit);
+    result.real_po_values[port] = lane_bit(
+        sample_word(samples[static_cast<size_t>(functional_idx)], parsed, cg,
+                    port),
+        bit);
   }
   for (size_t chain_id = 0; chain_id < request.scan_output_ports.size();
        ++chain_id) {
     std::vector<bool> bits;
     bits.reserve(request.max_chain_length);
-    for (int offset = 1; offset <= request.max_chain_length; ++offset) {
+    for (int offset = 0; offset < request.max_chain_length; ++offset) {
       bits.push_back(lane_bit(
-          sample_word(samples.at(offset), parsed, cg,
-                      request.scan_output_ports.at(chain_id)),
+          sample_word(samples.at(static_cast<size_t>(unload_start + offset)),
+                      parsed, cg, request.scan_output_ports.at(chain_id)),
           bit));
     }
     result.unload_seqs[static_cast<int>(chain_id)] = std::move(bits);
@@ -291,9 +319,26 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
       const int lane_bit_index = static_cast<int>(fault_idx - begin) + 1;
       const ScanPatternResult faulty_obs = extract_scan_lane_observations(
           parsed, cg, request.pattern, batch_samples, lane_bit_index);
-      lane.outcome = scan_observations_equal(result.golden, faulty_obs)
-                         ? ScanProtocolFaultOutcome::NO_CAPTURE_OR_UNLOAD_EFFECT
-                         : ScanProtocolFaultOutcome::PASS;
+      bool detected = !scan_observations_equal(result.golden, faulty_obs);
+
+      // LOC transition qualifier: a stuck-at observation difference only counts
+      // as a transition fault if the GOOD machine actually made the required
+      // edge at the fault net between the launch (frame 0) and capture (frame 1)
+      // samples. samples[0]=launch, samples[1]=capture; bit 0 is the good lane.
+      if (detected && request.pattern.loc_two_capture) {
+        const ScanProtocolFaultSpec& spec = request.faults[fault_idx];
+        const auto net = static_cast<size_t>(spec.compiled_net_index);
+        const bool launch_good = (batch_samples[0].at(net) & 1ULL) != 0;
+        const bool capture_good = (batch_samples[1].at(net) & 1ULL) != 0;
+        const bool pre = spec.fault_type == 1;   // STF pre=1, STR pre=0
+        const bool post = spec.fault_type == 0;  // STR post=1, STF post=0
+        if (launch_good != pre || capture_good != post) {
+          detected = false;
+        }
+      }
+
+      lane.outcome = detected ? ScanProtocolFaultOutcome::PASS
+                              : ScanProtocolFaultOutcome::NO_CAPTURE_OR_UNLOAD_EFFECT;
       batch.lanes.push_back(lane);
     }
     result.batches.push_back(std::move(batch));

@@ -18,6 +18,11 @@ struct ScanPatternRequest {
   int max_chain_length = 0;
   std::map<int, std::vector<bool>> load_seqs;
   std::map<std::string, bool> capture_pi_values;
+  // Launch-on-capture transition protocol (Phase 4 Step 2b). When true, a
+  // fault-free LAUNCH clock is inserted before the (fault-active) capture clock
+  // so the response is a two-frame transition rather than a single stuck-at
+  // capture. Functional POs are sampled at the capture (frame 1) pulse.
+  bool loc_two_capture = false;
 };
 
 struct ScanPatternResult {
