@@ -44,6 +44,13 @@ class ScanCheckResult(OperationResult):
 
 
 @dataclass(frozen=True)
+class RuleCheckResult(OperationResult):
+    passed: bool = True
+    error_count: int = 0
+    warning_count: int = 0
+
+
+@dataclass(frozen=True)
 class AtpgResult(OperationResult):
     pass
 

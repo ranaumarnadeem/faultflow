@@ -170,13 +170,14 @@ def append_vector_row(
     source: str,
     vector_index: int,
     pattern: str,
+    launch_pattern: str = "",
 ) -> int:
     conn.execute(
         """
         INSERT INTO vectors(
-          campaign_id, run_id, source, vector_index, pattern
-        ) VALUES (?, ?, ?, ?, ?)
+          campaign_id, run_id, source, vector_index, pattern, launch_pattern
+        ) VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (campaign_id, run_id, source, vector_index, pattern),
+        (campaign_id, run_id, source, vector_index, pattern, launch_pattern),
     )
     return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])

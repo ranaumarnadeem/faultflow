@@ -16,6 +16,7 @@ def reduced_protocol_matches(
     *,
     reduced_vector: dict[str, bool],
     functional_output_order: list[str],
+    loc_two_capture: bool = False,
 ) -> bool:
     verify_golden_scan_protocol(
         cfg,
@@ -26,6 +27,7 @@ def reduced_protocol_matches(
         fault_id=None,
         reduced_vector=reduced_vector,
         functional_output_order=functional_output_order,
+        loc_two_capture=loc_two_capture,
     )
     return True
 
@@ -40,6 +42,7 @@ def verify_golden_scan_protocol(
     fault_id: int | None,
     reduced_vector: dict[str, bool],
     functional_output_order: list[str],
+    loc_two_capture: bool = False,
 ) -> None:
     from faultflow.runner.runner import RunnerError, _load_core, _port_name_for_net
 
@@ -82,6 +85,7 @@ def verify_golden_scan_protocol(
             pattern.load_seqs,
             pattern.capture_pi_values,
             cfg.simulation.unsupported_cells,
+            loc_two_capture,
         )
     )
     real_po_values = dict(result.get("real_po_values", {}))

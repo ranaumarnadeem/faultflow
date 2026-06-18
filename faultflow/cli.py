@@ -77,6 +77,11 @@ def _parser() -> argparse.ArgumentParser:
         metavar="PCT",
         help="Target coverage percent to stop ATPG (default: [report] threshold)",
     )
+    sim.add_argument(
+        "--model",
+        choices=["stuck-at", "transition"],
+        help="Override [fault_model] model for this sim run",
+    )
 
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
@@ -137,6 +142,22 @@ def _parser() -> argparse.ArgumentParser:
         "scan-techmap", help="Regenerate Sky130 techmap output from scanned JSON"
     )
     add_common(scan_techmap)
+
+    rule_check = sub.add_parser(
+        "rule_check",
+        help="Run DFT structural rules (DRC) on the synthesized netlist",
+    )
+    add_common(rule_check)
+    rule_check.add_argument(
+        "--strict",
+        action="store_true",
+        help="Treat warnings as blocking (non-zero exit)",
+    )
+    rule_check.add_argument(
+        "--advisory",
+        action="store_true",
+        help="Report violations but always exit 0 (no gate)",
+    )
     return parser
 
 
@@ -156,6 +177,19 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "init":
             print(service.initialize(cfg).message)
         elif args.command == "sim":
+            if getattr(args, "model", None) is not None:
+                import dataclasses
+
+                model = args.model.replace("-", "_")
+                if model == "transition" and cfg.fault_model.collapsing:
+                    parser.error(
+                        "--model transition cannot be combined with "
+                        "[fault_model] collapsing = true"
+                    )
+                cfg = dataclasses.replace(
+                    cfg,
+                    fault_model=dataclasses.replace(cfg.fault_model, model=model),
+                )
             verify = (
                 parse_bool_value(args.verify, "verify")
                 if args.verify is not None
@@ -214,6 +248,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "scan-techmap":
             print(service.regenerate_scan_techmap(cfg).message)
+        elif args.command == "rule_check":
+            result = service.rule_check(cfg, strict=args.strict)
+            print(result.message)
+            if result.passed or args.advisory:
+                return 0
+            return 1
         else:
             parser.error(f"unknown command {args.command}")
     except (ConfigError, RunnerError) as exc:

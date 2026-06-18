@@ -49,4 +49,28 @@ SatSolveResult solve_transition_fault(const CompiledSimGraph& cg,
                                       std::map<std::string, bool>& v1_out,
                                       std::map<std::string, bool>& v2_out);
 
+// Couples one scan FF's capture-frame current state (PPI) to its launch-frame
+// next-state (PPO) in the LOC two-frame CNF. Both are CompiledNetIndex values:
+// `ppi_compiled` is a member of `pis` (a pseudo-PI input) and `ppo_compiled` is
+// a member of cg.observable (a pseudo-PO output).
+struct LocCouple {
+  uint32_t ppi_compiled = 0;
+  uint32_t ppo_compiled = 0;
+};
+
+// Scan launch-on-capture (LOC) two-frame transition-fault ATPG on the reduced
+// scan ATPG view. Unlike the broadside solver, V2 is FUNCTIONALLY DERIVED from
+// V1: per scan FF, the capture-frame PPI is forced equal to the launch-frame PPO
+// (`couples`), and every real PI holds launch->capture (`held_pi_compiled`). The
+// emitted launch state (v1_out, over real PIs + PPIs) plus the held capture PIs
+// fully determine the protocol load. SAT/UNSAT/TIMEOUT/UNKNOWN discipline and the
+// combined V1||V2 blocked-pattern key (length 2*pis.size()) match the broadside
+// solver.
+SatSolveResult solve_scan_transition_fault(
+    const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
+    const std::vector<LocCouple>& couples,
+    const std::vector<uint32_t>& held_pi_compiled, const CompactFault& fault,
+    const SatSolveOptions& options, std::map<std::string, bool>& v1_out,
+    std::map<std::string, bool>& v2_out);
+
 }  // namespace faultflow::atpg

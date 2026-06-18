@@ -111,4 +111,18 @@ std::vector<int64_t> simulate_transition_tentative_detections(
     const std::vector<int64_t>& fault_ids,
     const std::string& unsupported_policy);
 
+// ---- Transition model (scan launch-on-capture) -----------------------------
+// SAT on the reduced scan ATPG view: the LOC couples (capture PPI == launch PPO)
+// and held real PIs are derived from the view's `__ppi_<inst>` / `__ppo_<inst>`
+// port pairs, so the binding signature matches the broadside solver. The reduced
+// view is combinational (FFs already lowered to pseudo-ports), so the
+// combinational-only guard passes. Reduced-view verification reuses
+// verify_transition_fault_vector; full-protocol grading runs through the
+// two-capture scan-protocol sim on the generic netlist.
+SolveTransitionResult solve_scan_transition_fault_for_db(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::vector<std::string>& blocked_patterns, int conflict_limit,
+    int sat_timeout_seconds, const std::string& unsupported_policy);
+
 }  // namespace faultflow::atpg

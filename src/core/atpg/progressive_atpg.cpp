@@ -42,6 +42,50 @@ const CachedGraph& load_graph(const std::string& json_path,
   return ctx;
 }
 
+// Derives the scan LOC coupling from a reduced ATPG view: each `__ppi_<inst>`
+// input port (a scan FF's current state) is coupled to its `__ppo_<inst>` output
+// port (the FF's next-state); every other PI is a held real PI.
+struct ScanLocView {
+  std::vector<LocCouple> couples;
+  std::vector<uint32_t> held_pis;
+};
+
+ScanLocView build_scan_loc_view(const ParsedGraph& parsed,
+                                const CompiledSimGraph& cg) {
+  const std::string ppi_prefix = "__ppi_";
+  const std::string ppo_prefix = "__ppo_";
+  const ParsedModule& mod = parsed.top_module();
+  ScanLocView view;
+  for (const auto& [name, port] : mod.ports) {
+    if (port.direction != "input" || port.bits.size() != 1) {
+      continue;
+    }
+    const auto cit = cg.yosys_to_compiled.find(port.bits.front());
+    if (cit == cg.yosys_to_compiled.end()) {
+      continue;
+    }
+    const uint32_t ppi_compiled = static_cast<uint32_t>(cit->second);
+    if (name.rfind(ppi_prefix, 0) != 0) {
+      view.held_pis.push_back(ppi_compiled);
+      continue;
+    }
+    const std::string ppo_name = ppo_prefix + name.substr(ppi_prefix.size());
+    const auto pit = mod.ports.find(ppo_name);
+    if (pit == mod.ports.end() || pit->second.bits.size() != 1) {
+      throw std::runtime_error("scan LOC view: PPI without matching PPO: " +
+                               name);
+    }
+    const auto poit = cg.yosys_to_compiled.find(pit->second.bits.front());
+    if (poit == cg.yosys_to_compiled.end()) {
+      throw std::runtime_error("scan LOC view: PPO net not compiled: " +
+                               ppo_name);
+    }
+    view.couples.push_back(
+        {ppi_compiled, static_cast<uint32_t>(poit->second)});
+  }
+  return view;
+}
+
 std::vector<CompactFault> enumerate_all(
     const NormalizedGraph& ng, const CompiledSimGraph& cg, bool include_clock_faults,
     bool include_reset_faults, bool collapsing) {
@@ -371,6 +415,41 @@ SolveTransitionResult solve_transition_fault_for_db(
   std::map<std::string, bool> capture;
   const SatSolveResult result =
       solve_transition_fault(ctx.cg, pis, fault, options, launch, capture);
+
+  SolveTransitionResult out;
+  out.result = solve_result_name(result);
+  if (result == SatSolveResult::SAT) {
+    out.launch = std::move(launch);
+    out.capture = std::move(capture);
+  }
+  return out;
+}
+
+SolveTransitionResult solve_scan_transition_fault_for_db(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::vector<std::string>& blocked_patterns, int conflict_limit,
+    int sat_timeout_seconds, const std::string& unsupported_policy) {
+  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const db::FaultRecord rec = db::load_fault(db_path, fault_id);
+  if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
+      rec.status != FaultStatus::UNDETECTED) {
+    throw std::runtime_error("fault is not active for transition SAT ATPG");
+  }
+  const auto pis = ordered_pis(ctx.parsed, ctx.cg);
+  const ScanLocView view = build_scan_loc_view(ctx.parsed, ctx.cg);
+  CompactFault fault = fault_from_record(rec);
+  fault.model = FaultModel::TRANSITION;
+
+  SatSolveOptions options;
+  options.conflict_limit = conflict_limit;
+  options.sat_timeout_seconds = sat_timeout_seconds;
+  options.blocked_patterns = blocked_patterns;
+
+  std::map<std::string, bool> launch;
+  std::map<std::string, bool> capture;
+  const SatSolveResult result = solve_scan_transition_fault(
+      ctx.cg, pis, view.couples, view.held_pis, fault, options, launch, capture);
 
   SolveTransitionResult out;
   out.result = solve_result_name(result);

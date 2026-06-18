@@ -27,6 +27,7 @@ from faultflow.runner.progressive_atpg import (
     pattern_key,
 )
 from faultflow.runner.runner import RunnerError
+from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.protocol import serialize_vector
 from faultflow.scan.site_resolution import build_site_key_index, fault_type_to_sa_code
@@ -195,6 +196,25 @@ def _materialize_reduced_outputs(
     return materialized
 
 
+def _derive_loc_capture(
+    materialized_launch: dict[str, bool],
+    launch_vector: dict[str, bool],
+    pseudo_port_map: dict[str, dict[str, Any]],
+) -> dict[str, bool]:
+    """LOC capture vector V2 over reduced PIs: each scan FF's capture-frame PPI
+    is its launch-frame PPO (next-state); real PIs are held from V1."""
+    capture = {
+        name: bool(value)
+        for name, value in launch_vector.items()
+        if not str(name).startswith(PPI_PREFIX) and not str(name).startswith(PPO_PREFIX)
+    }
+    for entry in pseudo_port_map.values():
+        capture[str(entry["ppi_port"])] = bool(
+            materialized_launch.get(str(entry["ppo_port"]), False)
+        )
+    return capture
+
+
 def _process_scan_candidate(
     core: Any,
     conn: sqlite3.Connection,
@@ -215,10 +235,17 @@ def _process_scan_candidate(
     active_rows: list[_FaultRow],
     generic_site_index: dict[str, int],
     unsupported: str,
+    transition: bool = False,
 ) -> tuple[bool, bool]:
-    """Return (accepted, protocol_no_progress)."""
+    """Return (accepted, protocol_no_progress).
+
+    `vector` is the launch state V1 (over reduced PIs). For transition (LOC) the
+    capture vector V2 is functionally derived from V1 (capture PPI = launch PPO,
+    real PIs held); the reduced-view expectation, scan-pattern unload, and golden
+    gate use the frame-1 (V2) materialization, and grading runs two captures.
+    """
     pattern_key_str = pattern_key(vector, input_order)
-    materialized_vector = _materialize_reduced_outputs(
+    materialized_launch = _materialize_reduced_outputs(
         core,
         reduced_json_path,
         reduced_cell_map,
@@ -228,8 +255,38 @@ def _process_scan_candidate(
         scan_ctx.pseudo_port_map,
         unsupported,
     )
+    if transition:
+        capture_vector = _derive_loc_capture(
+            materialized_launch, vector, scan_ctx.pseudo_port_map
+        )
+        # Frame-1 outputs: PPO unload + functional PO response after the launch.
+        reduced_expectation = _materialize_reduced_outputs(
+            core,
+            reduced_json_path,
+            reduced_cell_map,
+            capture_vector,
+            input_order,
+            scan_ctx.functional_output_order,
+            scan_ctx.pseudo_port_map,
+            unsupported,
+        )
+        # serialize: load from V1's PPIs, unload-expectation from V2's PPOs.
+        serialize_input = dict(vector)
+        for entry in scan_ctx.pseudo_port_map.values():
+            serialize_input[str(entry["ppo_port"])] = bool(
+                reduced_expectation.get(str(entry["ppo_port"]), False)
+            )
+        vector_pattern = pattern_key(capture_vector, input_order)
+        launch_pattern = pattern_key_str
+    else:
+        capture_vector = {}
+        reduced_expectation = materialized_launch
+        serialize_input = materialized_launch
+        vector_pattern = pattern_key_str
+        launch_pattern = ""
+
     scan_pattern = serialize_vector(
-        materialized_vector,
+        serialize_input,
         scan_ctx.pseudo_port_map,
         scan_ctx.manifest,
     )
@@ -250,8 +307,9 @@ def _process_scan_candidate(
             scan_ctx.manifest,
             scan_ctx.generic_json,
             scan_pattern,
-            reduced_vector=materialized_vector,
+            reduced_vector=reduced_expectation,
             functional_output_order=scan_ctx.functional_output_order,
+            loc_two_capture=transition,
         )
     except Exception as exc:
         conn.execute(
@@ -276,14 +334,26 @@ def _process_scan_candidate(
     reduced_view_rejections: list[CandidateRejection] = []
 
     if source == "sat" and sat_target_fault_id is not None:
-        if not core.verify_fault_candidate(
-            reduced_json_path,
-            reduced_cell_map,
-            db_path,
-            sat_target_fault_id,
-            vector,
-            unsupported,
-        ):
+        if transition:
+            reduced_detected = core.verify_transition_candidate(
+                reduced_json_path,
+                reduced_cell_map,
+                db_path,
+                sat_target_fault_id,
+                vector,
+                capture_vector,
+                unsupported,
+            )
+        else:
+            reduced_detected = core.verify_fault_candidate(
+                reduced_json_path,
+                reduced_cell_map,
+                db_path,
+                sat_target_fault_id,
+                vector,
+                unsupported,
+            )
+        if not reduced_detected:
             reduced_view_rejections.append(
                 CandidateRejection(sat_target_fault_id, "tier_a_reduced_mismatch")
             )
@@ -302,17 +372,31 @@ def _process_scan_candidate(
             return False, True
 
     active_ids = [row.fault_id for row in active_rows]
-    tentative = list(
-        core.simulate_tentative(
-            reduced_json_path,
-            reduced_cell_map,
-            db_path,
-            vector,
-            input_order,
-            active_ids,
-            unsupported,
+    if transition:
+        tentative = list(
+            core.simulate_transition_tentative(
+                reduced_json_path,
+                reduced_cell_map,
+                db_path,
+                vector,
+                capture_vector,
+                input_order,
+                active_ids,
+                unsupported,
+            )
         )
-    )
+    else:
+        tentative = list(
+            core.simulate_tentative(
+                reduced_json_path,
+                reduced_cell_map,
+                db_path,
+                vector,
+                input_order,
+                active_ids,
+                unsupported,
+            )
+        )
     protocol_sim_fault_ids = sorted(
         set(tentative)
         | set(_active_q_stem_fault_ids(active_rows, scan_ctx.q_stem_site_keys))
@@ -363,6 +447,7 @@ def _process_scan_candidate(
             generic_cell_map,
             faults=protocol_fault_specs,
             unsupported_policy=unsupported,
+            loc_two_capture=transition,
             **protocol_fault_sim_kwargs,
         )
     )
@@ -406,7 +491,8 @@ def _process_scan_candidate(
         run_id=run_id,
         source="scan_native_sat_atpg",
         vector_index=vector_index,
-        pattern=pattern_key_str,
+        pattern=vector_pattern,
+        launch_pattern=launch_pattern,
     )
     commit = CandidateCommit(
         status="accepted",
@@ -443,6 +529,7 @@ def run_progressive_scan_atpg(
     db_path: Path | None = None,
     cell_map_path: Path | None = None,
     vector_source: str = "scan_native_sat_atpg",
+    transition: bool = False,
 ) -> tuple[VectorSet, AtpgStats, int, float, float]:
     from faultflow.runner.runner import _load_core, _port_names
 
@@ -593,6 +680,7 @@ def run_progressive_scan_atpg(
                     active_rows=active_rows,
                     generic_site_index=generic_site_index,
                     unsupported=unsupported,
+                    transition=transition,
                 )
             fault_sim_seconds += time.perf_counter() - sim_started
             if accepted:
@@ -618,23 +706,39 @@ def run_progressive_scan_atpg(
                 db_blocked.get(fault_id, set()) | rejected_patterns.get(fault_id, set())
             )
             solve_started = time.perf_counter()
-            solved = dict(
-                core.solve_fault_atpg(
-                    reduced_json_path,
-                    reduced_cell_map,
-                    effective_db_path,
-                    fault_id,
-                    blocked,
-                    cfg.atpg.sat_conflict_limit,
-                    cfg.atpg.sat_timeout_seconds,
-                    unsupported,
+            if transition:
+                solved = dict(
+                    core.solve_scan_transition_fault_atpg(
+                        reduced_json_path,
+                        reduced_cell_map,
+                        effective_db_path,
+                        fault_id,
+                        blocked,
+                        cfg.atpg.sat_conflict_limit,
+                        cfg.atpg.sat_timeout_seconds,
+                        unsupported,
+                    )
                 )
-            )
+            else:
+                solved = dict(
+                    core.solve_fault_atpg(
+                        reduced_json_path,
+                        reduced_cell_map,
+                        effective_db_path,
+                        fault_id,
+                        blocked,
+                        cfg.atpg.sat_conflict_limit,
+                        cfg.atpg.sat_timeout_seconds,
+                        unsupported,
+                    )
+                )
             atpg_seconds += time.perf_counter() - solve_started
             result = str(solved["result"])
             if result == "SAT":
                 stats.sat += 1
-                candidate = dict(solved["vector"])
+                # Transition SAT returns launch/capture; the launch (V1) is the
+                # candidate, and V2 is re-derived inside the candidate processor.
+                candidate = dict(solved["launch"] if transition else solved["vector"])
                 stats.generated_vectors += 1
                 key = pattern_key(candidate, input_order)
                 if key in seen_patterns:
@@ -665,6 +769,7 @@ def run_progressive_scan_atpg(
                         active_rows=active_rows,
                         generic_site_index=generic_site_index,
                         unsupported=unsupported,
+                        transition=transition,
                     )
                 fault_sim_seconds += time.perf_counter() - sim_started
                 if accepted:

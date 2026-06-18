@@ -285,6 +285,7 @@ def run_progressive_native_atpg(
             db_path=db_path,
             cell_map_path=cell_map_path,
             vector_source=vector_source,
+            transition=cfg.fault_model.model == "transition",
         )
 
     del scan_ctx

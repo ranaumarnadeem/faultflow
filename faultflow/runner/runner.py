@@ -48,6 +48,7 @@ from faultflow.scan import (
     run_scan_techmap,
     run_scan_techmap_json,
 )
+from faultflow.rule_check.model import RuleCheckReport
 from faultflow.scan.checks import check_scan_structure
 from faultflow.scan.atpg_view import build_scan_atpg_view
 from faultflow.scan.cell_map import resolve_scan_cell_map
@@ -931,6 +932,39 @@ class Runner:
             f"vectors={normal_mode.get('vector_count') if normal_mode else 0}"
             f"{tech_note} manifest={manifest_path}"
         )
+
+    def rule_check(self, *, strict: bool = False) -> RuleCheckReport:
+        """Run the DFT structural rule set on the synthesized netlist (and the
+        scan manifest if present). Standalone: never auto-triggers, never runs
+        Yosys; the JSON netlist must already exist."""
+        from faultflow.rule_check.report import write_reports as write_rule_reports
+        from faultflow.rule_check.rules import run_rule_check
+
+        t0 = time.perf_counter()
+        log.info("rule_check  running DFT rules (top=%s) ...", self.cfg.top)
+        self.cfg.ensure_workspace()
+        netlist = self._existing_json_netlist()
+        if netlist is None:
+            raise RunnerError(
+                "rule_check needs a synthesized JSON netlist; run `sim` or "
+                "`synth` first"
+            )
+        manifest = None
+        manifest_path = self._scan_manifest_path()
+        if manifest_path.exists():
+            manifest = load_manifest(manifest_path)
+        report = run_rule_check(netlist, self.cfg.cell_lib, self.cfg.top, manifest)
+        txt_path = self.cfg.output_dir / "rule_check.rpt"
+        json_path = self.cfg.output_dir / "rule_check.json"
+        write_rule_reports(report, txt_path, json_path, strict=strict)
+        log.info(
+            "rule_check  %s  errors=%d warnings=%d  %.1fs",
+            "PASS" if report.passed(strict=strict) else "FAIL",
+            len(report.errors),
+            len(report.warnings),
+            time.perf_counter() - t0,
+        )
+        return report
 
     def _find_bench_sidecar(self) -> tuple[Path, list[str]]:
         candidates = [

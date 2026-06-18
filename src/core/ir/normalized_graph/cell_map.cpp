@@ -168,6 +168,9 @@ CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node)
   if (node.contains("ff")) {
     entry.ff = parse_ff_metadata(node.at("ff"));
   }
+  if (node.contains("delay")) {
+    entry.delay = node.at("delay").get<double>();
+  }
   if (entry.node_type == NodeType::FF && !entry.ff.present) {
     throw ParseError("FF cell map entry missing ff metadata: " + pattern);
   }
@@ -217,6 +220,15 @@ std::optional<CellMapEntry> CellMap::lookup(
     }
   }
   return std::nullopt;
+}
+
+std::optional<double> CellMap::delay_for(
+    const std::string& raw_cell_type) const {
+  const auto entry = lookup(raw_cell_type);
+  if (!entry) {
+    return std::nullopt;
+  }
+  return entry->delay;
 }
 
 GateType lookup_gate_type(const CellMap& map, const std::string& raw) {

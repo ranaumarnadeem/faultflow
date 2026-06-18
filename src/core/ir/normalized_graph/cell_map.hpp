@@ -38,6 +38,11 @@ struct CellMapEntry {
   std::map<std::string, std::string> outputs;
   CellFFMetadata ff;
   bool unsupported = false;
+  // Optional metadata-only nominal cell delay (e.g. ns). Read ONLY for
+  // transition at-speed-relevance annotation/reporting — NEVER consumed by
+  // gate-eval, normalization, or the SAT/CNF path (Policy: JSON is not
+  // authoritative for logic semantics).
+  std::optional<double> delay;
 };
 
 class CellMap {
@@ -45,6 +50,10 @@ class CellMap {
   static CellMap load(const std::string& path);
 
   std::optional<CellMapEntry> lookup(const std::string& raw_cell_type) const;
+
+  // Nominal delay metadata for a raw cell type, or nullopt if the cell is
+  // unknown or carries no delay field. Reporting-only.
+  std::optional<double> delay_for(const std::string& raw_cell_type) const;
 
  private:
   std::vector<std::pair<std::string, CellMapEntry>> patterns_;

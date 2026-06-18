@@ -376,6 +376,22 @@ py::dict solve_transition_fault_atpg(
   return out;
 }
 
+py::dict solve_scan_transition_fault_atpg(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::vector<std::string>& blocked_patterns, int conflict_limit,
+    int sat_timeout_seconds, const std::string& unsupported_policy) {
+  const atpg::SolveTransitionResult result =
+      atpg::solve_scan_transition_fault_for_db(
+          json_path, cell_map_path, db_path, fault_id, blocked_patterns,
+          conflict_limit, sat_timeout_seconds, unsupported_policy);
+  py::dict out;
+  out["result"] = result.result;
+  out["launch"] = result.launch;
+  out["capture"] = result.capture;
+  return out;
+}
+
 bool verify_transition_candidate(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
@@ -500,7 +516,7 @@ py::dict simulate_scan_pattern_py(
     int max_chain_length,
     const std::map<int, std::vector<bool>>& load_seqs,
     const std::map<std::string, bool>& capture_pi_values,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy, bool loc_two_capture) {
   scan::ScanPatternRequest request;
   request.clock_port = clock_port;
   request.scan_enable_port = scan_enable_port;
@@ -510,6 +526,7 @@ py::dict simulate_scan_pattern_py(
   request.max_chain_length = max_chain_length;
   request.load_seqs = load_seqs;
   request.capture_pi_values = capture_pi_values;
+  request.loc_two_capture = loc_two_capture;
   const scan::ScanPatternResult result = scan::simulate_scan_pattern(
       json_path, cell_map_path, request, unsupported_policy);
   py::dict out;
@@ -532,7 +549,7 @@ py::dict simulate_scan_protocol_faults_py(
     const std::map<int, std::vector<bool>>& load_seqs,
     const std::map<std::string, bool>& capture_pi_values,
     const std::vector<std::pair<uint32_t, uint8_t>>& faults,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy, bool loc_two_capture) {
   scan::ScanProtocolFaultRequest request;
   request.pattern.clock_port = clock_port;
   request.pattern.scan_enable_port = scan_enable_port;
@@ -542,6 +559,7 @@ py::dict simulate_scan_protocol_faults_py(
   request.pattern.max_chain_length = max_chain_length;
   request.pattern.load_seqs = load_seqs;
   request.pattern.capture_pi_values = capture_pi_values;
+  request.pattern.loc_two_capture = loc_two_capture;
   request.faults.reserve(faults.size());
   for (const auto& [net_index, fault_type] : faults) {
     scan::ScanProtocolFaultSpec spec;
@@ -655,6 +673,12 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("fault_id"), py::arg("blocked_patterns"),
         py::arg("conflict_limit") = 100000, py::arg("sat_timeout_seconds") = 10,
         py::arg("unsupported_policy") = "fail");
+  m.def("solve_scan_transition_fault_atpg",
+        &faultflow::solve_scan_transition_fault_atpg, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("db_path"), py::arg("fault_id"),
+        py::arg("blocked_patterns"), py::arg("conflict_limit") = 100000,
+        py::arg("sat_timeout_seconds") = 10,
+        py::arg("unsupported_policy") = "fail");
   m.def("verify_transition_candidate", &faultflow::verify_transition_candidate,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("launch"), py::arg("capture"),
@@ -698,7 +722,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("scan_enable_port"), py::arg("scan_input_ports"),
         py::arg("scan_output_ports"), py::arg("functional_output_ports"),
         py::arg("max_chain_length"), py::arg("load_seqs"),
-        py::arg("capture_pi_values"), py::arg("unsupported_policy") = "fail");
+        py::arg("capture_pi_values"), py::arg("unsupported_policy") = "fail",
+        py::arg("loc_two_capture") = false);
   m.def("simulate_scan_protocol_faults",
         &faultflow::simulate_scan_protocol_faults_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("clock_port"),
@@ -706,7 +731,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("scan_output_ports"), py::arg("functional_output_ports"),
         py::arg("max_chain_length"), py::arg("load_seqs"),
         py::arg("capture_pi_values"), py::arg("faults"),
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("loc_two_capture") = false);
   m.def("list_site_keys", &faultflow::list_site_keys_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail");
 }

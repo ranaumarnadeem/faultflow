@@ -3,6 +3,7 @@
 #include <cadical.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <stdexcept>
 #include <vector>
 
@@ -162,12 +163,28 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
   return SatSolveResult::SAT;
 }
 
-SatSolveResult solve_transition_fault(const CompiledSimGraph& cg,
-                                      const std::vector<AtpgPiInfo>& pis,
-                                      const CompactFault& fault,
-                                      const SatSolveOptions& options,
-                                      std::map<std::string, bool>& v1_out,
-                                      std::map<std::string, bool>& v2_out) {
+namespace {
+
+// Installs the launch<->capture PI coupling clauses for a two-frame transition
+// CNF. Invoked after the per-PI capture good==faulty equivs are added. Broadside
+// uses a no-op (launch and capture PIs independent); scan LOC couples each
+// capture PPI to its launch PPO and holds the real PIs.
+using PiCoupler = std::function<void(CaDiCaL::Solver&, const std::vector<int>&,
+                                     CnfVarMap&)>;
+
+// Shared two-frame transition CNF: three net-variable copies (launch good,
+// capture good, capture faulty), the transition edge requirement + capture
+// stuck-at force at the fault net, and the capture good-vs-faulty miter over the
+// observable set. The only thing that varies between broadside and scan LOC is
+// `couple_pis`; everything else is identical.
+SatSolveResult solve_two_frame_transition(const CompiledSimGraph& cg,
+                                          const std::vector<AtpgPiInfo>& pis,
+                                          const CompactFault& fault,
+                                          const SatSolveOptions& options,
+                                          const PiCoupler& couple_pis,
+                                          bool launch_only_blocking,
+                                          std::map<std::string, bool>& v1_out,
+                                          std::map<std::string, bool>& v2_out) {
   // vars.free_vars / vars.faulty_vars are the CAPTURE-frame (frame 1) good and
   // faulty copies. Allocate a third copy for the LAUNCH frame (frame 0) good
   // machine; the launch frame needs no faulty copy because the fault is only
@@ -208,9 +225,7 @@ SatSolveResult solve_transition_fault(const CompiledSimGraph& cg,
     }
   }
 
-  // Capture-frame PIs: good == faulty everywhere except the fault net. Launch
-  // PIs are independent (broadside two-pattern): V1 and V2 are unconstrained
-  // relative to each other.
+  // Capture-frame PIs: good == faulty everywhere except the fault net.
   std::vector<int> launch_pi_literals;
   std::vector<int> capture_pi_literals;
   launch_pi_literals.reserve(pis.size());
@@ -224,15 +239,23 @@ SatSolveResult solve_transition_fault(const CompiledSimGraph& cg,
     }
   }
 
-  std::vector<int> combined_pi_literals = launch_pi_literals;
-  combined_pi_literals.insert(combined_pi_literals.end(),
-                              capture_pi_literals.begin(),
-                              capture_pi_literals.end());
+  // Launch<->capture PI coupling: broadside = none (independent); scan LOC =
+  // capture PPI == launch PPO + held real PIs.
+  couple_pis(solver, launch_vars, vars);
+
+  // Broadside blocks the combined V1||V2 pair (length 2N); scan LOC blocks the
+  // launch only (length N) because V2 is functionally derived from V1, so a new
+  // launch is the only way to a new pair.
+  std::vector<int> block_literals = launch_pi_literals;
+  if (!launch_only_blocking) {
+    block_literals.insert(block_literals.end(), capture_pi_literals.begin(),
+                          capture_pi_literals.end());
+  }
   for (const std::string& blocked : options.blocked_patterns) {
-    if (blocked.size() != combined_pi_literals.size()) {
+    if (blocked.size() != block_literals.size()) {
       throw std::runtime_error("blocked pattern length mismatch");
     }
-    add_blocking_clause(solver, combined_pi_literals,
+    add_blocking_clause(solver, block_literals,
                         assignment_from_pattern(blocked));
   }
 
@@ -277,6 +300,53 @@ SatSolveResult solve_transition_fault(const CompiledSimGraph& cg,
     v2_out[pi.name] = solver.val(vars.free_vars.at(pi.compiled)) > 0;
   }
   return SatSolveResult::SAT;
+}
+
+}  // namespace
+
+SatSolveResult solve_transition_fault(const CompiledSimGraph& cg,
+                                      const std::vector<AtpgPiInfo>& pis,
+                                      const CompactFault& fault,
+                                      const SatSolveOptions& options,
+                                      std::map<std::string, bool>& v1_out,
+                                      std::map<std::string, bool>& v2_out) {
+  // Broadside two-pattern: launch and capture PIs are independent, so no extra
+  // coupling beyond the shared good==faulty capture equivs.
+  const PiCoupler no_coupling =
+      [](CaDiCaL::Solver&, const std::vector<int>&, CnfVarMap&) {};
+  return solve_two_frame_transition(cg, pis, fault, options, no_coupling,
+                                    /*launch_only_blocking=*/false, v1_out,
+                                    v2_out);
+}
+
+SatSolveResult solve_scan_transition_fault(
+    const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
+    const std::vector<LocCouple>& couples,
+    const std::vector<uint32_t>& held_pi_compiled, const CompactFault& fault,
+    const SatSolveOptions& options, std::map<std::string, bool>& v1_out,
+    std::map<std::string, bool>& v2_out) {
+  const PiCoupler loc_coupling = [&](CaDiCaL::Solver& solver,
+                                     const std::vector<int>& launch_vars,
+                                     CnfVarMap& vars) {
+    // Per scan FF: capture-frame current state (PPI) == launch-frame next-state
+    // (PPO). This is the LOC functional-launch derivation V2 = f(V1). It is
+    // installed on the GOOD capture machine even when the PPI is the fault net
+    // (the faulty copy is independently forced to the stuck value).
+    for (const LocCouple& c : couples) {
+      add_equiv(solver, vars.free_vars.at(c.ppi_compiled),
+                launch_vars.at(c.ppo_compiled));
+    }
+    // Real PIs hold launch->capture (single-clock LOC convention).
+    for (uint32_t held : held_pi_compiled) {
+      add_equiv(solver, vars.free_vars.at(held), launch_vars.at(held));
+    }
+  };
+  // V2 is functionally derived from V1, so blocking the launch (V1) alone is
+  // sufficient to force a new pair: launch-only N-bit blocked keys, matching the
+  // stuck-at scan path's pattern_key handling.
+  return solve_two_frame_transition(cg, pis, fault, options, loc_coupling,
+                                    /*launch_only_blocking=*/true, v1_out,
+                                    v2_out);
 }
 
 }  // namespace faultflow::atpg

@@ -23,6 +23,7 @@ from faultflow.service.models import (
     NetlistWriteResult,
     OperationResult,
     ReportResult,
+    RuleCheckResult,
     ScanCheckResult,
     ScanInsertionResult,
     Scalar,
@@ -125,6 +126,25 @@ class FlowService:
         log.info("check  start  top=%s", cfg.top)
         message = str(self._runner(cfg).scan_check(**options))
         return ScanCheckResult("scan-check", cfg.top, message)
+
+    def rule_check(
+        self, cfg: FaultflowConfig, *, strict: bool = False
+    ) -> RuleCheckResult:
+        log.info("rule_check  start  top=%s", cfg.top)
+        from faultflow.rule_check.report import format_text
+
+        report = self._runner(cfg).rule_check(strict=strict)
+        txt = cfg.output_dir / "rule_check.rpt"
+        message = format_text(report, strict=strict).rstrip("\n") + f"\nreport: {txt}"
+        return RuleCheckResult(
+            "rule_check",
+            cfg.top,
+            message,
+            artifacts={"rule_check": txt},
+            passed=report.passed(strict=strict),
+            error_count=len(report.errors),
+            warning_count=len(report.warnings),
+        )
 
     def regenerate_scan_techmap(self, cfg: FaultflowConfig) -> OperationResult:
         log.info("techmap  start  top=%s", cfg.top)
