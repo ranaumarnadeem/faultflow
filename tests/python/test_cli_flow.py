@@ -86,6 +86,51 @@ def test_init_rejects_fingerprint_mismatch_by_field(
     assert "--clean" in err
 
 
+def test_sim_model_override_selects_transition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg_path = tmp_path / "config.ofs"
+    _config(cfg_path)
+    import faultflow.cli as cli_mod
+
+    captured: dict[str, str] = {}
+
+    def fake_run_atpg(_self: object, cfg: object, **_kwargs: object) -> object:
+        captured["model"] = cfg.fault_model.model  # type: ignore[attr-defined]
+        return SimpleNamespace(message="ok")
+
+    monkeypatch.setattr(cli_mod.FlowService, "run_atpg", fake_run_atpg)
+
+    assert (
+        main(["sim", "--top", "demo", "-c", str(cfg_path), "--model", "transition"])
+        == 0
+    )
+    assert captured["model"] == "transition"
+
+    # No flag -> config default (stuck_at).
+    assert main(["sim", "--top", "demo", "-c", str(cfg_path)]) == 0
+    assert captured["model"] == "stuck_at"
+
+
+def test_sim_model_transition_rejects_collapsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg_path = tmp_path / "config.ofs"
+    _config(cfg_path)
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8").replace(
+            "collapsing = false", "collapsing = true"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main(["sim", "--top", "demo", "-c", str(cfg_path), "--model", "transition"])
+    assert exc.value.code == 2
+
+
 def test_sim_requires_cpp_extension(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1,4 +1,7 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+
+#include <vector>
 
 #include "common/errors.hpp"
 #include "helpers/test_helpers.hpp"
@@ -21,6 +24,29 @@ TEST_CASE("lookup_gate_type Sky130", "[normalized_graph]") {
   REQUIRE(lookup_gate_type(map, "sky130_fd_sc_hd__inv_1") == GateType::INV);
   REQUIRE(lookup_gate_type(map, "sky130_fd_sc_hd__clkbuf_1") == GateType::BUF);
   REQUIRE(lookup_gate_type(map, "sky130_fd_sc_hd__o21ai_1") == GateType::O21AI);
+}
+
+TEST_CASE("CellMap delay metadata round-trips but is not authoritative",
+          "[normalized_graph][timing]") {
+  const CellMap map = CellMap::load(test::cell_map_path());
+
+  // Cells that carry a `delay` field expose it (reporting-only metadata).
+  const auto inv_delay = map.delay_for("sky130_fd_sc_hd__inv_1");
+  REQUIRE(inv_delay.has_value());
+  REQUIRE(inv_delay.value() == Catch::Approx(0.036));
+  REQUIRE(map.delay_for("sky130_fd_sc_hd__nand2_1").has_value());
+
+  // Cells without a delay field, and unknown cells, report nullopt.
+  REQUIRE_FALSE(map.delay_for("sky130_fd_sc_hd__buf_1").has_value());
+  REQUIRE_FALSE(map.delay_for("not_a_real_cell").has_value());
+
+  // The delay field NEVER changes logic semantics: gate type is unaffected.
+  REQUIRE(lookup_gate_type(map, "sky130_fd_sc_hd__inv_1") == GateType::INV);
+  REQUIRE(lookup_gate_type(map, "sky130_fd_sc_hd__nand2_1") == GateType::NAND2);
+  const auto inv = map.lookup("sky130_fd_sc_hd__inv_1");
+  REQUIRE(inv.has_value());
+  REQUIRE(inv->gate_type == GateType::INV);
+  REQUIRE(inv->inputs == std::vector<std::string>{"A"});
 }
 
 TEST_CASE("NormalizedGraph c17 levelization", "[normalized_graph]") {
