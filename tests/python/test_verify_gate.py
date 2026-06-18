@@ -360,6 +360,61 @@ endmodule
     assert cpp_result == iverilog_result.expected_outputs == [{"Q": True}]
 
 
+def test_build_transition_sequential_steps() -> None:
+    from faultflow.verify.gate import build_transition_sequential_steps
+
+    pairs = [({"a": False, "b": True}, {"a": True, "b": True})]
+    steps = build_transition_sequential_steps(pairs, ["a", "b"])
+    assert len(steps) == 1 and len(steps[0]) == 2
+    # Step 0 drives V1 and does NOT sample; step 1 drives V2 and samples.
+    assert steps[0][0].cycle.sample_outputs is False
+    assert steps[0][0].inputs == {"a": False, "b": True}
+    assert steps[0][1].cycle.sample_outputs is True
+    assert steps[0][1].inputs == {"a": True, "b": True}
+    assert steps[0][0].cycle.clock_edge == "NONE"
+
+
+def test_transition_iverilog_gate_two_frame_matches_core(tmp_path: Path) -> None:
+    from faultflow.verify.gate import build_transition_sequential_steps
+
+    core = runner_mod._load_core()
+    assert core is not None
+
+    gate = tmp_path / "tiny_xor2.v"
+    gate.write_text(
+        """
+module tiny_xor2(input A, input B, output Y);
+  sky130_fd_sc_hd__xor2_1 u0(.A(A), .B(B), .X(Y));
+endmodule
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    # Launch V1 -> Y=0; capture V2 -> Y=1. The combinational output settles to
+    # the V2 (frame-1) response, which the gate samples.
+    v1 = {"A": False, "B": False}
+    v2 = {"A": False, "B": True}
+    captures = VectorSet(source="tiny_xor2.trans", input_order=["A", "B"], vectors=[v2])
+    steps = build_transition_sequential_steps([(v1, v2)], ["A", "B"])
+    verifier = IverilogVerifier(
+        top="tiny_xor2",
+        work_dir=tmp_path / "verify",
+        gate_verilog=gate,
+        verilog_models=[Path("cells/sky130/sky130_fd_sc_hd.v")],
+    )
+
+    iverilog_result = verifier.run(["A", "B"], ["Y"], captures, steps)
+    cpp_result = core.fault_free_sequence_outputs(
+        "tests/cpp/fixtures/tiny_xor2.json",
+        "cells/sky130/sky130_fd_sc_hd.json",
+        [[v1, v2]],
+        ["A", "B"],
+        ["Y"],
+        "fail",
+    )
+
+    assert cpp_result == iverilog_result.expected_outputs == [{"Y": True}]
+
+
 def test_runner_verification_failure_aborts_before_sim(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

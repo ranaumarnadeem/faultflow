@@ -23,6 +23,12 @@ struct ScanPatternRequest {
   // so the response is a two-frame transition rather than a single stuck-at
   // capture. Functional POs are sampled at the capture (frame 1) pulse.
   bool loc_two_capture = false;
+  // Launch-on-shift transition protocol. When true, the fault-free LAUNCH is the
+  // last scan shift (scan_enable asserted, one extra shift feeding the per-chain
+  // launch scan-in bit) rather than a functional clock. Mutually exclusive with
+  // loc_two_capture.
+  bool los_two_capture = false;
+  std::map<int, bool> los_launch_scan_in;  // chain_id -> launch-shift scan-in bit
 };
 
 struct ScanPatternResult {

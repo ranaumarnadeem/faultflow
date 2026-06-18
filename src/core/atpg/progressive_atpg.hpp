@@ -125,4 +125,17 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy);
 
+// ---- Transition model (scan launch-on-shift) -------------------------------
+// LOS couples (capture PPI == launch predecessor PPI) and chain-head PPIs (free
+// scan-in bits) come from the Python chain order, so they are passed in as
+// `__ppi_*` PORT-NAME lists: `couple_ports[i] = (capture_ppi, predecessor_ppi)`
+// and `head_ppi_ports`. Held real PIs = all non-`__ppi_` inputs (derived here).
+SolveTransitionResult solve_scan_los_transition_fault_for_db(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::vector<std::pair<std::string, std::string>>& couple_ports,
+    const std::vector<std::string>& head_ppi_ports,
+    const std::vector<std::string>& blocked_patterns, int conflict_limit,
+    int sat_timeout_seconds, const std::string& unsupported_policy);
+
 }  // namespace faultflow::atpg

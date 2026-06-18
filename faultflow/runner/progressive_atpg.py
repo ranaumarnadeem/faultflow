@@ -61,6 +61,9 @@ def redundancy_model_id(fp: dict[str, Any]) -> str:
             # under stuck-at need not be redundant under transition, so the model
             # is part of the redundancy fingerprint.
             str(fp.get("fault_model", "stuck_at")),
+            # Launch mode too: an LOC-redundant fault may be LOS-testable (the
+            # extra free scan-in head bit), so loc/los redundancy must not alias.
+            str(fp.get("launch", "loc")),
         ]
     )
 
@@ -286,6 +289,7 @@ def run_progressive_native_atpg(
             cell_map_path=cell_map_path,
             vector_source=vector_source,
             transition=cfg.fault_model.model == "transition",
+            launch_mode=cfg.fault_model.launch,
         )
 
     del scan_ctx

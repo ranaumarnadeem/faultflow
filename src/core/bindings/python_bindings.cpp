@@ -392,6 +392,25 @@ py::dict solve_scan_transition_fault_atpg(
   return out;
 }
 
+py::dict solve_scan_los_transition_fault_atpg(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::vector<std::pair<std::string, std::string>>& couple_ports,
+    const std::vector<std::string>& head_ppi_ports,
+    const std::vector<std::string>& blocked_patterns, int conflict_limit,
+    int sat_timeout_seconds, const std::string& unsupported_policy) {
+  const atpg::SolveTransitionResult result =
+      atpg::solve_scan_los_transition_fault_for_db(
+          json_path, cell_map_path, db_path, fault_id, couple_ports,
+          head_ppi_ports, blocked_patterns, conflict_limit, sat_timeout_seconds,
+          unsupported_policy);
+  py::dict out;
+  out["result"] = result.result;
+  out["launch"] = result.launch;
+  out["capture"] = result.capture;
+  return out;
+}
+
 bool verify_transition_candidate(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
@@ -459,6 +478,23 @@ py::list compaction_detections_py(
   return out;
 }
 
+py::list compaction_pair_detections_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, const std::map<std::string, bool>& launch,
+    const std::map<std::string, bool>& capture,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids,
+    const std::string& unsupported_policy) {
+  const std::vector<int64_t> detected = atpg::detect_with_pair_unfiltered(
+      json_path, cell_map_path, db_path, launch, capture, input_order, fault_ids,
+      unsupported_policy);
+  py::list out;
+  for (int64_t fault_id : detected) {
+    out.append(fault_id);
+  }
+  return out;
+}
+
 void invalidate_stale_redundant_py(const std::string& db_path,
                                    int64_t campaign_id,
                                    const std::string& redundancy_model_id) {
@@ -516,7 +552,9 @@ py::dict simulate_scan_pattern_py(
     int max_chain_length,
     const std::map<int, std::vector<bool>>& load_seqs,
     const std::map<std::string, bool>& capture_pi_values,
-    const std::string& unsupported_policy, bool loc_two_capture) {
+    const std::string& unsupported_policy, bool loc_two_capture,
+    bool los_two_capture,
+    const std::map<int, bool>& los_launch_scan_in) {
   scan::ScanPatternRequest request;
   request.clock_port = clock_port;
   request.scan_enable_port = scan_enable_port;
@@ -527,6 +565,8 @@ py::dict simulate_scan_pattern_py(
   request.load_seqs = load_seqs;
   request.capture_pi_values = capture_pi_values;
   request.loc_two_capture = loc_two_capture;
+  request.los_two_capture = los_two_capture;
+  request.los_launch_scan_in = los_launch_scan_in;
   const scan::ScanPatternResult result = scan::simulate_scan_pattern(
       json_path, cell_map_path, request, unsupported_policy);
   py::dict out;
@@ -549,7 +589,8 @@ py::dict simulate_scan_protocol_faults_py(
     const std::map<int, std::vector<bool>>& load_seqs,
     const std::map<std::string, bool>& capture_pi_values,
     const std::vector<std::pair<uint32_t, uint8_t>>& faults,
-    const std::string& unsupported_policy, bool loc_two_capture) {
+    const std::string& unsupported_policy, bool loc_two_capture,
+    bool los_two_capture, const std::map<int, bool>& los_launch_scan_in) {
   scan::ScanProtocolFaultRequest request;
   request.pattern.clock_port = clock_port;
   request.pattern.scan_enable_port = scan_enable_port;
@@ -560,6 +601,8 @@ py::dict simulate_scan_protocol_faults_py(
   request.pattern.load_seqs = load_seqs;
   request.pattern.capture_pi_values = capture_pi_values;
   request.pattern.loc_two_capture = loc_two_capture;
+  request.pattern.los_two_capture = los_two_capture;
+  request.pattern.los_launch_scan_in = los_launch_scan_in;
   request.faults.reserve(faults.size());
   for (const auto& [net_index, fault_type] : faults) {
     scan::ScanProtocolFaultSpec spec;
@@ -679,6 +722,13 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("blocked_patterns"), py::arg("conflict_limit") = 100000,
         py::arg("sat_timeout_seconds") = 10,
         py::arg("unsupported_policy") = "fail");
+  m.def("solve_scan_los_transition_fault_atpg",
+        &faultflow::solve_scan_los_transition_fault_atpg, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("db_path"), py::arg("fault_id"),
+        py::arg("couple_ports"), py::arg("head_ppi_ports"),
+        py::arg("blocked_patterns"), py::arg("conflict_limit") = 100000,
+        py::arg("sat_timeout_seconds") = 10,
+        py::arg("unsupported_policy") = "fail");
   m.def("verify_transition_candidate", &faultflow::verify_transition_candidate,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("launch"), py::arg("capture"),
@@ -697,6 +747,11 @@ PYBIND11_MODULE(_faultflow_core, m) {
   m.def("compaction_detections", &faultflow::compaction_detections_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("vector"), py::arg("input_order"), py::arg("fault_ids"),
+        py::arg("unsupported_policy") = "fail");
+  m.def("compaction_pair_detections",
+        &faultflow::compaction_pair_detections_py, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("db_path"), py::arg("launch"),
+        py::arg("capture"), py::arg("input_order"), py::arg("fault_ids"),
         py::arg("unsupported_policy") = "fail");
   m.def("invalidate_stale_redundant", &faultflow::invalidate_stale_redundant_py,
         py::arg("db_path"), py::arg("campaign_id"),
@@ -723,7 +778,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("scan_output_ports"), py::arg("functional_output_ports"),
         py::arg("max_chain_length"), py::arg("load_seqs"),
         py::arg("capture_pi_values"), py::arg("unsupported_policy") = "fail",
-        py::arg("loc_two_capture") = false);
+        py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
+        py::arg("los_launch_scan_in") = std::map<int, bool>{});
   m.def("simulate_scan_protocol_faults",
         &faultflow::simulate_scan_protocol_faults_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("clock_port"),
@@ -732,7 +788,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("max_chain_length"), py::arg("load_seqs"),
         py::arg("capture_pi_values"), py::arg("faults"),
         py::arg("unsupported_policy") = "fail",
-        py::arg("loc_two_capture") = false);
+        py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
+        py::arg("los_launch_scan_in") = std::map<int, bool>{});
   m.def("list_site_keys", &faultflow::list_site_keys_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail");
 }

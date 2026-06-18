@@ -177,14 +177,12 @@ using PiCoupler = std::function<void(CaDiCaL::Solver&, const std::vector<int>&,
 // stuck-at force at the fault net, and the capture good-vs-faulty miter over the
 // observable set. The only thing that varies between broadside and scan LOC is
 // `couple_pis`; everything else is identical.
-SatSolveResult solve_two_frame_transition(const CompiledSimGraph& cg,
-                                          const std::vector<AtpgPiInfo>& pis,
-                                          const CompactFault& fault,
-                                          const SatSolveOptions& options,
-                                          const PiCoupler& couple_pis,
-                                          bool launch_only_blocking,
-                                          std::map<std::string, bool>& v1_out,
-                                          std::map<std::string, bool>& v2_out) {
+SatSolveResult solve_two_frame_transition(
+    const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
+    const CompactFault& fault, const SatSolveOptions& options,
+    const PiCoupler& couple_pis, bool launch_only_blocking,
+    const std::vector<uint32_t>& extra_block_compiled,
+    std::map<std::string, bool>& v1_out, std::map<std::string, bool>& v2_out) {
   // vars.free_vars / vars.faulty_vars are the CAPTURE-frame (frame 1) good and
   // faulty copies. Allocate a third copy for the LAUNCH frame (frame 0) good
   // machine; the launch frame needs no faulty copy because the fault is only
@@ -250,6 +248,13 @@ SatSolveResult solve_two_frame_transition(const CompiledSimGraph& cg,
   if (!launch_only_blocking) {
     block_literals.insert(block_literals.end(), capture_pi_literals.begin(),
                           capture_pi_literals.end());
+  } else {
+    // LOS: V2 = shift(V1) plus the free per-chain head scan-in bits, so the
+    // launch alone is not unique — include the capture-frame head PPI vars.
+    // (Empty for LOC, where V2 is fully derived from V1.)
+    for (uint32_t idx : extra_block_compiled) {
+      block_literals.push_back(vars.free_vars.at(idx));
+    }
   }
   for (const std::string& blocked : options.blocked_patterns) {
     if (blocked.size() != block_literals.size()) {
@@ -315,8 +320,8 @@ SatSolveResult solve_transition_fault(const CompiledSimGraph& cg,
   const PiCoupler no_coupling =
       [](CaDiCaL::Solver&, const std::vector<int>&, CnfVarMap&) {};
   return solve_two_frame_transition(cg, pis, fault, options, no_coupling,
-                                    /*launch_only_blocking=*/false, v1_out,
-                                    v2_out);
+                                    /*launch_only_blocking=*/false,
+                                    /*extra_block_compiled=*/{}, v1_out, v2_out);
 }
 
 SatSolveResult solve_scan_transition_fault(
@@ -345,8 +350,41 @@ SatSolveResult solve_scan_transition_fault(
   // sufficient to force a new pair: launch-only N-bit blocked keys, matching the
   // stuck-at scan path's pattern_key handling.
   return solve_two_frame_transition(cg, pis, fault, options, loc_coupling,
-                                    /*launch_only_blocking=*/true, v1_out,
-                                    v2_out);
+                                    /*launch_only_blocking=*/true,
+                                    /*extra_block_compiled=*/{}, v1_out, v2_out);
+}
+
+SatSolveResult solve_scan_los_transition_fault(
+    const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
+    const std::vector<LosCouple>& couples,
+    const std::vector<uint32_t>& head_ppi_compiled,
+    const std::vector<uint32_t>& held_pi_compiled, const CompactFault& fault,
+    const SatSolveOptions& options, std::map<std::string, bool>& v1_out,
+    std::map<std::string, bool>& v2_out) {
+  const PiCoupler los_coupling = [&](CaDiCaL::Solver& solver,
+                                     const std::vector<int>& launch_vars,
+                                     CnfVarMap& vars) {
+    // Per scan FF: capture-frame current state (PPI) == chain PREDECESSOR's
+    // launch-frame current state (PPI). This is the shift relation V2[ff] =
+    // V1[predecessor(ff)] created by the last scan-shift launch. Installed on the
+    // GOOD capture machine even when the PPI is the fault net (the faulty copy is
+    // independently forced to the stuck value). Chain HEAD PPIs get NO clause —
+    // their capture value is the fresh launch scan-in bit (a free variable).
+    for (const LosCouple& c : couples) {
+      add_equiv(solver, vars.free_vars.at(c.capture_ppi_compiled),
+                launch_vars.at(c.pred_ppi_compiled));
+    }
+    // Real PIs hold launch->capture (one functional capture clock after the
+    // shift).
+    for (uint32_t held : held_pi_compiled) {
+      add_equiv(solver, vars.free_vars.at(held), launch_vars.at(held));
+    }
+  };
+  // V2 = shift(V1) plus the free head scan-in bits, so the blocked key is
+  // launch ‖ head-bits (launch_only_blocking with the head PPIs appended).
+  return solve_two_frame_transition(cg, pis, fault, options, los_coupling,
+                                    /*launch_only_blocking=*/true,
+                                    head_ppi_compiled, v1_out, v2_out);
 }
 
 }  // namespace faultflow::atpg

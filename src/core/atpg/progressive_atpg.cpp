@@ -460,6 +460,80 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
   return out;
 }
 
+SolveTransitionResult solve_scan_los_transition_fault_for_db(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::vector<std::pair<std::string, std::string>>& couple_ports,
+    const std::vector<std::string>& head_ppi_ports,
+    const std::vector<std::string>& blocked_patterns, int conflict_limit,
+    int sat_timeout_seconds, const std::string& unsupported_policy) {
+  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const db::FaultRecord rec = db::load_fault(db_path, fault_id);
+  if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
+      rec.status != FaultStatus::UNDETECTED) {
+    throw std::runtime_error("fault is not active for transition SAT ATPG");
+  }
+  const auto pis = ordered_pis(ctx.parsed, ctx.cg);
+  const ParsedModule& mod = ctx.parsed.top_module();
+  const auto port_compiled = [&](const std::string& port) -> uint32_t {
+    const auto pit = mod.ports.find(port);
+    if (pit == mod.ports.end() || pit->second.bits.size() != 1) {
+      throw std::runtime_error("scan LOS view: bad port " + port);
+    }
+    const auto cit = ctx.cg.yosys_to_compiled.find(pit->second.bits.front());
+    if (cit == ctx.cg.yosys_to_compiled.end()) {
+      throw std::runtime_error("scan LOS view: net not compiled for " + port);
+    }
+    return static_cast<uint32_t>(cit->second);
+  };
+
+  std::vector<LosCouple> couples;
+  couples.reserve(couple_ports.size());
+  for (const auto& [cap, pred] : couple_ports) {
+    couples.push_back({port_compiled(cap), port_compiled(pred)});
+  }
+  std::vector<uint32_t> head_ppi;
+  head_ppi.reserve(head_ppi_ports.size());
+  for (const std::string& h : head_ppi_ports) {
+    head_ppi.push_back(port_compiled(h));
+  }
+  // Held real PIs = every single-bit input port that is not a pseudo-PI.
+  std::vector<uint32_t> held;
+  for (const auto& [name, port] : mod.ports) {
+    if (port.direction != "input" || port.bits.size() != 1) {
+      continue;
+    }
+    if (name.rfind("__ppi_", 0) == 0) {
+      continue;
+    }
+    const auto cit = ctx.cg.yosys_to_compiled.find(port.bits.front());
+    if (cit != ctx.cg.yosys_to_compiled.end()) {
+      held.push_back(static_cast<uint32_t>(cit->second));
+    }
+  }
+
+  CompactFault fault = fault_from_record(rec);
+  fault.model = FaultModel::TRANSITION;
+
+  SatSolveOptions options;
+  options.conflict_limit = conflict_limit;
+  options.sat_timeout_seconds = sat_timeout_seconds;
+  options.blocked_patterns = blocked_patterns;
+
+  std::map<std::string, bool> launch;
+  std::map<std::string, bool> capture;
+  const SatSolveResult result = solve_scan_los_transition_fault(
+      ctx.cg, pis, couples, head_ppi, held, fault, options, launch, capture);
+
+  SolveTransitionResult out;
+  out.result = solve_result_name(result);
+  if (result == SatSolveResult::SAT) {
+    out.launch = std::move(launch);
+    out.capture = std::move(capture);
+  }
+  return out;
+}
+
 bool verify_transition_fault_vector(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,

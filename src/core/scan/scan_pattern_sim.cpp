@@ -56,6 +56,29 @@ void append_launch_pulse(TestVector& vec, const ParsedGraph& parsed,
   vec.cycles.push_back(make_cycle(parsed, clock_port, values, false, false));
 }
 
+void append_launch_shift(TestVector& vec, const ParsedGraph& parsed,
+                         const ScanPatternRequest& request,
+                         std::map<std::string, bool> values) {
+  // LOS launch: ONE extra scan shift with scan_enable ASSERTED, feeding the
+  // fresh launch scan-in bit at each chain head. Fault INACTIVE; sample frame 0
+  // at the inactive clock level so the transition qualifier can read the good
+  // pre-transition value. scan_enable is local to this shift (values is taken by
+  // value), so the capture pulse built from the SE=0 base map still de-asserts.
+  values[request.scan_enable_port] = true;
+  for (size_t chain_id = 0; chain_id < request.scan_input_ports.size();
+       ++chain_id) {
+    const auto it = request.los_launch_scan_in.find(static_cast<int>(chain_id));
+    values[request.scan_input_ports[chain_id]] =
+        it != request.los_launch_scan_in.end() && it->second;
+  }
+  values[request.clock_port] = false;
+  vec.cycles.push_back(
+      make_cycle(parsed, request.clock_port, values, true, false));
+  values[request.clock_port] = true;
+  vec.cycles.push_back(
+      make_cycle(parsed, request.clock_port, values, false, false));
+}
+
 void append_capture_pulse(TestVector& vec, const ParsedGraph& parsed,
                           const std::string& clock_port,
                           std::map<std::string, bool> values) {
@@ -128,8 +151,14 @@ TestVector build_scan_pattern_vector(const ParsedGraph& parsed,
     for (const auto& scan_in : request.scan_input_ports) {
       values[scan_in] = false;
     }
+    if (request.loc_two_capture && request.los_two_capture) {
+      throw std::runtime_error(
+          "loc_two_capture and los_two_capture are mutually exclusive");
+    }
     if (request.loc_two_capture) {
       append_launch_pulse(vec, parsed, request.clock_port, values);
+    } else if (request.los_two_capture) {
+      append_launch_shift(vec, parsed, request, values);
     }
     append_capture_pulse(vec, parsed, request.clock_port, values);
   }
@@ -150,7 +179,8 @@ ScanPatternResult extract_scan_observations(
   }
   // LOC inserts a leading launch sample (frame 0); functional POs and the
   // unload then shift one index later. Non-LOC: functional_idx=0, unload at 1.
-  const int functional_idx = request.loc_two_capture ? 1 : 0;
+  const int functional_idx =
+      (request.loc_two_capture || request.los_two_capture) ? 1 : 0;
   const int unload_start = functional_idx + 1;
   if (static_cast<int>(samples.size()) !=
       request.max_chain_length + unload_start) {
@@ -207,7 +237,8 @@ ScanPatternResult extract_scan_lane_observations(
     const ParsedGraph& parsed, const CompiledSimGraph& cg,
     const ScanPatternRequest& request,
     const std::vector<std::vector<uint64_t>>& samples, int bit) {
-  const int functional_idx = request.loc_two_capture ? 1 : 0;
+  const int functional_idx =
+      (request.loc_two_capture || request.los_two_capture) ? 1 : 0;
   const int unload_start = functional_idx + 1;
   if (static_cast<int>(samples.size()) !=
       request.max_chain_length + unload_start) {
@@ -325,7 +356,8 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
       // as a transition fault if the GOOD machine actually made the required
       // edge at the fault net between the launch (frame 0) and capture (frame 1)
       // samples. samples[0]=launch, samples[1]=capture; bit 0 is the good lane.
-      if (detected && request.pattern.loc_two_capture) {
+      if (detected && (request.pattern.loc_two_capture ||
+                       request.pattern.los_two_capture)) {
         const ScanProtocolFaultSpec& spec = request.faults[fault_idx];
         const auto net = static_cast<size_t>(spec.compiled_net_index);
         const bool launch_good = (batch_samples[0].at(net) & 1ULL) != 0;

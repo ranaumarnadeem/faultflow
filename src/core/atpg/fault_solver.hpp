@@ -73,4 +73,28 @@ SatSolveResult solve_scan_transition_fault(
     const SatSolveOptions& options, std::map<std::string, bool>& v1_out,
     std::map<std::string, bool>& v2_out);
 
+// Couples one scan FF's capture-frame current state (PPI) to its chain
+// PREDECESSOR's launch-frame current state (PPI) in the LOS two-frame CNF — the
+// launch is the last scan shift, so V2[ff] = V1[predecessor(ff)].
+struct LosCouple {
+  uint32_t capture_ppi_compiled = 0;  // member of `pis`
+  uint32_t pred_ppi_compiled = 0;     // member of `pis` (the predecessor)
+};
+
+// Scan launch-on-shift (LOS) two-frame transition-fault ATPG on the reduced scan
+// ATPG view. The launch transition is created by the last scan shift: per scan
+// FF, the capture-frame PPI is forced equal to its chain predecessor's launch
+// PPI (`couples`); each chain HEAD PPI (`head_ppi_compiled`) is left FREE (the
+// fresh launch scan-in bit); every real PI holds launch->capture
+// (`held_pi_compiled`). Because V2 = shift(V1) plus the free head bits, the
+// blocked-pattern key is launch ‖ head-bits (length pis.size() + head count),
+// not launch-only.
+SatSolveResult solve_scan_los_transition_fault(
+    const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
+    const std::vector<LosCouple>& couples,
+    const std::vector<uint32_t>& head_ppi_compiled,
+    const std::vector<uint32_t>& held_pi_compiled, const CompactFault& fault,
+    const SatSolveOptions& options, std::map<std::string, bool>& v1_out,
+    std::map<std::string, bool>& v2_out);
+
 }  // namespace faultflow::atpg

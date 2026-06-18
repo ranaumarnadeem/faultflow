@@ -103,6 +103,29 @@ def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_Faul
     ]
 
 
+def _detected_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_FaultRow]:
+    rows = conn.execute(
+        """
+        SELECT id, fault_site_key, fault_type
+        FROM faults
+        WHERE campaign_id = ?
+          AND status = 'detected'
+          AND exclusion = 'none'
+          AND collapsed_into IS NULL
+        ORDER BY id
+        """,
+        (campaign_id,),
+    ).fetchall()
+    return [
+        _FaultRow(
+            fault_id=int(row["id"]),
+            fault_site_key=str(row["fault_site_key"]),
+            fault_type=str(row["fault_type"]),
+        )
+        for row in rows
+    ]
+
+
 def _active_q_stem_fault_ids(
     rows: list[_FaultRow], q_stem_site_keys: frozenset[str]
 ) -> list[int]:
@@ -215,6 +238,64 @@ def _derive_loc_capture(
     return capture
 
 
+def build_los_couples(
+    pseudo_port_map: dict[str, dict[str, Any]],
+) -> tuple[list[tuple[str, str]], list[str], dict[int, str]]:
+    """Return (couple_ports, head_ppi_ports, head_ppi_by_chain) for LOS.
+
+    couple_ports[i] = (capture_ppi_port, predecessor_ppi_port) for every scan FF
+    at chain position > 0; head_ppi_ports lists the position-0 (chain-head) PPI
+    ports (free launch scan-in bits); head_ppi_by_chain maps chain_id -> head PPI
+    port (to read the SAT-chosen head bit per chain)."""
+    by_pos: dict[tuple[int, int], dict[str, Any]] = {
+        (int(e["chain_id"]), int(e["position_in_chain"])): e
+        for e in pseudo_port_map.values()
+    }
+    couple_ports: list[tuple[str, str]] = []
+    head_ports: list[str] = []
+    head_by_chain: dict[int, str] = {}
+    for entry in pseudo_port_map.values():
+        chain = int(entry["chain_id"])
+        pos = int(entry["position_in_chain"])
+        ppi = str(entry["ppi_port"])
+        if pos == 0:
+            head_ports.append(ppi)
+            head_by_chain[chain] = ppi
+        else:
+            pred = by_pos[(chain, pos - 1)]
+            couple_ports.append((ppi, str(pred["ppi_port"])))
+    return couple_ports, head_ports, head_by_chain
+
+
+def _derive_los_capture(
+    launch_vector: dict[str, bool],
+    head_scan_in_by_chain: dict[int, bool],
+    pseudo_port_map: dict[str, dict[str, Any]],
+) -> dict[str, bool]:
+    """LOS capture vector V2 over reduced PIs: each scan FF's capture-frame PPI is
+    its chain predecessor's LAUNCH PPI (the shift V2[p]=V1[p-1]); the chain head's
+    PPI is the fresh launch scan-in bit; real PIs are held from V1."""
+    capture = {
+        name: bool(value)
+        for name, value in launch_vector.items()
+        if not str(name).startswith(PPI_PREFIX) and not str(name).startswith(PPO_PREFIX)
+    }
+    by_pos: dict[tuple[int, int], dict[str, Any]] = {
+        (int(e["chain_id"]), int(e["position_in_chain"])): e
+        for e in pseudo_port_map.values()
+    }
+    for entry in pseudo_port_map.values():
+        chain = int(entry["chain_id"])
+        pos = int(entry["position_in_chain"])
+        ppi = str(entry["ppi_port"])
+        if pos == 0:
+            capture[ppi] = bool(head_scan_in_by_chain.get(chain, False))
+        else:
+            pred = by_pos[(chain, pos - 1)]
+            capture[ppi] = bool(launch_vector.get(str(pred["ppi_port"]), False))
+    return capture
+
+
 def _process_scan_candidate(
     core: Any,
     conn: sqlite3.Connection,
@@ -236,15 +317,26 @@ def _process_scan_candidate(
     generic_site_index: dict[str, int],
     unsupported: str,
     transition: bool = False,
+    launch_mode: str = "loc",
+    los_head_scan_in: dict[int, bool] | None = None,
+    candidate_key: str | None = None,
 ) -> tuple[bool, bool]:
     """Return (accepted, protocol_no_progress).
 
-    `vector` is the launch state V1 (over reduced PIs). For transition (LOC) the
-    capture vector V2 is functionally derived from V1 (capture PPI = launch PPO,
-    real PIs held); the reduced-view expectation, scan-pattern unload, and golden
-    gate use the frame-1 (V2) materialization, and grading runs two captures.
+    `vector` is the launch state V1 (over reduced PIs). For transition the capture
+    vector V2 is derived from V1: LOC couples capture PPI = launch PPO; LOS shifts,
+    capture PPI = predecessor's launch PPI plus the per-chain head scan-in bit
+    (`los_head_scan_in`). The reduced-view expectation, scan-pattern unload, and
+    golden gate use the frame-1 (V2) materialization, and grading runs two captures.
     """
+    is_los = transition and launch_mode == "los"
+    is_loc = transition and launch_mode == "loc"
+    head_bits = los_head_scan_in or {}
     pattern_key_str = pattern_key(vector, input_order)
+    # Tracking/blocking key: V1 for LOC/stuck-at; V1 ‖ head-bits for LOS (V2 is
+    # shift(V1) plus the free head bits, so V1 alone is not unique). Distinct from
+    # launch_pattern, which is always the length-N V1 launch frame.
+    track_key = candidate_key if candidate_key is not None else pattern_key_str
     materialized_launch = _materialize_reduced_outputs(
         core,
         reduced_json_path,
@@ -256,9 +348,14 @@ def _process_scan_candidate(
         unsupported,
     )
     if transition:
-        capture_vector = _derive_loc_capture(
-            materialized_launch, vector, scan_ctx.pseudo_port_map
-        )
+        if is_los:
+            capture_vector = _derive_los_capture(
+                vector, head_bits, scan_ctx.pseudo_port_map
+            )
+        else:
+            capture_vector = _derive_loc_capture(
+                materialized_launch, vector, scan_ctx.pseudo_port_map
+            )
         # Frame-1 outputs: PPO unload + functional PO response after the launch.
         reduced_expectation = _materialize_reduced_outputs(
             core,
@@ -295,7 +392,7 @@ def _process_scan_candidate(
         campaign_id=campaign_id,
         run_id=run_id,
         candidate_id=candidate_id,
-        pattern=pattern_key_str,
+        pattern=track_key,
         source=source,
         sat_target_fault_id=sat_target_fault_id,
     )
@@ -309,7 +406,9 @@ def _process_scan_candidate(
             scan_pattern,
             reduced_vector=reduced_expectation,
             functional_output_order=scan_ctx.functional_output_order,
-            loc_two_capture=transition,
+            loc_two_capture=is_loc,
+            los_two_capture=is_los,
+            los_launch_scan_in=head_bits,
         )
     except Exception as exc:
         conn.execute(
@@ -447,7 +546,9 @@ def _process_scan_candidate(
             generic_cell_map,
             faults=protocol_fault_specs,
             unsupported_policy=unsupported,
-            loc_two_capture=transition,
+            loc_two_capture=is_loc,
+            los_two_capture=is_los,
+            los_launch_scan_in=head_bits,
             **protocol_fault_sim_kwargs,
         )
     )
@@ -466,7 +567,7 @@ def _process_scan_candidate(
             protocol_sim_rejections.append(
                 CandidateRejection(fault_id, "no_capture_or_unload_effect")
             )
-            blocked.append((fault_id, pattern_key_str))
+            blocked.append((fault_id, track_key))
 
     if not passed_fault_ids:
         commit = CandidateCommit(
@@ -530,8 +631,18 @@ def run_progressive_scan_atpg(
     cell_map_path: Path | None = None,
     vector_source: str = "scan_native_sat_atpg",
     transition: bool = False,
+    launch_mode: str = "loc",
 ) -> tuple[VectorSet, AtpgStats, int, float, float]:
     from faultflow.runner.runner import _load_core, _port_names
+
+    los = transition and launch_mode == "los"
+    los_couple_ports: list[tuple[str, str]] = []
+    los_head_ports: list[str] = []
+    los_head_by_chain: dict[int, str] = {}
+    if los:
+        los_couple_ports, los_head_ports, los_head_by_chain = build_los_couples(
+            scan_ctx.pseudo_port_map
+        )
 
     core = _load_core()
     if core is None:
@@ -649,7 +760,12 @@ def run_progressive_scan_atpg(
         atpg_seconds += time.perf_counter() - random_started
         new_random: list[dict[str, bool]] = []
         for vector in list(random_batch):
+            # LOS random candidates carry head bits = 0; the composite dedup key
+            # appends a zero head suffix so it stays length-compatible with LOS
+            # blocked keys (V1 ‖ head-bits).
             key = pattern_key(vector, input_order)
+            if los:
+                key = key + "0" * len(los_head_ports)
             if key in seen_patterns:
                 continue
             seen_patterns.add(key)
@@ -681,6 +797,13 @@ def run_progressive_scan_atpg(
                     generic_site_index=generic_site_index,
                     unsupported=unsupported,
                     transition=transition,
+                    launch_mode=launch_mode,
+                    los_head_scan_in={} if los else None,
+                    candidate_key=(
+                        pattern_key(vector, input_order) + "0" * len(los_head_ports)
+                        if los
+                        else None
+                    ),
                 )
             fault_sim_seconds += time.perf_counter() - sim_started
             if accepted:
@@ -706,7 +829,22 @@ def run_progressive_scan_atpg(
                 db_blocked.get(fault_id, set()) | rejected_patterns.get(fault_id, set())
             )
             solve_started = time.perf_counter()
-            if transition:
+            if los:
+                solved = dict(
+                    core.solve_scan_los_transition_fault_atpg(
+                        reduced_json_path,
+                        reduced_cell_map,
+                        effective_db_path,
+                        fault_id,
+                        los_couple_ports,
+                        los_head_ports,
+                        blocked,
+                        cfg.atpg.sat_conflict_limit,
+                        cfg.atpg.sat_timeout_seconds,
+                        unsupported,
+                    )
+                )
+            elif transition:
                 solved = dict(
                     core.solve_scan_transition_fault_atpg(
                         reduced_json_path,
@@ -740,7 +878,21 @@ def run_progressive_scan_atpg(
                 # candidate, and V2 is re-derived inside the candidate processor.
                 candidate = dict(solved["launch"] if transition else solved["vector"])
                 stats.generated_vectors += 1
-                key = pattern_key(candidate, input_order)
+                # LOS: capture (V2) carries the SAT-chosen free head scan-in bits;
+                # the dedup/blocking key is V1 ‖ head-bits (in head_ports order).
+                los_head_scan_in_sat: dict[int, bool] | None = None
+                if los:
+                    capture = dict(solved["capture"])
+                    los_head_scan_in_sat = {
+                        ch: bool(capture.get(port, False))
+                        for ch, port in los_head_by_chain.items()
+                    }
+                    key = pattern_key(candidate, input_order) + "".join(
+                        "1" if bool(capture.get(port, False)) else "0"
+                        for port in los_head_ports
+                    )
+                else:
+                    key = pattern_key(candidate, input_order)
                 if key in seen_patterns:
                     round_tracker.sat_outcomes.append("protocol_no_progress")
                     stats.protocol_no_progress_rounds += 1
@@ -770,6 +922,9 @@ def run_progressive_scan_atpg(
                         generic_site_index=generic_site_index,
                         unsupported=unsupported,
                         transition=transition,
+                        launch_mode=launch_mode,
+                        los_head_scan_in=los_head_scan_in_sat,
+                        candidate_key=key if los else None,
                     )
                 fault_sim_seconds += time.perf_counter() - sim_started
                 if accepted:
@@ -879,3 +1034,224 @@ def run_progressive_scan_atpg(
         atpg_seconds,
         fault_sim_seconds,
     )
+
+
+def _grade_launch_candidate(
+    core: Any,
+    *,
+    scan_ctx: ScanPipelineContext,
+    reduced_json_path: str,
+    reduced_cell_map: str,
+    generic_cell_map: str,
+    vector: dict[str, bool],
+    input_order: list[str],
+    fault_ids: list[int],
+    row_by_id: dict[int, _FaultRow],
+    generic_site_index: dict[str, int],
+    unsupported: str,
+    launch_mode: str,
+    los_head_scan_in: dict[int, bool] | None,
+) -> set[int]:
+    """Re-grade one launch candidate (V1) against  via the two-capture
+    scan-protocol sim on the generic netlist. Returns the detected subset. This is
+    the same authoritative engine the forward pipeline grades with, so it is safe
+    for coverage-preserving compaction (unlike a single-frame regrade)."""
+    is_los = launch_mode == "los"
+    is_loc = launch_mode == "loc"
+    head_bits = los_head_scan_in or {}
+    materialized_launch = _materialize_reduced_outputs(
+        core,
+        reduced_json_path,
+        reduced_cell_map,
+        vector,
+        input_order,
+        scan_ctx.functional_output_order,
+        scan_ctx.pseudo_port_map,
+        unsupported,
+    )
+    if is_los:
+        capture_vector = _derive_los_capture(
+            vector, head_bits, scan_ctx.pseudo_port_map
+        )
+    else:
+        capture_vector = _derive_loc_capture(
+            materialized_launch, vector, scan_ctx.pseudo_port_map
+        )
+    reduced_expectation = _materialize_reduced_outputs(
+        core,
+        reduced_json_path,
+        reduced_cell_map,
+        capture_vector,
+        input_order,
+        scan_ctx.functional_output_order,
+        scan_ctx.pseudo_port_map,
+        unsupported,
+    )
+    serialize_input = dict(vector)
+    for entry in scan_ctx.pseudo_port_map.values():
+        serialize_input[str(entry["ppo_port"])] = bool(
+            reduced_expectation.get(str(entry["ppo_port"]), False)
+        )
+    scan_pattern = serialize_vector(
+        serialize_input, scan_ctx.pseudo_port_map, scan_ctx.manifest
+    )
+
+    sim_ids: list[int] = []
+    specs: list[tuple[int, int]] = []
+    for fault_id in fault_ids:
+        row = row_by_id.get(fault_id)
+        if row is None:
+            continue
+        cidx = generic_site_index.get(row.fault_site_key)
+        if cidx is None:
+            continue
+        sim_ids.append(fault_id)
+        specs.append((cidx, fault_type_to_sa_code(row.fault_type)))
+    if not specs:
+        return set()
+
+    kwargs = _protocol_fault_sim_kwargs(scan_ctx, scan_pattern)
+    result = dict(
+        core.simulate_scan_protocol_faults(
+            str(scan_ctx.generic_json),
+            generic_cell_map,
+            faults=specs,
+            unsupported_policy=unsupported,
+            loc_two_capture=is_loc,
+            los_two_capture=is_los,
+            los_launch_scan_in=head_bits,
+            **kwargs,
+        )
+    )
+    lanes = [
+        dict(lane)
+        for batch in result.get("batches", [])
+        for lane in batch.get("lanes", [])
+    ]
+    passed: set[int] = set()
+    for fault_id, lane in zip(sim_ids, lanes):
+        if str(lane.get("outcome")) == "pass":
+            passed.add(fault_id)
+    return passed
+
+
+def compact_run_scan_transition(
+    core: Any,
+    *,
+    scan_ctx: ScanPipelineContext,
+    reduced_json_path: str,
+    reduced_cell_map: str,
+    generic_cell_map: str,
+    db_path: str,
+    campaign_id: int,
+    run_id: int,
+    vectors: VectorSet,
+    unsupported: str,
+    launch_mode: str,
+) -> tuple[VectorSet, int, float]:
+    """Reverse-order PROTOCOL-based static compaction of scan transition vectors.
+
+    Each kept launch (V1) is re-graded against the remaining-undetected detected
+    set via the two-capture scan-protocol sim, so coverage is preserved exactly.
+    Returns (compacted_vectors, new_run_id, raw_count)."""
+    from faultflow.runner.compaction import _decode, _insert_compacted_run, _pattern
+
+    input_order = vectors.input_order
+    with connect(db_path) as conn:
+        init_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT pattern, launch_pattern
+            FROM vectors
+            WHERE campaign_id = ? AND run_id = ?
+            ORDER BY vector_index
+            """,
+            (campaign_id, run_id),
+        ).fetchall()
+        detected_rows = _detected_fault_rows(conn, campaign_id)
+    raw_count = len(rows)
+    if raw_count == 0:
+        return vectors, run_id, float(raw_count)
+
+    row_by_id = {row.fault_id: row for row in detected_rows}
+    remaining: set[int] = set(row_by_id)
+    generic_site_index = build_site_key_index(
+        core, scan_ctx.generic_json, generic_cell_map, unsupported
+    )
+    _couples, _heads, head_by_chain = build_los_couples(scan_ctx.pseudo_port_map)
+
+    launches: list[dict[str, bool]] = []
+    captures: list[dict[str, bool]] = []
+    head_bits_list: list[dict[int, bool]] = []
+    for row in rows:
+        launch = _decode(str(row["launch_pattern"]), input_order)
+        capture = _decode(str(row["pattern"]), input_order)
+        launches.append(launch)
+        captures.append(capture)
+        if launch_mode == "los":
+            head_bits_list.append(
+                {
+                    ch: bool(capture.get(port, False))
+                    for ch, port in head_by_chain.items()
+                }
+            )
+        else:
+            head_bits_list.append({})
+
+    started = time.perf_counter()
+    kept_indices: list[int] = []
+    for idx in range(raw_count - 1, -1, -1):
+        if not remaining:
+            break
+        detected = _grade_launch_candidate(
+            core,
+            scan_ctx=scan_ctx,
+            reduced_json_path=reduced_json_path,
+            reduced_cell_map=reduced_cell_map,
+            generic_cell_map=generic_cell_map,
+            vector=launches[idx],
+            input_order=input_order,
+            fault_ids=sorted(remaining),
+            row_by_id=row_by_id,
+            generic_site_index=generic_site_index,
+            unsupported=unsupported,
+            launch_mode=launch_mode,
+            los_head_scan_in=head_bits_list[idx],
+        )
+        newly = detected & remaining
+        if newly:
+            kept_indices.append(idx)
+            remaining.difference_update(newly)
+    kept_indices.sort()
+
+    source = f"compacted_{vectors.source}"
+    capture_patterns = [_pattern(captures[i], input_order) for i in kept_indices]
+    launch_patterns = [_pattern(launches[i], input_order) for i in kept_indices]
+    with connect(db_path) as conn:
+        init_schema(conn)
+        with conn:
+            new_run_id = _insert_compacted_run(conn, run_id, source, len(kept_indices))
+    if capture_patterns:
+        core.append_vectors(
+            db_path,
+            campaign_id,
+            new_run_id,
+            source,
+            capture_patterns,
+            1,
+            launch_patterns,
+        )
+
+    with connect(db_path) as conn:
+        init_schema(conn)
+        coverage = summary(conn, campaign_id=campaign_id)["coverage_percent"]
+    log.info(
+        "compact  %d -> %d scan transition pairs  (-%d)  %.2fs  coverage=%.3f%%",
+        raw_count,
+        len(kept_indices),
+        raw_count - len(kept_indices),
+        time.perf_counter() - started,
+        float(coverage or 0.0),
+    )
+    kept_captures = [captures[i] for i in kept_indices]
+    return VectorSet(source, input_order, kept_captures), new_run_id, float(raw_count)

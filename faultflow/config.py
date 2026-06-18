@@ -270,11 +270,8 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         raise ConfigError("fault_model.model must be 'stuck_at' or 'transition'")
 
     fault_launch = parser.get("fault_model", "launch", fallback="loc").strip()
-    if fault_launch != "loc":
-        raise ConfigError(
-            "fault_model.launch must be 'loc' (launch-on-shift is reserved, "
-            "not implemented)"
-        )
+    if fault_launch not in {"loc", "los"}:
+        raise ConfigError("fault_model.launch must be 'loc' or 'los'")
 
     fault_collapsing = _bool(parser, "fault_model", "collapsing", False)
     if fault_model == "transition" and fault_collapsing:

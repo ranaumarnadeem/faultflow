@@ -1,0 +1,73 @@
+{
+  "comment": [
+    "Hand-built PRE-REDUCED scan ATPG view for LOS (launch-on-shift) tests.",
+    "Chain 0 = [ff0 @pos0 (head), ff1 @pos1]; Chain 1 = [ff2 @pos0 (head, alone)].",
+    "Under LOS the launch is the last scan shift, so capture PPI of a FF = the",
+    "LAUNCH PPI of its chain predecessor; the chain head's capture PPI is a fresh",
+    "scan-in bit (free). Observability:",
+    "  Y        = __ppi_ff1          (ff1 Q-stem transition reaches a real PO)",
+    "  __ppo_ff0 = A XOR __ppi_ff0    (ff0 head Q-stem reaches a pseudo-PO)",
+    "  __ppo_ff1 = A XOR __ppi_ff1",
+    "  __ppo_ff2 = __ppi_ff2          (single-FF chain head reaches a pseudo-PO)",
+    "Real PI: A. The test supplies the chain order via LosCouple/head lists."
+  ],
+  "modules": {
+    "tiny_scan_view_los": {
+      "attributes": { "top": "00000000000000000000000000000001" },
+      "ports": {
+        "A": { "direction": "input", "bits": [2] },
+        "__ppi_ff0": { "direction": "input", "bits": [3] },
+        "__ppi_ff1": { "direction": "input", "bits": [4] },
+        "__ppi_ff2": { "direction": "input", "bits": [8] },
+        "Y": { "direction": "output", "bits": [5] },
+        "__ppo_ff0": { "direction": "output", "bits": [6] },
+        "__ppo_ff1": { "direction": "output", "bits": [7] },
+        "__ppo_ff2": { "direction": "output", "bits": [9] }
+      },
+      "cells": {
+        "g_y": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__buf_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "X": "output" },
+          "connections": { "A": [4], "X": [5] }
+        },
+        "g_d0": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__xor2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "B": "input", "X": "output" },
+          "connections": { "A": [2], "B": [3], "X": [6] }
+        },
+        "g_d1": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__xor2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "B": "input", "X": "output" },
+          "connections": { "A": [2], "B": [4], "X": [7] }
+        },
+        "g_d2": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__buf_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "X": "output" },
+          "connections": { "A": [8], "X": [9] }
+        }
+      },
+      "netnames": {
+        "A": { "hide_name": 0, "bits": [2], "attributes": {} },
+        "__ppi_ff0": { "hide_name": 0, "bits": [3], "attributes": {} },
+        "__ppi_ff1": { "hide_name": 0, "bits": [4], "attributes": {} },
+        "__ppi_ff2": { "hide_name": 0, "bits": [8], "attributes": {} },
+        "Y": { "hide_name": 0, "bits": [5], "attributes": {} },
+        "__ppo_ff0": { "hide_name": 0, "bits": [6], "attributes": {} },
+        "__ppo_ff1": { "hide_name": 0, "bits": [7], "attributes": {} },
+        "__ppo_ff2": { "hide_name": 0, "bits": [9], "attributes": {} }
+      }
+    }
+  }
+}

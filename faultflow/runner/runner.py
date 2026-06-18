@@ -1206,6 +1206,31 @@ class Runner:
             )
         )
 
+    def _fault_free_sequence_outputs_with_core(
+        self,
+        netlist: Path,
+        pairs: list[tuple[dict[str, bool], dict[str, bool]]],
+        input_order: list[str],
+        output_order: list[str],
+    ) -> list[dict[str, bool]]:
+        core = _load_core()
+        if core is None:
+            raise RunnerError(
+                "C++ extension _faultflow_core is required. "
+                "Run: cmake --build build -- -j2"
+            )
+        sequences = [[launch, capture] for launch, capture in pairs]
+        return list(
+            core.fault_free_sequence_outputs(
+                str(netlist),
+                str(self.cfg.cell_lib),
+                sequences,
+                input_order,
+                output_order,
+                self.cfg.simulation.unsupported_cells,
+            )
+        )
+
     def _write_verified_vectors(
         self,
         run_id: int,
@@ -1305,6 +1330,9 @@ class Runner:
         sidecar: Path,
         vectors: VectorSet,
         input_order: list[str],
+        *,
+        transition: bool = False,
+        launch_vectors: list[dict[str, bool]] | None = None,
     ) -> list[dict[str, bool]]:
         if self.cfg.simulation.verify_tool != "iverilog":
             raise RunnerError("Only verify_tool=iverilog is supported")
@@ -1317,13 +1345,30 @@ class Runner:
             gate_verilog=self._find_gate_verilog(),
             verilog_models=[self.cfg.verilog_models],
         )
+
+        sequential_steps = None
+        pairs: list[tuple[dict[str, bool], dict[str, bool]]] = []
+        if transition:
+            from faultflow.verify.gate import build_transition_sequential_steps
+
+            launches = launch_vectors or []
+            pairs = list(zip(launches, vectors.vectors))
+            sequential_steps = build_transition_sequential_steps(pairs, input_order)
+
         try:
-            result = verifier.run(input_order, output_order, vectors)
+            result = verifier.run(input_order, output_order, vectors, sequential_steps)
         except VerificationError as exc:
             self._mark_verification_failure(str(exc))
             raise RunnerError(f"verification failed: {exc}") from exc
 
-        cpp_outputs = self._fault_free_outputs_with_core(netlist, vectors, output_order)
+        if transition:
+            cpp_outputs = self._fault_free_sequence_outputs_with_core(
+                netlist, pairs, input_order, output_order
+            )
+        else:
+            cpp_outputs = self._fault_free_outputs_with_core(
+                netlist, vectors, output_order
+            )
         if cpp_outputs != result.expected_outputs:
             error = "C++ fault-free outputs did not match Iverilog golden outputs"
             mismatch_path = self.cfg.verification_dir / "cpp_crosscheck.txt"
@@ -1454,6 +1499,11 @@ class Runner:
             )
 
             transition = self.cfg.fault_model.model == "transition"
+            if transition and self.cfg.fault_model.launch == "los":
+                raise RunnerError(
+                    "launch=los is scan-only; broadside combinational transition "
+                    "ATPG has no scan shift. Use `sim --scan` for LOS."
+                )
             with self._db() as conn:
                 fp = self._fingerprint(netlist)
                 model_id = redundancy_model_id(fp)
@@ -1489,15 +1539,21 @@ class Runner:
                 vector_source = "native_sat_atpg"
             sidecar = self.cfg.intermediate_dir / vector_source
             atpg_terminal = atpg_stats.terminal_reason
-            # Compaction and the iverilog gate operate on single-frame vectors;
-            # both are deferred for the two-frame transition model (Step 2b).
-            if transition:
-                if self.cfg.atpg.compaction != "none":
-                    log.info("sim    compaction skipped (transition model)")
-                if verify_enabled:
-                    log.info("sim    iverilog verify skipped (transition model)")
-            else:
-                if self.cfg.atpg.compaction != "none":
+            if self.cfg.atpg.compaction != "none":
+                if transition:
+                    # Two-frame reverse-sweep over (launch, capture) pairs.
+                    from faultflow.runner.compaction import compact_run_transition
+
+                    vectors, run_id, raw_vector_count = compact_run_transition(
+                        json_path=str(netlist),
+                        cell_map_path=str(self.cfg.cell_lib),
+                        db_path=str(self.cfg.db_path),
+                        campaign_id=campaign_id,
+                        run_id=run_id,
+                        vectors=vectors,
+                        unsupported=self.cfg.simulation.unsupported_cells,
+                    )
+                else:
                     from faultflow.runner.compaction import compact_run
 
                     vectors, run_id, raw_vector_count = compact_run(
@@ -1509,8 +1565,35 @@ class Runner:
                         vectors=vectors,
                         unsupported=self.cfg.simulation.unsupported_cells,
                     )
-                    vector_source = vectors.source
-                if verify_enabled:
+                vector_source = vectors.source
+            if verify_enabled:
+                if transition:
+                    # Two-frame launch/capture iverilog replay. Launch frames for
+                    # the (possibly compacted) run come from the DB launch_pattern
+                    # column, aligned with the capture vectors by vector_index.
+                    from faultflow.runner.compaction import _decode
+
+                    with self._db() as conn:
+                        launch_rows = conn.execute(
+                            "SELECT launch_pattern FROM vectors "
+                            "WHERE run_id = ? ORDER BY vector_index",
+                            (run_id,),
+                        ).fetchall()
+                    launches = [
+                        _decode(str(row["launch_pattern"]), vectors.input_order)
+                        for row in launch_rows
+                    ]
+                    sidecar, _ = self._find_order_sidecar()
+                    verified_outputs = self._run_verification(
+                        netlist,
+                        sidecar,
+                        vectors,
+                        vectors.input_order,
+                        transition=True,
+                        launch_vectors=launches,
+                    )
+                    self._write_verified_vectors(run_id, vectors, verified_outputs)
+                else:
                     sidecar, _ = self._find_order_sidecar()
                     verified_outputs = self._run_verification(
                         netlist, sidecar, vectors, vectors.input_order
@@ -1624,18 +1707,46 @@ class Runner:
             )
         )
         if self.cfg.atpg.compaction != "none":
-            from faultflow.runner.compaction import compact_run
             from faultflow.scan.cell_map import resolve_scan_cell_map
 
-            vectors, run_id, raw_vectors_scan = compact_run(
-                json_path=str(netlist),
-                cell_map_path=str(resolve_scan_cell_map(self.cfg)),
-                db_path=str(self.cfg.db_path),
-                campaign_id=campaign_id,
-                run_id=run_id,
-                vectors=vectors,
-                unsupported=self.cfg.simulation.unsupported_cells,
-            )
+            scan_cell_map = str(resolve_scan_cell_map(self.cfg))
+            if self.cfg.fault_model.model == "transition":
+                # Two-frame scan transition compaction MUST re-grade via the
+                # two-capture protocol sim, not the single-frame engine (which
+                # over-counts and would lose transition coverage).
+                from faultflow.scan.detection_pipeline import (
+                    compact_run_scan_transition,
+                )
+
+                core = _load_core()
+                if core is None:
+                    raise RunnerError("C++ extension _faultflow_core is required")
+                vectors, run_id, raw_vectors_f = compact_run_scan_transition(
+                    core,
+                    scan_ctx=scan_pipeline_ctx,
+                    reduced_json_path=str(netlist),
+                    reduced_cell_map=scan_cell_map,
+                    generic_cell_map=scan_cell_map,
+                    db_path=str(self.cfg.db_path),
+                    campaign_id=campaign_id,
+                    run_id=run_id,
+                    vectors=vectors,
+                    unsupported=self.cfg.simulation.unsupported_cells,
+                    launch_mode=self.cfg.fault_model.launch,
+                )
+                raw_vectors_scan = int(raw_vectors_f)
+            else:
+                from faultflow.runner.compaction import compact_run
+
+                vectors, run_id, raw_vectors_scan = compact_run(
+                    json_path=str(netlist),
+                    cell_map_path=scan_cell_map,
+                    db_path=str(self.cfg.db_path),
+                    campaign_id=campaign_id,
+                    run_id=run_id,
+                    vectors=vectors,
+                    unsupported=self.cfg.simulation.unsupported_cells,
+                )
         else:
             raw_vectors_scan = vectors.count
         total_seconds = time.perf_counter() - total_start

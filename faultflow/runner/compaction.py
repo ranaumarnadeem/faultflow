@@ -15,6 +15,14 @@ def _pattern(vector: dict[str, bool], input_order: list[str]) -> str:
     return "".join("1" if vector.get(name, False) else "0" for name in input_order)
 
 
+def _decode(pattern: str, input_order: list[str]) -> dict[str, bool]:
+    if len(pattern) != len(input_order):
+        raise RunnerError(
+            f"vector pattern length {len(pattern)} != {len(input_order)} PIs"
+        )
+    return {name: pattern[i] == "1" for i, name in enumerate(input_order)}
+
+
 def _detected_fault_ids(conn: sqlite3.Connection, campaign_id: int) -> list[int]:
     rows = conn.execute(
         """
@@ -143,3 +151,109 @@ def compact_run(
         float(coverage or 0.0),
     )
     return VectorSet(source, input_order, kept_vectors), new_run_id, raw_count
+
+
+def compact_run_transition(
+    *,
+    json_path: str,
+    cell_map_path: str,
+    db_path: str,
+    campaign_id: int,
+    run_id: int,
+    vectors: VectorSet,
+    unsupported: str,
+) -> tuple[VectorSet, int, int]:
+    """Reverse-order TWO-FRAME (transition) static compaction.
+
+    Each test is a (launch, capture) pair: capture frames are in ``vectors``,
+    launch frames are read from the DB ``vectors.launch_pattern`` column for this
+    run. Re-grading uses the qualified two-frame transition sim (the same engine
+    that detected the faults), so coverage is preserved. Kept pairs are written to
+    a new compacted run with both columns populated.
+    """
+    input_order = vectors.input_order
+    with connect(db_path) as conn:
+        init_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT pattern, launch_pattern
+            FROM vectors
+            WHERE campaign_id = ? AND run_id = ?
+            ORDER BY vector_index
+            """,
+            (campaign_id, run_id),
+        ).fetchall()
+        remaining: set[int] = set(_detected_fault_ids(conn, campaign_id))
+    pairs = [
+        (
+            _decode(str(row["launch_pattern"]), input_order),
+            _decode(str(row["pattern"]), input_order),
+        )
+        for row in rows
+    ]
+    raw_count = len(pairs)
+    if raw_count == 0:
+        return vectors, run_id, raw_count
+
+    core = _load_core()
+    if core is None:
+        raise RunnerError(
+            "C++ extension _faultflow_core is required for compaction. "
+            "Run: cmake --build build -- -j2"
+        )
+
+    started = time.perf_counter()
+    kept_indices: list[int] = []
+    for idx in range(raw_count - 1, -1, -1):
+        if not remaining:
+            break
+        launch, capture = pairs[idx]
+        detected = core.compaction_pair_detections(
+            json_path,
+            cell_map_path,
+            db_path,
+            launch,
+            capture,
+            input_order,
+            sorted(remaining),
+            unsupported,
+        )
+        newly = [fid for fid in detected if fid in remaining]
+        if newly:
+            kept_indices.append(idx)
+            remaining.difference_update(newly)
+    kept_indices.sort()
+    kept_pairs = [pairs[i] for i in kept_indices]
+
+    source = f"compacted_{vectors.source}"
+    capture_patterns = [_pattern(capture, input_order) for _l, capture in kept_pairs]
+    launch_patterns = [_pattern(launch, input_order) for launch, _c in kept_pairs]
+    with connect(db_path) as conn:
+        init_schema(conn)
+        with conn:
+            new_run_id = _insert_compacted_run(conn, run_id, source, len(kept_pairs))
+    if capture_patterns:
+        core.append_vectors(
+            db_path,
+            campaign_id,
+            new_run_id,
+            source,
+            capture_patterns,
+            1,
+            launch_patterns,
+        )
+
+    with connect(db_path) as conn:
+        init_schema(conn)
+        coverage = summary(conn, campaign_id=campaign_id)["coverage_percent"]
+
+    log.info(
+        "compact  %d -> %d transition pairs  (-%d)  %.2fs  coverage=%.3f%%",
+        raw_count,
+        len(kept_pairs),
+        raw_count - len(kept_pairs),
+        time.perf_counter() - started,
+        float(coverage or 0.0),
+    )
+    kept_captures = [capture for _l, capture in kept_pairs]
+    return VectorSet(source, input_order, kept_captures), new_run_id, raw_count

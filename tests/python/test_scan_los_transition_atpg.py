@@ -11,11 +11,9 @@ from faultflow.db.campaign import ensure_campaign
 from faultflow.runner.progressive_atpg import redundancy_model_id
 from faultflow.scan import stitch_scan_json
 from faultflow.scan.atpg_view import build_scan_atpg_view
-from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.detection_pipeline import (
-    _detected_fault_rows,
+    build_los_couples,
     build_scan_pipeline_context,
-    compact_run_scan_transition,
     run_progressive_scan_atpg,
 )
 from faultflow.scan.reports import hash_file, manifest_from_result, utc_timestamp
@@ -25,8 +23,9 @@ CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 
 
 def _tiny_dff_inv_json() -> dict[str, object]:
-    # A scan-able DFF whose Q (net 4) drives an inverter to functional PO Y, so a
-    # launched Q transition propagates to an observable (unlike a bare D=PI flop).
+    # A scan-able DFF whose Q drives an inverter to functional PO Y. Under LOS the
+    # single FF is a chain head, so its launched Q transition comes from the fresh
+    # scan-in bit; it propagates to Y.
     return {
         "modules": {
             "tiny_dff_inv": {
@@ -69,7 +68,7 @@ def _tiny_dff_inv_json() -> dict[str, object]:
     }
 
 
-def _transition_scan_workspace(tmp_path: Path):
+def _los_scan_workspace(tmp_path: Path):
     source = tmp_path / "tiny_dff_inv.json"
     source.write_text(
         json.dumps(_tiny_dff_inv_json(), indent=2) + "\n", encoding="utf-8"
@@ -82,7 +81,7 @@ netlist = {source}
 cell_lib = {CELL_MAP}
 [fault_model]
 model = transition
-launch = loc
+launch = los
 collapsing = false
 [simulation]
 unsupported_cells = fail
@@ -130,7 +129,7 @@ max_rounds = 3
     )
     fp = {
         "top": cfg.top,
-        "netlist_hash": "scan-trans",
+        "netlist_hash": "scan-los",
         "cell_lib_hash": "cell-test",
         "config_hash": "cfg-test",
         "template_hash": "tmpl-test",
@@ -141,20 +140,30 @@ max_rounds = 3
         "include_clock_faults": 0,
         "include_reset_faults": 0,
         "fault_model": "transition",
+        "launch": "los",
         "manifest_hash": str(manifest.get("generic_json_hash", "")),
         "atpg_view_schema_ver": "scan-atpg-view-observe-buf-1",
     }
-    return cfg, atpg_view, scan_ctx, fp
+    return cfg, atpg_view, scan_ctx, fp, pseudo_port_map
+
+
+def test_build_los_couples_single_ff_chain(tmp_path: Path) -> None:
+    _cfg, _view, _ctx, _fp, pseudo_port_map = _los_scan_workspace(tmp_path)
+    couple_ports, head_ports, head_by_chain = build_los_couples(pseudo_port_map)
+    # One FF -> a single chain head, no couples (no predecessor).
+    assert couple_ports == []
+    assert len(head_ports) == 1
+    assert set(head_by_chain.values()) == set(head_ports)
 
 
 @pytest.mark.integration
 @pytest.mark.golden
-def test_scan_loc_transition_run_accepts_and_persists_launch_pattern(
+def test_scan_los_run_accepts_and_persists_launch_pattern(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    cfg, atpg_view, scan_ctx, fp = _transition_scan_workspace(tmp_path)
-    assert cfg.fault_model.model == "transition"
+    cfg, atpg_view, scan_ctx, fp, _ = _los_scan_workspace(tmp_path)
+    assert cfg.fault_model.launch == "los"
 
     with connect(cfg.db_path) as conn:
         init_schema(conn)
@@ -169,9 +178,9 @@ def test_scan_loc_transition_run_accepts_and_persists_launch_pattern(
         max_rounds=3,
         target_coverage=100.0,
         transition=True,
+        launch_mode="los",
     )
 
-    # A real LOC transition vector was generated, verified, and accepted.
     assert stats.accepted_vectors >= 1
 
     with connect(cfg.db_path) as conn:
@@ -180,80 +189,9 @@ def test_scan_loc_transition_run_accepts_and_persists_launch_pattern(
             "SELECT pattern, launch_pattern FROM vectors WHERE campaign_id = ?",
             (campaign_id,),
         ).fetchall()
-        campaign_model = conn.execute(
-            "SELECT fault_model FROM campaigns WHERE id = ?",
-            (campaign_id,),
-        ).fetchone()
 
-    assert rows, "expected at least one persisted transition vector"
-    # Two-frame storage: launch_pattern (V1) populated and distinct columns set.
+    assert rows
     assert any(
         str(row["launch_pattern"]) and set(str(row["launch_pattern"])) <= {"0", "1"}
         for row in rows
     )
-    assert campaign_model is not None
-    assert str(campaign_model["fault_model"]) == "transition"
-
-
-@pytest.mark.integration
-@pytest.mark.golden
-def test_scan_transition_compaction_preserves_coverage(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
-) -> None:
-    import faultflow.runner.runner as runner_mod
-
-    monkeypatch.chdir(tmp_path)
-    cfg, atpg_view, scan_ctx, fp = _transition_scan_workspace(tmp_path)
-    core = runner_mod._load_core()
-    assert core is not None
-
-    with connect(cfg.db_path) as conn:
-        init_schema(conn)
-        campaign_id = ensure_campaign(conn, "scan", fp)
-
-    vectors, _stats, run_id, _a, _s = run_progressive_scan_atpg(
-        cfg,
-        atpg_view,
-        redundancy_model_id(fp),
-        campaign_id=campaign_id,
-        scan_ctx=scan_ctx,
-        max_rounds=3,
-        target_coverage=100.0,
-        transition=True,
-    )
-
-    with connect(cfg.db_path) as conn:
-        init_schema(conn)
-        detected_before = {
-            row.fault_id for row in _detected_fault_rows(conn, campaign_id)
-        }
-    assert detected_before  # the campaign detected at least one transition fault
-
-    scan_cell_map = str(resolve_scan_cell_map(cfg))
-    compacted, new_run_id, raw_count = compact_run_scan_transition(
-        core,
-        scan_ctx=scan_ctx,
-        reduced_json_path=str(atpg_view),
-        reduced_cell_map=scan_cell_map,
-        generic_cell_map=scan_cell_map,
-        db_path=str(cfg.db_path),
-        campaign_id=campaign_id,
-        run_id=run_id,
-        vectors=vectors,
-        unsupported=cfg.simulation.unsupported_cells,
-        launch_mode="loc",
-    )
-
-    # Compaction is a non-growing subset; faults stay detected (coverage held).
-    assert 1 <= compacted.count <= int(raw_count)
-    with connect(cfg.db_path) as conn:
-        init_schema(conn)
-        detected_after = {
-            row.fault_id for row in _detected_fault_rows(conn, campaign_id)
-        }
-        kept = conn.execute(
-            "SELECT launch_pattern FROM vectors WHERE run_id = ?",
-            (new_run_id,),
-        ).fetchall()
-    assert detected_after == detected_before
-    assert kept and all(str(r["launch_pattern"]) for r in kept)

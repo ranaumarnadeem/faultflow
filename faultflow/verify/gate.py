@@ -39,6 +39,39 @@ class SequentialStep:
     cycle: CycleSpec
 
 
+def build_transition_sequential_steps(
+    pairs: list[tuple[dict[str, bool], dict[str, bool]]],
+    input_order: list[str],
+) -> list[list[SequentialStep]]:
+    """One 2-cycle sequence per (launch, capture) pair for the combinational
+    transition iverilog replay: cycle 0 drives V1 and does NOT sample, cycle 1
+    drives V2 and samples. The combinational gate netlist has no FFs, so
+    clock_edge is NONE and the output settles to V2's response."""
+    return [
+        [
+            SequentialStep(
+                inputs={pi: bool(launch.get(pi, False)) for pi in input_order},
+                cycle=CycleSpec(
+                    cycle=0,
+                    clock_edge="NONE",
+                    reset_state=0,
+                    sample_outputs=False,
+                ),
+            ),
+            SequentialStep(
+                inputs={pi: bool(capture.get(pi, False)) for pi in input_order},
+                cycle=CycleSpec(
+                    cycle=1,
+                    clock_edge="NONE",
+                    reset_state=0,
+                    sample_outputs=True,
+                ),
+            ),
+        ]
+        for launch, capture in pairs
+    ]
+
+
 @dataclass(frozen=True)
 class VectorContract:
     initial_cycles: int

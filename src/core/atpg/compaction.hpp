@@ -21,4 +21,17 @@ std::vector<int64_t> detect_with_vector_unfiltered(
     const std::vector<int64_t>& fault_ids,
     const std::string& unsupported_policy);
 
+// Two-frame (transition) analogue of detect_with_vector_unfiltered: simulate one
+// launch/capture PAIR against the given fault ids via the qualified two-frame
+// transition sim and return the subset it detects. Same status-agnostic loader
+// (skip only excluded/collapsed). Coverage-preserving for transition compaction
+// because it uses the same engine that detected the faults. No DB writes.
+std::vector<int64_t> detect_with_pair_unfiltered(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, const std::map<std::string, bool>& launch,
+    const std::map<std::string, bool>& capture,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids,
+    const std::string& unsupported_policy);
+
 }  // namespace faultflow::atpg

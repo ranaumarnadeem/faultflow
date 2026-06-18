@@ -293,3 +293,64 @@ TEST_CASE("LOC rejects a stuck-at with no good-machine edge", "[scan][loc]") {
   REQUIRE(single.batches.front().lanes.front().outcome ==
           ScanProtocolFaultOutcome::PASS);
 }
+
+// ---------------------------------------------------------------------------
+// LOS two-capture protocol: launch = last scan shift (scan_enable asserted), so
+// each FF transitions to its chain predecessor's loaded value, then a capture
+// clock (scan_enable de-asserted) captures the response.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+ScanPatternRequest tiny_scan_chain_los_request() {
+  ScanPatternRequest request = tiny_scan_chain_request();
+  request.los_two_capture = true;
+  return request;
+}
+
+}  // namespace
+
+TEST_CASE("LOS grades a shift-launched FF-Q transition as detected",
+          "[scan][los]") {
+  // After loading, ff1.Q = load[1] = false (frame 0). The launch shift moves its
+  // chain predecessor ff0's loaded value load[2] = true into ff1 (frame 1): a
+  // real 0->1 edge at ff1.Q, observable at Q1.
+  ScanProtocolFaultRequest request;
+  request.pattern = tiny_scan_chain_los_request();
+  request.pattern.load_seqs[0] = {false, false, true};  // ff1 frame0=0, frame1=load[2]=1
+  request.pattern.los_launch_scan_in[0] = false;         // ff0's fresh launch bit
+  const uint32_t q1 = compiled_index_for_yosys_net("tiny_scan_chain.json", 9);
+  request.faults.push_back({q1, 0});                     // STR at ff1.Q
+
+  const auto result = simulate_scan_protocol_faults(
+      test::fixture_path("tiny_scan_chain.json"), test::cell_map_path(), request,
+      "fail");
+  REQUIRE(result.batches.front().lanes.front().outcome ==
+          ScanProtocolFaultOutcome::PASS);
+}
+
+TEST_CASE("LOS rejects a stuck-at with no shift-launched edge", "[scan][los]") {
+  // ff1.Q = load[1] = false (frame 0); predecessor's load[2] = false too, so the
+  // shift produces NO 1->0 edge. STF (SA1) still perturbs Q1, so single-capture
+  // would detect it -- the LOS transition qualifier rejects it.
+  ScanProtocolFaultRequest request;
+  request.pattern = tiny_scan_chain_los_request();
+  request.pattern.load_seqs[0] = {false, false, false};  // ff1 frame0=0, frame1=0
+  request.pattern.los_launch_scan_in[0] = false;
+  const uint32_t q1 = compiled_index_for_yosys_net("tiny_scan_chain.json", 9);
+  request.faults.push_back({q1, 1});                     // STF at ff1.Q
+
+  const auto los = simulate_scan_protocol_faults(
+      test::fixture_path("tiny_scan_chain.json"), test::cell_map_path(), request,
+      "fail");
+  REQUIRE(los.batches.front().lanes.front().outcome ==
+          ScanProtocolFaultOutcome::NO_CAPTURE_OR_UNLOAD_EFFECT);
+
+  ScanProtocolFaultRequest sa = request;
+  sa.pattern.los_two_capture = false;
+  const auto single = simulate_scan_protocol_faults(
+      test::fixture_path("tiny_scan_chain.json"), test::cell_map_path(), sa,
+      "fail");
+  REQUIRE(single.batches.front().lanes.front().outcome ==
+          ScanProtocolFaultOutcome::PASS);
+}

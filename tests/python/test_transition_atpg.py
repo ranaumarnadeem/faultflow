@@ -108,13 +108,25 @@ def test_config_rejects_invalid_model(tmp_path: Path) -> None:
         load_config(cfg_path, "c17")
 
 
-def test_config_rejects_los_launch(tmp_path: Path) -> None:
+def test_config_accepts_los_launch(tmp_path: Path) -> None:
+    # LOS (launch-on-shift) is implemented and scan-only; it parses at config
+    # load. The scan-only restriction is enforced at run time (Runner.sim).
     cfg_path = _write_cfg(
         tmp_path,
         netlist=C17_JSON,
         fault_model_lines="model = transition\nlaunch = los",
     )
-    with pytest.raises(ConfigError, match="launch must be 'loc'"):
+    cfg = load_config(cfg_path, "c17")
+    assert cfg.fault_model.launch == "los"
+
+
+def test_config_rejects_invalid_launch(tmp_path: Path) -> None:
+    cfg_path = _write_cfg(
+        tmp_path,
+        netlist=C17_JSON,
+        fault_model_lines="model = transition\nlaunch = bogus",
+    )
+    with pytest.raises(ConfigError, match="launch must be 'loc' or 'los'"):
         load_config(cfg_path, "c17")
 
 

@@ -20,6 +20,7 @@ add_executable(
   atpg/test_miter_sat.cpp
   atpg/test_transition_atpg.cpp
   atpg/test_scan_transition_atpg.cpp
+  atpg/test_scan_los_transition_atpg.cpp
   atpg/test_progressive_sim.cpp
   atpg/test_compaction.cpp
   fixtures/test_tiny_fixtures.cpp

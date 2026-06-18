@@ -71,7 +71,9 @@ def _prepare_workspace(workdir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _write_cfg(workdir: Path, *, netlist: Path, compaction: str) -> Path:
+def _write_cfg(
+    workdir: Path, *, netlist: Path, compaction: str, model: str = "stuck_at"
+) -> Path:
     cfg_path = workdir / "config.ofs"
     cfg_path.write_text(
         (f"""
@@ -82,6 +84,7 @@ liberty = {SKY130_LIBERTY}
 
 [fault_model]
 collapsing = false
+model = {model}
 
 [simulation]
 unsupported_cells = fail
@@ -108,10 +111,11 @@ def _run(
     netlist: Path,
     compaction: str,
     tag: str,
+    model: str = "stuck_at",
 ) -> tuple[dict, dict]:
     workdir = tmp_path / tag
     _prepare_workspace(workdir, monkeypatch)
-    cfg_path = _write_cfg(workdir, netlist=netlist, compaction=compaction)
+    cfg_path = _write_cfg(workdir, netlist=netlist, compaction=compaction, model=model)
     runner = Runner(load_config(cfg_path, top))
     runner.init()
     runner.sim(clean=True, max_rounds=20, target_coverage=95.0)
@@ -163,6 +167,46 @@ def test_compaction_preserves_coverage_and_reduces_c17(
     assert rep_rev["run"]["vector_count"] < rep_none["run"]["vector_count"]
     assert rep_rev["run"]["vector_source"] == "compacted_native_sat_atpg"
     assert rep_none["run"]["vector_source"] == "native_sat_atpg"
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_transition_compaction_preserves_coverage_c17(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    if not C17_JSON.exists():
+        pytest.skip("c17 sky130 netlist missing")
+
+    rep_none, sum_none = _run(
+        tmp_path,
+        monkeypatch,
+        top="c17",
+        netlist=C17_JSON,
+        compaction="none",
+        tag="trans_none",
+        model="transition",
+    )
+    rep_rev, sum_rev = _run(
+        tmp_path,
+        monkeypatch,
+        top="c17",
+        netlist=C17_JSON,
+        compaction="reverse",
+        tag="trans_reverse",
+        model="transition",
+    )
+
+    # Two-frame compaction preserves transition coverage exactly.
+    assert sum_rev["coverage_percent"] == sum_none["coverage_percent"]
+    assert sum_rev["detected"] == sum_none["detected"]
+    assert sum_rev["denominator"] == sum_none["denominator"]
+    # And reduces the launch/capture pair count.
+    assert rep_rev["run"]["vector_count"] <= rep_none["run"]["vector_count"]
+    assert rep_rev["summary"].get("fault_model") == "transition"
+    assert rep_rev["run"]["vector_source"] == "compacted_native_transition_atpg"
+    assert rep_none["run"]["vector_source"] == "native_transition_atpg"
 
 
 @pytest.mark.integration

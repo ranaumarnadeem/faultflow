@@ -32,8 +32,9 @@ def test_redundancy_model_id_is_stable() -> None:
         "include_clock_faults": 0,
         "include_reset_faults": 0,
     }
-    # fault_model is part of the redundancy fingerprint; absent -> stuck_at.
-    assert redundancy_model_id(fp) == "abc|def|0|fail|0|0|stuck_at"
+    # fault_model and launch are part of the redundancy fingerprint; absent ->
+    # stuck_at / loc.
+    assert redundancy_model_id(fp) == "abc|def|0|fail|0|0|stuck_at|loc"
 
 
 def test_summary_includes_redundant(tmp_path: Path) -> None:

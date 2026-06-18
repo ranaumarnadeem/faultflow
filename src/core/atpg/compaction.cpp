@@ -109,4 +109,61 @@ std::vector<int64_t> detect_with_vector_unfiltered(
   return detected;
 }
 
+std::vector<int64_t> detect_with_pair_unfiltered(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, const std::map<std::string, bool>& launch,
+    const std::map<std::string, bool>& capture,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids,
+    const std::string& unsupported_policy) {
+  if (fault_ids.empty()) {
+    return {};
+  }
+  const CachedGraph& ctx =
+      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+  const TestVector v1 = build_vector(ctx.parsed, launch, input_order);
+  const TestVector v2 = build_vector(ctx.parsed, capture, input_order);
+
+  const std::map<int64_t, db::FaultRecord> records =
+      db::load_faults(db_path, fault_ids);
+  std::vector<Target> targets;
+  targets.reserve(fault_ids.size());
+  for (int64_t fault_id : fault_ids) {
+    const auto it = records.find(fault_id);
+    if (it == records.end()) {
+      throw std::runtime_error("fault not found: " + std::to_string(fault_id));
+    }
+    const db::FaultRecord& rec = it->second;
+    if (rec.exclusion != FaultExclusion::NONE ||
+        rec.collapsed_into != std::numeric_limits<uint32_t>::max()) {
+      continue;
+    }
+    CompactFault fault;
+    fault.net_index = rec.compiled_net_index;
+    fault.type = rec.type;
+    fault.status = rec.status;
+    fault.exclusion = rec.exclusion;
+    fault.collapsed_into = rec.collapsed_into;
+    fault.model = FaultModel::TRANSITION;
+    targets.push_back({fault_id, fault});
+  }
+
+  BitParallelSim sim;
+  std::vector<int64_t> detected;
+  const size_t lanes = static_cast<size_t>(kBatchSize);
+  for (size_t begin = 0; begin < targets.size(); begin += lanes) {
+    const size_t end = std::min(begin + lanes, targets.size());
+    const FaultBatch batch = make_batch(targets, begin, end);
+    const uint64_t detected_mask =
+        sim.simulate_transition_batch(ctx.cg, v1, v2, batch);
+    for (size_t i = begin; i < end; ++i) {
+      const CompactFault& lane = batch.faults[i - begin];
+      if ((detected_mask & lane.sa_mask) != 0) {
+        detected.push_back(targets[i].fault_id);
+      }
+    }
+  }
+  return detected;
+}
+
 }  // namespace faultflow::atpg
