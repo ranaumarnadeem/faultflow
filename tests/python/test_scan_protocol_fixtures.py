@@ -17,7 +17,7 @@ GENERIC = FIXTURE_ROOT / "generic.json"
 MANIFEST = FIXTURE_ROOT / "manifest.json"
 CASES = FIXTURE_ROOT / "cases.json"
 SCHEMA = ROOT / "schemas/scan_protocol_fixture.schema.json"
-CELL_MAP = ROOT / "cells/osu/osu035.json"
+CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 
 
 def _load(path: Path) -> dict[str, Any]:

@@ -236,6 +236,8 @@ class Runner:
         return {
             "top": self.cfg.top,
             "cell_lib": str(self.cfg.cell_lib),
+            "fault_model": self.cfg.fault_model.model,
+            "launch": self.cfg.fault_model.launch,
             "collapsing": self.cfg.fault_model.collapsing,
             "unsupported_cells": self.cfg.simulation.unsupported_cells,
             "include_clock_faults": self.cfg.fault_model.include_clock_faults,
@@ -295,6 +297,7 @@ class Runner:
             "unsupported_cells": self.cfg.simulation.unsupported_cells,
             "include_clock_faults": int(self.cfg.fault_model.include_clock_faults),
             "include_reset_faults": int(self.cfg.fault_model.include_reset_faults),
+            "fault_model": self.cfg.fault_model.model,
         }
 
     def _stored_fingerprint(
@@ -428,8 +431,17 @@ class Runner:
         )
         cells = area = None
         for line in proc.stdout.splitlines():
+            # Plain stat (no liberty): "   Number of cells:             47"
             if "Number of cells:" in line:
                 cells = line.split()[-1]
+            # Liberty stat table row ending with " cells":
+            # "       12  110.106 cells"
+            elif line.strip().endswith(" cells"):
+                parts_l = line.split()
+                if len(parts_l) >= 2 and parts_l[0].isdigit():
+                    cells = parts_l[0]
+                    if len(parts_l) >= 3:
+                        area = parts_l[1]
             if "Chip area for module" in line:
                 area = line.split()[-1]
         parts = [f"{cells} cells"] if cells else []
@@ -1404,45 +1416,72 @@ class Runner:
             from faultflow.runner.progressive_atpg import (
                 redundancy_model_id,
                 run_progressive_native_atpg,
+                run_progressive_transition_atpg,
             )
 
+            transition = self.cfg.fault_model.model == "transition"
             with self._db() as conn:
                 fp = self._fingerprint(netlist)
                 model_id = redundancy_model_id(fp)
                 campaign_id = self._check_fingerprint(conn, fp)
-            log.info("sim    running progressive ATPG (top=%s) ...", self.cfg.top)
-            vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
-                run_progressive_native_atpg(
-                    self.cfg,
-                    netlist,
-                    model_id,
-                    campaign_id=campaign_id,
-                    max_rounds=max_rounds,
-                    target_coverage=target_coverage,
+            if transition:
+                log.info(
+                    "sim    running progressive transition ATPG (top=%s) ...",
+                    self.cfg.top,
                 )
-            )
-            sidecar = self.cfg.intermediate_dir / "native_sat_atpg"
-            vector_source = "native_sat_atpg"
+                vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
+                    run_progressive_transition_atpg(
+                        self.cfg,
+                        netlist,
+                        model_id,
+                        campaign_id=campaign_id,
+                        max_rounds=max_rounds,
+                        target_coverage=target_coverage,
+                    )
+                )
+                vector_source = "native_transition_atpg"
+            else:
+                log.info("sim    running progressive ATPG (top=%s) ...", self.cfg.top)
+                vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
+                    run_progressive_native_atpg(
+                        self.cfg,
+                        netlist,
+                        model_id,
+                        campaign_id=campaign_id,
+                        max_rounds=max_rounds,
+                        target_coverage=target_coverage,
+                    )
+                )
+                vector_source = "native_sat_atpg"
+            sidecar = self.cfg.intermediate_dir / vector_source
             atpg_terminal = atpg_stats.terminal_reason
-            if self.cfg.atpg.compaction != "none":
-                from faultflow.runner.compaction import compact_run
+            # Compaction and the iverilog gate operate on single-frame vectors;
+            # both are deferred for the two-frame transition model (Step 2b).
+            if transition:
+                if self.cfg.atpg.compaction != "none":
+                    log.info("sim    compaction skipped (transition model)")
+                if verify_enabled:
+                    log.info("sim    iverilog verify skipped (transition model)")
+            else:
+                if self.cfg.atpg.compaction != "none":
+                    from faultflow.runner.compaction import compact_run
 
-                vectors, run_id, raw_vector_count = compact_run(
-                    json_path=str(netlist),
-                    cell_map_path=str(self.cfg.cell_lib),
-                    db_path=str(self.cfg.db_path),
-                    campaign_id=campaign_id,
-                    run_id=run_id,
-                    vectors=vectors,
-                    unsupported=self.cfg.simulation.unsupported_cells,
-                )
-                vector_source = vectors.source
-            if verify_enabled:
-                sidecar, _ = self._find_order_sidecar()
-                verified_outputs = self._run_verification(
-                    netlist, sidecar, vectors, vectors.input_order
-                )
-                self._write_verified_vectors(run_id, vectors, verified_outputs)
+                    vectors, run_id, raw_vector_count = compact_run(
+                        json_path=str(netlist),
+                        cell_map_path=str(self.cfg.cell_lib),
+                        db_path=str(self.cfg.db_path),
+                        campaign_id=campaign_id,
+                        run_id=run_id,
+                        vectors=vectors,
+                        unsupported=self.cfg.simulation.unsupported_cells,
+                    )
+                    vector_source = vectors.source
+                if verify_enabled:
+                    sidecar, _ = self._find_order_sidecar()
+                    verified_outputs = self._run_verification(
+                        netlist, sidecar, vectors, vectors.input_order
+                    )
+                    self._write_verified_vectors(run_id, vectors, verified_outputs)
 
         total_seconds = time.perf_counter() - total_start
         self._write_run_timings(run_id, atpg_seconds, fault_sim_seconds, total_seconds)

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <random>
 #include <stdexcept>
+#include <utility>
 
 #include "atpg/fault_solver.hpp"
 #include "atpg/sat_atpg.hpp"
@@ -314,6 +315,166 @@ std::vector<int64_t> simulate_tentative_detections(
     const FaultBatch batch = make_batch(active, begin, end);
     ++g_simulation_instrumentation.batch_fault_calls;
     const uint64_t detected_mask = sim.simulate_batch(ctx.cg, tv, batch);
+    for (size_t i = begin; i < end; ++i) {
+      const CompactFault& lane = batch.faults[i - begin];
+      if ((detected_mask & lane.sa_mask) != 0) {
+        detected.push_back(active[i].fault_id);
+      }
+    }
+  }
+  return detected;
+}
+
+// ---- Transition model (combinational broadside two-pattern) ----------------
+
+std::vector<VectorPair> generate_random_vector_pairs(
+    const std::vector<std::string>& input_order, int count, uint64_t seed) {
+  std::vector<VectorPair> pairs;
+  std::mt19937_64 rng(seed);
+  pairs.reserve(static_cast<size_t>(count));
+  const auto draw = [&]() {
+    std::map<std::string, bool> vector;
+    for (const auto& input : input_order) {
+      vector[input] = (rng() & 1ULL) != 0;
+    }
+    return vector;
+  };
+  for (int i = 0; i < count; ++i) {
+    std::map<std::string, bool> launch = draw();
+    std::map<std::string, bool> capture = draw();
+    pairs.emplace_back(std::move(launch), std::move(capture));
+  }
+  return pairs;
+}
+
+SolveTransitionResult solve_transition_fault_for_db(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::vector<std::string>& blocked_patterns, int conflict_limit,
+    int sat_timeout_seconds, const std::string& unsupported_policy) {
+  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const db::FaultRecord rec = db::load_fault(db_path, fault_id);
+  if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
+      rec.status != FaultStatus::UNDETECTED) {
+    throw std::runtime_error("fault is not active for transition SAT ATPG");
+  }
+  const auto pis = ordered_pis(ctx.parsed, ctx.cg);
+  CompactFault fault = fault_from_record(rec);
+  fault.model = FaultModel::TRANSITION;
+
+  SatSolveOptions options;
+  options.conflict_limit = conflict_limit;
+  options.sat_timeout_seconds = sat_timeout_seconds;
+  options.blocked_patterns = blocked_patterns;
+
+  std::map<std::string, bool> launch;
+  std::map<std::string, bool> capture;
+  const SatSolveResult result =
+      solve_transition_fault(ctx.cg, pis, fault, options, launch, capture);
+
+  SolveTransitionResult out;
+  out.result = solve_result_name(result);
+  if (result == SatSolveResult::SAT) {
+    out.launch = std::move(launch);
+    out.capture = std::move(capture);
+  }
+  return out;
+}
+
+bool verify_transition_fault_vector(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::map<std::string, bool>& launch,
+    const std::map<std::string, bool>& capture,
+    const std::string& unsupported_policy) {
+  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const db::FaultRecord rec = db::load_fault(db_path, fault_id);
+  CompactFault fault = fault_from_record(rec);
+  fault.model = FaultModel::TRANSITION;
+  const auto to_vec = [&](const std::map<std::string, bool>& values) {
+    TestVector tv;
+    for (const auto& [name, value] : values) {
+      tv.inputs[ctx.parsed.net_id_by_name(name)] = value;
+    }
+    return tv;
+  };
+  GoldenRefSim golden;
+  return golden.simulate_transition_fault(ctx.cg, to_vec(launch), to_vec(capture),
+                                          fault);
+}
+
+std::vector<ProgressiveDetection> simulate_transition_incremental(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t campaign_id, int64_t run_id,
+    const std::vector<VectorPair>& new_pairs,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
+    const std::string& unsupported_policy) {
+  if (new_pairs.empty() || fault_ids.empty()) {
+    return {};
+  }
+  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  std::vector<std::pair<TestVector, TestVector>> pairs;
+  pairs.reserve(new_pairs.size());
+  for (const auto& [launch, capture] : new_pairs) {
+    pairs.emplace_back(vector_from_map(ctx.parsed, launch, input_order),
+                       vector_from_map(ctx.parsed, capture, input_order));
+  }
+
+  BitParallelSim sim;
+  std::vector<ProgressiveDetection> detections;
+  std::vector<ActiveFaultRecord> active =
+      load_active_fault_records(db_path, fault_ids, false);
+  for (size_t vi = 0; vi < pairs.size() && !active.empty(); ++vi) {
+    std::vector<ActiveFaultRecord> still_active;
+    still_active.reserve(active.size());
+    for (size_t begin = 0; begin < active.size(); begin += kFaultLanesPerWord) {
+      const size_t end = std::min(begin + kFaultLanesPerWord, active.size());
+      const FaultBatch batch = make_batch(active, begin, end);
+      ++g_simulation_instrumentation.batch_fault_calls;
+      const uint64_t detected_mask = sim.simulate_transition_batch(
+          ctx.cg, pairs[vi].first, pairs[vi].second, batch);
+      for (size_t i = begin; i < end; ++i) {
+        const CompactFault& lane = batch.faults[i - begin];
+        if ((detected_mask & lane.sa_mask) != 0) {
+          const int64_t vector_index =
+              vector_start_index + static_cast<int64_t>(vi);
+          db::mark_fault_detected(db_path, campaign_id, run_id,
+                                  active[i].fault_id, vector_index);
+          detections.push_back({active[i].fault_id, vector_index});
+        } else {
+          still_active.push_back(active[i]);
+        }
+      }
+    }
+    active = std::move(still_active);
+  }
+  return detections;
+}
+
+std::vector<int64_t> simulate_transition_tentative_detections(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, const std::map<std::string, bool>& launch,
+    const std::map<std::string, bool>& capture,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids,
+    const std::string& unsupported_policy) {
+  if (fault_ids.empty()) {
+    return {};
+  }
+  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const TestVector v1 = vector_from_map(ctx.parsed, launch, input_order);
+  const TestVector v2 = vector_from_map(ctx.parsed, capture, input_order);
+  BitParallelSim sim;
+  std::vector<int64_t> detected;
+  const std::vector<ActiveFaultRecord> active =
+      load_active_fault_records(db_path, fault_ids, true);
+  for (size_t begin = 0; begin < active.size(); begin += kFaultLanesPerWord) {
+    const size_t end = std::min(begin + kFaultLanesPerWord, active.size());
+    const FaultBatch batch = make_batch(active, begin, end);
+    ++g_simulation_instrumentation.batch_fault_calls;
+    const uint64_t detected_mask =
+        sim.simulate_transition_batch(ctx.cg, v1, v2, batch);
     for (size_t i = begin; i < end; ++i) {
       const CompactFault& lane = batch.faults[i - begin];
       if ((detected_mask & lane.sa_mask) != 0) {

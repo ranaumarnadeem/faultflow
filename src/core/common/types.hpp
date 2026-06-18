@@ -141,4 +141,9 @@ enum class FaultExclusion : uint8_t {
   BLACKBOX = 3,
 };
 
+// STUCK_AT: single-frame SA0/SA1 (default, existing behaviour unchanged).
+// TRANSITION: two-frame STR/STF — type=SA0 means slow-to-rise (capture-frame SA0),
+//             type=SA1 means slow-to-fall (capture-frame SA1).
+enum class FaultModel : uint8_t { STUCK_AT = 0, TRANSITION = 1 };
+
 }  // namespace faultflow

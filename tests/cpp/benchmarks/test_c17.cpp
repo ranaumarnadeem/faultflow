@@ -10,9 +10,9 @@ using namespace faultflow;
 
 TEST_CASE("c17 loads and compiles", "[c17][integration]") {
   const NormalizedGraph ng =
-      test::load_normalized_benchmark("iscas85/synth/c17.json");
+      test::load_normalized_benchmark("iscas85/synth_sky130/c17.json");
   const CompiledSimGraph cg =
-      test::load_compiled_benchmark("iscas85/synth/c17.json");
+      test::load_compiled_benchmark("iscas85/synth_sky130/c17.json");
   REQUIRE(ng.PIs.size() == 5);
   REQUIRE(ng.POs.size() == 2);
   int logic_gates = 0;
@@ -21,14 +21,14 @@ TEST_CASE("c17 loads and compiles", "[c17][integration]") {
       ++logic_gates;
     }
   }
-  REQUIRE(logic_gates == 6);
+  REQUIRE(logic_gates == 3);
 }
 
 TEST_CASE("c17 exhaustive coverage and golden parity", "[c17][integration]") {
   const NormalizedGraph ng =
-      test::load_normalized_benchmark("iscas85/synth/c17.json");
+      test::load_normalized_benchmark("iscas85/synth_sky130/c17.json");
   const CompiledSimGraph cg =
-      test::load_compiled_benchmark("iscas85/synth/c17.json");
+      test::load_compiled_benchmark("iscas85/synth_sky130/c17.json");
   const auto faults = enumerate_faults(ng, cg);
   std::vector<int> pi_ids(ng.PIs.begin(), ng.PIs.end());
   std::sort(pi_ids.begin(), pi_ids.end());
@@ -46,9 +46,9 @@ TEST_CASE("c17 exhaustive coverage and golden parity", "[c17][integration]") {
 
 TEST_CASE("c17 batching matches golden detection counts", "[c17][integration]") {
   const NormalizedGraph ng =
-      test::load_normalized_benchmark("iscas85/synth/c17.json");
+      test::load_normalized_benchmark("iscas85/synth_sky130/c17.json");
   const CompiledSimGraph cg =
-      test::load_compiled_benchmark("iscas85/synth/c17.json");
+      test::load_compiled_benchmark("iscas85/synth_sky130/c17.json");
   const auto all_faults = enumerate_faults(ng, cg);
   std::vector<int> pi_ids(ng.PIs.begin(), ng.PIs.end());
   std::sort(pi_ids.begin(), pi_ids.end());

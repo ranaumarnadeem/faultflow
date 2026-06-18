@@ -29,7 +29,7 @@ from faultflow.scan.site_resolution import (
 from db_v3_helpers import insert_campaign, insert_fault_row, insert_run
 
 ROOT = Path(__file__).resolve().parents[2]
-CELL_MAP = ROOT / "cells/osu/osu035.json"
+CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 RECONVERGE = ROOT / "tests/cpp/fixtures/tiny_reconverge.json"
 
 
@@ -188,10 +188,10 @@ def _d_fanout_generic_and_manifest() -> tuple[dict[str, Any], dict[str, Any]]:
                         },
                     },
                     "u_and": {
-                        "type": "AND2X1",
+                        "type": "sky130_fd_sc_hd__and2_1",
                         "parameters": {},
                         "attributes": {},
-                        "connections": {"A": [5], "B": [6], "Y": [9]},
+                        "connections": {"A": [5], "B": [6], "X": [9]},
                     },
                 },
                 "netnames": {
@@ -399,7 +399,7 @@ def _tiny_dff_scan_workspace(
                         "cells": {
                             "u0": {
                                 "hide_name": 0,
-                                "type": "DFFPOSX1",
+                                "type": "sky130_fd_sc_hd__dfxtp_1",
                                 "parameters": {},
                                 "attributes": {},
                                 "port_directions": {

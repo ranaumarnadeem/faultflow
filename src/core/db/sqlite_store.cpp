@@ -164,6 +164,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
     redundancy_model_id TEXT NOT NULL DEFAULT '',
     manifest_hash TEXT NOT NULL DEFAULT '',
     atpg_view_schema_ver TEXT NOT NULL DEFAULT '',
+    fault_model TEXT NOT NULL DEFAULT 'stuck_at',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS runs (
@@ -199,6 +200,7 @@ CREATE TABLE IF NOT EXISTS vectors (
     source TEXT NOT NULL,
     vector_index INTEGER NOT NULL,
     pattern TEXT NOT NULL,
+    launch_pattern TEXT NOT NULL DEFAULT '',
     inputs TEXT NOT NULL DEFAULT '{}',
     expected TEXT NOT NULL DEFAULT '{}',
     verified INTEGER NOT NULL DEFAULT 0,
@@ -318,9 +320,24 @@ int64_t start_run(const std::string& db_path, int64_t campaign_id,
   return id;
 }
 
+namespace {
+
+// Empty launch_patterns -> ''; otherwise it runs parallel to patterns (callers
+// validate the lengths match before binding).
+std::string launch_at(const std::vector<std::string>& launch_patterns,
+                      size_t i) {
+  return launch_patterns.empty() ? std::string() : launch_patterns[i];
+}
+
+}  // namespace
+
 void write_vectors(const std::string& db_path, int64_t campaign_id,
                    int64_t run_id, const std::string& source,
-                   const std::vector<std::string>& patterns) {
+                   const std::vector<std::string>& patterns,
+                   const std::vector<std::string>& launch_patterns) {
+  if (!launch_patterns.empty() && launch_patterns.size() != patterns.size()) {
+    throw std::runtime_error("launch_patterns length mismatch");
+  }
   SQLite::Database db = open_db(db_path);
   require_v3_schema(db);
   SQLite::Transaction txn(db);
@@ -332,13 +349,14 @@ void write_vectors(const std::string& db_path, int64_t campaign_id,
   clear.exec();
   SQLite::Statement q(
       db, "INSERT INTO vectors(campaign_id, run_id, source, vector_index, "
-          "pattern) VALUES (?, ?, ?, ?, ?)");
+          "pattern, launch_pattern) VALUES (?, ?, ?, ?, ?, ?)");
   for (size_t i = 0; i < patterns.size(); ++i) {
     q.bind(1, campaign_id);
     q.bind(2, run_id);
     q.bind(3, source);
     q.bind(4, static_cast<int64_t>(i + 1));
     q.bind(5, patterns[i]);
+    q.bind(6, launch_at(launch_patterns, i));
     q.exec();
     q.reset();
   }
@@ -348,22 +366,27 @@ void write_vectors(const std::string& db_path, int64_t campaign_id,
 void append_vectors(const std::string& db_path, int64_t campaign_id,
                     int64_t run_id, const std::string& source,
                     const std::vector<std::string>& patterns,
-                    int64_t start_index) {
+                    int64_t start_index,
+                    const std::vector<std::string>& launch_patterns) {
   if (patterns.empty()) {
     return;
+  }
+  if (!launch_patterns.empty() && launch_patterns.size() != patterns.size()) {
+    throw std::runtime_error("launch_patterns length mismatch");
   }
   SQLite::Database db = open_db(db_path);
   require_v3_schema(db);
   SQLite::Transaction txn(db);
   SQLite::Statement q(
       db, "INSERT INTO vectors(campaign_id, run_id, source, vector_index, "
-          "pattern) VALUES (?, ?, ?, ?, ?)");
+          "pattern, launch_pattern) VALUES (?, ?, ?, ?, ?, ?)");
   for (size_t i = 0; i < patterns.size(); ++i) {
     q.bind(1, campaign_id);
     q.bind(2, run_id);
     q.bind(3, source);
     q.bind(4, start_index + static_cast<int64_t>(i));
     q.bind(5, patterns[i]);
+    q.bind(6, launch_at(launch_patterns, i));
     q.exec();
     q.reset();
   }

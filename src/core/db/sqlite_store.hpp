@@ -11,7 +11,7 @@
 
 namespace faultflow::db {
 
-constexpr int kSchemaUserVersion = 5;
+constexpr int kSchemaUserVersion = 6;
 
 struct CoverageSummary {
   int64_t total_raw_faults = 0;
@@ -60,14 +60,19 @@ int64_t start_run(const std::string& db_path, int64_t campaign_id,
                   const std::string& vector_source, int64_t vector_count,
                   const std::string& initial_ff_state = "all_zero");
 
+// `patterns` is the sampled (capture) frame. `launch_patterns`, when non-empty,
+// is the parallel launch frame for transition vectors (must match `patterns`
+// length); empty leaves launch_pattern='' (single-frame stuck-at).
 void write_vectors(const std::string& db_path, int64_t campaign_id,
                    int64_t run_id, const std::string& source,
-                   const std::vector<std::string>& patterns);
+                   const std::vector<std::string>& patterns,
+                   const std::vector<std::string>& launch_patterns = {});
 
 void append_vectors(const std::string& db_path, int64_t campaign_id,
                     int64_t run_id, const std::string& source,
                     const std::vector<std::string>& patterns,
-                    int64_t start_index);
+                    int64_t start_index,
+                    const std::vector<std::string>& launch_patterns = {});
 
 void write_faults(const std::string& db_path, int64_t campaign_id,
                   int64_t run_id, const NormalizedGraph& ng,

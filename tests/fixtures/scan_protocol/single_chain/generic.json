@@ -38,10 +38,10 @@
           }
         },
         "u_y": {
-          "type": "XOR2X1",
+          "type": "sky130_fd_sc_hd__xor2_1",
           "parameters": {},
           "attributes": {},
-          "connections": {"A": [8], "B": [5], "Y": [10]}
+          "connections": {"A": [8], "B": [5], "X": [10]}
         }
       },
       "netnames": {

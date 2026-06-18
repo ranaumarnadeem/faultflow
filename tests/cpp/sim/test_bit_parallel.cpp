@@ -8,9 +8,9 @@ using namespace faultflow;
 
 TEST_CASE("BitParallelSim matches GoldenRefSim on c17", "[bit_parallel]") {
   const NormalizedGraph ng =
-      test::load_normalized_benchmark("iscas85/synth/c17.json");
+      test::load_normalized_benchmark("iscas85/synth_sky130/c17.json");
   const CompiledSimGraph cg =
-      test::load_compiled_benchmark("iscas85/synth/c17.json");
+      test::load_compiled_benchmark("iscas85/synth_sky130/c17.json");
   const auto faults = enumerate_faults(ng, cg);
   std::vector<int> pi_ids(ng.PIs.begin(), ng.PIs.end());
   std::sort(pi_ids.begin(), pi_ids.end());
@@ -22,7 +22,7 @@ TEST_CASE("BitParallelSim matches GoldenRefSim on c17", "[bit_parallel]") {
 
 TEST_CASE("BitParallelSim bit-0 invariant c17", "[bit_parallel]") {
   const CompiledSimGraph cg =
-      test::load_compiled_benchmark("iscas85/synth/c17.json");
+      test::load_compiled_benchmark("iscas85/synth_sky130/c17.json");
   BitParallelSim sim;
   SimState state;
   state.init(cg.net_count);

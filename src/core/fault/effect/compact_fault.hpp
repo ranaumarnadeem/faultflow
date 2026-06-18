@@ -16,6 +16,7 @@ struct CompactFault {
   FaultExclusion exclusion = FaultExclusion::NONE;
   uint32_t collapsed_into = std::numeric_limits<uint32_t>::max();
   uint32_t detected_by_vector = 0;
+  FaultModel model = FaultModel::STUCK_AT;
 };
 
 }  // namespace faultflow

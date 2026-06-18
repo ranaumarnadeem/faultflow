@@ -17,6 +17,10 @@ std::string benchmark_path(const std::string& name) {
 }
 
 std::string cell_map_path() {
+  return std::string(FAULTFLOW_SOURCE_DIR) + "/cells/sky130/sky130_fd_sc_hd.json";
+}
+
+std::string cell_map_path_osu() {
   return std::string(FAULTFLOW_SOURCE_DIR) + "/cells/osu/osu035.json";
 }
 

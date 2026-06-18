@@ -33,6 +33,13 @@ class GoldenRefSim {
       const CompiledSimGraph& cg,
       const std::vector<std::map<int, bool>>& fault_free,
       const std::vector<std::map<int, bool>>& faulty) const;
+
+  // Two-frame transition oracle. Returns true iff:
+  //   1. good machine made the required 0->1 (STR) / 1->0 (STF) transition at the fault net, AND
+  //   2. the capture-frame stuck-at is observable at a PO/TP.
+  bool simulate_transition_fault(const CompiledSimGraph& cg, const TestVector& v1,
+                                  const TestVector& v2,
+                                  const CompactFault& fault) const;
 };
 
 }  // namespace faultflow

@@ -6,7 +6,7 @@ using namespace faultflow;
 
 TEST_CASE("CompiledSimGraph c17", "[compiled_graph]") {
   const CompiledSimGraph cg =
-      test::load_compiled_benchmark("iscas85/synth/c17.json");
+      test::load_compiled_benchmark("iscas85/synth_sky130/c17.json");
   REQUIRE(cg.net_count >= 8);
   REQUIRE(cg.observable.size() == 2);
   REQUIRE(cg.pi_nets.size() == 5);
@@ -17,7 +17,7 @@ TEST_CASE("CompiledSimGraph c17", "[compiled_graph]") {
       ++gate_nodes;
     }
   }
-  REQUIRE(gate_nodes >= 6);
+  REQUIRE(gate_nodes >= 3);
   for (const auto& [yid, cidx] : cg.yosys_to_compiled) {
     REQUIRE(cg.compiled_to_yosys[cidx] == yid);
   }

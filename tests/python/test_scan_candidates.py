@@ -97,16 +97,21 @@ def test_load_blocked_patterns_groups_by_fault(tmp_path) -> None:
         )
         fault_ids = [
             int(row["id"])
-            for row in conn.execute(
-                "SELECT id FROM faults ORDER BY net_id"
-            ).fetchall()
+            for row in conn.execute("SELECT id FROM faults ORDER BY net_id").fetchall()
         ]
         conn.execute(
             """
             INSERT INTO blocked_patterns(campaign_id, fault_id, pattern)
             VALUES (?, ?, '01'), (?, ?, '10'), (?, ?, '11')
             """,
-            (campaign_id, fault_ids[0], campaign_id, fault_ids[0], campaign_id, fault_ids[1]),
+            (
+                campaign_id,
+                fault_ids[0],
+                campaign_id,
+                fault_ids[0],
+                campaign_id,
+                fault_ids[1],
+            ),
         )
         conn.commit()
         blocked = load_blocked_patterns(conn, campaign_id)

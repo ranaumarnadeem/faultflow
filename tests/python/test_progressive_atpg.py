@@ -32,7 +32,8 @@ def test_redundancy_model_id_is_stable() -> None:
         "include_clock_faults": 0,
         "include_reset_faults": 0,
     }
-    assert redundancy_model_id(fp) == "abc|def|0|fail|0|0"
+    # fault_model is part of the redundancy fingerprint; absent -> stuck_at.
+    assert redundancy_model_id(fp) == "abc|def|0|fail|0|0|stuck_at"
 
 
 def test_summary_includes_redundant(tmp_path: Path) -> None:
@@ -97,7 +98,7 @@ def _tiny_inv_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path
         f"""
 [design]
 netlist = {fixture}
-cell_lib = {root / "cells/osu/osu035.json"}
+cell_lib = {root / "cells/sky130/sky130_fd_sc_hd.json"}
 
 [fault_model]
 collapsing = false
@@ -178,7 +179,7 @@ def test_threshold_met_stops_before_complete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = Path(__file__).resolve().parents[2]
-    netlist = root / "tests/benchmarks/iscas85/synth/c432.json"
+    netlist = root / "tests/benchmarks/iscas85/synth_sky130/c432.json"
     if not netlist.exists():
         pytest.skip("c432 netlist missing")
 
@@ -187,7 +188,7 @@ def test_threshold_met_stops_before_complete(
         f"""
 [design]
 netlist = {netlist}
-cell_lib = {root / "cells/osu/osu035.json"}
+cell_lib = {root / "cells/sky130/sky130_fd_sc_hd.json"}
 
 [fault_model]
 collapsing = false
@@ -471,7 +472,7 @@ def test_cli_sim_passes_max_and_target(
         """
 [design]
 netlist = missing.json
-cell_lib = cells/osu/osu035.json
+cell_lib = cells/sky130/sky130_fd_sc_hd.json
 
 [simulation]
 unsupported_cells = fail
@@ -522,7 +523,7 @@ def test_cli_sim_rejects_invalid_max_and_target(
     monkeypatch.chdir(tmp_path)
     cfg_path = tmp_path / "config.ofs"
     cfg_path.write_text(
-        "[design]\nnetlist = x.json\ncell_lib = cells/osu/osu035.json\n",
+        "[design]\nnetlist = x.json\ncell_lib = cells/sky130/sky130_fd_sc_hd.json\n",
         encoding="utf-8",
     )
 
@@ -554,7 +555,7 @@ def test_runner_ext_skips_progressive_atpg(
         f"""
 [design]
 netlist = {netlist}
-cell_lib = {Path(__file__).resolve().parents[2] / "cells/osu/osu035.json"}
+cell_lib = {Path(__file__).resolve().parents[2] / "cells/sky130/sky130_fd_sc_hd.json"}
 
 [simulation]
 unsupported_cells = fail

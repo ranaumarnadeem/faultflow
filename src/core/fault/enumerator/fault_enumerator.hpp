@@ -17,4 +17,8 @@ std::vector<CompactFault> enumerate_faults(const NormalizedGraph& ng,
                                            const CompiledSimGraph& cg,
                                            EnumeratorOptions opt = {});
 
+std::vector<CompactFault> enumerate_transition_faults(const NormalizedGraph& ng,
+                                                       const CompiledSimGraph& cg,
+                                                       EnumeratorOptions opt = {});
+
 }  // namespace faultflow

@@ -71,6 +71,8 @@ def _optional_int(parser: ConfigParser, section: str, key: str) -> int | None:
 
 @dataclass(frozen=True)
 class FaultModelConfig:
+    model: str = "stuck_at"
+    launch: str = "loc"
     collapsing: bool = False
     include_clock_faults: bool = False
     include_reset_faults: bool = False
@@ -257,6 +259,30 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     if atpg_compaction not in {"none", "reverse"}:
         raise ConfigError("atpg.compaction must be 'none' or 'reverse'")
 
+    # Fault model: `model` is canonical; `type` is a back-compat alias (older
+    # configs carried `type = stuck_at`). Prefer `model` when both are present.
+    fault_model = parser.get(
+        "fault_model",
+        "model",
+        fallback=parser.get("fault_model", "type", fallback="stuck_at"),
+    ).strip()
+    if fault_model not in {"stuck_at", "transition"}:
+        raise ConfigError("fault_model.model must be 'stuck_at' or 'transition'")
+
+    fault_launch = parser.get("fault_model", "launch", fallback="loc").strip()
+    if fault_launch != "loc":
+        raise ConfigError(
+            "fault_model.launch must be 'loc' (launch-on-shift is reserved, "
+            "not implemented)"
+        )
+
+    fault_collapsing = _bool(parser, "fault_model", "collapsing", False)
+    if fault_model == "transition" and fault_collapsing:
+        raise ConfigError(
+            "fault collapsing is not supported for the transition model "
+            "(stuck-at equivalence rules do not hold for transition faults)"
+        )
+
     return FaultflowConfig(
         path=cfg_path,
         top=top,
@@ -266,7 +292,9 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         verilog_models=_verilog_models(parser),
         yosys_ver=parser.get("design", "yosys_ver", fallback=""),
         fault_model=FaultModelConfig(
-            collapsing=_bool(parser, "fault_model", "collapsing", False),
+            model=fault_model,
+            launch=fault_launch,
+            collapsing=fault_collapsing,
             include_clock_faults=_bool(
                 parser, "fault_model", "include_clock_faults", False
             ),

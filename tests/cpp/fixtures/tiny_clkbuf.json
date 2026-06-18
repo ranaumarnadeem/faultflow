@@ -2,58 +2,24 @@
   "creator": "Yosys 0.61+129 (faultflow fixture generator)",
   "modules": {
     "tiny_clkbuf": {
-      "attributes": {
-        "top": "00000000000000000000000000000001"
-      },
+      "attributes": { "top": "00000000000000000000000000000001" },
       "ports": {
-        "A": {
-          "direction": "input",
-          "bits": [
-            2
-          ]
-        },
-        "Y": {
-          "direction": "output",
-          "bits": [
-            3
-          ]
-        }
+        "A": { "direction": "input", "bits": [2] },
+        "Y": { "direction": "output", "bits": [3] }
       },
       "cells": {
         "u0": {
           "hide_name": 0,
-          "type": "CLKBUF1",
+          "type": "sky130_fd_sc_hd__clkbuf_1",
           "parameters": {},
           "attributes": {},
-          "port_directions": {
-            "A": "input",
-            "Y": "output"
-          },
-          "connections": {
-            "A": [
-              2
-            ],
-            "Y": [
-              3
-            ]
-          }
+          "port_directions": { "A": "input", "X": "output" },
+          "connections": { "A": [2], "X": [3] }
         }
       },
       "netnames": {
-        "A": {
-          "hide_name": 0,
-          "bits": [
-            2
-          ],
-          "attributes": {}
-        },
-        "Y": {
-          "hide_name": 0,
-          "bits": [
-            3
-          ],
-          "attributes": {}
-        }
+        "A": { "hide_name": 0, "bits": [2], "attributes": {} },
+        "Y": { "hide_name": 0, "bits": [3], "attributes": {} }
       }
     }
   }

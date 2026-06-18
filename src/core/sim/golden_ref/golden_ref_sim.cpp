@@ -400,4 +400,48 @@ bool GoldenRefSim::is_detected(const CompiledSimGraph& cg,
   return false;
 }
 
+bool GoldenRefSim::simulate_transition_fault(const CompiledSimGraph& cg,
+                                              const TestVector& v1,
+                                              const TestVector& v2,
+                                              const CompactFault& fault) const {
+  if (fault.exclusion != FaultExclusion::NONE) {
+    return false;
+  }
+
+  TestCycle init_cycle;
+  init_cycle.inputs = v1.inputs;
+  init_cycle.sample_outputs = true;
+  init_cycle.fault_active = false;
+
+  TestCycle capture_cycle;
+  capture_cycle.inputs = v2.inputs;
+  capture_cycle.sample_outputs = true;
+  capture_cycle.fault_active = true;
+
+  TestVector combined;
+  combined.cycles = {init_cycle, capture_cycle};
+
+  const auto ff_samples = simulate_sequence_fault_free(cg, combined);
+  if (ff_samples.size() < 2) {
+    return false;
+  }
+
+  // Transition check: good machine must have made the required transition at the fault net.
+  const int target_yid = cg.compiled_to_yosys[fault.net_index];
+  const auto& init_snap = ff_samples[0];
+  const auto& cap_snap = ff_samples[1];
+  if (init_snap.count(target_yid) == 0 || cap_snap.count(target_yid) == 0) {
+    return false;
+  }
+  // STR (SA0): init=0 -> cap=1;  STF (SA1): init=1 -> cap=0.
+  const bool pre_val = (fault.type == FaultType::SA0) ? false : true;
+  const bool post_val = (fault.type == FaultType::SA0) ? true : false;
+  if (init_snap.at(target_yid) != pre_val || cap_snap.at(target_yid) != post_val) {
+    return false;
+  }
+
+  const auto faulty_samples = simulate_sequence_with_fault(cg, combined, fault);
+  return is_sequence_detected(cg, ff_samples, faulty_samples);
+}
+
 }  // namespace faultflow

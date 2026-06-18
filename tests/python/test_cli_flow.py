@@ -19,7 +19,7 @@ def _config(path: Path) -> None:
         """
 [design]
 netlist = missing.json
-cell_lib = cells/osu/osu035.json
+cell_lib = cells/sky130/sky130_fd_sc_hd.json
 
 [fault_model]
 collapsing = false
@@ -139,7 +139,7 @@ def test_missing_nl2bench_fails_cleanly(
     _config(cfg)
     cfg.write_text(
         cfg.read_text(encoding="utf-8").replace(
-            "cell_lib = cells/osu/osu035.json",
+            "cell_lib = cells/sky130/sky130_fd_sc_hd.json",
             f"cell_lib = {tmp_path / 'cells.json'}\nliberty = {tmp_path / 'cells.lib'}",
         ),
         encoding="utf-8",
@@ -150,7 +150,9 @@ def test_missing_nl2bench_fails_cleanly(
     out.mkdir(parents=True)
     intermediate = out / ".faultflow" / "intermediate"
     intermediate.mkdir(parents=True)
-    (intermediate / "demo_gate.v").write_text("module demo; endmodule\n", encoding="utf-8")
+    (intermediate / "demo_gate.v").write_text(
+        "module demo; endmodule\n", encoding="utf-8"
+    )
     monkeypatch.setattr(runner_mod.shutil, "which", lambda _name: None)
 
     with pytest.raises(RunnerError, match="nl2bench"):
@@ -318,9 +320,7 @@ def test_coverage_report_schema_and_denominator_invariant(
         )
         conn.commit()
 
-        json_path, txt_path, report = write_reports(
-            conn, cfg, campaign_id=campaign_id
-        )
+        json_path, txt_path, report = write_reports(conn, cfg, campaign_id=campaign_id)
 
         assert json_path.exists()
         assert txt_path.exists()
@@ -371,9 +371,7 @@ def test_coverage_report_text_includes_protocol_fields(
         )
         conn.commit()
 
-        _, txt_path, report = write_reports(
-            conn, cfg, campaign_id=campaign_id
-        )
+        _, txt_path, report = write_reports(conn, cfg, campaign_id=campaign_id)
         text = txt_path.read_text(encoding="utf-8")
         assert report["summary"]["protocol_unresolved"] == 1
         assert "protocol_unresolved: 1" in text
@@ -400,7 +398,7 @@ def test_ext_without_bench_sidecar_raises(
         f"""
 [design]
 netlist = {netlist}
-cell_lib = {Path(__file__).resolve().parents[2] / "cells/osu/osu035.json"}
+cell_lib = {Path(__file__).resolve().parents[2] / "cells/sky130/sky130_fd_sc_hd.json"}
 
 [simulation]
 unsupported_cells = fail

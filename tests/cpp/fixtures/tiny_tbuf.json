@@ -12,13 +12,13 @@
             2
           ]
         },
-        "EN": {
+        "TE_B": {
           "direction": "input",
           "bits": [
             3
           ]
         },
-        "Y": {
+        "Z": {
           "direction": "output",
           "bits": [
             4
@@ -28,22 +28,22 @@
       "cells": {
         "u0": {
           "hide_name": 0,
-          "type": "TBUFX1",
+          "type": "sky130_fd_sc_hd__ebufn_1",
           "parameters": {},
           "attributes": {},
           "port_directions": {
             "A": "input",
-            "EN": "input",
-            "Y": "output"
+            "TE_B": "input",
+            "Z": "output"
           },
           "connections": {
             "A": [
               2
             ],
-            "EN": [
+            "TE_B": [
               3
             ],
-            "Y": [
+            "Z": [
               4
             ]
           }
@@ -57,14 +57,14 @@
           ],
           "attributes": {}
         },
-        "EN": {
+        "TE_B": {
           "hide_name": 0,
           "bits": [
             3
           ],
           "attributes": {}
         },
-        "Y": {
+        "Z": {
           "hide_name": 0,
           "bits": [
             4

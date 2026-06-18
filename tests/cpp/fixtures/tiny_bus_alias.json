@@ -24,36 +24,36 @@
       "cells": {
         "u0": {
           "hide_name": 0,
-          "type": "BUFX2",
+          "type": "sky130_fd_sc_hd__buf_1",
           "parameters": {},
           "attributes": {},
           "port_directions": {
             "A": "input",
-            "Y": "output"
+            "X": "output"
           },
           "connections": {
             "A": [
               2
             ],
-            "Y": [
+            "X": [
               4
             ]
           }
         },
         "u1": {
           "hide_name": 0,
-          "type": "BUFX2",
+          "type": "sky130_fd_sc_hd__buf_1",
           "parameters": {},
           "attributes": {},
           "port_directions": {
             "A": "input",
-            "Y": "output"
+            "X": "output"
           },
           "connections": {
             "A": [
               3
             ],
-            "Y": [
+            "X": [
               5
             ]
           }

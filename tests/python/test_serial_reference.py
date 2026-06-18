@@ -95,7 +95,7 @@ def test_shell_run_atpg_serial_ref_passes_reference_flag(tmp_path: Path) -> None
 
     session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
     session.read_netlist(source, "demo")
-    session.use_lib_cells("osu035")
+    session.use_lib_cells("sky130")
     session.synthesized = True
     bridge = TclBridge(session)
 

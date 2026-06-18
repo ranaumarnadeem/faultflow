@@ -32,8 +32,8 @@ def _config(path: Path, extra_sim: str = "") -> None:
         f"""
 [design]
 netlist = missing.json
-cell_lib = cells/osu/osu035.json
-liberty = cells/osu/osu035_stdcells.lib
+cell_lib = cells/sky130/sky130_fd_sc_hd.json
+liberty = cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib
 
 [fault_model]
 collapsing = false
@@ -318,7 +318,7 @@ def test_cpp_sequence_helper_matches_iverilog_tiny_dff(tmp_path: Path) -> None:
     gate.write_text(
         """
 module tiny_dff(input CLK, input D, output Q);
-  DFFPOSX1 u0(.CLK(CLK), .D(D), .Q(Q));
+  sky130_fd_sc_hd__dfxtp_1 u0(.CLK(CLK), .D(D), .Q(Q));
 endmodule
 """.strip() + "\n",
         encoding="utf-8",
@@ -344,13 +344,13 @@ endmodule
         top="tiny_dff",
         work_dir=tmp_path / "verify",
         gate_verilog=gate,
-        verilog_models=[Path("cells/osu/osu035_stdcells.v")],
+        verilog_models=[Path("cells/sky130/sky130_fd_sc_hd.v")],
     )
 
     iverilog_result = verifier.run(["CLK", "D"], ["Q"], vectors, steps)
     cpp_result = core.fault_free_sequence_outputs(
         "tests/cpp/fixtures/tiny_dff.json",
-        "cells/osu/osu035.json",
+        "cells/sky130/sky130_fd_sc_hd.json",
         [[{"CLK": False, "D": True}, {"CLK": True, "D": True}]],
         ["CLK", "D"],
         ["Q"],
@@ -405,7 +405,14 @@ def test_runner_verification_failure_aborts_before_sim(
 
     def fake_write_reports(*_args: object, **_kwargs: object) -> tuple[object, ...]:
         called["report"] = True
-        report_path = tmp_path / "output" / "demo" / ".faultflow" / "intermediate" / "coverage_report.json"
+        report_path = (
+            tmp_path
+            / "output"
+            / "demo"
+            / ".faultflow"
+            / "intermediate"
+            / "coverage_report.json"
+        )
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text("{}", encoding="utf-8")
         return (
@@ -420,7 +427,14 @@ def test_runner_verification_failure_aborts_before_sim(
         runner.sim()
 
     assert called["report"] is False
-    assert not (tmp_path / "output" / "demo" / ".faultflow" / "intermediate" / "coverage_report.json").exists()
+    assert not (
+        tmp_path
+        / "output"
+        / "demo"
+        / ".faultflow"
+        / "intermediate"
+        / "coverage_report.json"
+    ).exists()
 
 
 def test_runner_verification_dependency_failure_writes_report(
@@ -511,7 +525,7 @@ def test_cpp_fault_free_output_helper_matches_tiny_buf() -> None:
 
     outputs = core.fault_free_outputs(
         "tests/cpp/fixtures/tiny_buf.json",
-        "cells/osu/osu035.json",
+        "cells/sky130/sky130_fd_sc_hd.json",
         [{"A": True}, {"A": False}],
         ["A"],
         ["Y"],

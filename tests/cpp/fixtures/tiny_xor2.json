@@ -28,13 +28,13 @@
       "cells": {
         "u0": {
           "hide_name": 0,
-          "type": "XOR2X1",
+          "type": "sky130_fd_sc_hd__xor2_1",
           "parameters": {},
           "attributes": {},
           "port_directions": {
             "A": "input",
             "B": "input",
-            "Y": "output"
+            "X": "output"
           },
           "connections": {
             "A": [
@@ -43,7 +43,7 @@
             "B": [
               3
             ],
-            "Y": [
+            "X": [
               4
             ]
           }

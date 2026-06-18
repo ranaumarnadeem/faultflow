@@ -6,7 +6,7 @@
         "top": "00000000000000000000000000000001"
       },
       "ports": {
-        "CLK": {
+        "GATE": {
           "direction": "input",
           "bits": [
             2
@@ -28,20 +28,24 @@
       "cells": {
         "u0": {
           "hide_name": 0,
-          "type": "LATCH",
+          "type": "sky130_fd_sc_hd__dlrtp_1",
           "parameters": {},
           "attributes": {},
           "port_directions": {
-            "CLK": "input",
             "D": "input",
+            "GATE": "input",
+            "RESET_B": "input",
             "Q": "output"
           },
           "connections": {
-            "CLK": [
-              2
-            ],
             "D": [
               3
+            ],
+            "GATE": [
+              2
+            ],
+            "RESET_B": [
+              "1"
             ],
             "Q": [
               4
@@ -50,7 +54,7 @@
         }
       },
       "netnames": {
-        "CLK": {
+        "GATE": {
           "hide_name": 0,
           "bits": [
             2

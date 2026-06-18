@@ -20,7 +20,7 @@ from faultflow.scan import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-CELL_MAP = ROOT / "cells/osu/osu035.json"
+CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 
 
 def _tiny_dff_json() -> dict[str, object]:
@@ -36,7 +36,7 @@ def _tiny_dff_json() -> dict[str, object]:
                 "cells": {
                     "u0": {
                         "hide_name": 0,
-                        "type": "DFFPOSX1",
+                        "type": "sky130_fd_sc_hd__dfxtp_1",
                         "parameters": {},
                         "attributes": {},
                         "port_directions": {
@@ -121,7 +121,7 @@ def test_stitch_scan_json_builds_balanced_multi_chains(tmp_path: Path) -> None:
         q_net = 20 + index
         cells[f"u{index}"] = {
             "hide_name": 0,
-            "type": "DFFPOSX1",
+            "type": "sky130_fd_sc_hd__dfxtp_1",
             "parameters": {},
             "attributes": {},
             "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
@@ -234,7 +234,9 @@ def test_scan_cli_dry_run_writes_no_artifacts(
     text = capsys.readouterr().out
     assert "scan dry-run top=tiny_dff" in text
     assert "eligible_ffs=1" in text
-    assert not (tmp_path / "output/tiny_dff/.faultflow/manifests/scan_manifest.json").exists()
+    assert not (
+        tmp_path / "output/tiny_dff/.faultflow/manifests/scan_manifest.json"
+    ).exists()
 
 
 def test_scan_check_writes_fail_result_on_structural_error(
@@ -253,7 +255,9 @@ def test_scan_check_writes_fail_result_on_structural_error(
 
     assert exc.value.code == 2
     manifest = json.loads(
-        (tmp_path / "output/tiny_dff/.faultflow/manifests/scan_manifest.json").read_text()
+        (
+            tmp_path / "output/tiny_dff/.faultflow/manifests/scan_manifest.json"
+        ).read_text()
     )
     assert manifest["latest_check"]["status"] == "FAIL"
     assert "generic JSON hash" in manifest["latest_check"]["errors"][0]

@@ -6,25 +6,25 @@
         "top": "00000000000000000000000000000001"
       },
       "ports": {
-        "A": {
+        "A1": {
           "direction": "input",
           "bits": [
             2
           ]
         },
-        "B": {
+        "A2": {
           "direction": "input",
           "bits": [
             3
           ]
         },
-        "C": {
+        "B1": {
           "direction": "input",
           "bits": [
             4
           ]
         },
-        "D": {
+        "B2": {
           "direction": "input",
           "bits": [
             5
@@ -40,27 +40,27 @@
       "cells": {
         "u0": {
           "hide_name": 0,
-          "type": "OAI22X1",
+          "type": "sky130_fd_sc_hd__o22ai_1",
           "parameters": {},
           "attributes": {},
           "port_directions": {
-            "A": "input",
-            "B": "input",
-            "C": "input",
-            "D": "input",
+            "A1": "input",
+            "A2": "input",
+            "B1": "input",
+            "B2": "input",
             "Y": "output"
           },
           "connections": {
-            "A": [
+            "A1": [
               2
             ],
-            "B": [
+            "A2": [
               3
             ],
-            "C": [
+            "B1": [
               4
             ],
-            "D": [
+            "B2": [
               5
             ],
             "Y": [
@@ -70,28 +70,28 @@
         }
       },
       "netnames": {
-        "A": {
+        "A1": {
           "hide_name": 0,
           "bits": [
             2
           ],
           "attributes": {}
         },
-        "B": {
+        "A2": {
           "hide_name": 0,
           "bits": [
             3
           ],
           "attributes": {}
         },
-        "C": {
+        "B1": {
           "hide_name": 0,
           "bits": [
             4
           ],
           "attributes": {}
         },
-        "D": {
+        "B2": {
           "hide_name": 0,
           "bits": [
             5

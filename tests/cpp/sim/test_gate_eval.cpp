@@ -47,7 +47,7 @@ TEST_CASE("Gate evaluation basic gates", "[gate_eval]") {
   REQUIRE(eval_gate(GateType::XNOR2, {ALL1, ALL1}) == ALL1);
   REQUIRE(eval_gate(GateType::XNOR2, {ALL1, ALL0}) == ALL0);
 
-  // OSU035 inverting MUX2: S=1 selects A (in0)
+  // MUX2 (inverting variant): S=1 selects A (in0)
   REQUIRE(eval_gate(GateType::MUX2, {ALL1, ALL0, ALL1}) == ALL0);
   REQUIRE(eval_gate(GateType::MUX2, {ALL0, ALL1, ALL0}) == ALL0);
 

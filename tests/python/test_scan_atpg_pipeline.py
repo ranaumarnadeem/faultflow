@@ -13,7 +13,7 @@ from faultflow.scan import stitch_scan_json
 from faultflow.scan.reports import hash_file, manifest_from_result, utc_timestamp
 
 ROOT = Path(__file__).resolve().parents[2]
-CELL_MAP = ROOT / "cells/osu/osu035.json"
+CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 
 
 def _tiny_dff_json() -> dict[str, object]:
@@ -29,7 +29,7 @@ def _tiny_dff_json() -> dict[str, object]:
                 "cells": {
                     "u0": {
                         "hide_name": 0,
-                        "type": "DFFPOSX1",
+                        "type": "sky130_fd_sc_hd__dfxtp_1",
                         "parameters": {},
                         "attributes": {},
                         "port_directions": {

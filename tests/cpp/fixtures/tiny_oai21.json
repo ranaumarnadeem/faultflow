@@ -6,19 +6,19 @@
         "top": "00000000000000000000000000000001"
       },
       "ports": {
-        "A": {
+        "A1": {
           "direction": "input",
           "bits": [
             2
           ]
         },
-        "B": {
+        "A2": {
           "direction": "input",
           "bits": [
             3
           ]
         },
-        "C": {
+        "B1": {
           "direction": "input",
           "bits": [
             4
@@ -34,23 +34,23 @@
       "cells": {
         "u0": {
           "hide_name": 0,
-          "type": "OAI21X1",
+          "type": "sky130_fd_sc_hd__o21ai_1",
           "parameters": {},
           "attributes": {},
           "port_directions": {
-            "A": "input",
-            "B": "input",
-            "C": "input",
+            "A1": "input",
+            "A2": "input",
+            "B1": "input",
             "Y": "output"
           },
           "connections": {
-            "A": [
+            "A1": [
               2
             ],
-            "B": [
+            "A2": [
               3
             ],
-            "C": [
+            "B1": [
               4
             ],
             "Y": [
@@ -60,21 +60,21 @@
         }
       },
       "netnames": {
-        "A": {
+        "A1": {
           "hide_name": 0,
           "bits": [
             2
           ],
           "attributes": {}
         },
-        "B": {
+        "A2": {
           "hide_name": 0,
           "bits": [
             3
           ],
           "attributes": {}
         },
-        "C": {
+        "B1": {
           "hide_name": 0,
           "bits": [
             4

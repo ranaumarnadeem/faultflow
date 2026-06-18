@@ -34,7 +34,7 @@
       "cells": {
         "u0": {
           "hide_name": 0,
-          "type": "NAND3X1",
+          "type": "sky130_fd_sc_hd__nand3_1",
           "parameters": {},
           "attributes": {},
           "port_directions": {

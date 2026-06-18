@@ -9,9 +9,9 @@ using namespace faultflow;
 
 TEST_CASE("FaultEnumerator c17", "[enumerator]") {
   const NormalizedGraph ng =
-      test::load_normalized_benchmark("iscas85/synth/c17.json");
+      test::load_normalized_benchmark("iscas85/synth_sky130/c17.json");
   const CompiledSimGraph cg =
-      test::load_compiled_benchmark("iscas85/synth/c17.json");
+      test::load_compiled_benchmark("iscas85/synth_sky130/c17.json");
   const auto faults = enumerate_faults(ng, cg);
   REQUIRE(faults.size() == static_cast<size_t>(cg.net_count) * 2);
 }

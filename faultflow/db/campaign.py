@@ -5,7 +5,7 @@ from typing import Any
 
 CAMPAIGN_TYPE_COMB = "comb"
 CAMPAIGN_TYPE_SCAN = "scan"
-EXPECTED_USER_VERSION = 5
+EXPECTED_USER_VERSION = 6
 
 
 class SchemaError(RuntimeError):
@@ -69,6 +69,7 @@ def fingerprint_fields(fp: dict[str, Any]) -> dict[str, Any]:
         "redundancy_model_id": str(fp.get("redundancy_model_id", "")),
         "manifest_hash": str(fp.get("manifest_hash", "")),
         "atpg_view_schema_ver": str(fp.get("atpg_view_schema_ver", "")),
+        "fault_model": str(fp.get("fault_model", "stuck_at")),
     }
 
 
@@ -117,8 +118,8 @@ def ensure_campaign(
           campaign_type, top, netlist_hash, cell_lib_hash, config_hash,
           template_hash, yosys_version, faultflow_version, collapsing,
           unsupported_cells, include_clock_faults, include_reset_faults,
-          redundancy_model_id, manifest_hash, atpg_view_schema_ver
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          redundancy_model_id, manifest_hash, atpg_view_schema_ver, fault_model
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             campaign_type,
@@ -136,6 +137,7 @@ def ensure_campaign(
             fields["redundancy_model_id"],
             fields["manifest_hash"],
             fields["atpg_view_schema_ver"],
+            fields["fault_model"],
         ),
     )
     conn.commit()

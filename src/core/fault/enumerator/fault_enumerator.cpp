@@ -35,4 +35,14 @@ std::vector<CompactFault> enumerate_faults(const NormalizedGraph& ng,
   return faults;
 }
 
+std::vector<CompactFault> enumerate_transition_faults(const NormalizedGraph& ng,
+                                                       const CompiledSimGraph& cg,
+                                                       EnumeratorOptions opt) {
+  auto faults = enumerate_faults(ng, cg, opt);
+  for (auto& f : faults) {
+    f.model = FaultModel::TRANSITION;
+  }
+  return faults;
+}
+
 }  // namespace faultflow

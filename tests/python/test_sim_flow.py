@@ -12,7 +12,7 @@ import faultflow.runner.runner as runner_mod
 def test_c17_native_progressive_sim_flow() -> None:
     if runner_mod._load_core() is None:
         pytest.skip("C++ extension _faultflow_core is required")
-    if not Path("tests/benchmarks/iscas85/synth/c17.json").exists():
+    if not Path("tests/benchmarks/iscas85/synth_sky130/c17.json").exists():
         pytest.skip("c17 netlist missing")
 
     cfg = Path("config.ofs.example")

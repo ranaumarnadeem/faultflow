@@ -14,7 +14,7 @@
       "cells": {
         "u_inv": {
           "hide_name": 0,
-          "type": "INVX1",
+          "type": "sky130_fd_sc_hd__inv_1",
           "parameters": {},
           "attributes": {},
           "port_directions": {"A": "input", "Y": "output"},
@@ -22,15 +22,15 @@
         },
         "u_and": {
           "hide_name": 0,
-          "type": "AND2X1",
+          "type": "sky130_fd_sc_hd__and2_1",
           "parameters": {},
           "attributes": {},
-          "port_directions": {"A": "input", "B": "input", "Y": "output"},
-          "connections": {"A": [4], "B": [5], "Y": [6]}
+          "port_directions": {"A": "input", "B": "input", "X": "output"},
+          "connections": {"A": [4], "B": [5], "X": [6]}
         },
         "u_ff": {
           "hide_name": 0,
-          "type": "DFFPOSX1",
+          "type": "sky130_fd_sc_hd__dfxtp_1",
           "parameters": {},
           "attributes": {},
           "port_directions": {"CLK": "input", "D": "input", "Q": "output"},

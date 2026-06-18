@@ -241,4 +241,108 @@ std::vector<std::vector<uint64_t>> BitParallelSim::simulate_batch_samples(
   return samples;
 }
 
+bool BitParallelSim::simulate_transition_single_fault(const CompiledSimGraph& cg,
+                                                       const TestVector& v1,
+                                                       const TestVector& v2,
+                                                       const CompactFault& fault) const {
+  if (fault.exclusion != FaultExclusion::NONE) {
+    return false;
+  }
+
+  TestCycle init_cycle;
+  init_cycle.inputs = v1.inputs;
+  init_cycle.sample_outputs = true;
+  init_cycle.fault_active = false;
+
+  TestCycle capture_cycle;
+  capture_cycle.inputs = v2.inputs;
+  capture_cycle.sample_outputs = true;
+  capture_cycle.fault_active = true;
+
+  TestVector combined;
+  combined.cycles = {init_cycle, capture_cycle};
+
+  FaultBatch batch;
+  CompactFault f = fault;
+  f.bit = 1;
+  f.sa_mask = 1ULL << 1;
+  batch.faults[0] = f;
+  batch.size = 1;
+  batch.mask = f.sa_mask;
+
+  const auto samples = simulate_batch_samples(cg, combined, batch);
+  if (samples.size() < 2) {
+    return false;
+  }
+
+  // Transition check: bit 0 (good machine) must have made the required transition.
+  const bool init_good = (samples[0].at(f.net_index) & 1ULL) != 0;
+  const bool cap_good = (samples[1].at(f.net_index) & 1ULL) != 0;
+  const bool pre_val = (fault.type == FaultType::SA0) ? false : true;
+  const bool post_val = (fault.type == FaultType::SA0) ? true : false;
+  if (init_good != pre_val || cap_good != post_val) {
+    return false;
+  }
+
+  // Detection check: bit 1 differs from bit 0 at any observable in capture frame.
+  for (int obs : cg.observable) {
+    const uint64_t word = samples[1].at(obs);
+    const uint64_t golden = (word & 1ULL) ? ~0ULL : 0ULL;
+    if ((word ^ golden) & batch.mask) {
+      return true;
+    }
+  }
+  return false;
+}
+
+uint64_t BitParallelSim::simulate_transition_batch(const CompiledSimGraph& cg,
+                                                   const TestVector& v1,
+                                                   const TestVector& v2,
+                                                   const FaultBatch& batch) const {
+  TestCycle init_cycle;
+  init_cycle.inputs = v1.inputs;
+  init_cycle.sample_outputs = true;
+  init_cycle.fault_active = false;
+
+  TestCycle capture_cycle;
+  capture_cycle.inputs = v2.inputs;
+  capture_cycle.sample_outputs = true;
+  capture_cycle.fault_active = true;
+
+  TestVector combined;
+  combined.cycles = {init_cycle, capture_cycle};
+
+  const auto samples = simulate_batch_samples(cg, combined, batch);
+  if (samples.size() < 2) {
+    return 0ULL;
+  }
+  const std::vector<uint64_t>& init = samples[0];
+  const std::vector<uint64_t>& capture = samples[1];
+
+  // Capture-frame stuck-at propagation: any observable lane that differs from
+  // the golden (bit 0) value, restricted to the active lanes.
+  uint64_t propagated = 0ULL;
+  for (int obs : cg.observable) {
+    const uint64_t word = capture[obs];
+    const uint64_t golden = (word & 1ULL) ? ~0ULL : 0ULL;
+    propagated |= word ^ golden;
+  }
+  propagated &= batch.mask;
+
+  // Transition qualification: the good machine (bit 0) at each lane's fault net
+  // must hold the pre-transition value in the init frame. The init frame has the
+  // fault inactive, so every lane equals the golden value there. STR(SA0) pre=0,
+  // STF(SA1) pre=1.
+  uint64_t qualified = 0ULL;
+  for (int i = 0; i < batch.size; ++i) {
+    const CompactFault& f = batch.faults[i];
+    const bool init_good = (init[f.net_index] & 1ULL) != 0;
+    const bool pre = (f.type == FaultType::SA1);
+    if (init_good == pre) {
+      qualified |= f.sa_mask;
+    }
+  }
+  return propagated & qualified;
+}
+
 }  // namespace faultflow

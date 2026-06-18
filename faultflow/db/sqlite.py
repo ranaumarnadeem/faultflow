@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
     redundancy_model_id TEXT NOT NULL DEFAULT '',
     manifest_hash TEXT NOT NULL DEFAULT '',
     atpg_view_schema_ver TEXT NOT NULL DEFAULT '',
+    fault_model TEXT NOT NULL DEFAULT 'stuck_at',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS vectors (
     source TEXT NOT NULL,
     vector_index INTEGER NOT NULL,
     pattern TEXT NOT NULL,
+    launch_pattern TEXT NOT NULL DEFAULT '',
     inputs TEXT NOT NULL DEFAULT '{}',
     expected TEXT NOT NULL DEFAULT '{}',
     verified INTEGER NOT NULL DEFAULT 0,

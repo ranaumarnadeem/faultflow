@@ -9,9 +9,9 @@ using namespace faultflow;
 
 TEST_CASE("GoldenRefSim c17 fault-free", "[golden_ref]") {
   const CompiledSimGraph cg =
-      test::load_compiled_benchmark("iscas85/synth/c17.json");
+      test::load_compiled_benchmark("iscas85/synth_sky130/c17.json");
   const ParsedGraph pg =
-      test::load_parsed_benchmark("iscas85/synth/c17.json");
+      test::load_parsed_benchmark("iscas85/synth_sky130/c17.json");
   GoldenRefSim sim;
 
   TestVector v0;
@@ -25,9 +25,9 @@ TEST_CASE("GoldenRefSim c17 fault-free", "[golden_ref]") {
 
 TEST_CASE("GoldenRefSim exhaustive c17", "[golden_ref]") {
   const NormalizedGraph ng =
-      test::load_normalized_benchmark("iscas85/synth/c17.json");
+      test::load_normalized_benchmark("iscas85/synth_sky130/c17.json");
   const CompiledSimGraph cg =
-      test::load_compiled_benchmark("iscas85/synth/c17.json");
+      test::load_compiled_benchmark("iscas85/synth_sky130/c17.json");
   const auto faults = enumerate_faults(ng, cg);
   std::vector<int> pi_ids(ng.PIs.begin(), ng.PIs.end());
   std::sort(pi_ids.begin(), pi_ids.end());

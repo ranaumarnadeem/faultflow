@@ -27,7 +27,7 @@ bool sampled_q(const std::vector<std::map<int, bool>>& samples, int q_net) {
 
 }  // namespace
 
-TEST_CASE("OSU035 FF metadata normalizes and tags clock nets", "[sequential]") {
+TEST_CASE("FF metadata normalizes and tags clock nets", "[sequential]") {
   const NormalizedGraph ng = test::load_normalized("tiny_dff.json");
   REQUIRE(ng.nodes.size() >= 1);
   const auto node_it = std::find_if(
@@ -56,7 +56,7 @@ TEST_CASE("Compiled graph stores FF configs outside mutable state",
   REQUIRE(ff.in1 != UNUSED_INPUT);
 }
 
-TEST_CASE("GoldenRefSim captures OSU035 posedge and negedge DFFs",
+TEST_CASE("GoldenRefSim captures posedge and negedge DFFs",
           "[sequential]") {
   GoldenRefSim sim;
 
@@ -83,7 +83,7 @@ TEST_CASE("GoldenRefSim captures OSU035 posedge and negedge DFFs",
   }
 }
 
-TEST_CASE("GoldenRefSim applies OSU035 DFFSR async active-low controls",
+TEST_CASE("GoldenRefSim applies async active-low controls",
           "[sequential]") {
   const CompiledSimGraph cg = test::load_compiled("tiny_dffsr.json");
   GoldenRefSim sim;

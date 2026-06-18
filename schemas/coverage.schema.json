@@ -84,7 +84,8 @@
         "protocol_unresolved": { "type": "integer", "minimum": 0 },
         "fault_coverage_percent": { "type": "number", "minimum": 0, "maximum": 100 },
         "test_coverage_percent": { "type": "number", "minimum": 0, "maximum": 100 },
-        "coverage_percent": { "type": "number", "minimum": 0, "maximum": 100 }
+        "coverage_percent": { "type": "number", "minimum": 0, "maximum": 100 },
+        "fault_model": { "enum": ["stuck_at", "transition"] }
       }
     },
     "run": {
@@ -162,7 +163,7 @@
           "id": { "type": "integer", "minimum": 1 },
           "net_id": { "type": "integer" },
           "net_name": { "type": "string" },
-          "fault_type": { "enum": ["sa0", "sa1"] },
+          "fault_type": { "enum": ["sa0", "sa1", "str", "stf"] },
           "fault_site_key": { "type": "string" },
           "protocol_unresolved": { "type": "boolean" }
         }

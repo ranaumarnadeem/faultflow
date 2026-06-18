@@ -34,6 +34,7 @@ def test_parse_quaigh_test_rejects_non_combinational_subset(
         parse_quaigh_test(test_file, ["a", "b"])
 
 
+@pytest.mark.skip(reason="Sky130: BENCH format not generated for sky130 synth")
 def test_parse_existing_benchmark_vectors() -> None:
     bench = Path("tests/benchmarks/iscas85/synth/c17.bench")
     test_file = Path("tests/benchmarks/iscas85/synth/c17atpg.test")

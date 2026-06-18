@@ -42,6 +42,19 @@ class BitParallelSim {
                        const FaultBatch& batch) const;
 
   void update_ff_states(SimState& state, const CompiledSimGraph& cg) const;
+
+  // Two-frame transition detection. Mirrors simulate_transition_fault (golden oracle).
+  bool simulate_transition_single_fault(const CompiledSimGraph& cg, const TestVector& v1,
+                                         const TestVector& v2,
+                                         const CompactFault& fault) const;
+
+  // Batched two-frame transition fault simulation over a launch/capture pair.
+  // Returns the detected-lane mask (bit per lane, like simulate_batch): a lane
+  // is detected iff the capture-frame stuck-at propagates to an observable AND
+  // the good machine made the required transition at that lane's fault net.
+  uint64_t simulate_transition_batch(const CompiledSimGraph& cg, const TestVector& v1,
+                                     const TestVector& v2,
+                                     const FaultBatch& batch) const;
 };
 
 }  // namespace faultflow

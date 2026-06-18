@@ -8,22 +8,27 @@ using namespace faultflow;
 
 TEST_CASE("ParsedGraph loads synthesized c17", "[parsed_graph]") {
   const ParsedGraph g =
-      test::load_parsed_benchmark("iscas85/synth/c17.json");
+      test::load_parsed_benchmark("iscas85/synth_sky130/c17.json");
   REQUIRE(g.top == "c17");
   REQUIRE(g.modules.count("c17") == 1);
-  REQUIRE(g.lib_cells.count("NAND2X1") == 1);
-  REQUIRE(g.lib_cells.count("INVX1") == 1);
+  REQUIRE(g.lib_cells.empty());
   REQUIRE_FALSE(g.lib_cells.count("c17"));
+  std::set<std::string> used_types;
+  for (const auto& [nm, c] : g.top_module().cells) {
+    used_types.insert(c.type);
+  }
+  REQUIRE(used_types.count("sky130_fd_sc_hd__nand2_1") == 1);
+  REQUIRE(used_types.count("sky130_fd_sc_hd__o21a_1") == 1);
 
   const auto& mod = g.top_module();
   REQUIRE(mod.ports.at("N1").bits == std::vector<int>{2});
   REQUIRE(mod.ports.at("N22").bits == std::vector<int>{7});
-  REQUIRE(mod.cells.size() == 6);
+  REQUIRE(mod.cells.size() == 3);
 }
 
 TEST_CASE("ParsedGraph net_id_by_name c17", "[parsed_graph]") {
   const ParsedGraph g =
-      test::load_parsed_benchmark("iscas85/synth/c17.json");
+      test::load_parsed_benchmark("iscas85/synth_sky130/c17.json");
   REQUIRE(g.net_id_by_name("N1") == 2);
   REQUIRE(g.net_id_by_name("N23") == 8);
 }

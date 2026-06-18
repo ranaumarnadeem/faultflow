@@ -13,11 +13,23 @@
       "cells": {
         "u0": {
           "hide_name": 0,
-          "type": "DFFNEGX1",
+          "type": "sky130_fd_sc_hd__dfbbn_1",
           "parameters": {},
           "attributes": {},
-          "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
-          "connections": {"CLK": [2], "D": [3], "Q": [4]}
+          "port_directions": {
+            "CLK_N": "input",
+            "D": "input",
+            "RESET_B": "input",
+            "SET_B": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK_N": [2],
+            "D": [3],
+            "RESET_B": ["1"],
+            "SET_B": ["1"],
+            "Q": [4]
+          }
         }
       },
       "netnames": {

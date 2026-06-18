@@ -6,13 +6,13 @@
         "top": "00000000000000000000000000000001"
       },
       "ports": {
-        "A": {
+        "A0": {
           "direction": "input",
           "bits": [
             2
           ]
         },
-        "B": {
+        "A1": {
           "direction": "input",
           "bits": [
             3
@@ -24,7 +24,7 @@
             4
           ]
         },
-        "Y": {
+        "X": {
           "direction": "output",
           "bits": [
             5
@@ -34,40 +34,40 @@
       "cells": {
         "u0": {
           "hide_name": 0,
-          "type": "MUX2X1",
+          "type": "sky130_fd_sc_hd__mux2_1",
           "parameters": {},
           "attributes": {},
           "port_directions": {
-            "A": "input",
-            "B": "input",
+            "A0": "input",
+            "A1": "input",
             "S": "input",
-            "Y": "output"
+            "X": "output"
           },
           "connections": {
-            "A": [
+            "A0": [
               2
             ],
-            "B": [
+            "A1": [
               3
             ],
             "S": [
               4
             ],
-            "Y": [
+            "X": [
               5
             ]
           }
         }
       },
       "netnames": {
-        "A": {
+        "A0": {
           "hide_name": 0,
           "bits": [
             2
           ],
           "attributes": {}
         },
-        "B": {
+        "A1": {
           "hide_name": 0,
           "bits": [
             3
@@ -81,7 +81,7 @@
           ],
           "attributes": {}
         },
-        "Y": {
+        "X": {
           "hide_name": 0,
           "bits": [
             5

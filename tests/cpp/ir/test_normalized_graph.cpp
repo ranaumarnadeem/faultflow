@@ -7,25 +7,25 @@
 
 using namespace faultflow;
 
-TEST_CASE("normalize_cell_name OSU035", "[normalized_graph]") {
-  REQUIRE(normalize_cell_name("OAI21X1") == "OAI21");
-  REQUIRE(normalize_cell_name("AND2X2") == "AND2");
-  REQUIRE(normalize_cell_name("NAND3X1") == "NAND3");
-  REQUIRE(normalize_cell_name("INVX16") == "INV");
-  REQUIRE(normalize_cell_name("CLKBUF1") == "BUF");
-  REQUIRE(normalize_cell_name("BUFX4") == "BUF");
+TEST_CASE("CellMap pattern-matches sky130 drive-strength variants", "[normalized_graph]") {
+  const CellMap map = CellMap::load(test::cell_map_path());
+  REQUIRE(lookup_gate_type(map, "sky130_fd_sc_hd__inv_1") == GateType::INV);
+  REQUIRE(lookup_gate_type(map, "sky130_fd_sc_hd__and2_4") == GateType::AND2);
+  REQUIRE(lookup_gate_type(map, "sky130_fd_sc_hd__nand3_2") == GateType::NAND3);
+  REQUIRE(lookup_gate_type(map, "sky130_fd_sc_hd__clkbuf_8") == GateType::BUF);
+  REQUIRE(lookup_gate_type(map, "sky130_fd_sc_hd__buf_4") == GateType::BUF);
 }
 
-TEST_CASE("lookup_gate_type OSU035", "[normalized_graph]") {
-  const CellMap yaml = CellMap::load(test::cell_map_path());
-  REQUIRE(lookup_gate_type(yaml, "INVX1") == GateType::INV);
-  REQUIRE(lookup_gate_type(yaml, "CLKBUF1") == GateType::BUF);
-  REQUIRE(lookup_gate_type(yaml, "OAI21X1") == GateType::OAI21);
+TEST_CASE("lookup_gate_type Sky130", "[normalized_graph]") {
+  const CellMap map = CellMap::load(test::cell_map_path());
+  REQUIRE(lookup_gate_type(map, "sky130_fd_sc_hd__inv_1") == GateType::INV);
+  REQUIRE(lookup_gate_type(map, "sky130_fd_sc_hd__clkbuf_1") == GateType::BUF);
+  REQUIRE(lookup_gate_type(map, "sky130_fd_sc_hd__o21ai_1") == GateType::O21AI);
 }
 
 TEST_CASE("NormalizedGraph c17 levelization", "[normalized_graph]") {
   const NormalizedGraph ng =
-      test::load_normalized_benchmark("iscas85/synth/c17.json");
+      test::load_normalized_benchmark("iscas85/synth_sky130/c17.json");
   REQUIRE(ng.PIs.size() == 5);
   REQUIRE(ng.POs.size() == 2);
   int max_level = -1;
@@ -70,7 +70,7 @@ TEST_CASE("NormalizedGraph blackbox policy tags unknown outputs", "[normalized_g
   REQUIRE(ng.nets.at(3).is_blackboxed);
 }
 
-TEST_CASE("Deferred OSU035 latch and tbuf cells hard-fail while unsupported",
+TEST_CASE("Deferred Sky130 latch and tbuf cells hard-fail while unsupported",
           "[normalized_graph]") {
   const CellMap yaml = CellMap::load(test::cell_map_path());
   REQUIRE_THROWS_AS(

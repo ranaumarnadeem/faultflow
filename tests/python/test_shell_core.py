@@ -49,7 +49,7 @@ def test_failed_state_change_preserves_in_memory_and_checkpoint(
     _tiny_json(source)
     session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
     session.read_netlist(source, "demo")
-    session.use_lib_cells("osu035")
+    session.use_lib_cells("sky130")
     before = session.snapshot()
     checkpoint = session.checkpoint_path
     before_text = checkpoint.read_text(encoding="utf-8")
@@ -68,7 +68,7 @@ def test_successful_scan_commits_only_after_service_success(tmp_path: Path) -> N
     service = FakeService()
     session = ProjectSession(output_root=tmp_path / "output", service=service)
     session.read_netlist(source, "demo")
-    session.use_lib_cells("osu035")
+    session.use_lib_cells("sky130")
 
     result = session.add_scan(scan_chains=3)
 
@@ -85,7 +85,7 @@ def test_scan_dry_run_does_not_commit_scan_state(tmp_path: Path) -> None:
     service = FakeService()
     session = ProjectSession(output_root=tmp_path / "output", service=service)
     session.read_netlist(source, "demo")
-    session.use_lib_cells("osu035")
+    session.use_lib_cells("sky130")
 
     session.add_scan(scan_chains=3, dry_run=True)
 
@@ -98,7 +98,7 @@ def test_set_option_materializes_into_config(tmp_path: Path) -> None:
     _tiny_json(source)
     session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
     session.read_netlist(source, "demo")
-    session.use_lib_cells("osu035")
+    session.use_lib_cells("sky130")
 
     session.set_option("atpg.max_rounds", "37")
     session.set_option("report.threshold", "92.5")

@@ -18,7 +18,7 @@ from faultflow.scan.atpg_view import (
 from faultflow.scan.reports import manifest_from_result
 
 ROOT = Path(__file__).resolve().parents[2]
-CELL_MAP = ROOT / "cells/osu/osu035.json"
+CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 MULTICHAIN_FIXTURE = ROOT / "tests/cpp/fixtures/tiny_scan_multichain.json"
 
 
@@ -139,7 +139,7 @@ def test_stitched_single_chain_view_is_valid(tmp_path: Path) -> None:
                 "cells": {
                     "u0": {
                         "hide_name": 0,
-                        "type": "DFFPOSX1",
+                        "type": "sky130_fd_sc_hd__dfxtp_1",
                         "parameters": {},
                         "attributes": {},
                         "port_directions": {

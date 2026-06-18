@@ -32,6 +32,7 @@ CompiledSimGraph load_compiled(const std::string& fixture_name);
 CompiledSimGraph load_compiled_benchmark(const std::string& relative_path);
 
 std::string cell_map_path();
+std::string cell_map_path_osu();
 
 VectorSet generate_complete_input_space(const std::vector<int>& pi_yosys_ids);
 

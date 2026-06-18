@@ -216,8 +216,16 @@ def write_reports(
         )
 
     fp = _fingerprint(conn, campaign_id)
+    fault_model = str(fp.get("fault_model", "stuck_at"))
+    data["fault_model"] = fault_model
     per_node = _per_node(conn, campaign_id)
     undetected = _undetected_faults(conn, campaign_id)
+    if fault_model == "transition":
+        # STR/STF reuse the SA0/SA1 fault rows; relabel for the transition report.
+        _str_stf = {"sa0": "str", "sa1": "stf"}
+        for fault in undetected:
+            ft = str(fault["fault_type"]).lower()
+            fault["fault_type"] = _str_stf.get(ft, ft)
     if scan_context is not None:
         pseudo_port_map = scan_context.get("pseudo_port_map", {})
         if isinstance(pseudo_port_map, dict):
@@ -259,6 +267,7 @@ def write_reports(
 
     txt = [
         f"faultflow coverage report for {top}",
+        f"fault_model:         {fault_model}",
     ]
     if scan_context is not None:
         txt.extend(

@@ -285,6 +285,7 @@ class IverilogVerifier:
         compile_cmd = [
             iverilog,
             "-g2012",
+            "-DFUNCTIONAL",
             "-o",
             str(exe),
             str(tb),

@@ -28,7 +28,7 @@
       "cells": {
         "u0": {
           "hide_name": 0,
-          "type": "NOR2X1",
+          "type": "sky130_fd_sc_hd__nor2_1",
           "parameters": {},
           "attributes": {},
           "port_directions": {

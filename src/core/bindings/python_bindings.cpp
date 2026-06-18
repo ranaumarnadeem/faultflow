@@ -353,6 +353,79 @@ py::list simulate_tentative_py(
   return out;
 }
 
+// ---- Transition model bindings (combinational broadside two-pattern) -------
+
+std::vector<atpg::VectorPair> atpg_random_vector_pairs(
+    const std::vector<std::string>& input_order, int count, uint64_t seed) {
+  return atpg::generate_random_vector_pairs(input_order, count, seed);
+}
+
+py::dict solve_transition_fault_atpg(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::vector<std::string>& blocked_patterns, int conflict_limit,
+    int sat_timeout_seconds, const std::string& unsupported_policy) {
+  const atpg::SolveTransitionResult result =
+      atpg::solve_transition_fault_for_db(
+          json_path, cell_map_path, db_path, fault_id, blocked_patterns,
+          conflict_limit, sat_timeout_seconds, unsupported_policy);
+  py::dict out;
+  out["result"] = result.result;
+  out["launch"] = result.launch;
+  out["capture"] = result.capture;
+  return out;
+}
+
+bool verify_transition_candidate(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::map<std::string, bool>& launch,
+    const std::map<std::string, bool>& capture,
+    const std::string& unsupported_policy) {
+  return atpg::verify_transition_fault_vector(json_path, cell_map_path, db_path,
+                                              fault_id, launch, capture,
+                                              unsupported_policy);
+}
+
+py::list simulate_transition_incremental_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t campaign_id, int64_t run_id,
+    const std::vector<atpg::VectorPair>& new_pairs,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
+    const std::string& unsupported_policy) {
+  const std::vector<atpg::ProgressiveDetection> detections =
+      atpg::simulate_transition_incremental(
+          json_path, cell_map_path, db_path, campaign_id, run_id, new_pairs,
+          input_order, fault_ids, vector_start_index, unsupported_policy);
+  py::list out;
+  for (const auto& det : detections) {
+    py::dict row;
+    row["fault_id"] = det.fault_id;
+    row["vector_index"] = det.vector_index;
+    out.append(row);
+  }
+  return out;
+}
+
+py::list simulate_transition_tentative_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, const std::map<std::string, bool>& launch,
+    const std::map<std::string, bool>& capture,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids,
+    const std::string& unsupported_policy) {
+  const std::vector<int64_t> detected =
+      atpg::simulate_transition_tentative_detections(
+          json_path, cell_map_path, db_path, launch, capture, input_order,
+          fault_ids, unsupported_policy);
+  py::list out;
+  for (int64_t fault_id : detected) {
+    out.append(fault_id);
+  }
+  return out;
+}
+
 py::list compaction_detections_py(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path,
@@ -379,8 +452,10 @@ void invalidate_stale_redundant_py(const std::string& db_path,
 void append_vectors_py(const std::string& db_path, int64_t campaign_id,
                        int64_t run_id, const std::string& source,
                        const std::vector<std::string>& patterns,
-                       int64_t start_index) {
-  db::append_vectors(db_path, campaign_id, run_id, source, patterns, start_index);
+                       int64_t start_index,
+                       const std::vector<std::string>& launch_patterns) {
+  db::append_vectors(db_path, campaign_id, run_id, source, patterns,
+                     start_index, launch_patterns);
 }
 
 void mark_fault_redundant_py(const std::string& db_path, int64_t fault_id,
@@ -572,6 +647,29 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("vector"), py::arg("input_order"), py::arg("fault_ids"),
         py::arg("unsupported_policy") = "fail");
+  // Transition model (combinational broadside two-pattern) entry points.
+  m.def("atpg_random_vector_pairs", &faultflow::atpg_random_vector_pairs,
+        py::arg("input_order"), py::arg("count"), py::arg("seed"));
+  m.def("solve_transition_fault_atpg", &faultflow::solve_transition_fault_atpg,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
+        py::arg("fault_id"), py::arg("blocked_patterns"),
+        py::arg("conflict_limit") = 100000, py::arg("sat_timeout_seconds") = 10,
+        py::arg("unsupported_policy") = "fail");
+  m.def("verify_transition_candidate", &faultflow::verify_transition_candidate,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
+        py::arg("fault_id"), py::arg("launch"), py::arg("capture"),
+        py::arg("unsupported_policy") = "fail");
+  m.def("simulate_transition_incremental",
+        &faultflow::simulate_transition_incremental_py, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("db_path"), py::arg("campaign_id"),
+        py::arg("run_id"), py::arg("new_pairs"), py::arg("input_order"),
+        py::arg("fault_ids"), py::arg("vector_start_index"),
+        py::arg("unsupported_policy") = "fail");
+  m.def("simulate_transition_tentative",
+        &faultflow::simulate_transition_tentative_py, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("db_path"), py::arg("launch"),
+        py::arg("capture"), py::arg("input_order"), py::arg("fault_ids"),
+        py::arg("unsupported_policy") = "fail");
   m.def("compaction_detections", &faultflow::compaction_detections_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("vector"), py::arg("input_order"), py::arg("fault_ids"),
@@ -581,7 +679,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("redundancy_model_id"));
   m.def("append_vectors", &faultflow::append_vectors_py, py::arg("db_path"),
         py::arg("campaign_id"), py::arg("run_id"), py::arg("source"),
-        py::arg("patterns"), py::arg("start_index"));
+        py::arg("patterns"), py::arg("start_index"),
+        py::arg("launch_patterns") = std::vector<std::string>{});
   m.def("mark_fault_redundant", &faultflow::mark_fault_redundant_py,
         py::arg("db_path"), py::arg("fault_id"), py::arg("redundancy_model_id"));
   m.def("mark_fault_protocol_unresolved",

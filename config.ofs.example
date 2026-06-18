@@ -16,7 +16,12 @@ liberty   = cells/osu/osu035_stdcells.lib
 yosys_ver = 0.61+129
 
 [fault_model]
-type                 = stuck_at
+# model = stuck_at | transition  (`type` is accepted as a back-compat alias).
+# transition is combinational broadside two-pattern (STR/STF) ATPG; it requires
+# collapsing = false and is incompatible with scan in this release (Step 2b).
+model                = stuck_at
+# launch = loc  (launch-on-capture; launch-on-shift is reserved, not implemented).
+launch               = loc
 collapsing           = false
 include_clock_faults = false
 include_reset_faults = false

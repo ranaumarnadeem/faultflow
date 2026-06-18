@@ -6,7 +6,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests/cpp/fixtures/tiny_scan_chain.json"
-CELL_MAP = ROOT / "cells/osu/osu035.json"
+CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 
 
 @pytest.mark.golden
