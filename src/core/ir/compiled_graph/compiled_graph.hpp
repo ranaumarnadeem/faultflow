@@ -37,6 +37,9 @@ struct CompiledSimGraph {
   std::vector<int> level_starts;
   std::vector<int> observable;
   std::vector<int> pi_nets;
+  // Controllable pseudo-PI nets (e.g. blackbox output nets driven by an INPUT
+  // source node). A subset of pi_nets, not backed by a real module port.
+  std::vector<int> pseudo_pi_nets;
   int net_count = 0;
   std::map<int, int> yosys_to_compiled;
   std::vector<int> compiled_to_yosys;

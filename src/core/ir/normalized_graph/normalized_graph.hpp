@@ -24,6 +24,9 @@ struct NormNet {
   bool is_clock = false;
   bool is_reset = false;
   bool is_blackboxed = false;
+  // Phase 9: blackbox output net modeled as a controllable pseudo-PI (driven by
+  // an INPUT source node). Distinct from a real PI — not a module port.
+  bool is_pseudo_input = false;
 };
 
 struct NormNode {
@@ -48,11 +51,15 @@ struct NormalizedGraph {
   std::set<int> clocks;
   std::set<int> resets;
   std::set<int> blackboxed;
+  // Phase 9: blackbox output nets exposed as controllable pseudo-PIs, and the
+  // set of instance names blackboxed by name (boundary test interface).
+  std::set<int> pseudo_inputs;
+  std::set<std::string> blackbox_instances;
 
-  static NormalizedGraph from_parsed(const ParsedGraph& parsed,
-                                     const CellMap& cell_map,
-                                     const std::string& unsupported_policy =
-                                         "fail");
+  static NormalizedGraph from_parsed(
+      const ParsedGraph& parsed, const CellMap& cell_map,
+      const std::string& unsupported_policy = "fail",
+      const std::set<std::string>& blackbox_instances = {});
 };
 
 }  // namespace faultflow

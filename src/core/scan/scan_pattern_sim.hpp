@@ -31,7 +31,22 @@ struct ScanPatternRequest {
   // loc_two_capture.
   bool los_two_capture = false;
   std::map<int, bool> los_launch_scan_in;  // chain_id -> launch-shift scan-in bit
+  // When non-empty, only the named clocks are pulsed during the launch+capture
+  // window (LOC launch/LOS launch-shift/capture pulses). All clocks are still
+  // pulsed during load and unload. Empty = pulse all (regression-safe default).
+  std::vector<std::string> active_clock_ports;
 };
+
+// Returns true if clock i should be pulsed during the launch/capture window.
+// When active_clock_ports is empty every clock is active (unchanged behaviour).
+inline bool is_active(const ScanPatternRequest& req, size_t i) {
+  if (req.active_clock_ports.empty()) return true;
+  if (i >= req.clock_ports.size()) return false;
+  const std::string& name = req.clock_ports[i];
+  for (const auto& ap : req.active_clock_ports)
+    if (ap == name) return true;
+  return false;
+}
 
 struct ScanPatternResult {
   std::map<std::string, bool> real_po_values;

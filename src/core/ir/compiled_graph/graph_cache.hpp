@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "ir/compiled_graph/compiled_graph.hpp"
 #include "ir/normalized_graph/normalized_graph.hpp"
@@ -32,9 +33,21 @@ struct GraphCacheStats {
 // The cache key includes the size and mtime of both the netlist JSON and the
 // cell-map file, so an edit to either input within a single process forces a
 // rebuild; no external invalidation hook is required.
-const CachedGraph& load_cached_graph(const std::string& json_path,
-                                     const std::string& cell_map_path,
-                                     const std::string& unsupported_policy);
+const CachedGraph& load_cached_graph(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances);
+
+// 3-arg convenience overload (no blackbox). A named static empty list avoids a
+// temporary at the call site (which would trip GCC's -Wdangling-reference
+// heuristic on the returned reference, even though it points into the cache).
+inline const CachedGraph& load_cached_graph(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& unsupported_policy) {
+  static const std::vector<std::string> kNoBlackbox;
+  return load_cached_graph(json_path, cell_map_path, unsupported_policy,
+                           kNoBlackbox);
+}
 
 GraphCacheStats graph_cache_stats();
 

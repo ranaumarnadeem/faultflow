@@ -462,9 +462,30 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
       cg.observable.push_back(cg.yosys_to_compiled.at(po));
     }
   }
+  // Phase 9: test points (e.g. blackbox input nets) become observable pseudo-POs.
+  for (int tp : ng.TPs) {
+    if (cg.yosys_to_compiled.count(tp)) {
+      const int cidx = cg.yosys_to_compiled.at(tp);
+      if (std::find(cg.observable.begin(), cg.observable.end(), cidx) ==
+          cg.observable.end()) {
+        cg.observable.push_back(cidx);
+      }
+    }
+  }
   for (int pi : ng.PIs) {
     if (cg.yosys_to_compiled.count(pi)) {
       cg.pi_nets.push_back(cg.yosys_to_compiled.at(pi));
+    }
+  }
+  // Phase 9: controllable pseudo-PIs (blackbox output nets) are stimulus sources.
+  for (int ppi : ng.pseudo_inputs) {
+    if (cg.yosys_to_compiled.count(ppi)) {
+      const int cidx = cg.yosys_to_compiled.at(ppi);
+      if (std::find(cg.pi_nets.begin(), cg.pi_nets.end(), cidx) ==
+          cg.pi_nets.end()) {
+        cg.pi_nets.push_back(cidx);
+        cg.pseudo_pi_nets.push_back(cidx);
+      }
     }
   }
 

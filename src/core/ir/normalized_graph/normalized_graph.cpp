@@ -102,13 +102,45 @@ FFConfig build_ff_config(const CellMapEntry& entry, const ParsedCell& cell) {
 
 }  // namespace
 
-NormalizedGraph NormalizedGraph::from_parsed(const ParsedGraph& parsed,
-                                             const CellMap& cell_map,
-                                             const std::string& policy) {
+NormalizedGraph NormalizedGraph::from_parsed(
+    const ParsedGraph& parsed, const CellMap& cell_map,
+    const std::string& policy,
+    const std::set<std::string>& blackbox_instances) {
   NormalizedGraph ng;
   const ParsedModule& mod = parsed.top_module();
   std::map<int, int> parent;
   int next_node_id = 1;
+
+  // Phase 9: validate every named blackbox instance exists (never silently
+  // ignore a blackbox directive — Policy 1 spirit).
+  for (const auto& name : blackbox_instances) {
+    if (!mod.cells.count(name)) {
+      throw ParseError("blackbox instance not found: " + name);
+    }
+  }
+
+  // Resolve whether a pin is an output of a (possibly unknown-type) cell:
+  // prefer the cell-map entry, else fall back to common output-pin names.
+  auto is_output_pin = [&](const ParsedCell& cell,
+                           const std::string& pin) -> bool {
+    const auto entry = cell_map.lookup(cell.type);
+    if (entry) {
+      for (const auto& [logical, lib_pin] : entry->outputs) {
+        (void)logical;
+        if (lib_pin == pin) {
+          return true;
+        }
+      }
+      for (const auto& in_pin : entry->inputs) {
+        if (in_pin == pin) {
+          return false;
+        }
+      }
+    }
+    return pin == "Y" || pin == "YS" || pin == "YC" || pin == "Q" ||
+           pin == "X" || pin == "CO" || pin == "SUM" || pin == "S" ||
+           pin == "YPAD" || pin == "DO";
+  };
 
   auto ensure_net = [&](int raw_id) {
     if (!ng.nets.count(raw_id)) {
@@ -148,6 +180,26 @@ NormalizedGraph NormalizedGraph::from_parsed(const ParsedGraph& parsed,
       for (int bit : bits) {
         ensure_net(bit);
       }
+    }
+
+    // Phase 9: instance blackboxing — model the cell as a test boundary.
+    // Output nets become controllable pseudo-PIs; input nets become observable
+    // pseudo-POs (TPs). The cell itself is NOT elaborated.
+    if (blackbox_instances.count(inst)) {
+      for (const auto& [pin, bits] : cell.conns) {
+        const bool is_out = is_output_pin(cell, pin);
+        for (int bit : bits) {
+          if (is_out) {
+            ng.nets[bit].is_pseudo_input = true;
+            ng.pseudo_inputs.insert(bit);
+          } else {
+            ng.nets[bit].is_tp = true;
+            ng.TPs.insert(bit);
+          }
+        }
+      }
+      ng.blackbox_instances.insert(inst);
+      continue;
     }
 
     const auto entry = cell_map.lookup(cell.type);
@@ -251,6 +303,21 @@ NormalizedGraph NormalizedGraph::from_parsed(const ParsedGraph& parsed,
     }
     ng.nets[pi].driver = pi_node.id;
     ng.nodes[pi_node.id] = std::move(pi_node);
+  }
+
+  // Phase 9: pseudo-PI source nodes for blackbox output nets (controllable).
+  // A net that is also a real PI is already driven — skip it.
+  for (int ppi : ng.pseudo_inputs) {
+    if (ng.nets[ppi].driver >= 0) {
+      continue;
+    }
+    NormNode ppi_node;
+    ppi_node.id = next_node_id++;
+    ppi_node.type = NodeType::GATE;
+    ppi_node.gate_type = GateType::INPUT;
+    ppi_node.output_pins["Y"] = ppi;
+    ng.nets[ppi].driver = ppi_node.id;
+    ng.nodes[ppi_node.id] = std::move(ppi_node);
   }
 
   // CONST drivers (only when referenced)
