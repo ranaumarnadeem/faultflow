@@ -135,13 +135,14 @@ def _clock_port_name(module: dict[str, Any], clock_net: int) -> str | None:
 def _drop_dangling_scan_ports(
     module: dict[str, Any],
     manifest: dict[str, Any],
-    clock_net: int,
+    clock_nets: list[int],
 ) -> None:
     used = _nets_used_by_cells(module)
     scan_names = _manifest_scan_port_names(manifest)
-    clock_name = _clock_port_name(module, clock_net)
-    if clock_name is not None:
-        scan_names.add(clock_name)
+    for clk_net in clock_nets:
+        clock_name = _clock_port_name(module, clk_net)
+        if clock_name is not None:
+            scan_names.add(clock_name)
     ports = module.get("ports", {})
     netnames = module.get("netnames", {})
     if not isinstance(ports, dict) or not isinstance(netnames, dict):
@@ -364,10 +365,16 @@ def build_scan_atpg_view(
             },
         }
 
-    clock_net_raw = manifest.get("clock_net")
-    if not isinstance(clock_net_raw, int):
-        raise ScanError("manifest clock_net must be an integer")
-    _drop_dangling_scan_ports(module, manifest, clock_net_raw)
+    # Support both v2 (clock_nets: list) and v1 (clock_net: int) manifests.
+    clock_nets_raw = manifest.get("clock_nets")
+    if isinstance(clock_nets_raw, list) and clock_nets_raw:
+        clock_nets_list = [int(n) for n in clock_nets_raw]
+    else:
+        clk = manifest.get("clock_net")
+        if not isinstance(clk, int):
+            raise ScanError("manifest must have clock_nets (list) or clock_net (int)")
+        clock_nets_list = [clk]
+    _drop_dangling_scan_ports(module, manifest, clock_nets_list)
 
     attrs = module.setdefault("attributes", {})
     if isinstance(attrs, dict):

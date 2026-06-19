@@ -59,14 +59,23 @@ def verify_golden_scan_protocol(
             "Run: cmake --build build -- -j2"
         )
 
-    clock_net = manifest.get("clock_net")
-    if not isinstance(clock_net, int):
-        raise RunnerError("scan manifest clock_net must be an integer")
-    clock_port = _port_name_for_net(
-        generic_json, str(manifest["top"]), clock_net, "input"
-    )
-    if clock_port is None:
-        raise RunnerError(f"cannot map scan clock net {clock_net} to a port")
+    # Support both v2 (clock_nets: list) and v1 (clock_net: int) manifests.
+    clock_nets_raw = manifest.get("clock_nets")
+    if isinstance(clock_nets_raw, list) and clock_nets_raw:
+        clock_net_ids = [int(n) for n in clock_nets_raw]
+    else:
+        clk = manifest.get("clock_net")
+        if not isinstance(clk, int):
+            raise RunnerError("scan manifest must have clock_nets (list) or clock_net (int)")
+        clock_net_ids = [clk]
+    clock_ports: list[str] = []
+    for clk_net in clock_net_ids:
+        port = _port_name_for_net(
+            generic_json, str(manifest["top"]), clk_net, "input"
+        )
+        if port is None:
+            raise RunnerError(f"cannot map scan clock net {clk_net} to a port")
+        clock_ports.append(port)
 
     scan_inputs = manifest.get("scan_inputs", [])
     scan_outputs = manifest.get("scan_outputs", [])
@@ -82,18 +91,18 @@ def verify_golden_scan_protocol(
         core.simulate_scan_pattern(
             str(generic_json),
             str(cell_map),
-            clock_port,
-            scan_enable,
-            scan_input_ports,
-            scan_output_ports,
-            functional_output_order,
-            max_chain_length,
-            pattern.load_seqs,
-            pattern.capture_pi_values,
-            cfg.simulation.unsupported_cells,
-            loc_two_capture,
-            los_two_capture,
-            los_launch_scan_in or {},
+            clock_ports,
+            scan_enable_port=scan_enable,
+            scan_input_ports=scan_input_ports,
+            scan_output_ports=scan_output_ports,
+            functional_output_ports=functional_output_order,
+            max_chain_length=max_chain_length,
+            load_seqs=pattern.load_seqs,
+            capture_pi_values=pattern.capture_pi_values,
+            unsupported_policy=cfg.simulation.unsupported_cells,
+            loc_two_capture=loc_two_capture,
+            los_two_capture=los_two_capture,
+            los_launch_scan_in=los_launch_scan_in or {},
         )
     )
     real_po_values = dict(result.get("real_po_values", {}))

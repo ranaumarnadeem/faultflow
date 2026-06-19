@@ -239,18 +239,6 @@ NormalizedGraph NormalizedGraph::from_parsed(const ParsedGraph& parsed,
     ng.nodes[node.id] = std::move(node);
   }
 
-  bool has_ff = false;
-  for (const auto& [nid, node] : ng.nodes) {
-    (void)nid;
-    if (node.type == NodeType::FF) {
-      has_ff = true;
-      break;
-    }
-  }
-  if (has_ff && ng.clocks.size() > 1) {
-    throw ParseError("Sequential simulation supports exactly one clock net");
-  }
-
   // PI source pseudo-nodes (INPUT)
   for (int pi : ng.PIs) {
     NormNode pi_node;

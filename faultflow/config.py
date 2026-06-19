@@ -114,6 +114,19 @@ class ScanConfig:
 
 
 @dataclass(frozen=True)
+class ClockSpec:
+    """A declared clock domain (Phase 6, `add_clock` / `[clocks]`).
+
+    ``off_state`` is the clock's inactive level (0 for active-high/posedge,
+    1 for a negedge clock); the test protocol returns each clock to its
+    off-state between pulses.
+    """
+
+    port: str
+    off_state: int = 0
+
+
+@dataclass(frozen=True)
 class FaultflowConfig:
     path: Path
     top: str
@@ -128,6 +141,7 @@ class FaultflowConfig:
     report: ReportConfig
     scan: ScanConfig
     output_root: Path = Path("output")
+    clocks: tuple[ClockSpec, ...] = ()
 
     @property
     def output_dir(self) -> Path:
@@ -222,6 +236,47 @@ def _optional_path(parser: ConfigParser, section: str, key: str) -> Path | None:
     return Path(value) if value else None
 
 
+def _parse_clocks(parser: ConfigParser) -> tuple[ClockSpec, ...]:
+    if not parser.has_section("clocks"):
+        return ()
+
+    ports_raw = parser.get("clocks", "ports", fallback="").strip()
+    if not ports_raw:
+        return ()
+
+    ports = [p.strip() for p in ports_raw.split(",") if p.strip()]
+
+    seen: set[str] = set()
+    for p in ports:
+        if p in seen:
+            raise ConfigError(f"[clocks] duplicate port '{p}'")
+        seen.add(p)
+
+    off_states: dict[str, int] = {}
+    off_raw = parser.get("clocks", "off", fallback="").strip()
+    if off_raw:
+        for token in off_raw.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if ":" not in token:
+                raise ConfigError(
+                    f"[clocks] off entry '{token}' must be '<port>:<0|1>'"
+                )
+            port, _, val = token.partition(":")
+            port = port.strip()
+            val = val.strip()
+            if port not in seen:
+                raise ConfigError(f"[clocks] off references undeclared port '{port}'")
+            if val not in {"0", "1"}:
+                raise ConfigError(
+                    f"[clocks] off_state for '{port}' must be 0 or 1, got '{val}'"
+                )
+            off_states[port] = int(val)
+
+    return tuple(ClockSpec(port=p, off_state=off_states.get(p, 0)) for p in ports)
+
+
 def _verilog_models(parser: ConfigParser) -> Path:
     value = parser.get("simulation", "verilog_models", fallback="").strip()
     if not value:
@@ -280,6 +335,14 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             "(stuck-at equivalence rules do not hold for transition faults)"
         )
 
+    clocks = _parse_clocks(parser)
+
+    if fault_model == "transition" and len(clocks) > 1:
+        raise ConfigError(
+            "transition fault model with multiple declared clock domains is not yet "
+            "supported (Phase 6 deferred); use model = stuck_at for multi-clock designs"
+        )
+
     return FaultflowConfig(
         path=cfg_path,
         top=top,
@@ -326,4 +389,5 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             scan_enable=parser.get("scan", "scan_enable", fallback="scan_en"),
             run_techmap=_bool(parser, "scan", "run_techmap", True),
         ),
+        clocks=clocks,
     )

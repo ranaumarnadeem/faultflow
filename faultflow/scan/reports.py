@@ -54,7 +54,7 @@ def manifest_from_result(
     check_result: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return {
-        "version": 1,
+        "version": 2,
         "top": result.top,
         "source_json": str(source_json),
         "generic_json": str(result.output_json),
@@ -64,7 +64,7 @@ def manifest_from_result(
         "chain_order_policy": "sorted by instance name, not netlist order",
         "chain_count": result.chain_count,
         "cell_count": result.cell_count,
-        "clock_net": result.clock_net,
+        "clock_nets": result.clock_nets,
         "scan_inputs": result.scan_inputs,
         "scan_outputs": result.scan_outputs,
         "scan_enable": result.scan_enable,
@@ -103,7 +103,7 @@ def dry_run_manifest(plan: ScanPlan) -> dict[str, object]:
         "chain_order_policy": "sorted by instance name, not netlist order",
         "chain_count": plan.chain_count,
         "cell_count": plan.cell_count,
-        "clock_net": plan.clock_net,
+        "clock_nets": plan.clock_nets,
         "scan_inputs": plan.scan_inputs,
         "scan_outputs": plan.scan_outputs,
         "scan_enable": plan.scan_enable,

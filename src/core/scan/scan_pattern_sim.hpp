@@ -10,7 +10,9 @@ namespace faultflow::scan {
 constexpr int kScanProtocolFaultBatchSize = 63;
 
 struct ScanPatternRequest {
-  std::string clock_port;
+  std::vector<std::string> clock_ports;
+  std::vector<bool> clock_off_states;  // parallel to clock_ports; element i is the
+                                       // inactive level for clock i (false = default)
   std::string scan_enable_port;
   std::vector<std::string> scan_input_ports;
   std::vector<std::string> scan_output_ports;

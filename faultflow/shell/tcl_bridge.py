@@ -37,6 +37,8 @@ class TclBridge:
             "resume": self._resume,
             "clean": self._clean,
             "reset": self._reset,
+            "add_clock": self._add_clock,
+            "report_clocks": self._report_clocks,
             "help": self._help,
             "quit": self._quit,
             "exit": self._quit,
@@ -336,6 +338,42 @@ proc {name} {{args}} {{
             raise ShellError("usage: reset", "CONFIG", "INVALID_OPTION")
         self.session.reset()
         return "session reset"
+
+    def _add_clock(self, args: list[str]) -> Any:
+        if not args:
+            raise ShellError(
+                "usage: add_clock PORT [-off 0|1]", "CONFIG", "INVALID_OPTION"
+            )
+        port = args[0]
+        off_state = 0
+        idx = 1
+        while idx < len(args):
+            flag = args[idx]
+            if flag == "-off":
+                if idx + 1 >= len(args):
+                    raise ShellError(
+                        "add_clock: -off requires a value", "CONFIG", "INVALID_OPTION"
+                    )
+                val = args[idx + 1]
+                if val not in ("0", "1"):
+                    raise ShellError(
+                        f"add_clock: -off must be 0 or 1, got {val!r}",
+                        "CONFIG",
+                        "INVALID_VALUE",
+                    )
+                off_state = int(val)
+                idx += 2
+            else:
+                raise ShellError(
+                    f"add_clock: unknown option {flag!r}", "CONFIG", "INVALID_OPTION"
+                )
+        self.session.add_clock(port, off_state=off_state)
+        return f"clock domain: {port} off_state={off_state}"
+
+    def _report_clocks(self, args: list[str]) -> Any:
+        if args:
+            raise ShellError("usage: report_clocks", "CONFIG", "INVALID_OPTION")
+        return {"clocks": self.session.report_clocks()}
 
     def _help(self, args: list[str]) -> Any:
         if len(args) > 1:

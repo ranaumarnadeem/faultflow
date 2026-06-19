@@ -87,8 +87,8 @@ def check_scan_structure(
             clock_nets.add(clk)
             if se != se_net:
                 errors.append(f"{instance}: SE does not use shared scan enable")
-        if len(clock_nets) != 1:
-            errors.append("scanned design must have exactly one scan clock net")
+        if len(clock_nets) == 0:
+            errors.append("scanned design has no scan clock net")
 
         seen: set[str] = set()
         for raw_chain in chains:

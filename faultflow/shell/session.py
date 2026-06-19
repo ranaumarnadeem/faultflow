@@ -9,6 +9,7 @@ from typing import Any
 
 from faultflow.config import (
     AtpgConfig,
+    ClockSpec,
     FaultflowConfig,
     FaultModelConfig,
     ReportConfig,
@@ -55,6 +56,7 @@ class ProjectSession:
         self.scan_checked = False
         self.scan_campaign_stale = False
         self.options: dict[str, str] = {}
+        self.declared_clocks: list[ClockSpec] = []
 
     @property
     def checkpoint_path(self) -> Path:
@@ -78,6 +80,9 @@ class ProjectSession:
     def _checkpoint_payload(self) -> dict[str, object]:
         snap = asdict(self.snapshot())
         snap["output_root"] = str(self.output_root)
+        snap["declared_clocks"] = [
+            [cs.port, cs.off_state] for cs in self.declared_clocks
+        ]
         return snap
 
     def checkpoint(self) -> tuple[Path, str]:
@@ -134,6 +139,23 @@ class ProjectSession:
             f"using technology profile {profile.name}",
         )
 
+    def add_clock(self, port: str, *, off_state: int = 0) -> None:
+        if off_state not in (0, 1):
+            raise ShellError(
+                f"add_clock: off_state must be 0 or 1, got {off_state}",
+                "CONFIG",
+                "INVALID_VALUE",
+            )
+        self.declared_clocks = [cs for cs in self.declared_clocks if cs.port != port]
+        self.declared_clocks.append(ClockSpec(port=port, off_state=off_state))
+        if self.top is not None:
+            self.checkpoint()
+
+    def report_clocks(self) -> list[dict[str, object]]:
+        return [
+            {"port": cs.port, "off_state": cs.off_state} for cs in self.declared_clocks
+        ]
+
     def materialize_config(self) -> FaultflowConfig:
         if self.top is None or self.source is None:
             raise precondition("run read_netlist first", "NO_DESIGN")
@@ -148,6 +170,7 @@ class ProjectSession:
                 liberty=self.profile.liberty,
                 verilog_models=self.profile.verilog_models,
                 output_root=self.output_root,
+                clocks=tuple(self.declared_clocks),
             )
         else:
             cfg = FaultflowConfig(
@@ -164,6 +187,7 @@ class ProjectSession:
                 report=ReportConfig(output=Path("coverage.rpt")),
                 scan=ScanConfig(run_techmap=False),
                 output_root=self.output_root,
+                clocks=tuple(self.declared_clocks),
             )
         for key, value in self.options.items():
             if key == "atpg.max_rounds":
@@ -356,6 +380,10 @@ class ProjectSession:
             bool(data.get("scan_campaign_stale", False)) if resume else False
         )
         self.options = dict(data.get("options", ()))
+        self.declared_clocks = [
+            ClockSpec(port=str(row[0]), off_state=int(row[1]))
+            for row in data.get("declared_clocks", [])
+        ]
         if resume and self.scan_inserted:
             cfg = self.materialize_config()
             if not cfg.scan_manifest_path.exists():
@@ -400,3 +428,4 @@ class ProjectSession:
         self.scan_checked = False
         self.scan_campaign_stale = False
         self.options.clear()
+        self.declared_clocks.clear()

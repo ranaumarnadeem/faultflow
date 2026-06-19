@@ -70,7 +70,7 @@ class ScanPlan:
     top: str
     chain_count: int
     cell_count: int
-    clock_net: int
+    clock_nets: list[int]
     scan_inputs: list[str]
     scan_outputs: list[str]
     scan_enable: str
@@ -388,12 +388,19 @@ def _build_plan(
             reasons = ", ".join(sorted({ff.reason for ff in ineligible}))
             raise ScanError(f"no eligible FF cells found to stitch; reasons: {reasons}")
         raise ScanError("no eligible FF cells found to stitch")
-    clock_nets = {ff.clock_net for ff in eligible}
-    if len(clock_nets) != 1:
-        raise ScanError("scan stitching supports exactly one eligible clock net")
+    unique_clock_nets = sorted({ff.clock_net for ff in eligible})
+    # Sort FFs by (clock_net, instance) so all FFs of each domain are adjacent,
+    # which guarantees chain boundaries fall between domains (not across them).
+    eligible = sorted(eligible, key=lambda ff: (ff.clock_net, ff.instance))
+
     chain_count = _chain_count_from_options(
         len(eligible), scan_chains, max_chain_length
     )
+    if chain_count < len(unique_clock_nets):
+        raise ScanError(
+            f"scan_chains ({chain_count}) must be >= number of clock domains "
+            f"({len(unique_clock_nets)}) so each domain gets at least one chain"
+        )
     lengths = balanced_chain_lengths(len(eligible), chain_count)
     if max_chain_length is not None:
         for length in lengths:
@@ -414,7 +421,15 @@ def _build_plan(
     for chain_index, length in enumerate(lengths):
         previous_q = scan_in_bits[chain_index]
         chain_cells: list[ScanCellRecord] = []
-        for chain_position, ff in enumerate(eligible[cursor : cursor + length]):
+        chain_ffs = eligible[cursor : cursor + length]
+        chain_clock_nets = {ff.clock_net for ff in chain_ffs}
+        if len(chain_clock_nets) > 1:
+            raise ScanError(
+                f"chain {chain_index} spans multiple clock domains "
+                f"({sorted(chain_clock_nets)}); increase scan_chains so each "
+                f"domain occupies complete chains"
+            )
+        for chain_position, ff in enumerate(chain_ffs):
             record = ScanCellRecord(
                 instance=ff.instance,
                 original_type=ff.original_type,
@@ -445,7 +460,7 @@ def _build_plan(
         top=top,
         chain_count=chain_count,
         cell_count=len(records),
-        clock_net=next(iter(clock_nets)),
+        clock_nets=unique_clock_nets,
         scan_inputs=scan_inputs,
         scan_outputs=scan_outputs,
         scan_enable=scan_enable,
@@ -579,7 +594,7 @@ def stitch_scan_json(
         output_json=output_json,
         chain_count=plan.chain_count,
         cell_count=plan.cell_count,
-        clock_net=plan.clock_net,
+        clock_nets=plan.clock_nets,
         scan_inputs=plan.scan_inputs,
         scan_outputs=plan.scan_outputs,
         scan_enable=plan.scan_enable,

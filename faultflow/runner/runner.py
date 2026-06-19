@@ -684,7 +684,7 @@ class Runner:
         netlist: Path,
         vectors: VectorSet,
         output_order: list[str],
-        clock_name: str,
+        clock_names: list[str],
         extra_inputs: dict[str, bool] | None = None,
         cell_map_path: Path | None = None,
     ) -> list[dict[str, bool]]:
@@ -695,15 +695,16 @@ class Runner:
                 "Run: cmake --build build -- -j2"
             )
         extra = extra_inputs or {}
-        input_order = sorted(set(vectors.input_order) | set(extra) | {clock_name})
+        input_order = sorted(set(vectors.input_order) | set(extra) | set(clock_names))
         sequences = []
         for vector in vectors.vectors:
             base = {name: bool(vector.get(name, False)) for name in input_order}
             base.update(extra)
             low = dict(base)
             high = dict(base)
-            low[clock_name] = False
-            high[clock_name] = True
+            for clk in clock_names:
+                low[clk] = False
+                high[clk] = True
             sequences.append([low, high])
         cell_map = cell_map_path if cell_map_path is not None else self.cfg.cell_lib
         return list(
@@ -721,21 +722,32 @@ class Runner:
         self,
         manifest: dict[str, object],
         vectors_path: Path | None,
-    ) -> tuple[VectorSet, VectorSet, list[str], str, dict[str, bool], str]:
+    ) -> tuple[VectorSet, VectorSet, list[str], list[str], dict[str, bool], str]:
         source_json = Path(str(manifest["source_json"]))
         output_order = _port_names(source_json, str(manifest["top"]), "output")
         if not output_order:
             raise RunnerError("normal-mode scan check requires at least one PO")
-        clock_net_raw = manifest["clock_net"]
-        if not isinstance(clock_net_raw, int):
-            raise RunnerError("scan manifest clock_net must be an integer")
-        clock_name = _port_name_for_net(
-            source_json, str(manifest["top"]), clock_net_raw, "input"
-        )
-        if clock_name is None:
-            raise RunnerError(
-                f"cannot map scan clock net {clock_net_raw} to an input port"
+        # Support both v2 (clock_nets: list) and v1 (clock_net: int) manifests.
+        clock_nets_raw = manifest.get("clock_nets")
+        if isinstance(clock_nets_raw, list) and clock_nets_raw:
+            clock_net_ids = [int(n) for n in clock_nets_raw]
+        else:
+            clk = manifest.get("clock_net")
+            if not isinstance(clk, int):
+                raise RunnerError(
+                    "scan manifest must have clock_nets (list) or clock_net (int)"
+                )
+            clock_net_ids = [clk]
+        clock_names: list[str] = []
+        for clk_net in clock_net_ids:
+            port = _port_name_for_net(
+                source_json, str(manifest["top"]), clk_net, "input"
             )
+            if port is None:
+                raise RunnerError(
+                    f"cannot map scan clock net {clk_net} to an input port"
+                )
+            clock_names.append(port)
         vectors, vector_source = self._scan_vector_source(source_json, vectors_path)
         raw_scan_inputs = manifest.get("scan_inputs", [])
         scan_inputs = (
@@ -760,7 +772,7 @@ class Runner:
             vectors,
             scanned_vectors,
             output_order,
-            clock_name,
+            clock_names,
             scan_extra,
             vector_source,
         )
@@ -776,19 +788,19 @@ class Runner:
             vectors,
             scanned_vectors,
             output_order,
-            clock_name,
+            clock_names,
             scan_extra,
             vector_source,
         ) = self._scan_normal_mode_context(manifest, vectors_path)
 
         original = self._sequence_outputs(
-            source_json, vectors, output_order, clock_name
+            source_json, vectors, output_order, clock_names
         )
         scanned = self._sequence_outputs(
             generic_json,
             scanned_vectors,
             output_order,
-            clock_name,
+            clock_names,
             extra_inputs=scan_extra,
             cell_map_path=resolve_scan_cell_map(self.cfg),
         )
@@ -807,7 +819,7 @@ class Runner:
         manifest: dict[str, object],
         scanned_vectors: VectorSet,
         output_order: list[str],
-        clock_name: str,
+        clock_names: list[str],
         scan_extra: dict[str, bool],
     ) -> dict[str, object]:
         sky = manifest.get("sky130_verilog")
@@ -834,7 +846,7 @@ class Runner:
             generic_json,
             scanned_vectors,
             output_order,
-            clock_name,
+            clock_names,
             extra_inputs=scan_extra,
             cell_map_path=resolve_scan_cell_map(self.cfg),
         )
@@ -842,7 +854,7 @@ class Runner:
             techmap_json,
             scanned_vectors,
             output_order,
-            clock_name,
+            clock_names,
             extra_inputs=scan_extra,
             cell_map_path=self.cfg.cell_lib,
         )
@@ -891,7 +903,7 @@ class Runner:
                     _vectors,
                     scanned_vectors,
                     output_order,
-                    clock_name,
+                    clock_names,
                     scan_extra,
                     _vector_source,
                 ) = self._scan_normal_mode_context(manifest, vectors_path)
@@ -899,7 +911,7 @@ class Runner:
                     manifest,
                     scanned_vectors,
                     output_order,
-                    clock_name,
+                    clock_names,
                     scan_extra,
                 )
             except Exception as exc:

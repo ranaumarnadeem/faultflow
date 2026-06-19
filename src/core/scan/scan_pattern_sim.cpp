@@ -16,7 +16,13 @@
 namespace faultflow::scan {
 namespace {
 
-TestCycle make_cycle(const ParsedGraph& parsed, const std::string& clock_port,
+static bool clock_off(const ScanPatternRequest& req, size_t i) {
+  return i < req.clock_off_states.size() ? req.clock_off_states[i] : false;
+}
+
+TestCycle make_cycle(const ParsedGraph& parsed,
+                     const std::vector<std::string>& clock_ports,
+                     const std::vector<bool>& clock_off_states,
                      const std::map<std::string, bool>& values,
                      bool sample_outputs, bool fault_active) {
   TestCycle cycle;
@@ -25,35 +31,44 @@ TestCycle make_cycle(const ParsedGraph& parsed, const std::string& clock_port,
   for (const auto& [name, value] : values) {
     cycle.inputs[parsed.net_id_by_name(name)] = value;
   }
-  if (!values.count(clock_port)) {
-    cycle.inputs[parsed.net_id_by_name(clock_port)] = false;
+  for (size_t i = 0; i < clock_ports.size(); ++i) {
+    if (!values.count(clock_ports[i])) {
+      const bool off = i < clock_off_states.size() ? clock_off_states[i] : false;
+      cycle.inputs[parsed.net_id_by_name(clock_ports[i])] = off;
+    }
   }
   return cycle;
 }
 
 void append_clock_pulse(TestVector& vec, const ParsedGraph& parsed,
-                        const std::string& clock_port,
+                        const std::vector<std::string>& clock_ports,
+                        const std::vector<bool>& clock_off_states,
                         std::map<std::string, bool> values, bool sample,
                         bool fault_active) {
-  values[clock_port] = false;
+  for (size_t i = 0; i < clock_ports.size(); ++i)
+    values[clock_ports[i]] = i < clock_off_states.size() ? clock_off_states[i] : false;
   vec.cycles.push_back(
-      make_cycle(parsed, clock_port, values, false, fault_active));
-  values[clock_port] = true;
+      make_cycle(parsed, clock_ports, clock_off_states, values, false, fault_active));
+  for (size_t i = 0; i < clock_ports.size(); ++i)
+    values[clock_ports[i]] = !(i < clock_off_states.size() ? clock_off_states[i] : false);
   vec.cycles.push_back(
-      make_cycle(parsed, clock_port, values, sample, fault_active));
+      make_cycle(parsed, clock_ports, clock_off_states, values, sample, fault_active));
 }
 
 void append_launch_pulse(TestVector& vec, const ParsedGraph& parsed,
-                         const std::string& clock_port,
+                         const std::vector<std::string>& clock_ports,
+                         const std::vector<bool>& clock_off_states,
                          std::map<std::string, bool> values) {
   // LOC launch: one functional clock with the fault INACTIVE establishes the
   // launched (frame-0) state. Sample at the inactive clock level so the
   // transition qualifier can read the good-machine pre-transition value at the
   // fault net; functional POs are read at the capture pulse, not here.
-  values[clock_port] = false;
-  vec.cycles.push_back(make_cycle(parsed, clock_port, values, true, false));
-  values[clock_port] = true;
-  vec.cycles.push_back(make_cycle(parsed, clock_port, values, false, false));
+  for (size_t i = 0; i < clock_ports.size(); ++i)
+    values[clock_ports[i]] = i < clock_off_states.size() ? clock_off_states[i] : false;
+  vec.cycles.push_back(make_cycle(parsed, clock_ports, clock_off_states, values, true, false));
+  for (size_t i = 0; i < clock_ports.size(); ++i)
+    values[clock_ports[i]] = !(i < clock_off_states.size() ? clock_off_states[i] : false);
+  vec.cycles.push_back(make_cycle(parsed, clock_ports, clock_off_states, values, false, false));
 }
 
 void append_launch_shift(TestVector& vec, const ParsedGraph& parsed,
@@ -71,38 +86,47 @@ void append_launch_shift(TestVector& vec, const ParsedGraph& parsed,
     values[request.scan_input_ports[chain_id]] =
         it != request.los_launch_scan_in.end() && it->second;
   }
-  values[request.clock_port] = false;
-  vec.cycles.push_back(
-      make_cycle(parsed, request.clock_port, values, true, false));
-  values[request.clock_port] = true;
-  vec.cycles.push_back(
-      make_cycle(parsed, request.clock_port, values, false, false));
+  for (size_t i = 0; i < request.clock_ports.size(); ++i)
+    values[request.clock_ports[i]] = clock_off(request, i);
+  vec.cycles.push_back(make_cycle(parsed, request.clock_ports,
+                                  request.clock_off_states, values, true, false));
+  for (size_t i = 0; i < request.clock_ports.size(); ++i)
+    values[request.clock_ports[i]] = !clock_off(request, i);
+  vec.cycles.push_back(make_cycle(parsed, request.clock_ports,
+                                  request.clock_off_states, values, false, false));
 }
 
 void append_capture_pulse(TestVector& vec, const ParsedGraph& parsed,
-                          const std::string& clock_port,
+                          const std::vector<std::string>& clock_ports,
+                          const std::vector<bool>& clock_off_states,
                           std::map<std::string, bool> values) {
   // Functional POs belong to the loaded-state combinational response. Sample
   // after settling at the inactive clock level, then capture PPO values.
-  values[clock_port] = false;
-  vec.cycles.push_back(make_cycle(parsed, clock_port, values, true, true));
-  values[clock_port] = true;
-  vec.cycles.push_back(make_cycle(parsed, clock_port, values, false, true));
+  for (size_t i = 0; i < clock_ports.size(); ++i)
+    values[clock_ports[i]] = i < clock_off_states.size() ? clock_off_states[i] : false;
+  vec.cycles.push_back(make_cycle(parsed, clock_ports, clock_off_states, values, true, true));
+  for (size_t i = 0; i < clock_ports.size(); ++i)
+    values[clock_ports[i]] = !(i < clock_off_states.size() ? clock_off_states[i] : false);
+  vec.cycles.push_back(make_cycle(parsed, clock_ports, clock_off_states, values, false, true));
 }
 
 void append_unload_pulse(TestVector& vec, const ParsedGraph& parsed,
-                         const std::string& clock_port,
+                         const std::vector<std::string>& clock_ports,
+                         const std::vector<bool>& clock_off_states,
                          std::map<std::string, bool> values) {
-  values[clock_port] = false;
-  vec.cycles.push_back(make_cycle(parsed, clock_port, values, true, true));
-  values[clock_port] = true;
-  vec.cycles.push_back(make_cycle(parsed, clock_port, values, false, true));
+  for (size_t i = 0; i < clock_ports.size(); ++i)
+    values[clock_ports[i]] = i < clock_off_states.size() ? clock_off_states[i] : false;
+  vec.cycles.push_back(make_cycle(parsed, clock_ports, clock_off_states, values, true, true));
+  for (size_t i = 0; i < clock_ports.size(); ++i)
+    values[clock_ports[i]] = !(i < clock_off_states.size() ? clock_off_states[i] : false);
+  vec.cycles.push_back(make_cycle(parsed, clock_ports, clock_off_states, values, false, true));
 }
 
 std::map<std::string, bool> base_values(const ScanPatternRequest& request) {
   std::map<std::string, bool> values = request.capture_pi_values;
   values[request.scan_enable_port] = false;
-  values[request.clock_port] = false;
+  for (size_t i = 0; i < request.clock_ports.size(); ++i)
+    values[request.clock_ports[i]] = clock_off(request, i);
   for (const auto& scan_in : request.scan_input_ports) {
     values[scan_in] = false;
   }
@@ -141,13 +165,15 @@ TestVector build_scan_pattern_vector(const ParsedGraph& parsed,
           offset < static_cast<int>(bits.size()) ? bits[offset] : false;
       values[request.scan_input_ports[chain_id]] = bit;
     }
-    append_clock_pulse(vec, parsed, request.clock_port, values, false, false);
+    append_clock_pulse(vec, parsed, request.clock_ports, request.clock_off_states,
+                       values, false, false);
   }
 
   {
     std::map<std::string, bool> values = request.capture_pi_values;
     values[request.scan_enable_port] = false;
-    values[request.clock_port] = false;
+    for (size_t i = 0; i < request.clock_ports.size(); ++i)
+      values[request.clock_ports[i]] = clock_off(request, i);
     for (const auto& scan_in : request.scan_input_ports) {
       values[scan_in] = false;
     }
@@ -156,17 +182,20 @@ TestVector build_scan_pattern_vector(const ParsedGraph& parsed,
           "loc_two_capture and los_two_capture are mutually exclusive");
     }
     if (request.loc_two_capture) {
-      append_launch_pulse(vec, parsed, request.clock_port, values);
+      append_launch_pulse(vec, parsed, request.clock_ports,
+                          request.clock_off_states, values);
     } else if (request.los_two_capture) {
       append_launch_shift(vec, parsed, request, values);
     }
-    append_capture_pulse(vec, parsed, request.clock_port, values);
+    append_capture_pulse(vec, parsed, request.clock_ports,
+                         request.clock_off_states, values);
   }
 
   for (int offset = 0; offset < request.max_chain_length; ++offset) {
     std::map<std::string, bool> values = base_values(request);
     values[request.scan_enable_port] = true;
-    append_unload_pulse(vec, parsed, request.clock_port, values);
+    append_unload_pulse(vec, parsed, request.clock_ports,
+                        request.clock_off_states, values);
   }
   return vec;
 }

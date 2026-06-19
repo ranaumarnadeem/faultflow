@@ -159,22 +159,31 @@ def _termination_sweep_q_stems(
 def _protocol_fault_sim_kwargs(
     ctx: ScanPipelineContext, pattern: Any
 ) -> dict[str, object]:
-    clock_net = ctx.manifest.get("clock_net")
-    if not isinstance(clock_net, int):
-        raise RunnerError("scan manifest clock_net must be an integer")
     from faultflow.runner.runner import _port_name_for_net
 
-    clock_port = _port_name_for_net(
-        ctx.generic_json, str(ctx.manifest["top"]), clock_net, "input"
-    )
-    if clock_port is None:
-        raise RunnerError(f"cannot map scan clock net {clock_net} to a port")
+    # Support both v2 (clock_nets: list) and v1 (clock_net: int) manifests.
+    clock_nets_raw = ctx.manifest.get("clock_nets")
+    if isinstance(clock_nets_raw, list) and clock_nets_raw:
+        clock_net_ids = [int(n) for n in clock_nets_raw]
+    else:
+        clk = ctx.manifest.get("clock_net")
+        if not isinstance(clk, int):
+            raise RunnerError("scan manifest must have clock_nets (list) or clock_net (int)")
+        clock_net_ids = [clk]
+    clock_ports: list[str] = []
+    for clk_net in clock_net_ids:
+        port = _port_name_for_net(
+            ctx.generic_json, str(ctx.manifest["top"]), clk_net, "input"
+        )
+        if port is None:
+            raise RunnerError(f"cannot map scan clock net {clk_net} to a port")
+        clock_ports.append(port)
     scan_inputs = ctx.manifest.get("scan_inputs", [])
     scan_outputs = ctx.manifest.get("scan_outputs", [])
     if not isinstance(scan_inputs, list) or not isinstance(scan_outputs, list):
         raise RunnerError("manifest scan_inputs/scan_outputs must be lists")
     return {
-        "clock_port": clock_port,
+        "clock_ports": clock_ports,
         "scan_enable_port": str(ctx.manifest["scan_enable"]),
         "scan_input_ports": [str(name) for name in scan_inputs],
         "scan_output_ports": [str(name) for name in scan_outputs],

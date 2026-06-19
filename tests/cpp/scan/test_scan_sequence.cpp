@@ -13,7 +13,7 @@ namespace {
 
 ScanPatternRequest tiny_scan_chain_request() {
   ScanPatternRequest request;
-  request.clock_port = "CLK";
+  request.clock_ports = {"CLK"};
   request.scan_enable_port = "scan_en";
   request.scan_input_ports = {"scan_in"};
   request.scan_output_ports = {"scan_out_0"};
@@ -28,7 +28,7 @@ ScanPatternRequest tiny_scan_chain_request() {
 
 ScanPatternRequest asymmetric_scan_chain_request() {
   ScanPatternRequest request;
-  request.clock_port = "CLK";
+  request.clock_ports = {"CLK"};
   request.scan_enable_port = "scan_en";
   request.scan_input_ports = {"scan_in"};
   request.scan_output_ports = {"scan_out"};
@@ -56,7 +56,7 @@ uint32_t compiled_index_for_yosys_net(const std::string& fixture,
 
 TEST_CASE("simulate_scan_pattern matches three-FF load/unload", "[scan]") {
   ScanPatternRequest request;
-  request.clock_port = "CLK";
+  request.clock_ports = {"CLK"};
   request.scan_enable_port = "scan_en";
   request.scan_input_ports = {"scan_in"};
   request.scan_output_ports = {"scan_out_0"};
@@ -103,7 +103,7 @@ TEST_CASE("functional outputs are sampled before the capture edge", "[scan]") {
 
 TEST_CASE("simulate_scan_pattern sample count is max_chain_length + 1", "[scan]") {
   ScanPatternRequest request;
-  request.clock_port = "CLK";
+  request.clock_ports = {"CLK"};
   request.scan_enable_port = "scan_en";
   request.scan_input_ports = {"scan_in_0", "scan_in_1"};
   request.scan_output_ports = {"scan_out_0", "scan_out_1"};

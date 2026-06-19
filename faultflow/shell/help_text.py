@@ -39,6 +39,25 @@ COMMAND_HELP = {
         "A loaded design and selected PDK profile.",
         "synth",
     ),
+    "add_clock": CommandHelp(
+        "Project",
+        "add_clock PORT [-off 0|1]",
+        "Declare a clock domain",
+        "Registers PORT as a clock. -off sets the inactive level (0=default for "
+        "posedge/active-high, 1 for negedge). A second add_clock for the same port "
+        "replaces the prior entry. Declared clocks take authority over the name "
+        "heuristic for domain identification.",
+        "A design session (read_netlist not required).",
+        "add_clock clk_a\nadd_clock clk_b -off 1",
+    ),
+    "report_clocks": CommandHelp(
+        "Project",
+        "report_clocks",
+        "List declared clock domains",
+        "Returns port names and off-states for all clocks declared via add_clock.",
+        "",
+        "report_clocks",
+    ),
     "add_scan": CommandHelp(
         "Scan",
         "add_scan -chains N [-max_length N] [-SI NAME] [-SO NAME] "

@@ -545,7 +545,9 @@ void update_run_vector_count_py(const std::string& db_path, int64_t run_id,
 
 py::dict simulate_scan_pattern_py(
     const std::string& json_path, const std::string& cell_map_path,
-    const std::string& clock_port, const std::string& scan_enable_port,
+    const std::vector<std::string>& clock_ports,
+    const std::vector<bool>& clock_off_states,
+    const std::string& scan_enable_port,
     const std::vector<std::string>& scan_input_ports,
     const std::vector<std::string>& scan_output_ports,
     const std::vector<std::string>& functional_output_ports,
@@ -556,7 +558,8 @@ py::dict simulate_scan_pattern_py(
     bool los_two_capture,
     const std::map<int, bool>& los_launch_scan_in) {
   scan::ScanPatternRequest request;
-  request.clock_port = clock_port;
+  request.clock_ports = clock_ports;
+  request.clock_off_states = clock_off_states;
   request.scan_enable_port = scan_enable_port;
   request.scan_input_ports = scan_input_ports;
   request.scan_output_ports = scan_output_ports;
@@ -581,7 +584,9 @@ py::dict simulate_scan_pattern_py(
 
 py::dict simulate_scan_protocol_faults_py(
     const std::string& json_path, const std::string& cell_map_path,
-    const std::string& clock_port, const std::string& scan_enable_port,
+    const std::vector<std::string>& clock_ports,
+    const std::vector<bool>& clock_off_states,
+    const std::string& scan_enable_port,
     const std::vector<std::string>& scan_input_ports,
     const std::vector<std::string>& scan_output_ports,
     const std::vector<std::string>& functional_output_ports,
@@ -592,7 +597,8 @@ py::dict simulate_scan_protocol_faults_py(
     const std::string& unsupported_policy, bool loc_two_capture,
     bool los_two_capture, const std::map<int, bool>& los_launch_scan_in) {
   scan::ScanProtocolFaultRequest request;
-  request.pattern.clock_port = clock_port;
+  request.pattern.clock_ports = clock_ports;
+  request.pattern.clock_off_states = clock_off_states;
   request.pattern.scan_enable_port = scan_enable_port;
   request.pattern.scan_input_ports = scan_input_ports;
   request.pattern.scan_output_ports = scan_output_ports;
@@ -773,7 +779,9 @@ PYBIND11_MODULE(_faultflow_core, m) {
   m.def("update_run_vector_count", &faultflow::update_run_vector_count_py,
         py::arg("db_path"), py::arg("run_id"), py::arg("vector_count"));
   m.def("simulate_scan_pattern", &faultflow::simulate_scan_pattern_py,
-        py::arg("json_path"), py::arg("cell_map_path"), py::arg("clock_port"),
+        py::arg("json_path"), py::arg("cell_map_path"),
+        py::arg("clock_ports"),
+        py::arg("clock_off_states") = std::vector<bool>{},
         py::arg("scan_enable_port"), py::arg("scan_input_ports"),
         py::arg("scan_output_ports"), py::arg("functional_output_ports"),
         py::arg("max_chain_length"), py::arg("load_seqs"),
@@ -782,7 +790,9 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("los_launch_scan_in") = std::map<int, bool>{});
   m.def("simulate_scan_protocol_faults",
         &faultflow::simulate_scan_protocol_faults_py,
-        py::arg("json_path"), py::arg("cell_map_path"), py::arg("clock_port"),
+        py::arg("json_path"), py::arg("cell_map_path"),
+        py::arg("clock_ports"),
+        py::arg("clock_off_states") = std::vector<bool>{},
         py::arg("scan_enable_port"), py::arg("scan_input_ports"),
         py::arg("scan_output_ports"), py::arg("functional_output_ports"),
         py::arg("max_chain_length"), py::arg("load_seqs"),
