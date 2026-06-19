@@ -168,7 +168,9 @@ def _protocol_fault_sim_kwargs(
     else:
         clk = ctx.manifest.get("clock_net")
         if not isinstance(clk, int):
-            raise RunnerError("scan manifest must have clock_nets (list) or clock_net (int)")
+            raise RunnerError(
+                "scan manifest must have clock_nets (list) or clock_net (int)"
+            )
         clock_net_ids = [clk]
     clock_ports: list[str] = []
     for clk_net in clock_net_ids:

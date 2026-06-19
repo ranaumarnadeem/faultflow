@@ -66,13 +66,13 @@ def verify_golden_scan_protocol(
     else:
         clk = manifest.get("clock_net")
         if not isinstance(clk, int):
-            raise RunnerError("scan manifest must have clock_nets (list) or clock_net (int)")
+            raise RunnerError(
+                "scan manifest must have clock_nets (list) or clock_net (int)"
+            )
         clock_net_ids = [clk]
     clock_ports: list[str] = []
     for clk_net in clock_net_ids:
-        port = _port_name_for_net(
-            generic_json, str(manifest["top"]), clk_net, "input"
-        )
+        port = _port_name_for_net(generic_json, str(manifest["top"]), clk_net, "input")
         if port is None:
             raise RunnerError(f"cannot map scan clock net {clk_net} to a port")
         clock_ports.append(port)

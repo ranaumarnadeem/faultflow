@@ -153,7 +153,13 @@ def test_multiple_clock_domains_flagged(tmp_path: Path) -> None:
     )
     report = run_rule_check(_write(tmp_path, "multiclk", design), CELL_MAP, "multiclk")
     assert "CLK003" in _rule_ids(report)
-    assert not report.passed()
+    # CLK003 is now INFO (multi-clock is supported for stuck-at + scan).
+    assert report.passed()
+    clk003 = next(v for v in report.violations if v.rule_id == "CLK003")
+    from faultflow.rule_check.model import Severity
+
+    assert clk003.severity is Severity.INFO
+    assert "2 clock domains" in clk003.message
 
 
 def test_combinational_feedback_flagged(tmp_path: Path) -> None:

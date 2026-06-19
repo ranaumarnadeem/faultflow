@@ -42,18 +42,14 @@ def _tiny_json(path: Path) -> None:
 
 def _write_config(path: Path, clocks_section: str = "") -> None:
     path.write_text(
-        (
-            """
+        ("""
 [design]
 netlist = demo.json
 cell_lib = cells/sky130/sky130_fd_sc_hd.json
 
 [fault_model]
 model = stuck_at
-"""
-            + clocks_section
-        ).strip()
-        + "\n",
+""" + clocks_section).strip() + "\n",
         encoding="utf-8",
     )
 

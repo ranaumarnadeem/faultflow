@@ -16,7 +16,7 @@ def test_simulate_scan_protocol_faults_matches_golden_api(
     import _faultflow_core as core  # type: ignore[import-not-found]
 
     kwargs = {
-        "clock_port": "CLK",
+        "clock_ports": ["CLK"],
         "scan_enable_port": "scan_en",
         "scan_input_ports": ["scan_in"],
         "scan_output_ports": ["scan_out_0"],
@@ -47,7 +47,7 @@ def test_simulate_scan_protocol_faults_detects_active_capture_fault(
     result = core.simulate_scan_protocol_faults(
         str(FIXTURE),
         str(CELL_MAP),
-        clock_port="CLK",
+        clock_ports=["CLK"],
         scan_enable_port="scan_en",
         scan_input_ports=["scan_in"],
         scan_output_ports=["scan_out_0"],

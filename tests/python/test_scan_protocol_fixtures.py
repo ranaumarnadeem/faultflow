@@ -157,15 +157,15 @@ def test_physical_protocol_observes_pre_capture_outputs(
     result = core.simulate_scan_pattern(
         str(GENERIC),
         str(CELL_MAP),
-        "CLK",
-        "scan_en",
-        ["scan_in"],
-        ["scan_out"],
-        ["Y"],
-        2,
-        {0: list(case["load_seqs"]["0"])},
-        {"A": False, "D0": False, "D1": True},
-        "fail",
+        ["CLK"],
+        scan_enable_port="scan_en",
+        scan_input_ports=["scan_in"],
+        scan_output_ports=["scan_out"],
+        functional_output_ports=["Y"],
+        max_chain_length=2,
+        load_seqs={0: list(case["load_seqs"]["0"])},
+        capture_pi_values={"A": False, "D0": False, "D1": True},
+        unsupported_policy="fail",
     )
 
     assert result["real_po_values"] == dict(case["pre_capture_outputs"])

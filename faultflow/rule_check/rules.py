@@ -20,18 +20,29 @@ def _net(facts: NetlistFacts, net: int) -> str:
     return f"{facts.net_name(net)} (net {net})"
 
 
-# --- CLK003: a single design must not mix clock domains (single-clock scope) ---
+# --- CLK003: informational — multi-clock is supported for stuck-at and scan ---
 def rule_multiple_clock_domains(facts: NetlistFacts) -> list[Violation]:
     if len(facts.clock_nets) <= 1:
         return []
-    names = ", ".join(sorted(facts.net_name(n) for n in facts.clock_nets))
+    ff_per_domain: dict[int, int] = {n: 0 for n in facts.clock_nets}
+    for cell in facts.cells:
+        if cell.is_ff and cell.clock_net in ff_per_domain:
+            ff_per_domain[cell.clock_net] += 1
+
+    def _dom(n: int) -> str:
+        count = ff_per_domain[n]
+        label = "FF" if count == 1 else "FFs"
+        return f"{facts.net_name(n)} ({count} {label})"
+
+    domain_strs = ", ".join(_dom(n) for n in sorted(facts.clock_nets))
     return [
         Violation(
             "CLK003",
-            Severity.ERROR,
+            Severity.INFO,
             "multiple clock domains",
-            f"design has {len(facts.clock_nets)} clock nets ({names}); "
-            "single-clock scope supports exactly one",
+            f"design has {len(facts.clock_nets)} clock domains: {domain_strs}; "
+            "stuck-at and scan ATPG are supported; "
+            "at-speed transition multi-clock is deferred",
         )
     ]
 
