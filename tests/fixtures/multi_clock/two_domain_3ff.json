@@ -20,6 +20,7 @@
           "type": "$scanff_faultflow",
           "parameters": {},
           "attributes": {"faultflow_scan": "1"},
+          "port_directions": {"CLK": "input", "D": "input", "SDI": "input", "SE": "input", "Q": "output"},
           "connections": {
             "CLK": [2], "D": [7], "SDI": [5], "SE": [4], "Q": [11]
           }
@@ -28,6 +29,7 @@
           "type": "$scanff_faultflow",
           "parameters": {},
           "attributes": {"faultflow_scan": "1"},
+          "port_directions": {"CLK": "input", "D": "input", "SDI": "input", "SE": "input", "Q": "output"},
           "connections": {
             "CLK": [2], "D": [12], "SDI": [11], "SE": [4], "Q": [13]
           }
@@ -36,6 +38,7 @@
           "type": "$scanff_faultflow",
           "parameters": {},
           "attributes": {"faultflow_scan": "1"},
+          "port_directions": {"CLK": "input", "D": "input", "SDI": "input", "SE": "input", "Q": "output"},
           "connections": {
             "CLK": [3], "D": [14], "SDI": [6], "SE": [4], "Q": [15]
           }
@@ -44,12 +47,14 @@
           "type": "sky130_fd_sc_hd__xor2_1",
           "parameters": {},
           "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "X": "output"},
           "connections": {"A": [11], "B": [8], "X": [12]}
         },
         "u_and": {
           "type": "sky130_fd_sc_hd__and2_1",
           "parameters": {},
           "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "X": "output"},
           "connections": {"A": [13], "B": [9], "X": [14]}
         }
       },

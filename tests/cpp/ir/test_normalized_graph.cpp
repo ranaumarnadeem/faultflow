@@ -96,6 +96,86 @@ TEST_CASE("NormalizedGraph blackbox policy tags unknown outputs", "[normalized_g
   REQUIRE(ng.nets.at(3).is_blackboxed);
 }
 
+// ---------------------------------------------------------------------------
+// Phase 9 — instance blackboxing + boundary observation
+// Fixture tiny_blackbox_boundary.json:
+//   a(2),b(3),c(4) PIs ; y(7) PO
+//   g_up: and2_1 A=a,B=b -> up(5)      (upstream cone -> blackbox INPUT)
+//   u_bb: inv_1  A=up    -> bbout(6)   (instance blackboxed by name)
+//   g_dn: xor2_1 A=bbout,B=c -> y(7)   (downstream cone -> real PO)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Phase9 instance blackbox skips elaboration", "[normalized_graph][blackbox9]") {
+  const ParsedGraph pg = test::load_parsed("tiny_blackbox_boundary.json");
+  const CellMap map = CellMap::load(test::cell_map_path());
+  const NormalizedGraph ng =
+      NormalizedGraph::from_parsed(pg, map, "fail", {"u_bb"});
+  // 9-N01: no node elaborated for the blackboxed instance.
+  for (const auto& [id, node] : ng.nodes) {
+    (void)id;
+    REQUIRE(node.instance != "u_bb");
+  }
+  // 9-N04: bookkeeping + the surrounding gates still elaborated.
+  REQUIRE(ng.blackbox_instances.count("u_bb") == 1);
+  bool saw_up_gate = false;
+  bool saw_dn_gate = false;
+  for (const auto& [id, node] : ng.nodes) {
+    (void)id;
+    if (node.instance == "g_up") saw_up_gate = true;
+    if (node.instance == "g_dn") saw_dn_gate = true;
+  }
+  REQUIRE(saw_up_gate);
+  REQUIRE(saw_dn_gate);
+}
+
+TEST_CASE("Phase9 instance blackbox output becomes controllable pseudo-PI",
+          "[normalized_graph][blackbox9]") {
+  const ParsedGraph pg = test::load_parsed("tiny_blackbox_boundary.json");
+  const CellMap map = CellMap::load(test::cell_map_path());
+  const NormalizedGraph ng =
+      NormalizedGraph::from_parsed(pg, map, "fail", {"u_bb"});
+  const int bbout = pg.net_id_by_name("bbout");  // 6
+  // 9-N02: output net driven by an INPUT source node; controllable, not excluded.
+  REQUIRE(ng.pseudo_inputs.count(bbout) == 1);
+  REQUIRE(ng.nets.at(bbout).is_pseudo_input);
+  REQUIRE(ng.nets.at(bbout).driver >= 0);
+  REQUIRE_FALSE(ng.nets.at(bbout).is_blackboxed);
+}
+
+TEST_CASE("Phase9 instance blackbox input becomes observable TP",
+          "[normalized_graph][blackbox9]") {
+  const ParsedGraph pg = test::load_parsed("tiny_blackbox_boundary.json");
+  const CellMap map = CellMap::load(test::cell_map_path());
+  const NormalizedGraph ng =
+      NormalizedGraph::from_parsed(pg, map, "fail", {"u_bb"});
+  const int up = pg.net_id_by_name("up");  // 5
+  // 9-N03
+  REQUIRE(ng.TPs.count(up) == 1);
+  REQUIRE(ng.nets.at(up).is_tp);
+}
+
+TEST_CASE("Phase9 unknown blackbox instance throws", "[normalized_graph][blackbox9]") {
+  const ParsedGraph pg = test::load_parsed("tiny_blackbox_boundary.json");
+  const CellMap map = CellMap::load(test::cell_map_path());
+  // 9-N05
+  REQUIRE_THROWS_AS(
+      NormalizedGraph::from_parsed(pg, map, "fail", {"does_not_exist"}),
+      ParseError);
+}
+
+TEST_CASE("Phase9 empty blackbox set leaves unsupported-cell path intact",
+          "[normalized_graph][blackbox9]") {
+  const ParsedGraph pg = test::load_parsed("tiny_blackbox.json");
+  const CellMap map = CellMap::load(test::cell_map_path());
+  // 9-N06: existing unknown-type blackbox path unchanged; no pseudo-PI / TP.
+  const NormalizedGraph ng =
+      NormalizedGraph::from_parsed(pg, map, "blackbox", {});
+  REQUIRE(ng.blackboxed.count(3) == 1);
+  REQUIRE(ng.nets.at(3).is_blackboxed);
+  REQUIRE(ng.pseudo_inputs.empty());
+  REQUIRE(ng.TPs.empty());
+}
+
 TEST_CASE("Deferred Sky130 latch and tbuf cells hard-fail while unsupported",
           "[normalized_graph]") {
   const CellMap yaml = CellMap::load(test::cell_map_path());

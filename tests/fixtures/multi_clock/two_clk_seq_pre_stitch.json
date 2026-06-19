@@ -1,0 +1,85 @@
+{
+  "modules": {
+    "two_clk_seq": {
+      "attributes": {"top": "1"},
+      "ports": {
+        "clk_a":   {"direction": "input",  "bits": [2]},
+        "clk_b":   {"direction": "input",  "bits": [3]},
+        "rst_n":   {"direction": "input",  "bits": [4]},
+        "d0":      {"direction": "input",  "bits": [5]},
+        "d1":      {"direction": "input",  "bits": [6]},
+        "d2":      {"direction": "input",  "bits": [7]},
+        "d3":      {"direction": "input",  "bits": [8]},
+        "q_out_a": {"direction": "output", "bits": [12]},
+        "q_out_b": {"direction": "output", "bits": [15]}
+      },
+      "cells": {
+        "ff_a0": {
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "connections": {"CLK": [2], "D": [5], "Q": [10]}
+        },
+        "u_xor_a": {
+          "type": "sky130_fd_sc_hd__xor2_1",
+          "parameters": {},
+          "attributes": {},
+          "connections": {"A": [10], "B": [6], "X": [11]}
+        },
+        "ff_a1": {
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "connections": {"CLK": [2], "D": [11], "Q": [12]}
+        },
+        "ff_b0": {
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "connections": {"CLK": [3], "D": [7], "Q": [13]}
+        },
+        "u_and_b": {
+          "type": "sky130_fd_sc_hd__and2_1",
+          "parameters": {},
+          "attributes": {},
+          "connections": {"A": [13], "B": [8], "X": [14]}
+        },
+        "ff_b1": {
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "connections": {"CLK": [3], "D": [14], "Q": [15]}
+        },
+        "u_cross_and": {
+          "type": "sky130_fd_sc_hd__and2_1",
+          "parameters": {},
+          "attributes": {},
+          "connections": {"A": [12], "B": [7], "X": [16]}
+        },
+        "ff_b2": {
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "connections": {"CLK": [3], "D": [16], "Q": [17]}
+        }
+      },
+      "netnames": {
+        "clk_a":        {"hide_name": 0, "bits": [2],  "attributes": {}},
+        "clk_b":        {"hide_name": 0, "bits": [3],  "attributes": {}},
+        "rst_n":        {"hide_name": 0, "bits": [4],  "attributes": {}},
+        "d0":           {"hide_name": 0, "bits": [5],  "attributes": {}},
+        "d1":           {"hide_name": 0, "bits": [6],  "attributes": {}},
+        "d2":           {"hide_name": 0, "bits": [7],  "attributes": {}},
+        "d3":           {"hide_name": 0, "bits": [8],  "attributes": {}},
+        "qa0":          {"hide_name": 0, "bits": [10], "attributes": {}},
+        "xor_out":      {"hide_name": 0, "bits": [11], "attributes": {}},
+        "qa1":          {"hide_name": 0, "bits": [12], "attributes": {}},
+        "qb0":          {"hide_name": 0, "bits": [13], "attributes": {}},
+        "and_out_b":    {"hide_name": 0, "bits": [14], "attributes": {}},
+        "qb1":          {"hide_name": 0, "bits": [15], "attributes": {}},
+        "cross_and_out":{"hide_name": 0, "bits": [16], "attributes": {}},
+        "qb2":          {"hide_name": 0, "bits": [17], "attributes": {}}
+      }
+    }
+  }
+}

@@ -124,7 +124,8 @@ def test_clocks_off_unknown_port_raises(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # config gate: transition + multi-clock is rejected (deferred follow-up)
 # --------------------------------------------------------------------------- #
-def test_transition_with_multiple_declared_clocks_rejected(tmp_path: Path) -> None:
+def test_transition_with_multiple_declared_clocks_allowed(tmp_path: Path) -> None:
+    """Phase 6b: transition + multi-clock is now supported (per-domain at-speed)."""
     cfg_path = tmp_path / "config.ofs"
     _write_config(
         cfg_path,
@@ -135,8 +136,9 @@ def test_transition_with_multiple_declared_clocks_rejected(tmp_path: Path) -> No
     )
     cfg_path.write_text(text, encoding="utf-8")
 
-    with pytest.raises(ConfigError, match="transition"):
-        load_config(cfg_path, "demo")
+    cfg = load_config(cfg_path, "demo")
+    assert cfg.fault_model.model == "transition"
+    assert len(cfg.clocks) == 2
 
 
 def test_transition_with_single_declared_clock_allowed(tmp_path: Path) -> None:
