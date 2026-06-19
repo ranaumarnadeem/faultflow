@@ -56,19 +56,21 @@ void append_clock_pulse(TestVector& vec, const ParsedGraph& parsed,
 }
 
 void append_launch_pulse(TestVector& vec, const ParsedGraph& parsed,
-                         const std::vector<std::string>& clock_ports,
-                         const std::vector<bool>& clock_off_states,
+                         const ScanPatternRequest& req,
                          std::map<std::string, bool> values) {
   // LOC launch: one functional clock with the fault INACTIVE establishes the
   // launched (frame-0) state. Sample at the inactive clock level so the
   // transition qualifier can read the good-machine pre-transition value at the
   // fault net; functional POs are read at the capture pulse, not here.
-  for (size_t i = 0; i < clock_ports.size(); ++i)
-    values[clock_ports[i]] = i < clock_off_states.size() ? clock_off_states[i] : false;
-  vec.cycles.push_back(make_cycle(parsed, clock_ports, clock_off_states, values, true, false));
-  for (size_t i = 0; i < clock_ports.size(); ++i)
-    values[clock_ports[i]] = !(i < clock_off_states.size() ? clock_off_states[i] : false);
-  vec.cycles.push_back(make_cycle(parsed, clock_ports, clock_off_states, values, false, false));
+  // Only active-domain clocks are pulsed; others hold at their off-state.
+  for (size_t i = 0; i < req.clock_ports.size(); ++i)
+    values[req.clock_ports[i]] = clock_off(req, i);
+  vec.cycles.push_back(
+      make_cycle(parsed, req.clock_ports, req.clock_off_states, values, true, false));
+  for (size_t i = 0; i < req.clock_ports.size(); ++i)
+    values[req.clock_ports[i]] = is_active(req, i) ? !clock_off(req, i) : clock_off(req, i);
+  vec.cycles.push_back(
+      make_cycle(parsed, req.clock_ports, req.clock_off_states, values, false, false));
 }
 
 void append_launch_shift(TestVector& vec, const ParsedGraph& parsed,
@@ -79,6 +81,7 @@ void append_launch_shift(TestVector& vec, const ParsedGraph& parsed,
   // at the inactive clock level so the transition qualifier can read the good
   // pre-transition value. scan_enable is local to this shift (values is taken by
   // value), so the capture pulse built from the SE=0 base map still de-asserts.
+  // Only active-domain clocks are pulsed during the LOS launch shift.
   values[request.scan_enable_port] = true;
   for (size_t chain_id = 0; chain_id < request.scan_input_ports.size();
        ++chain_id) {
@@ -91,23 +94,26 @@ void append_launch_shift(TestVector& vec, const ParsedGraph& parsed,
   vec.cycles.push_back(make_cycle(parsed, request.clock_ports,
                                   request.clock_off_states, values, true, false));
   for (size_t i = 0; i < request.clock_ports.size(); ++i)
-    values[request.clock_ports[i]] = !clock_off(request, i);
+    values[request.clock_ports[i]] =
+        is_active(request, i) ? !clock_off(request, i) : clock_off(request, i);
   vec.cycles.push_back(make_cycle(parsed, request.clock_ports,
                                   request.clock_off_states, values, false, false));
 }
 
 void append_capture_pulse(TestVector& vec, const ParsedGraph& parsed,
-                          const std::vector<std::string>& clock_ports,
-                          const std::vector<bool>& clock_off_states,
+                          const ScanPatternRequest& req,
                           std::map<std::string, bool> values) {
   // Functional POs belong to the loaded-state combinational response. Sample
   // after settling at the inactive clock level, then capture PPO values.
-  for (size_t i = 0; i < clock_ports.size(); ++i)
-    values[clock_ports[i]] = i < clock_off_states.size() ? clock_off_states[i] : false;
-  vec.cycles.push_back(make_cycle(parsed, clock_ports, clock_off_states, values, true, true));
-  for (size_t i = 0; i < clock_ports.size(); ++i)
-    values[clock_ports[i]] = !(i < clock_off_states.size() ? clock_off_states[i] : false);
-  vec.cycles.push_back(make_cycle(parsed, clock_ports, clock_off_states, values, false, true));
+  // Only active-domain clocks are pulsed for the capture edge.
+  for (size_t i = 0; i < req.clock_ports.size(); ++i)
+    values[req.clock_ports[i]] = clock_off(req, i);
+  vec.cycles.push_back(
+      make_cycle(parsed, req.clock_ports, req.clock_off_states, values, true, true));
+  for (size_t i = 0; i < req.clock_ports.size(); ++i)
+    values[req.clock_ports[i]] = is_active(req, i) ? !clock_off(req, i) : clock_off(req, i);
+  vec.cycles.push_back(
+      make_cycle(parsed, req.clock_ports, req.clock_off_states, values, false, true));
 }
 
 void append_unload_pulse(TestVector& vec, const ParsedGraph& parsed,
@@ -182,13 +188,11 @@ TestVector build_scan_pattern_vector(const ParsedGraph& parsed,
           "loc_two_capture and los_two_capture are mutually exclusive");
     }
     if (request.loc_two_capture) {
-      append_launch_pulse(vec, parsed, request.clock_ports,
-                          request.clock_off_states, values);
+      append_launch_pulse(vec, parsed, request, values);
     } else if (request.los_two_capture) {
       append_launch_shift(vec, parsed, request, values);
     }
-    append_capture_pulse(vec, parsed, request.clock_ports,
-                         request.clock_off_states, values);
+    append_capture_pulse(vec, parsed, request, values);
   }
 
   for (int offset = 0; offset < request.max_chain_length; ++offset) {

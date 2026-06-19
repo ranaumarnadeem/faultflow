@@ -19,7 +19,8 @@ std::vector<int64_t> detect_with_vector_unfiltered(
     const std::string& db_path, const std::map<std::string, bool>& vector,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
-    const std::string& unsupported_policy);
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 // Two-frame (transition) analogue of detect_with_vector_unfiltered: simulate one
 // launch/capture PAIR against the given fault ids via the qualified two-frame
@@ -32,6 +33,7 @@ std::vector<int64_t> detect_with_pair_unfiltered(
     const std::map<std::string, bool>& capture,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
-    const std::string& unsupported_policy);
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 }  // namespace faultflow::atpg

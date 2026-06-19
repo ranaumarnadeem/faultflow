@@ -20,7 +20,7 @@ def _net(facts: NetlistFacts, net: int) -> str:
     return f"{facts.net_name(net)} (net {net})"
 
 
-# --- CLK003: informational — multi-clock is supported for stuck-at and scan ---
+# --- CLK003: informational — multi-clock is fully supported ---
 def rule_multiple_clock_domains(facts: NetlistFacts) -> list[Violation]:
     if len(facts.clock_nets) <= 1:
         return []
@@ -41,8 +41,68 @@ def rule_multiple_clock_domains(facts: NetlistFacts) -> list[Violation]:
             Severity.INFO,
             "multiple clock domains",
             f"design has {len(facts.clock_nets)} clock domains: {domain_strs}; "
-            "stuck-at and scan ATPG are supported; "
-            "at-speed transition multi-clock is deferred",
+            "stuck-at, scan ATPG, and per-domain at-speed transition are supported",
+        )
+    ]
+
+
+# --- CLK004: informational — FF->FF cross-domain data paths ---
+def rule_cross_domain_data_paths(facts: NetlistFacts) -> list[Violation]:
+    """Cross-domain FF->FF paths are masked during per-domain at-speed transition."""
+    if len(facts.clock_nets) <= 1:
+        return []
+    cell_by_inst: dict[str, CellFact] = {c.instance: c for c in facts.cells}
+
+    def _ff_d_reachable(start_net: int) -> set[tuple[str, str]]:
+        visited: set[int] = set()
+        worklist = [start_net]
+        reached: set[tuple[str, str]] = set()
+        while worklist:
+            net = worklist.pop()
+            if net in visited:
+                continue
+            visited.add(net)
+            for sink_inst, sink_pin in facts.sinks_of.get(net, []):
+                sink = cell_by_inst.get(sink_inst)
+                if sink is None:
+                    continue
+                if sink.is_ff:
+                    if sink_pin != sink.clock_pin:
+                        reached.add((sink_inst, sink_pin))
+                else:
+                    worklist.extend(sink.outputs.values())
+        return reached
+
+    seen: set[tuple[str, str]] = set()
+    cross_pairs: list[tuple[str, str]] = []
+    for cell in facts.cells:
+        if not cell.is_ff:
+            continue
+        for q_net in cell.outputs.values():
+            for dst_inst, _pin in _ff_d_reachable(q_net):
+                dst = cell_by_inst.get(dst_inst)
+                if dst is None or not dst.is_ff:
+                    continue
+                if dst.clock_net != cell.clock_net:
+                    pair = (cell.instance, dst_inst)
+                    if pair not in seen:
+                        seen.add(pair)
+                        cross_pairs.append(pair)
+
+    if not cross_pairs:
+        return []
+
+    def _pair_str(src: str, dst: str) -> str:
+        return f"{src}->{dst}"
+
+    pair_strs = ", ".join(_pair_str(s, d) for s, d in sorted(cross_pairs))
+    return [
+        Violation(
+            "CLK004",
+            Severity.INFO,
+            "cross-domain data paths",
+            f"{len(cross_pairs)} cross-domain FF->FF data path(s): {pair_strs}; "
+            "masked during per-domain at-speed transition ATPG",
         )
     ]
 
@@ -235,6 +295,7 @@ def run_rule_check(
     facts = build_netlist_facts(netlist_json, cell_map_json, top)
     report = RuleCheckReport(top=top)
     report.violations.extend(rule_multiple_clock_domains(facts))
+    report.violations.extend(rule_cross_domain_data_paths(facts))
     report.violations.extend(rule_uncontrollable_clock(facts))
     report.violations.extend(rule_clock_as_data(facts))
     report.violations.extend(rule_multi_driver(facts))

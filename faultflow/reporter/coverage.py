@@ -62,12 +62,19 @@ def _per_node(conn: sqlite3.Connection, campaign_id: int) -> list[dict[str, Any]
     return nodes
 
 
-def _policy(fp: dict[str, Any]) -> dict[str, Any]:
+def _policy(
+    fp: dict[str, Any], blackbox_instances: tuple[str, ...] = ()
+) -> dict[str, Any]:
     return {
         "unsupported_cells": fp.get("unsupported_cells", "fail"),
         "include_clock_faults": bool(fp.get("include_clock_faults", 0)),
         "include_reset_faults": bool(fp.get("include_reset_faults", 0)),
         "collapsing": bool(fp.get("collapsing", 0)),
+        "blackbox_instances": list(blackbox_instances),
+        # When instances are blackboxed, their boundary is modeled as a test
+        # interface (inputs observable, outputs controllable) — a documented
+        # coverage assumption, parallel to scan pseudo-PI/PO.
+        "blackbox_boundary": "pseudo_port" if blackbox_instances else "none",
     }
 
 
@@ -157,6 +164,7 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         "excluded_scan",
         "excluded_scan_internal",
         "excluded_scan_chain",
+        "excluded_cross_domain",
         "protocol_unresolved",
         "fault_coverage_percent",
         "test_coverage_percent",
@@ -208,6 +216,7 @@ def write_reports(
         + data["excluded_clock"]
         + data["excluded_reset"]
         + data["excluded_scan"]
+        + data.get("excluded_cross_domain", 0)
     )
     if data["total_raw_faults"] != invariant:
         raise CoverageError(
@@ -249,7 +258,7 @@ def write_reports(
             "config_hash": fp.get("config_hash", ""),
             "template_hash": fp.get("template_hash", ""),
         },
-        "policy": _policy(fp),
+        "policy": _policy(fp, cfg.blackbox_instances),
         "summary": data,
         "run": _latest_run(conn, campaign_id),
         "per_node": per_node,
@@ -293,6 +302,7 @@ def write_reports(
             f"excluded_scan:       {data['excluded_scan']}",
             f"excluded_scan_internal:{data['excluded_scan_internal']}",
             f"excluded_scan_chain:{data['excluded_scan_chain']}",
+            f"excluded_cross_domain:{data.get('excluded_cross_domain', 0)}",
             f"protocol_unresolved: {data['protocol_unresolved']}",
             f"fault_coverage_%:    {data['fault_coverage_percent']:.3f}",
             f"test_coverage_%:     {data['test_coverage_percent']:.3f}",

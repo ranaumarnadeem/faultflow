@@ -64,6 +64,9 @@ def redundancy_model_id(fp: dict[str, Any]) -> str:
             # Launch mode too: an LOC-redundant fault may be LOS-testable (the
             # extra free scan-in head bit), so loc/los redundancy must not alias.
             str(fp.get("launch", "loc")),
+            # Blackbox changes the graph (pseudo-PI/TP boundary), so UNSAT-redundant
+            # classifications from one blackbox config must not survive to another.
+            str(sorted(fp.get("blackbox_instances", []))),
         ]
     )
 
@@ -131,6 +134,7 @@ def _accept_and_simulate(
     fault_ids: list[int],
     vector_index: int,
     unsupported: str,
+    blackbox_instances: list[str],
     on_vector_accepted: Callable[[dict[str, bool], int | None], None] | None,
 ) -> None:
     fault_id = fault_ids[0] if len(fault_ids) == 1 else None
@@ -151,6 +155,7 @@ def _accept_and_simulate(
         fault_ids,
         vector_index,
         unsupported,
+        blackbox_instances,
     )
     core.update_run_vector_count(db_path, run_id, vector_index)
 
@@ -194,6 +199,7 @@ def _accept_and_simulate_transition(
     fault_ids: list[int],
     vector_index: int,
     unsupported: str,
+    blackbox_instances: list[str],
 ) -> None:
     launch_key = pattern_key(launch, input_order)
     capture_key = pattern_key(capture, input_order)
@@ -218,6 +224,7 @@ def _accept_and_simulate_transition(
         fault_ids,
         vector_index,
         unsupported,
+        blackbox_instances,
     )
     core.update_run_vector_count(db_path, run_id, vector_index)
 
@@ -318,6 +325,7 @@ def run_progressive_native_atpg(
     )
     unsupported = cfg.simulation.unsupported_cells
 
+    bb_instances = list(cfg.blackbox_instances)
     core.ensure_faults_enumerated(
         json_path,
         effective_cell_map,
@@ -327,6 +335,7 @@ def run_progressive_native_atpg(
         cfg.fault_model.include_reset_faults,
         cfg.fault_model.collapsing,
         unsupported,
+        bb_instances,
     )
     core.invalidate_stale_redundant(effective_db_path, campaign_id, redundancy_model)
 
@@ -405,6 +414,7 @@ def run_progressive_native_atpg(
                     fault_ids=active_ids,
                     vector_index=vector_index,
                     unsupported=unsupported,
+                    blackbox_instances=bb_instances,
                     on_vector_accepted=on_vector_accepted,
                 )
                 fault_sim_seconds += time.perf_counter() - sim_started
@@ -427,6 +437,7 @@ def run_progressive_native_atpg(
                     cfg.atpg.sat_conflict_limit,
                     cfg.atpg.sat_timeout_seconds,
                     unsupported,
+                    bb_instances,
                 )
             )
             atpg_seconds += time.perf_counter() - atpg_started
@@ -448,6 +459,7 @@ def run_progressive_native_atpg(
                     fault_id,
                     candidate,
                     unsupported,
+                    bb_instances,
                 )
                 fault_sim_seconds += time.perf_counter() - sim_started
                 if verified:
@@ -469,6 +481,7 @@ def run_progressive_native_atpg(
                         fault_ids=[fault_id],
                         vector_index=vector_index,
                         unsupported=unsupported,
+                        blackbox_instances=bb_instances,
                         on_vector_accepted=on_vector_accepted,
                     )
                     fault_sim_seconds += time.perf_counter() - sim_started
@@ -608,6 +621,7 @@ def run_progressive_transition_atpg(
     )
     unsupported = cfg.simulation.unsupported_cells
 
+    bb_instances = list(cfg.blackbox_instances)
     # Shared enumeration: STR/STF reuse the SA0/SA1 fault rows.
     core.ensure_faults_enumerated(
         json_path,
@@ -618,6 +632,7 @@ def run_progressive_transition_atpg(
         cfg.fault_model.include_reset_faults,
         cfg.fault_model.collapsing,
         unsupported,
+        bb_instances,
     )
     core.invalidate_stale_redundant(effective_db_path, campaign_id, redundancy_model)
 
@@ -701,6 +716,7 @@ def run_progressive_transition_atpg(
                     fault_ids=active_ids,
                     vector_index=vector_index,
                     unsupported=unsupported,
+                    blackbox_instances=bb_instances,
                 )
                 fault_sim_seconds += time.perf_counter() - sim_started
 
@@ -722,6 +738,7 @@ def run_progressive_transition_atpg(
                     cfg.atpg.sat_conflict_limit,
                     cfg.atpg.sat_timeout_seconds,
                     unsupported,
+                    bb_instances,
                 )
             )
             atpg_seconds += time.perf_counter() - atpg_started
@@ -745,6 +762,7 @@ def run_progressive_transition_atpg(
                     launch,
                     capture,
                     unsupported,
+                    bb_instances,
                 )
                 fault_sim_seconds += time.perf_counter() - sim_started
                 if verified:
@@ -767,6 +785,7 @@ def run_progressive_transition_atpg(
                         fault_ids=[fault_id],
                         vector_index=vector_index,
                         unsupported=unsupported,
+                        blackbox_instances=bb_instances,
                     )
                     fault_sim_seconds += time.perf_counter() - sim_started
                     round_tracker.sat_outcomes.append("SAT")

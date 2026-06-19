@@ -39,6 +39,8 @@ class TclBridge:
             "reset": self._reset,
             "add_clock": self._add_clock,
             "report_clocks": self._report_clocks,
+            "add_blackbox": self._add_blackbox,
+            "report_blackbox": self._report_blackbox,
             "help": self._help,
             "quit": self._quit,
             "exit": self._quit,
@@ -374,6 +376,17 @@ proc {name} {{args}} {{
         if args:
             raise ShellError("usage: report_clocks", "CONFIG", "INVALID_OPTION")
         return {"clocks": self.session.report_clocks()}
+
+    def _add_blackbox(self, args: list[str]) -> Any:
+        if len(args) != 1:
+            raise ShellError("usage: add_blackbox INSTANCE", "CONFIG", "INVALID_OPTION")
+        self.session.add_blackbox(args[0])
+        return f"blackbox instance: {args[0]}"
+
+    def _report_blackbox(self, args: list[str]) -> Any:
+        if args:
+            raise ShellError("usage: report_blackbox", "CONFIG", "INVALID_OPTION")
+        return {"blackbox": self.session.report_blackbox()}
 
     def _help(self, args: list[str]) -> Any:
         if len(args) > 1:

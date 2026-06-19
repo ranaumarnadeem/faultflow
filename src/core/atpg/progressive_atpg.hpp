@@ -48,19 +48,22 @@ void ensure_faults_enumerated(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t campaign_id, bool include_clock_faults,
     bool include_reset_faults, bool collapsing,
-    const std::string& unsupported_policy);
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 SolveFaultResult solve_fault_for_db(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
-    int sat_timeout_seconds, const std::string& unsupported_policy);
+    int sat_timeout_seconds, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 bool verify_fault_vector(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
     const std::map<std::string, bool>& vector,
-    const std::string& unsupported_policy);
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 std::vector<ProgressiveDetection> simulate_incremental(
     const std::string& json_path, const std::string& cell_map_path,
@@ -68,14 +71,16 @@ std::vector<ProgressiveDetection> simulate_incremental(
     const std::vector<std::map<std::string, bool>>& new_vectors,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
-    const std::string& unsupported_policy);
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 std::vector<int64_t> simulate_tentative_detections(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, const std::map<std::string, bool>& vector,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
-    const std::string& unsupported_policy);
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 // ---- Transition model (combinational broadside two-pattern) ----------------
 // Separate entry points so the stuck-at path stays byte-identical. Enumeration
@@ -86,14 +91,16 @@ SolveTransitionResult solve_transition_fault_for_db(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
-    int sat_timeout_seconds, const std::string& unsupported_policy);
+    int sat_timeout_seconds, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 bool verify_transition_fault_vector(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
     const std::map<std::string, bool>& launch,
     const std::map<std::string, bool>& capture,
-    const std::string& unsupported_policy);
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 std::vector<ProgressiveDetection> simulate_transition_incremental(
     const std::string& json_path, const std::string& cell_map_path,
@@ -101,7 +108,8 @@ std::vector<ProgressiveDetection> simulate_transition_incremental(
     const std::vector<VectorPair>& new_pairs,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
-    const std::string& unsupported_policy);
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 std::vector<int64_t> simulate_transition_tentative_detections(
     const std::string& json_path, const std::string& cell_map_path,
@@ -109,7 +117,8 @@ std::vector<int64_t> simulate_transition_tentative_detections(
     const std::map<std::string, bool>& capture,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
-    const std::string& unsupported_policy);
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 // ---- Transition model (scan launch-on-capture) -----------------------------
 // SAT on the reduced scan ATPG view: the LOC couples (capture PPI == launch PPO)
@@ -123,7 +132,8 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
-    int sat_timeout_seconds, const std::string& unsupported_policy);
+    int sat_timeout_seconds, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 // ---- Transition model (scan launch-on-shift) -------------------------------
 // LOS couples (capture PPI == launch predecessor PPI) and chain-head PPIs (free
@@ -136,6 +146,7 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
     const std::vector<std::pair<std::string, std::string>>& couple_ports,
     const std::vector<std::string>& head_ppi_ports,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
-    int sat_timeout_seconds, const std::string& unsupported_policy);
+    int sat_timeout_seconds, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 }  // namespace faultflow::atpg

@@ -33,9 +33,11 @@ SimulationInstrumentation g_simulation_instrumentation;
 const CachedGraph& load_graph(const std::string& json_path,
                               const std::string& cell_map_path,
                               const std::string& unsupported_policy,
+                              const std::vector<std::string>& blackbox_instances,
                               bool require_combinational = true) {
   const CachedGraph& ctx =
-      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+      load_cached_graph(json_path, cell_map_path, unsupported_policy,
+                        blackbox_instances);
   if (require_combinational && !ctx.cg.ff_nodes.empty()) {
     throw std::runtime_error("progressive native ATPG is combinational-only");
   }
@@ -226,13 +228,15 @@ void ensure_faults_enumerated(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t campaign_id, bool include_clock_faults,
     bool include_reset_faults, bool collapsing,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   db::init_database(db_path);
   if (db::fault_count(db_path, campaign_id) > 0) {
     return;
   }
   const CachedGraph& ctx =
-      load_graph(json_path, cell_map_path, unsupported_policy, false);
+      load_graph(json_path, cell_map_path, unsupported_policy,
+                 blackbox_instances, false);
   const std::vector<CompactFault> faults =
       enumerate_all(ctx.ng, ctx.cg, include_clock_faults, include_reset_faults,
                     collapsing);
@@ -243,8 +247,10 @@ SolveFaultResult solve_fault_for_db(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
-    int sat_timeout_seconds, const std::string& unsupported_policy) {
-  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+    int sat_timeout_seconds, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
   if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
       rec.status != FaultStatus::UNDETECTED) {
@@ -274,8 +280,10 @@ bool verify_fault_vector(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
     const std::map<std::string, bool>& vector,
-    const std::string& unsupported_policy) {
-  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
   CompactFault fault = fault_from_record(rec);
   GoldenRefSim golden;
@@ -296,11 +304,13 @@ std::vector<ProgressiveDetection> simulate_incremental(
     const std::vector<std::map<std::string, bool>>& new_vectors,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   if (new_vectors.empty() || fault_ids.empty()) {
     return {};
   }
-  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   std::vector<TestVector> vectors;
   vectors.reserve(new_vectors.size());
   for (const auto& raw : new_vectors) {
@@ -344,11 +354,13 @@ std::vector<int64_t> simulate_tentative_detections(
     const std::string& db_path, const std::map<std::string, bool>& vector,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   if (fault_ids.empty()) {
     return {};
   }
-  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const TestVector tv = vector_from_map(ctx.parsed, vector, input_order);
   BitParallelSim sim;
   std::vector<int64_t> detected;
@@ -395,8 +407,10 @@ SolveTransitionResult solve_transition_fault_for_db(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
-    int sat_timeout_seconds, const std::string& unsupported_policy) {
-  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+    int sat_timeout_seconds, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
   if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
       rec.status != FaultStatus::UNDETECTED) {
@@ -429,8 +443,10 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
-    int sat_timeout_seconds, const std::string& unsupported_policy) {
-  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+    int sat_timeout_seconds, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
   if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
       rec.status != FaultStatus::UNDETECTED) {
@@ -466,8 +482,10 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
     const std::vector<std::pair<std::string, std::string>>& couple_ports,
     const std::vector<std::string>& head_ppi_ports,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
-    int sat_timeout_seconds, const std::string& unsupported_policy) {
-  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+    int sat_timeout_seconds, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
   if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
       rec.status != FaultStatus::UNDETECTED) {
@@ -539,8 +557,10 @@ bool verify_transition_fault_vector(
     const std::string& db_path, int64_t fault_id,
     const std::map<std::string, bool>& launch,
     const std::map<std::string, bool>& capture,
-    const std::string& unsupported_policy) {
-  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
   CompactFault fault = fault_from_record(rec);
   fault.model = FaultModel::TRANSITION;
@@ -562,11 +582,13 @@ std::vector<ProgressiveDetection> simulate_transition_incremental(
     const std::vector<VectorPair>& new_pairs,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   if (new_pairs.empty() || fault_ids.empty()) {
     return {};
   }
-  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   std::vector<std::pair<TestVector, TestVector>> pairs;
   pairs.reserve(new_pairs.size());
   for (const auto& [launch, capture] : new_pairs) {
@@ -611,11 +633,13 @@ std::vector<int64_t> simulate_transition_tentative_detections(
     const std::map<std::string, bool>& capture,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   if (fault_ids.empty()) {
     return {};
   }
-  const CachedGraph& ctx = load_graph(json_path, cell_map_path, unsupported_policy);
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const TestVector v1 = vector_from_map(ctx.parsed, launch, input_order);
   const TestVector v2 = vector_from_map(ctx.parsed, capture, input_order);
   BitParallelSim sim;

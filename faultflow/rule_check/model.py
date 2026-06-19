@@ -20,7 +20,8 @@ class Violation:
     message: str  # specific instance detail
 
     def format_line(self) -> str:
-        return f"[{self.severity.value.upper()}] {self.rule_id} {self.title}: {self.message}"
+        sev = self.severity.value.upper()
+        return f"[{sev}] {self.rule_id} {self.title}: {self.message}"
 
 
 @dataclass

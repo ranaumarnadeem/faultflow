@@ -57,6 +57,7 @@ class ProjectSession:
         self.scan_campaign_stale = False
         self.options: dict[str, str] = {}
         self.declared_clocks: list[ClockSpec] = []
+        self.declared_blackbox: list[str] = []
 
     @property
     def checkpoint_path(self) -> Path:
@@ -83,6 +84,7 @@ class ProjectSession:
         snap["declared_clocks"] = [
             [cs.port, cs.off_state] for cs in self.declared_clocks
         ]
+        snap["declared_blackbox"] = list(self.declared_blackbox)
         return snap
 
     def checkpoint(self) -> tuple[Path, str]:
@@ -156,6 +158,22 @@ class ProjectSession:
             {"port": cs.port, "off_state": cs.off_state} for cs in self.declared_clocks
         ]
 
+    def add_blackbox(self, instance: str) -> None:
+        instance = instance.strip()
+        if not instance:
+            raise ShellError(
+                "add_blackbox: instance name must not be empty",
+                "CONFIG",
+                "INVALID_VALUE",
+            )
+        if instance not in self.declared_blackbox:
+            self.declared_blackbox.append(instance)
+        if self.top is not None:
+            self.checkpoint()
+
+    def report_blackbox(self) -> list[str]:
+        return list(self.declared_blackbox)
+
     def materialize_config(self) -> FaultflowConfig:
         if self.top is None or self.source is None:
             raise precondition("run read_netlist first", "NO_DESIGN")
@@ -171,6 +189,7 @@ class ProjectSession:
                 verilog_models=self.profile.verilog_models,
                 output_root=self.output_root,
                 clocks=tuple(self.declared_clocks),
+                blackbox_instances=tuple(self.declared_blackbox),
             )
         else:
             cfg = FaultflowConfig(
@@ -188,6 +207,7 @@ class ProjectSession:
                 scan=ScanConfig(run_techmap=False),
                 output_root=self.output_root,
                 clocks=tuple(self.declared_clocks),
+                blackbox_instances=tuple(self.declared_blackbox),
             )
         for key, value in self.options.items():
             if key == "atpg.max_rounds":
@@ -384,6 +404,9 @@ class ProjectSession:
             ClockSpec(port=str(row[0]), off_state=int(row[1]))
             for row in data.get("declared_clocks", [])
         ]
+        self.declared_blackbox = [
+            str(name) for name in data.get("declared_blackbox", [])
+        ]
         if resume and self.scan_inserted:
             cfg = self.materialize_config()
             if not cfg.scan_manifest_path.exists():
@@ -429,3 +452,4 @@ class ProjectSession:
         self.scan_campaign_stale = False
         self.options.clear()
         self.declared_clocks.clear()
+        self.declared_blackbox.clear()

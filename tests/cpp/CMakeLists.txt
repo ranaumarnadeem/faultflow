@@ -7,7 +7,9 @@ add_executable(
   sim/test_sequential_ff.cpp
   scan/test_scan_chain.cpp
   scan/test_scan_sequence.cpp
+  scan/test_scan_multiclock_stagger.cpp
   sim/test_bit_parallel.cpp
+  sim/test_blackbox_boundary.cpp
   ir/test_parsed_graph.cpp
   ir/test_normalized_graph.cpp
   ir/test_compiled_graph.cpp
@@ -23,6 +25,7 @@ add_executable(
   atpg/test_scan_los_transition_atpg.cpp
   atpg/test_progressive_sim.cpp
   atpg/test_compaction.cpp
+  atpg/test_blackbox_boundary_atpg.cpp
   fixtures/test_tiny_fixtures.cpp
   benchmarks/test_c17.cpp
   sim/test_golden_ref_tiny.cpp

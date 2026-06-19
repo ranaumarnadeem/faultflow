@@ -183,9 +183,13 @@ def serialize_vector(
         load_by_chain.setdefault(chain_id, {})[position] = bool(
             vector.get(str(entry["ppi_port"]), False)
         )
-        unload_by_chain.setdefault(chain_id, {})[position] = bool(
-            vector.get(str(entry["ppo_port"]), False)
-        )
+        ppo = entry.get("ppo_port")
+        if ppo is not None:
+            unload_val = bool(vector.get(str(ppo), False))
+        else:
+            # Inactive-domain FF: no PPO; it holds its loaded value.
+            unload_val = bool(vector.get(str(entry["ppi_port"]), False))
+        unload_by_chain.setdefault(chain_id, {})[position] = unload_val
     load_seqs: dict[int, list[bool]] = {}
     expected_unload: dict[int, list[bool]] = {}
     for chain_id, targets in load_by_chain.items():

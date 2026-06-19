@@ -142,6 +142,9 @@ class FaultflowConfig:
     scan: ScanConfig
     output_root: Path = Path("output")
     clocks: tuple[ClockSpec, ...] = ()
+    # Instance names blackboxed by the user ([blackbox] instances = ...). Each is
+    # modeled as a test boundary: inputs become observable, outputs controllable.
+    blackbox_instances: tuple[str, ...] = ()
 
     @property
     def output_dir(self) -> Path:
@@ -277,6 +280,29 @@ def _parse_clocks(parser: ConfigParser) -> tuple[ClockSpec, ...]:
     return tuple(ClockSpec(port=p, off_state=off_states.get(p, 0)) for p in ports)
 
 
+def _parse_blackbox(parser: ConfigParser) -> tuple[str, ...]:
+    """Parse the optional ``[blackbox]`` section.
+
+    ``instances = u_sram, u_pll`` — each named instance is modeled as a test
+    boundary (inputs observable, outputs controllable). Empty/duplicate entries
+    are rejected.
+    """
+    if not parser.has_section("blackbox"):
+        return ()
+
+    raw = parser.get("blackbox", "instances", fallback="").strip()
+    if not raw:
+        return ()
+
+    instances = [name.strip() for name in raw.split(",") if name.strip()]
+    seen: set[str] = set()
+    for name in instances:
+        if name in seen:
+            raise ConfigError(f"[blackbox] duplicate instance '{name}'")
+        seen.add(name)
+    return tuple(instances)
+
+
 def _verilog_models(parser: ConfigParser) -> Path:
     value = parser.get("simulation", "verilog_models", fallback="").strip()
     if not value:
@@ -336,12 +362,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         )
 
     clocks = _parse_clocks(parser)
-
-    if fault_model == "transition" and len(clocks) > 1:
-        raise ConfigError(
-            "transition fault model with multiple declared clock domains is not yet "
-            "supported (Phase 6 deferred); use model = stuck_at for multi-clock designs"
-        )
+    blackbox_instances = _parse_blackbox(parser)
 
     return FaultflowConfig(
         path=cfg_path,
@@ -390,4 +411,5 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             run_techmap=_bool(parser, "scan", "run_techmap", True),
         ),
         clocks=clocks,
+        blackbox_instances=blackbox_instances,
     )

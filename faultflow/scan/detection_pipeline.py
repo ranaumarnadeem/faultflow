@@ -30,10 +30,15 @@ from faultflow.runner.runner import RunnerError
 from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.protocol import serialize_vector
-from faultflow.scan.site_resolution import build_site_key_index, fault_type_to_sa_code
+from faultflow.scan.domain_reach import (
+    compute_cross_domain_net_ids,
+    tag_cross_domain_exclusions,
+)
 from faultflow.scan.site_resolution import (
     apply_scan_execution_map,
     build_scan_execution_map,
+    build_site_key_index,
+    fault_type_to_sa_code,
 )
 from faultflow.scan.verify import reduced_protocol_matches
 
@@ -206,7 +211,11 @@ def _materialize_reduced_outputs(
     pseudo_port_map: dict[str, dict[str, Any]],
     unsupported: str,
 ) -> dict[str, bool]:
-    ppo_order = [str(entry["ppo_port"]) for _, entry in sorted(pseudo_port_map.items())]
+    ppo_order = [
+        str(entry["ppo_port"])
+        for _, entry in sorted(pseudo_port_map.items())
+        if entry.get("ppo_port") is not None
+    ]
     output_order = [*functional_output_order, *ppo_order]
     samples = list(
         core.fault_free_outputs(
@@ -235,17 +244,28 @@ def _derive_loc_capture(
     launch_vector: dict[str, bool],
     pseudo_port_map: dict[str, dict[str, Any]],
 ) -> dict[str, bool]:
-    """LOC capture vector V2 over reduced PIs: each scan FF's capture-frame PPI
-    is its launch-frame PPO (next-state); real PIs are held from V1."""
+    """LOC capture vector V2 over reduced PIs.
+
+    Active-domain FFs: capture PPI = launch PPO (next-state).
+    Inactive-domain FFs (ppo_port is None): capture PPI = launch PPI (hold).
+    Real PIs are held from V1.
+    """
     capture = {
         name: bool(value)
         for name, value in launch_vector.items()
         if not str(name).startswith(PPI_PREFIX) and not str(name).startswith(PPO_PREFIX)
     }
     for entry in pseudo_port_map.values():
-        capture[str(entry["ppi_port"])] = bool(
-            materialized_launch.get(str(entry["ppo_port"]), False)
-        )
+        ppo = entry.get("ppo_port")
+        if ppo is not None:
+            capture[str(entry["ppi_port"])] = bool(
+                materialized_launch.get(str(ppo), False)
+            )
+        else:
+            # Inactive domain: FF holds its loaded (launch frame) state.
+            capture[str(entry["ppi_port"])] = bool(
+                launch_vector.get(str(entry["ppi_port"]), False)
+            )
     return capture
 
 
@@ -331,6 +351,7 @@ def _process_scan_candidate(
     launch_mode: str = "loc",
     los_head_scan_in: dict[int, bool] | None = None,
     candidate_key: str | None = None,
+    active_clock_ports: list[str] | None = None,
 ) -> tuple[bool, bool]:
     """Return (accepted, protocol_no_progress).
 
@@ -378,12 +399,14 @@ def _process_scan_candidate(
             scan_ctx.pseudo_port_map,
             unsupported,
         )
-        # serialize: load from V1's PPIs, unload-expectation from V2's PPOs.
+        # serialize: load from V1's PPIs, unload-expectation from active PPOs.
         serialize_input = dict(vector)
         for entry in scan_ctx.pseudo_port_map.values():
-            serialize_input[str(entry["ppo_port"])] = bool(
-                reduced_expectation.get(str(entry["ppo_port"]), False)
-            )
+            ppo = entry.get("ppo_port")
+            if ppo is not None:
+                serialize_input[str(ppo)] = bool(
+                    reduced_expectation.get(str(ppo), False)
+                )
         vector_pattern = pattern_key(capture_vector, input_order)
         launch_pattern = pattern_key_str
     else:
@@ -420,6 +443,7 @@ def _process_scan_candidate(
             loc_two_capture=is_loc,
             los_two_capture=is_los,
             los_launch_scan_in=head_bits,
+            active_clock_ports=active_clock_ports,
         )
     except Exception as exc:
         conn.execute(
@@ -560,6 +584,7 @@ def _process_scan_candidate(
             loc_two_capture=is_loc,
             los_two_capture=is_los,
             los_launch_scan_in=head_bits,
+            active_clock_ports=active_clock_ports or [],
             **protocol_fault_sim_kwargs,
         )
     )
@@ -701,6 +726,27 @@ def run_progressive_scan_atpg(
         scan_ctx.pseudo_port_map,
         scan_ctx.manifest,
     )
+    # For transition faults in multi-domain designs, tag cross-domain fault sites.
+    if cfg.fault_model.model == "transition":
+        clock_nets_raw = scan_ctx.manifest.get("clock_nets", [])
+        if isinstance(clock_nets_raw, list) and len(clock_nets_raw) > 1:
+            cross_domain_ids = compute_cross_domain_net_ids(
+                scan_ctx.generic_json, scan_ctx.manifest
+            )
+            if cross_domain_ids:
+                generic_rows: list[dict[str, Any]] = list(
+                    core.list_site_keys(
+                        str(scan_ctx.generic_json), generic_cell_map, unsupported
+                    )
+                )
+                exclusions = tag_cross_domain_exclusions(
+                    generic_rows, cross_domain_ids, exclusions
+                )
+                n_xd = sum(1 for v in exclusions.values() if v == "cross_domain")
+                log.info(
+                    "cross-domain: tagged %d fault sites excluded_cross_domain",
+                    n_xd,
+                )
     with connect(effective_db_path) as conn:
         init_schema(conn)
         apply_scan_execution_map(

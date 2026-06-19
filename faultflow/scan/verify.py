@@ -19,6 +19,7 @@ def reduced_protocol_matches(
     loc_two_capture: bool = False,
     los_two_capture: bool = False,
     los_launch_scan_in: dict[int, bool] | None = None,
+    active_clock_ports: list[str] | None = None,
 ) -> bool:
     verify_golden_scan_protocol(
         cfg,
@@ -32,6 +33,7 @@ def reduced_protocol_matches(
         loc_two_capture=loc_two_capture,
         los_two_capture=los_two_capture,
         los_launch_scan_in=los_launch_scan_in,
+        active_clock_ports=active_clock_ports,
     )
     return True
 
@@ -49,6 +51,7 @@ def verify_golden_scan_protocol(
     loc_two_capture: bool = False,
     los_two_capture: bool = False,
     los_launch_scan_in: dict[int, bool] | None = None,
+    active_clock_ports: list[str] | None = None,
 ) -> None:
     from faultflow.runner.runner import RunnerError, _load_core, _port_name_for_net
 
@@ -103,6 +106,7 @@ def verify_golden_scan_protocol(
             loc_two_capture=loc_two_capture,
             los_two_capture=los_two_capture,
             los_launch_scan_in=los_launch_scan_in or {},
+            active_clock_ports=active_clock_ports or [],
         )
     )
     real_po_values = dict(result.get("real_po_values", {}))

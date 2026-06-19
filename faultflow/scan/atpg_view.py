@@ -281,9 +281,17 @@ def _resolve_d_observe_boundary(
 
 
 def build_scan_atpg_view(
-    generic_json: dict[str, Any], manifest: dict[str, Any]
+    generic_json: dict[str, Any],
+    manifest: dict[str, Any],
+    *,
+    active_clock_net: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
-    """Return (reduced Yosys JSON, pseudo_port_map keyed by FF instance)."""
+    """Return (reduced Yosys JSON, pseudo_port_map keyed by FF instance).
+
+    When active_clock_net is given, only FFs clocked by that net get a PPO
+    observe buffer (per-domain transition view).  All FFs still get a PPI so
+    inactive-domain FF state can be controlled as held inputs.
+    """
     top = str(manifest["top"])
     _, source_module = _top_module(generic_json, top)
     view = copy.deepcopy(generic_json)
@@ -314,15 +322,12 @@ def build_scan_atpg_view(
 
         q_net = int(record["q_net"])
         d_net = int(record["data_net"])
+        record_clock_net = int(record.get("clock_net", -1))
         ppi_port = _ppi_name(instance)
-        ppo_port = _ppo_name(instance)
         ppi_bit = next_id
-        next_id += 1
-        ppo_bit = next_id
         next_id += 1
 
         _add_port(module, ppi_port, "input", ppi_bit)
-        _add_port(module, ppo_port, "output", ppo_bit)
         _rewire_net_in_module(
             module,
             q_net,
@@ -330,21 +335,45 @@ def build_scan_atpg_view(
             excluded_ports=scan_port_names,
         )
 
-        observe_input, d_boundary_site_key, next_id, d_observe_net_id = (
-            _resolve_d_observe_boundary(
-                cells,
-                instance=instance,
-                d_net=d_net,
-                next_id=next_id,
+        # Create PPO only for FFs in the active domain (or always when single-domain).
+        ppo_is_active = active_clock_net is None or record_clock_net == active_clock_net
+        ppo_port: str | None
+        ppo_bit: int | None
+        boundary: dict[str, Any]
+        if ppo_is_active:
+            _ppo_port_str = _ppo_name(instance)
+            _ppo_bit_int = next_id
+            next_id += 1
+
+            _add_port(module, _ppo_port_str, "output", _ppo_bit_int)
+            observe_input, d_boundary_site_key, next_id, d_observe_net_id = (
+                _resolve_d_observe_boundary(
+                    cells,
+                    instance=instance,
+                    d_net=d_net,
+                    next_id=next_id,
+                )
             )
-        )
-        _add_internal_buf_cell(
-            cells,
-            f"$ffobserve_{instance}",
-            OBSERVE_BUF_CELL,
-            observe_input,
-            ppo_bit,
-        )
+            _add_internal_buf_cell(
+                cells,
+                f"$ffobserve_{instance}",
+                OBSERVE_BUF_CELL,
+                observe_input,
+                _ppo_bit_int,
+            )
+            ppo_port = _ppo_port_str
+            ppo_bit = _ppo_bit_int
+            boundary = {
+                "atpg_view_schema_ver": ATPG_VIEW_SCHEMA_VER,
+                "d_boundary_site_key": d_boundary_site_key,
+                "d_observe_net_id": d_observe_net_id,
+                "q_stem_site_key": stem_site_key(q_net),
+                "unload_capable": True,
+            }
+        else:
+            ppo_port = None
+            ppo_bit = None
+            boundary = {}
 
         cells.pop(instance, None)
         pseudo_port_map[instance] = {
@@ -356,13 +385,8 @@ def build_scan_atpg_view(
             "original_d_net": _net_name_for_bit(source_module, d_net) or str(d_net),
             "chain_id": int(record["chain_index"]),
             "position_in_chain": int(record["chain_position"]),
-            "boundary": {
-                "atpg_view_schema_ver": ATPG_VIEW_SCHEMA_VER,
-                "d_boundary_site_key": d_boundary_site_key,
-                "d_observe_net_id": d_observe_net_id,
-                "q_stem_site_key": stem_site_key(q_net),
-                "unload_capable": True,
-            },
+            "clock_net": record_clock_net,
+            "boundary": boundary,
         }
 
     # Support both v2 (clock_nets: list) and v1 (clock_net: int) manifests.
@@ -384,6 +408,13 @@ def build_scan_atpg_view(
 
 
 def build_scan_atpg_view_from_paths(
-    generic_json_path: Path | str, manifest: dict[str, Any]
+    generic_json_path: Path | str,
+    manifest: dict[str, Any],
+    *,
+    active_clock_net: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
-    return build_scan_atpg_view(_load_json(Path(generic_json_path)), manifest)
+    return build_scan_atpg_view(
+        _load_json(Path(generic_json_path)),
+        manifest,
+        active_clock_net=active_clock_net,
+    )

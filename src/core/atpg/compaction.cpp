@@ -57,12 +57,14 @@ std::vector<int64_t> detect_with_vector_unfiltered(
     const std::string& db_path, const std::map<std::string, bool>& vector,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   if (fault_ids.empty()) {
     return {};
   }
   const CachedGraph& ctx =
-      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+      load_cached_graph(json_path, cell_map_path, unsupported_policy,
+                        blackbox_instances);
   const TestVector tv = build_vector(ctx.parsed, vector, input_order);
 
   // One batched query (matches db::load_faults usage in progressive_atpg.cpp).
@@ -115,12 +117,14 @@ std::vector<int64_t> detect_with_pair_unfiltered(
     const std::map<std::string, bool>& capture,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   if (fault_ids.empty()) {
     return {};
   }
   const CachedGraph& ctx =
-      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+      load_cached_graph(json_path, cell_map_path, unsupported_policy,
+                        blackbox_instances);
   const TestVector v1 = build_vector(ctx.parsed, launch, input_order);
   const TestVector v2 = build_vector(ctx.parsed, capture, input_order);
 

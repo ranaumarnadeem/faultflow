@@ -68,6 +68,20 @@ std::vector<AtpgPiInfo> ordered_pis(const ParsedGraph& parsed,
   }
   std::sort(pis.begin(), pis.end(),
             [](const AtpgPiInfo& a, const AtpgPiInfo& b) { return a.name < b.name; });
+  // Phase 9: append controllable pseudo-PIs (e.g. blackbox output nets). They
+  // are not backed by a real module port, so they get a synthesized name. They
+  // MUST be in the SAT PI set so good==faulty is enforced (the miter cannot
+  // cheat by differing them between machines). No-blackbox designs have none.
+  std::vector<AtpgPiInfo> pseudo;
+  pseudo.reserve(cg.pseudo_pi_nets.size());
+  for (int cidx : cg.pseudo_pi_nets) {
+    const int yid = cg.compiled_to_yosys[cidx];
+    pseudo.push_back(
+        {"__bbpi_" + std::to_string(yid), yid, static_cast<uint32_t>(cidx)});
+  }
+  std::sort(pseudo.begin(), pseudo.end(),
+            [](const AtpgPiInfo& a, const AtpgPiInfo& b) { return a.name < b.name; });
+  pis.insert(pis.end(), pseudo.begin(), pseudo.end());
   return pis;
 }
 

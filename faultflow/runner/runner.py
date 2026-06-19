@@ -245,6 +245,9 @@ class Runner:
             "include_reset_faults": self.cfg.fault_model.include_reset_faults,
             "atpg_tool": self.cfg.atpg.tool,
             "atpg_mode": self.cfg.atpg.mode,
+            # Blackboxing changes normalization (boundary nets) and therefore the
+            # fault set, so a change must invalidate resume via config_hash.
+            "blackbox_instances": list(self.cfg.blackbox_instances),
         }
 
     def _rendered_yosys_script(self, source: Path | None = None) -> str:
@@ -299,6 +302,7 @@ class Runner:
             "include_clock_faults": int(self.cfg.fault_model.include_clock_faults),
             "include_reset_faults": int(self.cfg.fault_model.include_reset_faults),
             "fault_model": self.cfg.fault_model.model,
+            "blackbox_instances": list(self.cfg.blackbox_instances),
         }
 
     def _stored_fingerprint(
@@ -1142,6 +1146,7 @@ class Runner:
                 self.cfg.fault_model.include_reset_faults,
                 self.cfg.fault_model.collapsing,
                 self.cfg.simulation.unsupported_cells,
+                list(self.cfg.blackbox_instances),
             )
         )
 
@@ -1469,6 +1474,17 @@ class Runner:
         removed = self._purge_transients() if purge else 0
         netlist = self._find_netlist()
         verify_enabled = self.cfg.simulation.verify if verify is None else verify
+        # iverilog cannot drive/observe blackbox pseudo-ports, and the blackbox
+        # instance has no behavioral model to simulate. Skip the gate rather than
+        # mis-verify; the internal GoldenRef/bit-parallel oracle remains the
+        # source of truth.
+        if verify_enabled and self.cfg.blackbox_instances:
+            log.warning(
+                "verify  skipped: blackbox instances present (%s); pseudo-ports "
+                "are not iverilog-observable",
+                ", ".join(self.cfg.blackbox_instances),
+            )
+            verify_enabled = False
         verified_outputs: list[dict[str, bool]] | None = None
         raw_vector_count: int | None = None
 
@@ -1841,5 +1857,6 @@ class Runner:
                 f"collapsed={data['collapsed']} "
                 f"excluded_blackbox={data['excluded_blackbox']} "
                 f"excluded_clock={data['excluded_clock']} "
-                f"excluded_reset={data['excluded_reset']}{atpg_note}"
+                f"excluded_reset={data['excluded_reset']} "
+                f"xdomain={data.get('excluded_cross_domain', 0)}{atpg_note}"
             )

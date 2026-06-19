@@ -58,6 +58,25 @@ COMMAND_HELP = {
         "",
         "report_clocks",
     ),
+    "add_blackbox": CommandHelp(
+        "Project",
+        "add_blackbox INSTANCE",
+        "Blackbox an instance by name",
+        "Models INSTANCE as a test boundary: its input nets become observable "
+        "(pseudo-PO) and its output nets become controllable (pseudo-PI), so the "
+        "surrounding logic stays gradeable. The instance itself is not simulated. "
+        "Repeated calls accumulate; a duplicate is ignored.",
+        "A design session (read_netlist not required).",
+        "add_blackbox u_sram\nadd_blackbox u_pll",
+    ),
+    "report_blackbox": CommandHelp(
+        "Project",
+        "report_blackbox",
+        "List blackboxed instances",
+        "Returns instance names declared via add_blackbox.",
+        "",
+        "report_blackbox",
+    ),
     "add_scan": CommandHelp(
         "Scan",
         "add_scan -chains N [-max_length N] [-SI NAME] [-SO NAME] "

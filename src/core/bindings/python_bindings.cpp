@@ -140,9 +140,10 @@ py::dict simulate_to_db(
     const std::vector<std::map<std::string, bool>>& raw_vectors,
     const std::vector<std::string>& input_order, const std::string& vector_source,
     bool include_clock_faults, bool include_reset_faults, bool collapsing,
-    const std::string& unsupported_policy) {
-  const CachedGraph& graph =
-      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& graph = load_cached_graph(
+      json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const ParsedGraph& parsed = graph.parsed;
   const NormalizedGraph& ng = graph.ng;
   const CompiledSimGraph& cg = graph.cg;
@@ -286,20 +287,24 @@ void ensure_faults_enumerated_py(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t campaign_id, bool include_clock_faults,
     bool include_reset_faults, bool collapsing,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   atpg::ensure_faults_enumerated(json_path, cell_map_path, db_path, campaign_id,
                                  include_clock_faults, include_reset_faults,
-                                 collapsing, unsupported_policy);
+                                 collapsing, unsupported_policy,
+                                 blackbox_instances);
 }
 
 py::dict solve_fault_atpg(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
-    int sat_timeout_seconds, const std::string& unsupported_policy) {
+    int sat_timeout_seconds, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   const atpg::SolveFaultResult result = atpg::solve_fault_for_db(
       json_path, cell_map_path, db_path, fault_id, blocked_patterns,
-      conflict_limit, sat_timeout_seconds, unsupported_policy);
+      conflict_limit, sat_timeout_seconds, unsupported_policy,
+      blackbox_instances);
   py::dict out;
   out["result"] = result.result;
   out["vector"] = result.vector;
@@ -310,9 +315,11 @@ bool verify_fault_candidate(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
     const std::map<std::string, bool>& vector,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   return atpg::verify_fault_vector(json_path, cell_map_path, db_path, fault_id,
-                                   vector, unsupported_policy);
+                                   vector, unsupported_policy,
+                                   blackbox_instances);
 }
 
 py::list simulate_incremental_py(
@@ -321,11 +328,13 @@ py::list simulate_incremental_py(
     const std::vector<std::map<std::string, bool>>& new_vectors,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   const std::vector<atpg::ProgressiveDetection> detections =
       atpg::simulate_incremental(json_path, cell_map_path, db_path, campaign_id,
                                  run_id, new_vectors, input_order, fault_ids,
-                                 vector_start_index, unsupported_policy);
+                                 vector_start_index, unsupported_policy,
+                                 blackbox_instances);
   py::list out;
   for (const auto& det : detections) {
     py::dict row;
@@ -342,10 +351,11 @@ py::list simulate_tentative_py(
     const std::map<std::string, bool>& vector,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   const std::vector<int64_t> detected = atpg::simulate_tentative_detections(
       json_path, cell_map_path, db_path, vector, input_order, fault_ids,
-      unsupported_policy);
+      unsupported_policy, blackbox_instances);
   py::list out;
   for (int64_t fault_id : detected) {
     out.append(fault_id);
@@ -364,11 +374,13 @@ py::dict solve_transition_fault_atpg(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
-    int sat_timeout_seconds, const std::string& unsupported_policy) {
+    int sat_timeout_seconds, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   const atpg::SolveTransitionResult result =
       atpg::solve_transition_fault_for_db(
           json_path, cell_map_path, db_path, fault_id, blocked_patterns,
-          conflict_limit, sat_timeout_seconds, unsupported_policy);
+          conflict_limit, sat_timeout_seconds, unsupported_policy,
+          blackbox_instances);
   py::dict out;
   out["result"] = result.result;
   out["launch"] = result.launch;
@@ -380,11 +392,13 @@ py::dict solve_scan_transition_fault_atpg(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
-    int sat_timeout_seconds, const std::string& unsupported_policy) {
+    int sat_timeout_seconds, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   const atpg::SolveTransitionResult result =
       atpg::solve_scan_transition_fault_for_db(
           json_path, cell_map_path, db_path, fault_id, blocked_patterns,
-          conflict_limit, sat_timeout_seconds, unsupported_policy);
+          conflict_limit, sat_timeout_seconds, unsupported_policy,
+          blackbox_instances);
   py::dict out;
   out["result"] = result.result;
   out["launch"] = result.launch;
@@ -398,12 +412,13 @@ py::dict solve_scan_los_transition_fault_atpg(
     const std::vector<std::pair<std::string, std::string>>& couple_ports,
     const std::vector<std::string>& head_ppi_ports,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
-    int sat_timeout_seconds, const std::string& unsupported_policy) {
+    int sat_timeout_seconds, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   const atpg::SolveTransitionResult result =
       atpg::solve_scan_los_transition_fault_for_db(
           json_path, cell_map_path, db_path, fault_id, couple_ports,
           head_ppi_ports, blocked_patterns, conflict_limit, sat_timeout_seconds,
-          unsupported_policy);
+          unsupported_policy, blackbox_instances);
   py::dict out;
   out["result"] = result.result;
   out["launch"] = result.launch;
@@ -416,10 +431,12 @@ bool verify_transition_candidate(
     const std::string& db_path, int64_t fault_id,
     const std::map<std::string, bool>& launch,
     const std::map<std::string, bool>& capture,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   return atpg::verify_transition_fault_vector(json_path, cell_map_path, db_path,
                                               fault_id, launch, capture,
-                                              unsupported_policy);
+                                              unsupported_policy,
+                                              blackbox_instances);
 }
 
 py::list simulate_transition_incremental_py(
@@ -428,11 +445,13 @@ py::list simulate_transition_incremental_py(
     const std::vector<atpg::VectorPair>& new_pairs,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   const std::vector<atpg::ProgressiveDetection> detections =
       atpg::simulate_transition_incremental(
           json_path, cell_map_path, db_path, campaign_id, run_id, new_pairs,
-          input_order, fault_ids, vector_start_index, unsupported_policy);
+          input_order, fault_ids, vector_start_index, unsupported_policy,
+          blackbox_instances);
   py::list out;
   for (const auto& det : detections) {
     py::dict row;
@@ -449,11 +468,12 @@ py::list simulate_transition_tentative_py(
     const std::map<std::string, bool>& capture,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   const std::vector<int64_t> detected =
       atpg::simulate_transition_tentative_detections(
           json_path, cell_map_path, db_path, launch, capture, input_order,
-          fault_ids, unsupported_policy);
+          fault_ids, unsupported_policy, blackbox_instances);
   py::list out;
   for (int64_t fault_id : detected) {
     out.append(fault_id);
@@ -467,10 +487,11 @@ py::list compaction_detections_py(
     const std::map<std::string, bool>& vector,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   const std::vector<int64_t> detected = atpg::detect_with_vector_unfiltered(
       json_path, cell_map_path, db_path, vector, input_order, fault_ids,
-      unsupported_policy);
+      unsupported_policy, blackbox_instances);
   py::list out;
   for (int64_t fault_id : detected) {
     out.append(fault_id);
@@ -484,10 +505,11 @@ py::list compaction_pair_detections_py(
     const std::map<std::string, bool>& capture,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
   const std::vector<int64_t> detected = atpg::detect_with_pair_unfiltered(
       json_path, cell_map_path, db_path, launch, capture, input_order, fault_ids,
-      unsupported_policy);
+      unsupported_policy, blackbox_instances);
   py::list out;
   for (int64_t fault_id : detected) {
     out.append(fault_id);
@@ -556,7 +578,8 @@ py::dict simulate_scan_pattern_py(
     const std::map<std::string, bool>& capture_pi_values,
     const std::string& unsupported_policy, bool loc_two_capture,
     bool los_two_capture,
-    const std::map<int, bool>& los_launch_scan_in) {
+    const std::map<int, bool>& los_launch_scan_in,
+    const std::vector<std::string>& active_clock_ports) {
   scan::ScanPatternRequest request;
   request.clock_ports = clock_ports;
   request.clock_off_states = clock_off_states;
@@ -570,6 +593,7 @@ py::dict simulate_scan_pattern_py(
   request.loc_two_capture = loc_two_capture;
   request.los_two_capture = los_two_capture;
   request.los_launch_scan_in = los_launch_scan_in;
+  request.active_clock_ports = active_clock_ports;
   const scan::ScanPatternResult result = scan::simulate_scan_pattern(
       json_path, cell_map_path, request, unsupported_policy);
   py::dict out;
@@ -595,7 +619,8 @@ py::dict simulate_scan_protocol_faults_py(
     const std::map<std::string, bool>& capture_pi_values,
     const std::vector<std::pair<uint32_t, uint8_t>>& faults,
     const std::string& unsupported_policy, bool loc_two_capture,
-    bool los_two_capture, const std::map<int, bool>& los_launch_scan_in) {
+    bool los_two_capture, const std::map<int, bool>& los_launch_scan_in,
+    const std::vector<std::string>& active_clock_ports) {
   scan::ScanProtocolFaultRequest request;
   request.pattern.clock_ports = clock_ports;
   request.pattern.clock_off_states = clock_off_states;
@@ -609,6 +634,7 @@ py::dict simulate_scan_protocol_faults_py(
   request.pattern.loc_two_capture = loc_two_capture;
   request.pattern.los_two_capture = los_two_capture;
   request.pattern.los_launch_scan_in = los_launch_scan_in;
+  request.pattern.active_clock_ports = active_clock_ports;
   request.faults.reserve(faults.size());
   for (const auto& [net_index, fault_type] : faults) {
     scan::ScanProtocolFaultSpec spec;
@@ -681,7 +707,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("vectors"), py::arg("input_order"), py::arg("vector_source"),
         py::arg("include_clock_faults") = false,
         py::arg("include_reset_faults") = false, py::arg("collapsing") = false,
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("fault_free_outputs", &faultflow::fault_free_outputs, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("vectors"), py::arg("input_order"),
         py::arg("output_order"), py::arg("unsupported_policy") = "fail");
@@ -695,25 +722,30 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("campaign_id"), py::arg("include_clock_faults") = false,
         py::arg("include_reset_faults") = false, py::arg("collapsing") = false,
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("solve_fault_atpg", &faultflow::solve_fault_atpg, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("db_path"), py::arg("fault_id"),
         py::arg("blocked_patterns"), py::arg("conflict_limit") = 100000,
         py::arg("sat_timeout_seconds") = 10,
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("verify_fault_candidate", &faultflow::verify_fault_candidate,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("vector"),
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("simulate_incremental", &faultflow::simulate_incremental_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("campaign_id"), py::arg("run_id"), py::arg("new_vectors"),
         py::arg("input_order"), py::arg("fault_ids"),
-        py::arg("vector_start_index"), py::arg("unsupported_policy") = "fail");
+        py::arg("vector_start_index"), py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("simulate_tentative", &faultflow::simulate_tentative_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("vector"), py::arg("input_order"), py::arg("fault_ids"),
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   // Transition model (combinational broadside two-pattern) entry points.
   m.def("atpg_random_vector_pairs", &faultflow::atpg_random_vector_pairs,
         py::arg("input_order"), py::arg("count"), py::arg("seed"));
@@ -721,44 +753,52 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("blocked_patterns"),
         py::arg("conflict_limit") = 100000, py::arg("sat_timeout_seconds") = 10,
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("solve_scan_transition_fault_atpg",
         &faultflow::solve_scan_transition_fault_atpg, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("db_path"), py::arg("fault_id"),
         py::arg("blocked_patterns"), py::arg("conflict_limit") = 100000,
         py::arg("sat_timeout_seconds") = 10,
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("solve_scan_los_transition_fault_atpg",
         &faultflow::solve_scan_los_transition_fault_atpg, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("db_path"), py::arg("fault_id"),
         py::arg("couple_ports"), py::arg("head_ppi_ports"),
         py::arg("blocked_patterns"), py::arg("conflict_limit") = 100000,
         py::arg("sat_timeout_seconds") = 10,
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("verify_transition_candidate", &faultflow::verify_transition_candidate,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("launch"), py::arg("capture"),
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("simulate_transition_incremental",
         &faultflow::simulate_transition_incremental_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("db_path"), py::arg("campaign_id"),
         py::arg("run_id"), py::arg("new_pairs"), py::arg("input_order"),
         py::arg("fault_ids"), py::arg("vector_start_index"),
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("simulate_transition_tentative",
         &faultflow::simulate_transition_tentative_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("db_path"), py::arg("launch"),
         py::arg("capture"), py::arg("input_order"), py::arg("fault_ids"),
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("compaction_detections", &faultflow::compaction_detections_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("vector"), py::arg("input_order"), py::arg("fault_ids"),
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("compaction_pair_detections",
         &faultflow::compaction_pair_detections_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("db_path"), py::arg("launch"),
         py::arg("capture"), py::arg("input_order"), py::arg("fault_ids"),
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("invalidate_stale_redundant", &faultflow::invalidate_stale_redundant_py,
         py::arg("db_path"), py::arg("campaign_id"),
         py::arg("redundancy_model_id"));
@@ -787,7 +827,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("max_chain_length"), py::arg("load_seqs"),
         py::arg("capture_pi_values"), py::arg("unsupported_policy") = "fail",
         py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
-        py::arg("los_launch_scan_in") = std::map<int, bool>{});
+        py::arg("los_launch_scan_in") = std::map<int, bool>{},
+        py::arg("active_clock_ports") = std::vector<std::string>{});
   m.def("simulate_scan_protocol_faults",
         &faultflow::simulate_scan_protocol_faults_py,
         py::arg("json_path"), py::arg("cell_map_path"),
@@ -799,7 +840,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("capture_pi_values"), py::arg("faults"),
         py::arg("unsupported_policy") = "fail",
         py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
-        py::arg("los_launch_scan_in") = std::map<int, bool>{});
+        py::arg("los_launch_scan_in") = std::map<int, bool>{},
+        py::arg("active_clock_ports") = std::vector<std::string>{});
   m.def("list_site_keys", &faultflow::list_site_keys_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail");
 }

@@ -251,6 +251,8 @@ def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[st
                     THEN 1 ELSE 0 END) AS excluded_scan_internal,
           SUM(CASE WHEN exclusion = 'scan_chain'
                     THEN 1 ELSE 0 END) AS excluded_scan_chain,
+          SUM(CASE WHEN exclusion = 'cross_domain'
+                    THEN 1 ELSE 0 END) AS excluded_cross_domain,
           SUM(CASE WHEN protocol_unresolved = 1 AND exclusion = 'none'
                     AND collapsed_into IS NULL AND status != 'detected'
                     THEN 1 ELSE 0 END) AS protocol_unresolved
