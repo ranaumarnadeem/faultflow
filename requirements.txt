@@ -1,0 +1,9 @@
+# faultflow Python control-plane runtime dependencies.
+#
+# The control plane is otherwise Python standard library only (argparse, configparser,
+# subprocess, sqlite3, hashlib, pathlib, dataclasses). jsonschema validates the coverage
+# and oracle JSON reports against schemas/; if it is absent a built-in shape-check runs
+# instead, so this dependency is recommended but not strictly required.
+#
+# Doc build dependencies are separate, in docs/requirements.txt.
+jsonschema>=4.0

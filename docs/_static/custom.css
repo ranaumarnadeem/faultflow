@@ -1,0 +1,11 @@
+/* Small presentational tweaks on top of the Furo theme. */
+
+/* Slightly tighter, monospaced inline code to match the OpenROAD/LibreLane feel. */
+code.literal {
+    font-size: 0.86em;
+}
+
+/* Give wide reference tables room and a horizontal scrollbar when needed. */
+.table-wrapper {
+    overflow-x: auto;
+}

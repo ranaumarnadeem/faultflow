@@ -1,0 +1,10 @@
+# Documentation build dependencies for faultflow.
+#
+# These are independent of the tool's own runtime/build dependencies and map
+# directly onto nixpkgs (python3Packages.sphinx, .furo, .myst-parser, ...) for
+# the planned Nix packaging of the docs.
+sphinx>=7.2
+furo>=2024.1.29
+myst-parser>=2.0
+sphinx-copybutton>=0.5
+sphinx-design>=0.5
