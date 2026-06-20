@@ -127,6 +127,14 @@ class ClockSpec:
 
 
 @dataclass(frozen=True)
+class TestpointConfig:
+    opentest: Path = Path("opentest")
+    metric: str = "scoap"
+    threshold: int = 50
+    max_points: int = 10
+
+
+@dataclass(frozen=True)
 class FaultflowConfig:
     path: Path
     top: str
@@ -142,9 +150,8 @@ class FaultflowConfig:
     scan: ScanConfig
     output_root: Path = Path("output")
     clocks: tuple[ClockSpec, ...] = ()
-    # Instance names blackboxed by the user ([blackbox] instances = ...). Each is
-    # modeled as a test boundary: inputs become observable, outputs controllable.
     blackbox_instances: tuple[str, ...] = ()
+    testpoint: TestpointConfig = TestpointConfig()
 
     @property
     def output_dir(self) -> Path:
@@ -412,4 +419,12 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         ),
         clocks=clocks,
         blackbox_instances=blackbox_instances,
+        testpoint=TestpointConfig(
+            opentest=Path(
+                parser.get("testpoint", "opentest", fallback="opentest")
+            ),
+            metric=parser.get("testpoint", "metric", fallback="scoap"),
+            threshold=_int(parser, "testpoint", "threshold", 50),
+            max_points=_int(parser, "testpoint", "max_points", 10),
+        ),
     )

@@ -41,6 +41,8 @@ class TclBridge:
             "report_clocks": self._report_clocks,
             "add_blackbox": self._add_blackbox,
             "report_blackbox": self._report_blackbox,
+            "add_tp": self._add_tp,
+            "reject_tp": self._reject_tp,
             "help": self._help,
             "quit": self._quit,
             "exit": self._quit,
@@ -387,6 +389,64 @@ proc {name} {{args}} {{
         if args:
             raise ShellError("usage: report_blackbox", "CONFIG", "INVALID_OPTION")
         return {"blackbox": self.session.report_blackbox()}
+
+    def _add_tp(self, args: list[str]) -> Any:
+        kwargs: dict[str, object] = {}
+        idx = 0
+        while idx < len(args):
+            flag = args[idx]
+            if flag in ("-m", "--metric"):
+                if idx + 1 >= len(args):
+                    raise ShellError(
+                        f"add_tp: {flag} requires a value",
+                        "CONFIG",
+                        "INVALID_OPTION",
+                    )
+                kwargs["metric"] = args[idx + 1]
+                idx += 2
+            elif flag in ("-t", "--threshold"):
+                if idx + 1 >= len(args):
+                    raise ShellError(
+                        f"add_tp: {flag} requires a value",
+                        "CONFIG",
+                        "INVALID_OPTION",
+                    )
+                try:
+                    kwargs["threshold"] = int(args[idx + 1])
+                except ValueError:
+                    raise ShellError(
+                        f"add_tp: threshold must be integer, got {args[idx+1]!r}",
+                        "CONFIG",
+                        "INVALID_VALUE",
+                    )
+                idx += 2
+            elif flag in ("-n", "--max-points"):
+                if idx + 1 >= len(args):
+                    raise ShellError(
+                        f"add_tp: {flag} requires a value",
+                        "CONFIG",
+                        "INVALID_OPTION",
+                    )
+                try:
+                    kwargs["max_points"] = int(args[idx + 1])
+                except ValueError:
+                    raise ShellError(
+                        f"add_tp: max_points must be integer, got {args[idx+1]!r}",
+                        "CONFIG",
+                        "INVALID_VALUE",
+                    )
+                idx += 2
+            else:
+                raise ShellError(
+                    f"add_tp: unknown option {flag!r}", "CONFIG", "INVALID_OPTION"
+                )
+        comparison = self.session.add_tp(**kwargs)  # type: ignore[arg-type]
+        return comparison
+
+    def _reject_tp(self, args: list[str]) -> Any:
+        if args:
+            raise ShellError("usage: reject_tp", "CONFIG", "INVALID_OPTION")
+        return self.session.reject_tp()
 
     def _help(self, args: list[str]) -> Any:
         if len(args) > 1:

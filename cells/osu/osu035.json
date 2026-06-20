@@ -71,6 +71,24 @@
     "inputs": ["A", "B", "S"],
     "outputs": {"Y": "Y"}
   },
+  "MX2X1": {
+    "node_type": "GATE",
+    "gate_type": "MUX2",
+    "inputs": ["A", "B", "S0"],
+    "outputs": {"Y": "Y"}
+  },
+  "MX2X2": {
+    "node_type": "GATE",
+    "gate_type": "MUX2",
+    "inputs": ["A", "B", "S0"],
+    "outputs": {"Y": "Y"}
+  },
+  "MX2X4": {
+    "node_type": "GATE",
+    "gate_type": "MUX2",
+    "inputs": ["A", "B", "S0"],
+    "outputs": {"Y": "Y"}
+  },
   "AOI21X*": {
     "node_type": "GATE",
     "gate_type": "AOI21",

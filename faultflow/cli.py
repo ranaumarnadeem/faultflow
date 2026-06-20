@@ -158,6 +158,22 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Report violations but always exit 0 (no gate)",
     )
+
+    run = sub.add_parser(
+        "run",
+        help=(
+            "Oracle mode: translate an OT-format config, run ATPG, "
+            "write oracle_response.json"
+        ),
+    )
+    run.add_argument(
+        "-c",
+        "--config",
+        type=Path,
+        required=True,
+        help="Path to an OpenTestability-format faultflow.ofs",
+    )
+
     return parser
 
 
@@ -172,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
                 output_root=args.out,
                 verbose=args.verbose,
             )
+        if args.command == "run":
+            return _handle_run(args, parser)
         cfg = load_config(Path(args.config), args.top)
         service = FlowService(runner_factory=Runner)
         if args.command == "init":
@@ -259,6 +277,19 @@ def main(argv: list[str] | None = None) -> int:
     except (ConfigError, RunnerError) as exc:
         parser.exit(2, f"error: {exc}\n")
     return 0
+
+
+def _handle_run(args: object, parser: argparse.ArgumentParser) -> int:
+    from faultflow.service.oracle import run_oracle
+
+    ofs_path = Path(getattr(args, "config"))
+    if not ofs_path.exists():
+        parser.exit(2, f"error: config not found: {ofs_path}\n")
+    try:
+        return run_oracle(ofs_path)
+    except Exception as exc:
+        parser.exit(1, f"error: oracle run failed: {exc}\n")
+    return 1
 
 
 if __name__ == "__main__":

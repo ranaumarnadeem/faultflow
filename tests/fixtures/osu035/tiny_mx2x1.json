@@ -1,0 +1,30 @@
+{
+  "creator": "faultflow fixture (M0 MX2X1 cell map test)",
+  "modules": {
+    "tiny_mx2x1": {
+      "attributes": {"top": "00000000000000000000000000000001"},
+      "ports": {
+        "A":  {"direction": "input",  "bits": [2]},
+        "B":  {"direction": "input",  "bits": [3]},
+        "S0": {"direction": "input",  "bits": [4]},
+        "Y":  {"direction": "output", "bits": [5]}
+      },
+      "cells": {
+        "u_mx": {
+          "hide_name": 0,
+          "type": "MX2X1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "S0": "input", "Y": "output"},
+          "connections": {"A": [2], "B": [3], "S0": [4], "Y": [5]}
+        }
+      },
+      "netnames": {
+        "A":  {"hide_name": 0, "bits": [2], "attributes": {}},
+        "B":  {"hide_name": 0, "bits": [3], "attributes": {}},
+        "S0": {"hide_name": 0, "bits": [4], "attributes": {}},
+        "Y":  {"hide_name": 0, "bits": [5], "attributes": {}}
+      }
+    }
+  }
+}

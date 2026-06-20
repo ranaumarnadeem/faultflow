@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from faultflow.config import load_config
+from faultflow.config import FaultflowConfig, load_config
 from faultflow.db import connect, init_schema
 from faultflow.reporter.coverage import _policy, write_reports
 from db_v3_helpers import insert_campaign
@@ -118,7 +118,7 @@ def test_blackbox_simulate_and_report(tmp_path: Path, require_cpp_core: None) ->
 # --------------------------------------------------------------------------- #
 
 
-def _make_cfg(tmp_path: Path) -> "FaultflowConfig":  # type: ignore[name-defined]
+def _make_cfg(tmp_path: Path) -> FaultflowConfig:
     from dataclasses import replace
 
     cfg = load_config(_write_cfg(tmp_path), TOP)
@@ -161,7 +161,9 @@ def test_ensure_faults_enumerated_with_blackbox(
     net_names = {r["net_name"] for r in rows}
     # Boundary nets must have fault rows with the blackbox graph.
     assert "up" in net_names, f"TP net 'up' missing from faults; got {net_names}"
-    assert "bbout" in net_names, f"pseudo-PI 'bbout' missing from faults; got {net_names}"
+    assert "bbout" in net_names, (
+        f"pseudo-PI 'bbout' missing from faults; got {net_names}"
+    )
     # All rows start as undetected
     assert all(r["status"] == "undetected" for r in rows)
 

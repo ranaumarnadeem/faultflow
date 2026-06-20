@@ -174,6 +174,139 @@ class ProjectSession:
     def report_blackbox(self) -> list[str]:
         return list(self.declared_blackbox)
 
+    # ---------------------------------------------------------------------- #
+    # Test-point insertion (Path A — add_tp / reject_tp)
+    # ---------------------------------------------------------------------- #
+
+    def _tp_stack_path(self) -> Path:
+        if self.top is None:
+            raise precondition("run read_netlist first", "NO_DESIGN")
+        return self.output_root / self.top / "tp" / "state.json"
+
+    def add_tp(
+        self,
+        *,
+        metric: str | None = None,
+        threshold: int | None = None,
+        max_points: int | None = None,
+    ) -> dict[str, object]:
+        """Insert test points via OT, run new campaign, return comparison dict."""
+        if self.top is None or self.source is None:
+            raise precondition("run read_netlist first", "NO_DESIGN")
+        if not self.synthesized:
+            raise precondition("run synth first", "SYNTH_REQUIRED")
+
+        cfg = self.materialize_config()
+        tp_cfg = cfg.testpoint
+
+        # Ensure baseline campaign exists.
+        from faultflow.db import connect, init_schema, latest_campaign_id
+
+        if not cfg.db_path.exists():
+            raise precondition(
+                "run sim first to establish a baseline campaign",
+                "NO_BASELINE_CAMPAIGN",
+            )
+        with connect(cfg.db_path) as conn:
+            baseline_campaign = latest_campaign_id(conn, "comb")
+        if baseline_campaign is None:
+            raise precondition(
+                "no combinational campaign found; run sim first",
+                "NO_BASELINE_CAMPAIGN",
+            )
+
+        from faultflow.testpoint.versions import TestpointVersionStack
+
+        stack = TestpointVersionStack.load_or_create(self._tp_stack_path())
+        if stack.current is None:
+            stack.push(self.source, baseline_campaign, label="baseline")
+
+        # Determine output path for TPI netlist.
+        tp_dir = self._tp_stack_path().parent / f"iter{len(stack.all())}"
+        tp_dir.mkdir(parents=True, exist_ok=True)
+        tp_netlist = tp_dir / f"{self.top}_tp.json"
+
+        from faultflow.testpoint.opentest_driver import insert_test_points
+
+        _lib = str(cfg.cell_lib.name).lower()
+        _tech = "osu035" if ("osu035" in _lib or "osu" in _lib) else "sky130"
+
+        result = insert_test_points(
+            tp_cfg.opentest,
+            self.source,
+            tp_netlist,
+            metric=metric or tp_cfg.metric,
+            threshold=threshold if threshold is not None else tp_cfg.threshold,
+            max_points=max_points if max_points is not None else tp_cfg.max_points,
+            tech=_tech,
+        )
+
+        # Run ATPG on TPI netlist.
+        import dataclasses
+
+        tp_sim_cfg = dataclasses.replace(cfg, netlist=tp_netlist)
+        self.service.initialize(tp_sim_cfg)
+        self.service.run_atpg(tp_sim_cfg)
+
+        with connect(tp_sim_cfg.db_path) as conn:
+            tp_campaign = latest_campaign_id(conn, "comb")
+        if tp_campaign is None:
+            raise RuntimeError("TPI ATPG produced no campaign")
+
+        stack.push(
+            tp_netlist,
+            tp_campaign,
+            label=f"tp_iter{len(stack.all()) - 1}",
+        )
+
+        # Build comparison.
+        from faultflow.testpoint.compare import (
+            build_comparison,
+            compute_rescued,
+            load_summary,
+        )
+
+        with connect(tp_sim_cfg.db_path) as conn:
+            init_schema(conn)
+            baseline_sum = load_summary(conn, baseline_campaign)
+            tp_sum = load_summary(conn, tp_campaign)
+            rescued = compute_rescued(conn, baseline_campaign, tp_campaign)
+
+        comparison = build_comparison(
+            baseline_sum,
+            tp_sum,
+            rescued,
+            tp_report={
+                "total": result.total_count,
+                "obs": result.obs_count,
+                "ctrl": result.ctrl_count,
+            },
+        )
+
+        self.checkpoint()
+        return comparison
+
+    def reject_tp(self) -> str:
+        """Revert to the previous TP iteration (or baseline)."""
+        from faultflow.testpoint.versions import TestpointVersionStack
+
+        stack = TestpointVersionStack.load_or_create(self._tp_stack_path())
+        if stack.current is None or len(stack.all()) <= 1:
+            raise ShellError(
+                "no test-point iteration to reject (already at baseline)",
+                "TP",
+                "NO_TP_TO_REJECT",
+            )
+        popped = stack.pop()
+        prev = stack.current
+        if prev is not None:
+            self.source = Path(prev.netlist_path)
+        self.checkpoint()
+        return (
+            f"rejected {popped.label}; "
+            f"restored to {prev.label if prev else 'baseline'}"
+        )
+
     def materialize_config(self) -> FaultflowConfig:
         if self.top is None or self.source is None:
             raise precondition("run read_netlist first", "NO_DESIGN")

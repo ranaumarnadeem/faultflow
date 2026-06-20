@@ -77,6 +77,31 @@ COMMAND_HELP = {
         "",
         "report_blackbox",
     ),
+    "add_tp": CommandHelp(
+        "Test Point",
+        "add_tp [-m METRIC] [-t THRESHOLD] [-n MAX_POINTS]",
+        "Insert test points via OpenTestability",
+        "Calls OpenTestability's analyze_and_add_tp on the current netlist, "
+        "runs ATPG on the resulting TPI netlist, and prints a Baseline|+TP|Δ "
+        "comparison table. The TPI netlist becomes the new current version. "
+        "Use reject_tp to revert. Requires [testpoint] opentest = /path/to/opentest "
+        "in config and a completed sim campaign. "
+        "-m: testability metric (default: scoap). "
+        "-t: target threshold (default: 50). -n: max TPs to insert (default: 10).",
+        "sim command must have been run first.",
+        "add_tp\nadd_tp -m scoap -t 60 -n 5",
+    ),
+    "reject_tp": CommandHelp(
+        "Test Point",
+        "reject_tp",
+        "Revert last test-point iteration",
+        "Pops the current TP iteration from the version stack and restores the "
+        "previous netlist as the active source. The TPI netlist files are preserved "
+        "on disk but the active session returns to the prior iteration. "
+        "Cannot revert past the original baseline.",
+        "add_tp must have been run at least once.",
+        "reject_tp",
+    ),
     "add_scan": CommandHelp(
         "Scan",
         "add_scan -chains N [-max_length N] [-SI NAME] [-SO NAME] "
@@ -198,7 +223,16 @@ COMMAND_HELP = {
 }
 
 
-CATEGORY_ORDER = ("Project", "Scan", "Run", "Output", "Options", "Session", "Shell")
+CATEGORY_ORDER = (
+    "Project",
+    "Test Point",
+    "Scan",
+    "Run",
+    "Output",
+    "Options",
+    "Session",
+    "Shell",
+)
 
 
 def render_help_overview() -> str:
