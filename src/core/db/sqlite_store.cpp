@@ -86,6 +86,9 @@ SQLite::Database open_db(const std::string& db_path) {
   SQLite::Database db(db_path, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
   db.exec("PRAGMA busy_timeout = 30000");
   db.exec("PRAGMA foreign_keys = ON");
+  // Avoid an fsync per commit (very costly on /mnt/c). Safe with the default
+  // rollback journal for this regenerable DB; WAL stays off per project policy.
+  db.exec("PRAGMA synchronous = NORMAL");
   return db;
 }
 

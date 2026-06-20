@@ -531,12 +531,20 @@ def _process_scan_candidate(
                 unsupported,
             )
         )
-    protocol_sim_fault_ids = sorted(
-        set(tentative)
-        | set(_active_q_stem_fault_ids(active_rows, scan_ctx.q_stem_site_keys))
-    )
+    # PERF (CVA6-scale lever): the reduced pseudo-PI/PO view grades any logic-cone
+    # fault exactly as the full load+capture+unload scan protocol would. The shift
+    # is a fault-INDEPENDENT permutation, and the per-candidate golden gate above
+    # (reduced_protocol_matches) proves fault-free reduced==protocol on every
+    # unload bit + functional PO. So a logic-cone fault observed at an active PPO
+    # in the reduced view is necessarily captured and shifted out by the real
+    # protocol -- no need to re-simulate the thousand-cycle protocol for it. Only
+    # FF Q-stem faults (whose net is abstracted into a pseudo-port and is thus
+    # invisible to the reduced view) require the full protocol sim to confirm.
+    qstem_active = set(_active_q_stem_fault_ids(active_rows, scan_ctx.q_stem_site_keys))
+    reduced_trusted = sorted(set(tentative) - qstem_active)
+    protocol_sim_fault_ids = sorted(qstem_active)
 
-    if not protocol_sim_fault_ids:
+    if not reduced_trusted and not protocol_sim_fault_ids:
         if source == "sat" and sat_target_fault_id is not None:
             reduced_view_rejections.append(
                 CandidateRejection(sat_target_fault_id, "tier_a_reduced_mismatch")
@@ -557,53 +565,57 @@ def _process_scan_candidate(
         )
         return False, source == "sat"
 
-    row_by_id = {row.fault_id: row for row in active_rows}
-    simulated_fault_ids: list[int] = []
-    protocol_fault_specs: list[tuple[int, int]] = []
-    for fault_id in protocol_sim_fault_ids:
-        row = row_by_id.get(fault_id)
-        if row is None:
-            continue
-        generic_cidx = generic_site_index.get(row.fault_site_key)
-        if generic_cidx is None:
-            raise RunnerError(
-                f"generic compiled index missing for site {row.fault_site_key}"
-            )
-        simulated_fault_ids.append(fault_id)
-        protocol_fault_specs.append(
-            (generic_cidx, fault_type_to_sa_code(row.fault_type))
-        )
-
-    protocol_fault_sim_kwargs = _protocol_fault_sim_kwargs(scan_ctx, scan_pattern)
-    protocol_fault_sim_result = dict(
-        core.simulate_scan_protocol_faults(
-            str(scan_ctx.generic_json),
-            generic_cell_map,
-            faults=protocol_fault_specs,
-            unsupported_policy=unsupported,
-            loc_two_capture=is_loc,
-            los_two_capture=is_los,
-            los_launch_scan_in=head_bits,
-            active_clock_ports=active_clock_ports or [],
-            **protocol_fault_sim_kwargs,
-        )
-    )
-
-    passed_fault_ids: list[int] = []
+    # Logic-cone faults are trusted directly from the cheap reduced grade.
+    passed_fault_ids: list[int] = list(reduced_trusted)
     protocol_sim_rejections: list[CandidateRejection] = []
     blocked: list[tuple[int, str]] = []
-    all_lanes: list[dict[str, object]] = []
-    for batch in protocol_fault_sim_result.get("batches", []):
-        for lane in batch.get("lanes", []):
-            all_lanes.append(dict(lane))
-    for fault_id, lane in zip(simulated_fault_ids, all_lanes):
-        if str(lane.get("outcome")) == "pass":
-            passed_fault_ids.append(fault_id)
-        else:
-            protocol_sim_rejections.append(
-                CandidateRejection(fault_id, "no_capture_or_unload_effect")
+
+    # Q-stem faults confirmed through the full protocol sim -- skipped entirely
+    # when the candidate detects no scan-stem fault (the common case).
+    if protocol_sim_fault_ids:
+        row_by_id = {row.fault_id: row for row in active_rows}
+        simulated_fault_ids: list[int] = []
+        protocol_fault_specs: list[tuple[int, int]] = []
+        for fault_id in protocol_sim_fault_ids:
+            row = row_by_id.get(fault_id)
+            if row is None:
+                continue
+            generic_cidx = generic_site_index.get(row.fault_site_key)
+            if generic_cidx is None:
+                raise RunnerError(
+                    f"generic compiled index missing for site {row.fault_site_key}"
+                )
+            simulated_fault_ids.append(fault_id)
+            protocol_fault_specs.append(
+                (generic_cidx, fault_type_to_sa_code(row.fault_type))
             )
-            blocked.append((fault_id, track_key))
+
+        protocol_fault_sim_kwargs = _protocol_fault_sim_kwargs(scan_ctx, scan_pattern)
+        protocol_fault_sim_result = dict(
+            core.simulate_scan_protocol_faults(
+                str(scan_ctx.generic_json),
+                generic_cell_map,
+                faults=protocol_fault_specs,
+                unsupported_policy=unsupported,
+                loc_two_capture=is_loc,
+                los_two_capture=is_los,
+                los_launch_scan_in=head_bits,
+                active_clock_ports=active_clock_ports or [],
+                **protocol_fault_sim_kwargs,
+            )
+        )
+        all_lanes: list[dict[str, object]] = []
+        for batch in protocol_fault_sim_result.get("batches", []):
+            for lane in batch.get("lanes", []):
+                all_lanes.append(dict(lane))
+        for fault_id, lane in zip(simulated_fault_ids, all_lanes):
+            if str(lane.get("outcome")) == "pass":
+                passed_fault_ids.append(fault_id)
+            else:
+                protocol_sim_rejections.append(
+                    CandidateRejection(fault_id, "no_capture_or_unload_effect")
+                )
+                blocked.append((fault_id, track_key))
 
     if not passed_fault_ids:
         commit = CandidateCommit(

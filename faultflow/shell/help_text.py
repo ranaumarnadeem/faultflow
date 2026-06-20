@@ -77,6 +77,19 @@ COMMAND_HELP = {
         "",
         "report_blackbox",
     ),
+    "check_cells": CommandHelp(
+        "Project",
+        "check_cells [-allow PATTERN]",
+        "Audit netlist cell coverage vs the PDK cell map",
+        "Compares every cell type in the synthesized netlist against the "
+        "selected PDK JSON cell map (techmap) and reports the total cell count, "
+        "the uncovered cell types (with counts) you must add to the techmap "
+        "before they would be blackboxed or hard-fail, and any memory/macro-like "
+        "types. Report-only: it never aborts the session. Repeat -allow to treat "
+        "cell-type globs (e.g. '$scopeinfo') as intentional blackboxes.",
+        "A synthesized design and a selected PDK profile.",
+        "check_cells\ncheck_cells -allow $scopeinfo",
+    ),
     "add_tp": CommandHelp(
         "Test Point",
         "add_tp [-m METRIC] [-t THRESHOLD] [-n MAX_POINTS]",

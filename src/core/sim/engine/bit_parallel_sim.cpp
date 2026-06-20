@@ -9,14 +9,22 @@ uint64_t gather_input(const std::vector<uint64_t>& nv, uint32_t slot) {
   return slot == UNUSED_INPUT ? 0ULL : nv[slot];
 }
 
-std::vector<TestCycle> cycles_for(const TestVector& vec) {
+// Returns vec.cycles by reference when present (no copy); otherwise fills the
+// caller-owned scratch with a single synthetic cycle and returns that. The hot
+// sequential paths call this once per batch over thousand-cycle scan vectors, so
+// the previous by-value return copied the whole cycle vector (each TestCycle
+// holding a std::map) on every call.
+const std::vector<TestCycle>& cycles_for(const TestVector& vec,
+                                         std::vector<TestCycle>& scratch) {
   if (!vec.cycles.empty()) {
     return vec.cycles;
   }
+  scratch.clear();
   TestCycle c;
   c.inputs = vec.inputs;
   c.sample_outputs = true;
-  return {c};
+  scratch.push_back(std::move(c));
+  return scratch;
 }
 
 uint64_t active_mask(uint64_t value, Polarity polarity) {
@@ -49,7 +57,8 @@ void BitParallelSim::broadcast_cycle_inputs(SimState& state,
   auto& nv = state.current_values();
   for (int pi_idx : cg.pi_nets) {
     const int yid = cg.compiled_to_yosys[pi_idx];
-    const bool val = cycle.inputs.count(yid) ? cycle.inputs.at(yid) : false;
+    const auto it = cycle.inputs.find(yid);
+    const bool val = (it != cycle.inputs.end()) ? it->second : false;
     nv[pi_idx] = val ? ~0ULL : 0ULL;
   }
 }
@@ -74,6 +83,9 @@ void BitParallelSim::evaluate_combinational(SimState& state,
                                             const CompiledSimGraph& cg,
                                             const FaultBatch& batch) const {
   auto& nv = state.current_values();
+  // Reused across every node so the hot eval does not heap-allocate a fresh
+  // 6-element vector per gate (the dominant cost at CVA6 scale).
+  std::vector<uint64_t> ins(6);
 
   const auto eval_level = [&](int start, int end) {
     for (int i = start; i < end; ++i) {
@@ -91,10 +103,12 @@ void BitParallelSim::evaluate_combinational(SimState& state,
         inject_faults(nv, batch, sn.out);
         continue;
       }
-      const std::vector<uint64_t> ins = {
-          gather_input(nv, sn.in0), gather_input(nv, sn.in1),
-          gather_input(nv, sn.in2), gather_input(nv, sn.in3),
-          gather_input(nv, sn.in4), gather_input(nv, sn.in5)};
+      ins[0] = gather_input(nv, sn.in0);
+      ins[1] = gather_input(nv, sn.in1);
+      ins[2] = gather_input(nv, sn.in2);
+      ins[3] = gather_input(nv, sn.in3);
+      ins[4] = gather_input(nv, sn.in4);
+      ins[5] = gather_input(nv, sn.in5);
       nv[sn.out] = eval_gate(sn.type, ins);
       inject_faults(nv, batch, sn.out);
     }
@@ -115,6 +129,7 @@ void BitParallelSim::evaluate_combinational_mode(SimState& state,
                                                  const FaultBatch& batch,
                                                  const ModeConfig& mc) const {
   auto& nv = state.current_values();
+  std::vector<uint64_t> ins(6);  // reused per node (see evaluate_combinational)
 
   const auto eval_level = [&](int start, int end) {
     for (int i = start; i < end; ++i) {
@@ -144,10 +159,12 @@ void BitParallelSim::evaluate_combinational_mode(SimState& state,
         inject_faults(nv, batch, sn.out);
         continue;
       }
-      const std::vector<uint64_t> ins = {
-          gather_input(nv, sn.in0), gather_input(nv, sn.in1),
-          gather_input(nv, sn.in2), gather_input(nv, sn.in3),
-          gather_input(nv, sn.in4), gather_input(nv, sn.in5)};
+      ins[0] = gather_input(nv, sn.in0);
+      ins[1] = gather_input(nv, sn.in1);
+      ins[2] = gather_input(nv, sn.in2);
+      ins[3] = gather_input(nv, sn.in3);
+      ins[4] = gather_input(nv, sn.in4);
+      ins[5] = gather_input(nv, sn.in5);
       nv[sn.out] = eval_gate(sn.type, ins);
       inject_faults(nv, batch, sn.out);
     }
@@ -301,7 +318,8 @@ uint64_t BitParallelSim::simulate_batch(const CompiledSimGraph& cg,
   state.reset_ff_states();
 
   uint64_t detected = 0ULL;
-  for (const TestCycle& cycle : cycles_for(vec)) {
+  std::vector<TestCycle> cyc_scratch;
+  for (const TestCycle& cycle : cycles_for(vec, cyc_scratch)) {
     FaultBatch inactive_batch;
     const FaultBatch& active_batch = cycle.fault_active ? batch : inactive_batch;
     // Broadcast real PIs (indexed in cg.pi_nets).
@@ -369,7 +387,8 @@ std::vector<std::vector<uint64_t>> BitParallelSim::simulate_batch_samples(
   state.reset_ff_states();
 
   std::vector<std::vector<uint64_t>> samples;
-  for (const TestCycle& cycle : cycles_for(vec)) {
+  std::vector<TestCycle> cyc_scratch;
+  for (const TestCycle& cycle : cycles_for(vec, cyc_scratch)) {
     FaultBatch inactive_batch;
     const FaultBatch& active_batch = cycle.fault_active ? batch : inactive_batch;
     broadcast_cycle_inputs(state, cg, cycle);

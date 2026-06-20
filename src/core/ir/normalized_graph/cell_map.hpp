@@ -3,6 +3,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "common/types.hpp"
@@ -68,6 +69,12 @@ class CellMap {
 
  private:
   std::vector<std::pair<std::string, CellMapEntry>> patterns_;
+  // Memoizes lookup() results per raw cell type. CellMap is immutable after
+  // load(), so this is a pure cache: at CVA6 scale (~80 unique cell types over
+  // 200k cells) it collapses the O(patterns) glob scan to one scan per distinct
+  // type, then O(1) thereafter.
+  mutable std::unordered_map<std::string, std::optional<CellMapEntry>>
+      lookup_cache_;
 };
 
 std::string normalize_cell_name(const std::string& raw);

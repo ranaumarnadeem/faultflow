@@ -250,12 +250,19 @@ CellMap CellMap::load(const std::string& path) {
 
 std::optional<CellMapEntry> CellMap::lookup(
     const std::string& raw_cell_type) const {
+  const auto cached = lookup_cache_.find(raw_cell_type);
+  if (cached != lookup_cache_.end()) {
+    return cached->second;
+  }
+  std::optional<CellMapEntry> result;
   for (const auto& [pattern, entry] : patterns_) {
     if (pattern_match(pattern, raw_cell_type)) {
-      return entry;
+      result = entry;
+      break;
     }
   }
-  return std::nullopt;
+  lookup_cache_.emplace(raw_cell_type, result);
+  return result;
 }
 
 std::optional<double> CellMap::delay_for(

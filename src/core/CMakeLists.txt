@@ -26,9 +26,22 @@ target_include_directories(faultflow_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 set_target_properties(faultflow_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# CaDiCaL (native SAT ATPG solver). It ships no CMake config, so locate the library
+# and header explicitly and fail early with a clear message instead of a cryptic link
+# error. See docs/getting_started/installation.md for how to install it.
+find_library(CADICAL_LIBRARY NAMES cadical)
+find_path(CADICAL_INCLUDE_DIR NAMES cadical.hpp)
+if(NOT CADICAL_LIBRARY OR NOT CADICAL_INCLUDE_DIR)
+  message(FATAL_ERROR
+    "CaDiCaL not found (CADICAL_LIBRARY=${CADICAL_LIBRARY}, "
+    "CADICAL_INCLUDE_DIR=${CADICAL_INCLUDE_DIR}). Install libcadical and cadical.hpp; "
+    "see docs/getting_started/installation.md.")
+endif()
+
 target_link_libraries(
-  faultflow_core PUBLIC nlohmann_json::nlohmann_json SQLiteCpp cadical
+  faultflow_core PUBLIC nlohmann_json::nlohmann_json SQLiteCpp ${CADICAL_LIBRARY}
 )
+target_include_directories(faultflow_core PUBLIC ${CADICAL_INCLUDE_DIR})
 
 target_compile_options(faultflow_core PRIVATE -Wall -Wextra)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Techmap coverage audit.
+"""Techmap coverage audit (thin CLI wrapper).
 
 Point this at a synthesized Yosys JSON netlist and a faultflow JSON cell map to
 find, *before* running any simulation:
@@ -17,6 +17,10 @@ add to the JSON cell map.
 Exit code is 0 when every cell type is covered or explicitly allow-listed, and 1
 when uncovered cell types remain -- so it can gate a CI / preflight step.
 
+The audit logic lives in :mod:`faultflow.reporter.cell_audit`; this file is only
+the CLI + printing front end. The `check_cells` shell command shares the same
+core.
+
 Usage:
     python3 scripts/techmap_audit.py NETLIST.json CELLMAP.json [--top TOP]
                                      [--allow PATTERN ...]
@@ -26,107 +30,48 @@ Example:
         examples/picorv32_synth/picorv32a_sky130.json \\
         cells/sky130/sky130_fd_sc_hd.json --allow '$scopeinfo'
 """
+
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
-MEMORY_KEYWORDS = ("mem", "ram", "rom", "sram", "dpram", "macro", "fifo", "regfile")
+# Allow running the script directly from a checkout without installing.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-
-def _strip_escape(name: str) -> str:
-    """Yosys JSON sometimes escapes internal names with a leading backslash."""
-    return name[1:] if name.startswith("\\") else name
-
-
-def cellmap_covers(cell_type: str, patterns: list[str]) -> bool:
-    """Mirror the cell-map glob match: exact key, or a 'prefix*' pattern.
-
-    Leading backslash escapes are normalised on both sides so '\\$scanff_...'
-    keys match '$scanff_...' types and vice versa.
-    """
-    ct = _strip_escape(cell_type)
-    for pat in patterns:
-        p = _strip_escape(pat)
-        if p.endswith("*"):
-            if ct.startswith(p[:-1]):
-                return True
-        elif ct == p:
-            return True
-    return False
-
-
-def _top_module(net: dict, requested: str | None) -> tuple[str, dict]:
-    modules = net.get("modules", {})
-    if requested and requested in modules:
-        return requested, modules[requested]
-    for name, mod in modules.items():
-        attrs = mod.get("attributes", {})
-        top = str(attrs.get("top", "0"))
-        if top in ("1", "00000000000000000000000000000001"):
-            return name, mod
-    # Fall back to the only / first module.
-    name = next(iter(modules))
-    return name, modules[name]
+from faultflow.reporter.cell_audit import audit_netlist  # noqa: E402
 
 
 def audit(netlist: Path, cellmap: Path, top: str | None, allow: list[str]) -> int:
-    net = json.loads(netlist.read_text(encoding="utf-8"))
-    cmap = json.loads(cellmap.read_text(encoding="utf-8"))
-    patterns = list(cmap.keys())
+    result = audit_netlist(netlist, cellmap, allow, top=top)
 
-    top_name, mod = _top_module(net, top)
-    cells = mod.get("cells", {})
-
-    type_counts: dict[str, int] = {}
-    for cell in cells.values():
-        t = str(cell.get("type", "?"))
-        type_counts[t] = type_counts.get(t, 0) + 1
-
-    mem_like = sorted(
-        ((t, n) for t, n in type_counts.items()
-         if any(k in t.lower() for k in MEMORY_KEYWORDS)),
-        key=lambda x: -x[1],
-    )
-    uncovered = sorted(
-        ((t, n) for t, n in type_counts.items()
-         if not cellmap_covers(t, patterns) and not cellmap_covers(t, allow)),
-        key=lambda x: -x[1],
-    )
-    allowed_uncovered = sorted(
-        ((t, n) for t, n in type_counts.items()
-         if not cellmap_covers(t, patterns) and cellmap_covers(t, allow)),
-        key=lambda x: -x[1],
-    )
-
-    print(f"netlist : {netlist}")
-    print(f"cellmap : {cellmap}")
-    print(f"top     : {top_name}")
-    print(f"cells   : {len(cells)}  unique types: {len(type_counts)}")
+    print(f"netlist : {result.netlist}")
+    print(f"cellmap : {result.cellmap}")
+    print(f"top     : {result.top}")
+    print(f"cells   : {result.total_cells}  unique types: {result.unique_types}")
 
     print("\nMEMORY / MACRO-LIKE cell types (excluded from denominator if blackboxed):")
-    if mem_like:
-        for t, n in mem_like:
+    if result.mem_like:
+        for t, n in result.mem_like:
             print(f"    {t}: {n}")
     else:
         print("    NONE")
 
-    if allowed_uncovered:
+    if result.allowed_uncovered:
         print("\nUNCOVERED but ALLOW-LISTED (intentionally blackboxed):")
-        for t, n in allowed_uncovered:
+        for t, n in result.allowed_uncovered:
             print(f"    {t}: {n}")
 
     print("\nUNCOVERED cell types (add these to the cell map):")
-    if uncovered:
-        for t, n in uncovered:
+    if result.uncovered:
+        for t, n in result.uncovered:
             print(f"    {t}: {n}")
     else:
         print("    NONE -- every cell type is covered or allow-listed.")
 
-    if uncovered:
-        print(f"\nFAIL: {len(uncovered)} cell type(s) not in the techmap.")
+    if result.uncovered:
+        print(f"\nFAIL: {len(result.uncovered)} cell type(s) not in the techmap.")
         return 1
     print("\nOK: techmap covers every cell type in this netlist.")
     return 0

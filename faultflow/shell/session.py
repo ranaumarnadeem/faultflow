@@ -192,6 +192,45 @@ class ProjectSession:
     def report_testmode(self) -> str:
         return self.test_mode
 
+    def check_cells(self, *, allow: list[str] | None = None) -> dict[str, object]:
+        """Audit the configured netlist against the selected PDK cell map.
+
+        Report-only (like report_clocks): never aborts the session. Returns a
+        dict with the total cell count, uncovered (would-be-blackboxed) cell
+        types, memory/macro-like types, and an ``ok`` flag.
+        """
+        if self.top is None or self.source is None:
+            raise precondition("run read_netlist first", "NO_DESIGN")
+        if self.source_kind != "yosys_json":
+            raise precondition(
+                "check_cells needs a synthesized Yosys JSON netlist; run synth first",
+                "SYNTH_REQUIRED",
+            )
+        if self.profile is None:
+            raise precondition("run use_lib_cells first", "PROFILE_REQUIRED")
+
+        from faultflow.reporter.cell_audit import audit_netlist
+
+        result = audit_netlist(
+            self.source,
+            self.profile.cell_map,
+            list(allow or []),
+            top=self.top,
+        )
+        return {
+            "netlist": str(result.netlist),
+            "cellmap": str(result.cellmap),
+            "top": result.top,
+            "total_cells": result.total_cells,
+            "unique_types": result.unique_types,
+            "uncovered": [{"type": t, "count": n} for t, n in result.uncovered],
+            "allowed_uncovered": [
+                {"type": t, "count": n} for t, n in result.allowed_uncovered
+            ],
+            "memory_like": [{"type": t, "count": n} for t, n in result.mem_like],
+            "ok": result.ok,
+        }
+
     # ---------------------------------------------------------------------- #
     # Test-point insertion (Path A — add_tp / reject_tp)
     # ---------------------------------------------------------------------- #

@@ -158,6 +158,20 @@ CREATE TABLE IF NOT EXISTS blocked_patterns (
 """
 
 
+# Secondary indices on the hot ATPG query columns. The faults table reaches
+# 100k+ rows on large cores; every round scans it for active/detected/redundant
+# counts, so these turn repeated full-table scans into index lookups. Kept
+# separate from the table DDL so they can evolve independently.
+SCHEMA_INDICES = """
+CREATE INDEX IF NOT EXISTS idx_faults_campaign_status
+    ON faults(campaign_id, status, exclusion, collapsed_into);
+CREATE INDEX IF NOT EXISTS idx_faults_campaign_site
+    ON faults(campaign_id, fault_site_key);
+CREATE INDEX IF NOT EXISTS idx_fault_detections_fault
+    ON fault_detections(fault_id);
+"""
+
+
 def connect(path: str | Path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -165,6 +179,13 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA foreign_keys = ON")
+    # synchronous=NORMAL (safe with the default rollback journal; only a host
+    # power loss, not an app crash, risks the regenerable fault DB) avoids an
+    # fsync on every commit, which is very expensive on /mnt/c (WSL). A 64 MB
+    # page cache keeps the faults table resident across a round. WAL stays off
+    # per project policy (/mnt/c does not support its shared memory).
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA cache_size = -65536")
     return conn
 
 
@@ -194,6 +215,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             "faultflow.sqlite."
         )
     conn.executescript(SCHEMA_V3)
+    conn.executescript(SCHEMA_INDICES)
     conn.execute(f"PRAGMA user_version = {EXPECTED_USER_VERSION}")
     conn.commit()
 

@@ -45,6 +45,7 @@ class TclBridge:
             "reject_tp": self._reject_tp,
             "set_testmode": self._set_testmode,
             "report_testmode": self._report_testmode,
+            "check_cells": self._check_cells,
             "help": self._help,
             "quit": self._quit,
             "exit": self._quit,
@@ -464,6 +465,28 @@ proc {name} {{args}} {{
         if args:
             raise ShellError("usage: report_testmode", "CONFIG", "INVALID_OPTION")
         return {"test_mode": self.session.report_testmode()}
+
+    def _check_cells(self, args: list[str]) -> Any:
+        allow: list[str] = []
+        idx = 0
+        while idx < len(args):
+            flag = args[idx]
+            if flag == "-allow":
+                if idx + 1 >= len(args):
+                    raise ShellError(
+                        "check_cells: -allow requires a PATTERN",
+                        "CONFIG",
+                        "INVALID_OPTION",
+                    )
+                allow.append(args[idx + 1])
+                idx += 2
+            else:
+                raise ShellError(
+                    f"check_cells: unknown option {flag!r}",
+                    "CONFIG",
+                    "INVALID_OPTION",
+                )
+        return self.session.check_cells(allow=allow)
 
     def _help(self, args: list[str]) -> Any:
         if len(args) > 1:
