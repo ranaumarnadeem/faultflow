@@ -55,7 +55,8 @@ GateType parse_gate_type(const std::string& s) {
       {"NOR4B", GateType::NOR4B},   {"OR3B", GateType::OR3B},
       {"OR4B", GateType::OR4B},     {"ADDF", GateType::ADDF_S},
       {"ADDH", GateType::ADDH_S},   {"CONST0", GateType::CONST0},
-      {"CONST1", GateType::CONST1},
+      {"CONST1", GateType::CONST1}, {"WBR_IN", GateType::WBR_IN},
+      {"WBR_OUT", GateType::WBR_OUT},
   };
   auto it = kMap.find(s);
   if (it == kMap.end()) {
@@ -142,6 +143,22 @@ CellFFMetadata parse_ff_metadata(const nlohmann::json& node) {
   return ff;
 }
 
+CellWBRMetadata parse_wbr_metadata(const nlohmann::json& node) {
+  CellWBRMetadata wbr;
+  wbr.present = true;
+  const std::string side = node.at("side").get<std::string>();
+  if (side == "input") {
+    wbr.is_input = true;
+  } else if (side == "output") {
+    wbr.is_input = false;
+  } else {
+    throw ParseError("WBR side must be 'input' or 'output': " + side);
+  }
+  wbr.core_pin = node.at("core_pin").get<std::string>();
+  wbr.sys_pin = node.at("sys_pin").get<std::string>();
+  return wbr;
+}
+
 CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node) {
   CellMapEntry entry;
   if (node.value("unsupported", false)) {
@@ -168,11 +185,19 @@ CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node)
   if (node.contains("ff")) {
     entry.ff = parse_ff_metadata(node.at("ff"));
   }
+  if (node.contains("wbr")) {
+    entry.wbr = parse_wbr_metadata(node.at("wbr"));
+  }
   if (node.contains("delay")) {
     entry.delay = node.at("delay").get<double>();
   }
   if (entry.node_type == NodeType::FF && !entry.ff.present) {
     throw ParseError("FF cell map entry missing ff metadata: " + pattern);
+  }
+  if ((entry.gate_type == GateType::WBR_IN ||
+       entry.gate_type == GateType::WBR_OUT) &&
+      !entry.wbr.present) {
+    throw ParseError("WBR cell map entry missing wbr metadata: " + pattern);
   }
   return entry;
 }

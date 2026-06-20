@@ -209,6 +209,34 @@
     "inputs": ["A"],
     "outputs": {"Y": "Y"}
   },
+  "$wbc_in_faultflow": {
+    "node_type": "GATE",
+    "gate_type": "WBR_IN",
+    "inputs": ["FROM_SYS"],
+    "outputs": {"TO_CORE": "TO_CORE"},
+    "wbr": {"side": "input", "core_pin": "TO_CORE", "sys_pin": "FROM_SYS"}
+  },
+  "\\$wbc_in_faultflow": {
+    "node_type": "GATE",
+    "gate_type": "WBR_IN",
+    "inputs": ["FROM_SYS"],
+    "outputs": {"TO_CORE": "TO_CORE"},
+    "wbr": {"side": "input", "core_pin": "TO_CORE", "sys_pin": "FROM_SYS"}
+  },
+  "$wbc_out_faultflow": {
+    "node_type": "GATE",
+    "gate_type": "WBR_OUT",
+    "inputs": ["FROM_CORE"],
+    "outputs": {"TO_SYS": "TO_SYS"},
+    "wbr": {"side": "output", "core_pin": "FROM_CORE", "sys_pin": "TO_SYS"}
+  },
+  "\\$wbc_out_faultflow": {
+    "node_type": "GATE",
+    "gate_type": "WBR_OUT",
+    "inputs": ["FROM_CORE"],
+    "outputs": {"TO_SYS": "TO_SYS"},
+    "wbr": {"side": "output", "core_pin": "FROM_CORE", "sys_pin": "TO_SYS"}
+  },
   "LATCH": {"node_type": "LATCH"},
   "TBUFX*": {"node_type": "TBUF"},
   "PAD*": {"node_type": "GATE", "gate_type": "BUF", "unsupported": true}

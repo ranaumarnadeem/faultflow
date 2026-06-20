@@ -21,6 +21,11 @@ uint64_t eval_bitwise(GateType type, const std::vector<uint64_t>& inputs) {
       return ~in0;
     case GateType::BUF:
     case GateType::INPUT:
+    // Wrapper boundary cells are plain buffers in FUNCTIONAL mode (and as a
+    // pure gate function). INTEST/EXTEST safe-0 and stimulus-passthrough are
+    // applied by the engine via ModeConfig, not here.
+    case GateType::WBR_IN:
+    case GateType::WBR_OUT:
       return in0;
     case GateType::AND2:
       return in0 & in1;

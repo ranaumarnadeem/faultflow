@@ -51,9 +51,7 @@ def translate_oracle_ofs(ofs_path: Path) -> tuple[Any, str]:
     netlist = Path(cp.get("input", "netlist"))
     top = cp.get("design", "top_module", fallback="top")
     output_dir = Path(cp.get("output", "dir", fallback=str(ofs_path.parent)))
-    cell_lib = Path(
-        cp.get("design", "cell_lib", fallback=str(_DEFAULT_CELL_LIB))
-    )
+    cell_lib = Path(cp.get("design", "cell_lib", fallback=str(_DEFAULT_CELL_LIB)))
 
     output_dir.mkdir(parents=True, exist_ok=True)
     native_ofs = output_dir / ".faultflow_native.ofs"

@@ -51,6 +51,14 @@ void wire_inputs(SimNode& sn, GateType gt,
     case GateType::BUF:
       wire("A", sn.in0);
       break;
+    // IEEE 1500 wrapper cells: the functional data input feeds in0 (the WBR
+    // node drives its stable output net; FUNCTIONAL = buffer of in0).
+    case GateType::WBR_IN:
+      wire("FROM_SYS", sn.in0);
+      break;
+    case GateType::WBR_OUT:
+      wire("FROM_CORE", sn.in0);
+      break;
     case GateType::INPUT:
     case GateType::DFF:
       break;
@@ -489,8 +497,88 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
     }
   }
 
+  // IEEE 1500 wrapper boundary cells -> compiled-index (stem) space. Each WBR
+  // node already drives the cell's stem output net; we only record the
+  // core/sys index pair so build_mode_config can reconfigure points per mode.
+  for (const auto& wc : ng.wrapper_cells) {
+    auto cit = cg.yosys_to_compiled.find(wc.core_net);
+    auto sit = cg.yosys_to_compiled.find(wc.sys_net);
+    if (cit == cg.yosys_to_compiled.end() ||
+        sit == cg.yosys_to_compiled.end()) {
+      continue;
+    }
+    CompiledWrapperCell cwc;
+    cwc.core_idx = static_cast<uint32_t>(cit->second);
+    cwc.sys_idx = static_cast<uint32_t>(sit->second);
+    cwc.is_input = wc.is_input;
+    cg.wrapper_cells.push_back(cwc);
+  }
+
   rebuild_fanout_csr(cg);
   return cg;
+}
+
+ModeConfig build_mode_config(const CompiledSimGraph& cg, TestMode mode) {
+  ModeConfig mc;
+  mc.mode = mode;
+  mc.wbr_action.assign(static_cast<size_t>(cg.net_count),
+                       static_cast<uint8_t>(WbrAction::PASS));
+
+  // FUNCTIONAL: wrapper cells are transparent buffers; point sets unchanged.
+  if (mode == TestMode::FUNCTIONAL) {
+    mc.stimulus_nets.assign(cg.pi_nets.begin(), cg.pi_nets.end());
+    mc.observable_nets.assign(cg.observable.begin(), cg.observable.end());
+    return mc;
+  }
+
+  auto push_unique = [](std::vector<uint32_t>& v, uint32_t x) {
+    if (std::find(v.begin(), v.end(), x) == v.end()) {
+      v.push_back(x);
+    }
+  };
+  const auto set = [](WbrAction a) { return static_cast<uint8_t>(a); };
+
+  // Each wrapper cell contributes a control point OR an observe point depending
+  // on mode (IEEE 1500 boundary truth table). The driven net (core for WBR_IN,
+  // sys for WBR_OUT) is either a stimulus (skip, retain broadcast) or forced 0.
+  for (const auto& wc : cg.wrapper_cells) {
+    if (mode == TestMode::INTEST) {
+      if (wc.is_input) {  // drive core inputs (control)
+        push_unique(mc.stimulus_nets, wc.core_idx);
+        mc.wbr_action[wc.core_idx] = set(WbrAction::SKIP_STIMULUS);
+      } else {  // observe core outputs; drive sys side safe-0
+        push_unique(mc.observable_nets, wc.core_idx);
+        push_unique(mc.safe_zero_nets, wc.sys_idx);
+        mc.wbr_action[wc.sys_idx] = set(WbrAction::FORCE_ZERO);
+      }
+    } else {  // EXTEST
+      if (wc.is_input) {  // observe interconnect; drive core side safe-0
+        push_unique(mc.observable_nets, wc.sys_idx);
+        push_unique(mc.safe_zero_nets, wc.core_idx);
+        mc.wbr_action[wc.core_idx] = set(WbrAction::FORCE_ZERO);
+      } else {  // drive interconnect (control)
+        push_unique(mc.stimulus_nets, wc.sys_idx);
+        mc.wbr_action[wc.sys_idx] = set(WbrAction::SKIP_STIMULUS);
+      }
+    }
+  }
+
+  if (mode == TestMode::EXTEST) {
+    // Top PIs also drive the interconnect; base POs not used as a control
+    // point remain observable interconnect endpoints.
+    for (int pi : cg.pi_nets) {
+      push_unique(mc.stimulus_nets, static_cast<uint32_t>(pi));
+    }
+    for (int po : cg.observable) {
+      const uint32_t cidx = static_cast<uint32_t>(po);
+      if (std::find(mc.stimulus_nets.begin(), mc.stimulus_nets.end(), cidx) ==
+          mc.stimulus_nets.end()) {
+        push_unique(mc.observable_nets, cidx);
+      }
+    }
+  }
+
+  return mc;
 }
 
 std::string canonical_site_key(const CompiledSimGraph& cg, uint32_t cidx) {

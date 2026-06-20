@@ -31,12 +31,23 @@ struct CellFFMetadata {
   bool has_scan = false;
 };
 
+// IEEE 1500 wrapper boundary cell metadata. `is_input` marks a cell on a core
+// INPUT port (drives the core side) vs a core OUTPUT port (drives the system
+// side). `core_pin`/`sys_pin` name the two functional data pins.
+struct CellWBRMetadata {
+  bool present = false;
+  bool is_input = false;
+  std::string core_pin;
+  std::string sys_pin;
+};
+
 struct CellMapEntry {
   NodeType node_type = NodeType::GATE;
   GateType gate_type = GateType::BUF;
   std::vector<std::string> inputs;
   std::map<std::string, std::string> outputs;
   CellFFMetadata ff;
+  CellWBRMetadata wbr;
   bool unsupported = false;
   // Optional metadata-only nominal cell delay (e.g. ns). Read ONLY for
   // transition at-speed-relevance annotation/reporting — NEVER consumed by

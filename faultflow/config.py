@@ -152,6 +152,10 @@ class FaultflowConfig:
     clocks: tuple[ClockSpec, ...] = ()
     blackbox_instances: tuple[str, ...] = ()
     testpoint: TestpointConfig = TestpointConfig()
+    # IEEE 1500 wrapper test mode: "functional" | "intest" | "extest". INTEST and
+    # EXTEST reconfigure the wrapper boundary control/observe points, so they are
+    # distinct runs (part of the fingerprint).
+    test_mode: str = "functional"
 
     @property
     def output_dir(self) -> Path:
@@ -371,6 +375,10 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     clocks = _parse_clocks(parser)
     blackbox_instances = _parse_blackbox(parser)
 
+    test_mode = parser.get("testmode", "mode", fallback="functional").strip().lower()
+    if test_mode not in {"functional", "intest", "extest"}:
+        raise ConfigError("testmode.mode must be 'functional', 'intest', or 'extest'")
+
     return FaultflowConfig(
         path=cfg_path,
         top=top,
@@ -420,11 +428,10 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         clocks=clocks,
         blackbox_instances=blackbox_instances,
         testpoint=TestpointConfig(
-            opentest=Path(
-                parser.get("testpoint", "opentest", fallback="opentest")
-            ),
+            opentest=Path(parser.get("testpoint", "opentest", fallback="opentest")),
             metric=parser.get("testpoint", "metric", fallback="scoap"),
             threshold=_int(parser, "testpoint", "threshold", 50),
             max_points=_int(parser, "testpoint", "max_points", 10),
         ),
+        test_mode=test_mode,
     )

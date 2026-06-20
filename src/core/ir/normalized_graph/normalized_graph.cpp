@@ -288,6 +288,24 @@ NormalizedGraph NormalizedGraph::from_parsed(
       node.level = 0;
     }
 
+    // IEEE 1500 wrapper boundary cell: record its core/sys nets (the node above
+    // already drives the cell's output net, stable across modes). The cell
+    // elaborates as an ordinary WBR_IN/WBR_OUT buffer node; only the per-mode
+    // control/observe reconfiguration (build_mode_config) reads this record.
+    if (entry->wbr.present) {
+      auto core_it = cell.conns.find(entry->wbr.core_pin);
+      auto sys_it = cell.conns.find(entry->wbr.sys_pin);
+      if (core_it == cell.conns.end() || core_it->second.empty() ||
+          sys_it == cell.conns.end() || sys_it->second.empty()) {
+        throw ParseError("WBR cell missing core/sys pin connection: " + inst);
+      }
+      NormWrapperCell wc;
+      wc.core_net = core_it->second.front();
+      wc.sys_net = sys_it->second.front();
+      wc.is_input = entry->wbr.is_input;
+      ng.wrapper_cells.push_back(wc);
+    }
+
     ng.nodes[node.id] = std::move(node);
   }
 

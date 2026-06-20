@@ -58,6 +58,7 @@ class ProjectSession:
         self.options: dict[str, str] = {}
         self.declared_clocks: list[ClockSpec] = []
         self.declared_blackbox: list[str] = []
+        self.test_mode: str = "functional"
 
     @property
     def checkpoint_path(self) -> Path:
@@ -85,6 +86,7 @@ class ProjectSession:
             [cs.port, cs.off_state] for cs in self.declared_clocks
         ]
         snap["declared_blackbox"] = list(self.declared_blackbox)
+        snap["test_mode"] = self.test_mode
         return snap
 
     def checkpoint(self) -> tuple[Path, str]:
@@ -173,6 +175,22 @@ class ProjectSession:
 
     def report_blackbox(self) -> list[str]:
         return list(self.declared_blackbox)
+
+    def set_testmode(self, mode: str) -> None:
+        normalized = mode.strip().lower()
+        if normalized not in {"functional", "intest", "extest"}:
+            raise ShellError(
+                "set_testmode: mode must be functional, intest, or extest, "
+                f"got {mode!r}",
+                "CONFIG",
+                "INVALID_VALUE",
+            )
+        self.test_mode = normalized
+        if self.top is not None:
+            self.checkpoint()
+
+    def report_testmode(self) -> str:
+        return self.test_mode
 
     # ---------------------------------------------------------------------- #
     # Test-point insertion (Path A — add_tp / reject_tp)
@@ -323,6 +341,7 @@ class ProjectSession:
                 output_root=self.output_root,
                 clocks=tuple(self.declared_clocks),
                 blackbox_instances=tuple(self.declared_blackbox),
+                test_mode=self.test_mode,
             )
         else:
             cfg = FaultflowConfig(
@@ -341,6 +360,7 @@ class ProjectSession:
                 output_root=self.output_root,
                 clocks=tuple(self.declared_clocks),
                 blackbox_instances=tuple(self.declared_blackbox),
+                test_mode=self.test_mode,
             )
         for key, value in self.options.items():
             if key == "atpg.max_rounds":
@@ -540,6 +560,7 @@ class ProjectSession:
         self.declared_blackbox = [
             str(name) for name in data.get("declared_blackbox", [])
         ]
+        self.test_mode = str(data.get("test_mode", "functional"))
         if resume and self.scan_inserted:
             cfg = self.materialize_config()
             if not cfg.scan_manifest_path.exists():
@@ -586,3 +607,4 @@ class ProjectSession:
         self.options.clear()
         self.declared_clocks.clear()
         self.declared_blackbox.clear()
+        self.test_mode = "functional"

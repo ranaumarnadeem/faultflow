@@ -115,6 +115,78 @@ bool edge_active(bool prev, bool cur, TriggerType trigger) {
   return prev && !cur;
 }
 
+// IEEE 1500 mode-aware combinational evaluation (scalar oracle). Returns the
+// settled net values. PIs and ModeConfig stimulus nets are driven from the
+// vector; wrapper cells apply their per-mode action (buffer / retain stimulus /
+// safe-0). A net fault, if any, overrides after each write.
+std::vector<bool> run_comb_mode(const CompiledSimGraph& cg, const TestVector& vec,
+                                const CompactFault* fault, const ModeConfig& mc) {
+  std::vector<bool> values(cg.net_count, false);
+
+  for (int pi_idx : cg.pi_nets) {
+    const int yid = cg.compiled_to_yosys[pi_idx];
+    auto it = vec.inputs.find(yid);
+    values[pi_idx] = (it != vec.inputs.end()) ? it->second : false;
+    apply_fault(values, fault, static_cast<uint32_t>(pi_idx));
+  }
+  for (uint32_t s : mc.stimulus_nets) {
+    const int yid = cg.compiled_to_yosys[s];
+    auto it = vec.inputs.find(yid);
+    values[s] = (it != vec.inputs.end()) ? it->second : false;
+    apply_fault(values, fault, s);
+  }
+
+  const auto eval_one = [&](const SimNode& sn) {
+    if (sn.type == GateType::INPUT || sn.type == GateType::DFF) {
+      return;
+    }
+    if (sn.type == GateType::CONST0) {
+      values[sn.out] = false;
+      apply_fault(values, fault, sn.out);
+      return;
+    }
+    if (sn.type == GateType::CONST1) {
+      values[sn.out] = true;
+      apply_fault(values, fault, sn.out);
+      return;
+    }
+    if (sn.type == GateType::WBR_IN || sn.type == GateType::WBR_OUT) {
+      const uint8_t act = mc.wbr_action[sn.out];
+      if (act == static_cast<uint8_t>(WbrAction::SKIP_STIMULUS)) {
+        // control point: keep the broadcast stimulus value.
+      } else if (act == static_cast<uint8_t>(WbrAction::FORCE_ZERO)) {
+        values[sn.out] = false;
+      } else {
+        values[sn.out] = (sn.in0 != UNUSED_INPUT) ? values[sn.in0] : false;
+      }
+      apply_fault(values, fault, sn.out);
+      return;
+    }
+    std::vector<bool> ins;
+    const uint32_t in_slots[] = {sn.in0, sn.in1, sn.in2, sn.in3, sn.in4, sn.in5};
+    for (uint32_t slot : in_slots) {
+      if (slot != UNUSED_INPUT) {
+        ins.push_back(values[slot]);
+      }
+    }
+    values[sn.out] = eval_gate_scalar(sn.type, ins);
+    apply_fault(values, fault, sn.out);
+  };
+
+  if (cg.level_starts.size() >= 2) {
+    for (size_t lvl = 0; lvl + 1 < cg.level_starts.size(); ++lvl) {
+      for (int i = cg.level_starts[lvl]; i < cg.level_starts[lvl + 1]; ++i) {
+        eval_one(cg.nodes[i]);
+      }
+    }
+  } else {
+    for (const auto& sn : cg.nodes) {
+      eval_one(sn);
+    }
+  }
+  return values;
+}
+
 void update_ff_states(const CompiledSimGraph& cg,
                       const std::vector<bool>& values,
                       const std::vector<bool>& prev_values,
@@ -394,6 +466,35 @@ bool GoldenRefSim::is_detected(const CompiledSimGraph& cg,
   for (int cidx : cg.observable) {
     const int yid = cg.compiled_to_yosys[cidx];
     if (fault_free.at(yid) != faulty.at(yid)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::map<int, bool> GoldenRefSim::simulate_fault_free(
+    const CompiledSimGraph& cg, const TestVector& vec,
+    const ModeConfig& mode) const {
+  return snapshot(cg, run_comb_mode(cg, vec, nullptr, mode));
+}
+
+std::map<int, bool> GoldenRefSim::simulate_with_fault(
+    const CompiledSimGraph& cg, const TestVector& vec, const CompactFault& fault,
+    const ModeConfig& mode) const {
+  const CompactFault* f =
+      fault.exclusion == FaultExclusion::NONE ? &fault : nullptr;
+  return snapshot(cg, run_comb_mode(cg, vec, f, mode));
+}
+
+bool GoldenRefSim::is_detected(const CompiledSimGraph& cg,
+                               const std::map<int, bool>& fault_free,
+                               const std::map<int, bool>& faulty,
+                               const ModeConfig& mode) const {
+  for (uint32_t cidx : mode.observable_nets) {
+    const int yid = cg.compiled_to_yosys[cidx];
+    auto a = fault_free.find(yid);
+    auto b = faulty.find(yid);
+    if (a != fault_free.end() && b != faulty.end() && a->second != b->second) {
       return true;
     }
   }

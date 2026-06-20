@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "common/types.hpp"
+
 namespace faultflow {
 
 struct SimState {
@@ -11,6 +13,9 @@ struct SimState {
   std::vector<uint64_t> ff_states;
   std::vector<uint64_t> initial_ff_state;
   std::vector<uint64_t> prev_values;
+  // IEEE 1500 test mode for this run. FUNCTIONAL by default; the engine applies
+  // the per-mode wrapper control/observe reconfiguration via a ModeConfig.
+  TestMode test_mode = TestMode::FUNCTIONAL;
 
   void init(int net_count, int frame_count = 1, int ff_count = 0) {
     frames.assign(frame_count, std::vector<uint64_t>(net_count, 0ULL));

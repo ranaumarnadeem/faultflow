@@ -43,6 +43,8 @@ class TclBridge:
             "report_blackbox": self._report_blackbox,
             "add_tp": self._add_tp,
             "reject_tp": self._reject_tp,
+            "set_testmode": self._set_testmode,
+            "report_testmode": self._report_testmode,
             "help": self._help,
             "quit": self._quit,
             "exit": self._quit,
@@ -447,6 +449,21 @@ proc {name} {{args}} {{
         if args:
             raise ShellError("usage: reject_tp", "CONFIG", "INVALID_OPTION")
         return self.session.reject_tp()
+
+    def _set_testmode(self, args: list[str]) -> Any:
+        if len(args) != 1:
+            raise ShellError(
+                "usage: set_testmode functional|intest|extest",
+                "CONFIG",
+                "INVALID_OPTION",
+            )
+        self.session.set_testmode(args[0])
+        return f"test mode: {self.session.report_testmode()}"
+
+    def _report_testmode(self, args: list[str]) -> Any:
+        if args:
+            raise ShellError("usage: report_testmode", "CONFIG", "INVALID_OPTION")
+        return {"test_mode": self.session.report_testmode()}
 
     def _help(self, args: list[str]) -> Any:
         if len(args) > 1:

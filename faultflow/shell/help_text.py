@@ -102,6 +102,27 @@ COMMAND_HELP = {
         "add_tp must have been run at least once.",
         "reject_tp",
     ),
+    "set_testmode": CommandHelp(
+        "Test Mode",
+        "set_testmode functional|intest|extest",
+        "Select the IEEE 1500 wrapper test mode",
+        "Sets the wrapper boundary test mode for a wrapped core. FUNCTIONAL "
+        "leaves wrapper cells transparent. INTEST tests the core internals "
+        "(wrapper input cells drive core inputs, output cells observe core "
+        "outputs). EXTEST tests the interconnect around the core (the same "
+        "cells flip to drive/observe the system side). INTEST and EXTEST are "
+        "distinct runs and invalidate a resume vs FUNCTIONAL.",
+        "A design session (read_netlist not required).",
+        "set_testmode intest",
+    ),
+    "report_testmode": CommandHelp(
+        "Test Mode",
+        "report_testmode",
+        "Show the current wrapper test mode",
+        "Returns the active test mode (functional, intest, or extest).",
+        "",
+        "report_testmode",
+    ),
     "add_scan": CommandHelp(
         "Scan",
         "add_scan -chains N [-max_length N] [-SI NAME] [-SO NAME] "
@@ -225,6 +246,7 @@ COMMAND_HELP = {
 
 CATEGORY_ORDER = (
     "Project",
+    "Test Mode",
     "Test Point",
     "Scan",
     "Run",

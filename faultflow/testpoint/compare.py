@@ -22,9 +22,7 @@ class CampaignSummary:
     atpg_rounds: int
 
 
-def load_summary(
-    conn: sqlite3.Connection, campaign_id: int
-) -> CampaignSummary:
+def load_summary(conn: sqlite3.Connection, campaign_id: int) -> CampaignSummary:
     from faultflow.db import summary as _db_summary
 
     data = _db_summary(conn, campaign_id=campaign_id)
@@ -42,12 +40,8 @@ def load_summary(
         detected=int(data.get("detected", 0) or 0),
         denominator=int(data.get("denominator", 0) or 0),
         undetected=int(data.get("undetected", 0) or 0),
-        fault_coverage_percent=float(
-            data.get("fault_coverage_percent", 0.0) or 0.0
-        ),
-        test_coverage_percent=float(
-            data.get("test_coverage_percent", 0.0) or 0.0
-        ),
+        fault_coverage_percent=float(data.get("fault_coverage_percent", 0.0) or 0.0),
+        test_coverage_percent=float(data.get("test_coverage_percent", 0.0) or 0.0),
         vector_count=int(run.get("vector_count", 0) or 0),
         atpg_seconds=float(run.get("atpg_generation_seconds", 0.0) or 0.0),
         sim_seconds=float(run.get("fault_simulation_seconds", 0.0) or 0.0),
@@ -56,9 +50,7 @@ def load_summary(
     )
 
 
-def compute_rescued(
-    conn: sqlite3.Connection, baseline_id: int, tp_id: int
-) -> int:
+def compute_rescued(conn: sqlite3.Connection, baseline_id: int, tp_id: int) -> int:
     """Faults undetected in baseline but detected in TP, excluding inserted TP nets."""
     row = conn.execute(
         """

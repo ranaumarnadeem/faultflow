@@ -248,6 +248,9 @@ class Runner:
             # Blackboxing changes normalization (boundary nets) and therefore the
             # fault set, so a change must invalidate resume via config_hash.
             "blackbox_instances": list(self.cfg.blackbox_instances),
+            # IEEE 1500 test mode reconfigures the observable/control point sets,
+            # so INTEST and EXTEST are distinct runs from FUNCTIONAL.
+            "test_mode": self.cfg.test_mode,
         }
 
     def _rendered_yosys_script(self, source: Path | None = None) -> str:

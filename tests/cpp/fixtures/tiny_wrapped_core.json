@@ -1,0 +1,68 @@
+{
+  "creator": "faultflow fixture generator (IEEE 1500 wrapped core)",
+  "modules": {
+    "tiny_wrapped_core": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "a": {"direction": "input",  "bits": [2]},
+        "b": {"direction": "input",  "bits": [3]},
+        "c": {"direction": "input",  "bits": [4]},
+        "y": {"direction": "output", "bits": [9]}
+      },
+      "cells": {
+        "g_out": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__and2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "X": "output"},
+          "connections": {"A": [2], "B": [3], "X": [5]}
+        },
+        "wi0": {
+          "hide_name": 0,
+          "type": "$wbc_in_faultflow",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"FROM_SYS": "input", "TO_CORE": "output"},
+          "connections": {"FROM_SYS": [5], "TO_CORE": [6]}
+        },
+        "wi1": {
+          "hide_name": 0,
+          "type": "$wbc_in_faultflow",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"FROM_SYS": "input", "TO_CORE": "output"},
+          "connections": {"FROM_SYS": [4], "TO_CORE": [7]}
+        },
+        "g_core": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__xor2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "X": "output"},
+          "connections": {"A": [6], "B": [7], "X": [8]}
+        },
+        "wo0": {
+          "hide_name": 0,
+          "type": "$wbc_out_faultflow",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"FROM_CORE": "input", "TO_SYS": "output"},
+          "connections": {"FROM_CORE": [8], "TO_SYS": [9]}
+        }
+      },
+      "netnames": {
+        "a":   {"hide_name": 0, "bits": [2], "attributes": {}},
+        "b":   {"hide_name": 0, "bits": [3], "attributes": {}},
+        "c":   {"hide_name": 0, "bits": [4], "attributes": {}},
+        "g":   {"hide_name": 0, "bits": [5], "attributes": {}},
+        "ci0": {"hide_name": 0, "bits": [6], "attributes": {}},
+        "ci1": {"hide_name": 0, "bits": [7], "attributes": {}},
+        "co":  {"hide_name": 0, "bits": [8], "attributes": {}},
+        "y":   {"hide_name": 0, "bits": [9], "attributes": {}}
+      }
+    }
+  }
+}

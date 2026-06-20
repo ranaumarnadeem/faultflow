@@ -110,6 +110,104 @@ void BitParallelSim::evaluate_combinational(SimState& state,
   eval_level(0, static_cast<int>(cg.nodes.size()));
 }
 
+void BitParallelSim::evaluate_combinational_mode(SimState& state,
+                                                 const CompiledSimGraph& cg,
+                                                 const FaultBatch& batch,
+                                                 const ModeConfig& mc) const {
+  auto& nv = state.current_values();
+
+  const auto eval_level = [&](int start, int end) {
+    for (int i = start; i < end; ++i) {
+      const SimNode& sn = cg.nodes[i];
+      if (sn.type == GateType::INPUT || sn.type == GateType::DFF) {
+        continue;
+      }
+      if (sn.type == GateType::CONST0) {
+        nv[sn.out] = 0ULL;
+        inject_faults(nv, batch, sn.out);
+        continue;
+      }
+      if (sn.type == GateType::CONST1) {
+        nv[sn.out] = ~0ULL;
+        inject_faults(nv, batch, sn.out);
+        continue;
+      }
+      if (sn.type == GateType::WBR_IN || sn.type == GateType::WBR_OUT) {
+        const uint8_t act = mc.wbr_action[sn.out];
+        if (act == static_cast<uint8_t>(WbrAction::SKIP_STIMULUS)) {
+          // control point: keep the broadcast stimulus value.
+        } else if (act == static_cast<uint8_t>(WbrAction::FORCE_ZERO)) {
+          nv[sn.out] = 0ULL;
+        } else {
+          nv[sn.out] = gather_input(nv, sn.in0);
+        }
+        inject_faults(nv, batch, sn.out);
+        continue;
+      }
+      const std::vector<uint64_t> ins = {
+          gather_input(nv, sn.in0), gather_input(nv, sn.in1),
+          gather_input(nv, sn.in2), gather_input(nv, sn.in3),
+          gather_input(nv, sn.in4), gather_input(nv, sn.in5)};
+      nv[sn.out] = eval_gate(sn.type, ins);
+      inject_faults(nv, batch, sn.out);
+    }
+  };
+
+  if (cg.level_starts.size() >= 2) {
+    for (size_t lvl = 0; lvl + 1 < cg.level_starts.size(); ++lvl) {
+      eval_level(cg.level_starts[lvl], cg.level_starts[lvl + 1]);
+    }
+    return;
+  }
+  eval_level(0, static_cast<int>(cg.nodes.size()));
+}
+
+bool BitParallelSim::simulate_single_fault(const CompiledSimGraph& cg,
+                                           const TestVector& vec,
+                                           const CompactFault& fault,
+                                           const ModeConfig& mc) const {
+  if (fault.exclusion != FaultExclusion::NONE) {
+    return false;
+  }
+  FaultBatch batch;
+  CompactFault f = fault;
+  f.bit = 1;
+  f.sa_mask = 1ULL << 1;
+  batch.faults[0] = f;
+  batch.size = 1;
+  batch.mask = f.sa_mask;
+
+  SimState state;
+  state.test_mode = mc.mode;
+  state.init(cg.net_count, 1, static_cast<int>(cg.ff_configs.size()));
+  auto& nv = state.current_values();
+
+  // Broadcast PIs and the mode's control points to all 64 lanes (golden lane 0
+  // + 63 faulty lanes all see the same stimulus).
+  for (int pi_idx : cg.pi_nets) {
+    const int yid = cg.compiled_to_yosys[pi_idx];
+    const bool val = vec.inputs.count(yid) ? vec.inputs.at(yid) : false;
+    nv[pi_idx] = val ? ~0ULL : 0ULL;
+  }
+  for (uint32_t s : mc.stimulus_nets) {
+    const int yid = cg.compiled_to_yosys[s];
+    const bool val = vec.inputs.count(yid) ? vec.inputs.at(yid) : false;
+    nv[s] = val ? ~0ULL : 0ULL;
+  }
+  inject_faults(nv, batch, f.net_index);
+
+  evaluate_combinational_mode(state, cg, batch, mc);
+
+  uint64_t detected = 0ULL;
+  const auto& fv = state.current_values();
+  for (uint32_t obs : mc.observable_nets) {
+    const uint64_t word = fv[obs];
+    const uint64_t golden = (word & 1ULL) ? ~0ULL : 0ULL;
+    detected |= word ^ golden;
+  }
+  return (detected & batch.mask) != 0;
+}
+
 void BitParallelSim::seed_ff_outputs(SimState& state, const CompiledSimGraph& cg,
                                      const FaultBatch& batch) const {
   auto& nv = state.current_values();

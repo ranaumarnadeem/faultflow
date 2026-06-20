@@ -1,0 +1,42 @@
+{
+  "creator": "faultflow fixture generator (wrapped core, wrappers removed)",
+  "comment": "Same function as tiny_wrapped_core (y = (a&b) ^ c) with the WBR cells collapsed to plain wires. FUNCTIONAL-mode baseline for wrapper-invisibility.",
+  "modules": {
+    "tiny_wrapped_core_nowrap": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "a": {"direction": "input",  "bits": [2]},
+        "b": {"direction": "input",  "bits": [3]},
+        "c": {"direction": "input",  "bits": [4]},
+        "y": {"direction": "output", "bits": [9]}
+      },
+      "cells": {
+        "g_out": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__and2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "X": "output"},
+          "connections": {"A": [2], "B": [3], "X": [5]}
+        },
+        "g_core": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__xor2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "X": "output"},
+          "connections": {"A": [5], "B": [4], "X": [9]}
+        }
+      },
+      "netnames": {
+        "a": {"hide_name": 0, "bits": [2], "attributes": {}},
+        "b": {"hide_name": 0, "bits": [3], "attributes": {}},
+        "c": {"hide_name": 0, "bits": [4], "attributes": {}},
+        "g": {"hide_name": 0, "bits": [5], "attributes": {}},
+        "y": {"hide_name": 0, "bits": [9], "attributes": {}}
+      }
+    }
+  }
+}

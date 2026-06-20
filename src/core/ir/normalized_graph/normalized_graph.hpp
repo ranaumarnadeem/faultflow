@@ -40,6 +40,17 @@ struct NormNode {
   FFConfig ff_config;
 };
 
+// IEEE 1500 wrapper boundary cell, in NormalizedGraph (YosysNetID) space.
+// `core_net` is the core-facing data net, `sys_net` the system/outside-facing
+// net. `is_input` marks a cell on a core INPUT port (the WBR_IN node drives
+// core_net) vs a core OUTPUT port (the WBR_OUT node drives sys_net). The driven
+// net is stable across all modes; see TestMode for the mode-dependent roles.
+struct NormWrapperCell {
+  YosysNetID core_net = 0;
+  YosysNetID sys_net = 0;
+  bool is_input = false;
+};
+
 struct NormalizedGraph {
   std::map<int, NormNode> nodes;
   std::map<int, NormNet> nets;
@@ -55,6 +66,8 @@ struct NormalizedGraph {
   // set of instance names blackboxed by name (boundary test interface).
   std::set<int> pseudo_inputs;
   std::set<std::string> blackbox_instances;
+  // IEEE 1500 wrapper boundary cells, in declaration order (serial WBR order).
+  std::vector<NormWrapperCell> wrapper_cells;
 
   static NormalizedGraph from_parsed(
       const ParsedGraph& parsed, const CellMap& cell_map,

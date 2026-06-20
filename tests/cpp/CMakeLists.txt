@@ -10,9 +10,11 @@ add_executable(
   scan/test_scan_multiclock_stagger.cpp
   sim/test_bit_parallel.cpp
   sim/test_blackbox_boundary.cpp
+  sim/test_wbr_modes.cpp
   ir/test_parsed_graph.cpp
   ir/test_normalized_graph.cpp
   ir/test_compiled_graph.cpp
+  ir/test_wbr_cells.cpp
   fault/test_enumerator.cpp
   fault/test_batch_manager.cpp
   fault/test_collapser.cpp

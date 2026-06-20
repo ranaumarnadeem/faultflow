@@ -83,9 +83,20 @@ enum class GateType {
   CONST1,
   INPUT,
   DFF,
+  // IEEE 1500 wrapper boundary cells. WBR_IN sits on a core input (drives the
+  // core-side net); WBR_OUT sits on a core output (drives the system-side net).
+  // In FUNCTIONAL mode both are plain buffers; INTEST/EXTEST reconfigure them
+  // into control/observe points (see TestMode + build_mode_config).
+  WBR_IN,
+  WBR_OUT,
 };
 
 enum class NodeType { GATE, FF, LATCH, CONST, TBUF, ICG };
+
+// IEEE 1500 SerialWBR test mode. FUNCTIONAL = wrapper cells are transparent;
+// INTEST = test the core internals; EXTEST = test the interconnect around the
+// core. Carried on SimState; reconfigures the control/observe point sets.
+enum class TestMode : uint8_t { FUNCTIONAL = 0, INTEST = 1, EXTEST = 2 };
 
 enum class TriggerType : uint8_t { POSEDGE = 0, NEGEDGE = 1 };
 
