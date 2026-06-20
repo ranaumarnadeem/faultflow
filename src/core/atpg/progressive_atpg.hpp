@@ -56,14 +56,16 @@ SolveFaultResult solve_fault_for_db(
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances = {});
+    const std::vector<std::string>& blackbox_instances = {},
+    const std::string& test_mode = "");
 
 bool verify_fault_vector(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
     const std::map<std::string, bool>& vector,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances = {});
+    const std::vector<std::string>& blackbox_instances = {},
+    const std::string& test_mode = "");
 
 std::vector<ProgressiveDetection> simulate_incremental(
     const std::string& json_path, const std::string& cell_map_path,
@@ -72,7 +74,8 @@ std::vector<ProgressiveDetection> simulate_incremental(
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances = {});
+    const std::vector<std::string>& blackbox_instances = {},
+    const std::string& test_mode = "");
 
 std::vector<int64_t> simulate_tentative_detections(
     const std::string& json_path, const std::string& cell_map_path,
@@ -80,7 +83,8 @@ std::vector<int64_t> simulate_tentative_detections(
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances = {});
+    const std::vector<std::string>& blackbox_instances = {},
+    const std::string& test_mode = "");
 
 // ---- Transition model (combinational broadside two-pattern) ----------------
 // Separate entry points so the stuck-at path stays byte-identical. Enumeration

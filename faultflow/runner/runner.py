@@ -1150,6 +1150,7 @@ class Runner:
                 self.cfg.fault_model.collapsing,
                 self.cfg.simulation.unsupported_cells,
                 list(self.cfg.blackbox_instances),
+                self.cfg.test_mode,
             )
         )
 

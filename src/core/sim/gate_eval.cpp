@@ -156,6 +156,45 @@ uint64_t eval_bitwise(GateType type, const std::vector<uint64_t>& inputs) {
       return in0 ^ in1;
     case GateType::ADDH_CO:
       return in0 & in1;
+    case GateType::A211O:
+      return (in0 & in1) | in2 | in3;
+    case GateType::A222OI:
+      return ~((in0 & in1) | (in2 & in3) | (pick(inputs, 4) & pick(inputs, 5)));
+    case GateType::A2BB2OI:
+      return (in0 | in1) & ~(in2 & in3);
+    case GateType::A311O:
+      return (in0 & in1 & in2) | in3 | in4;
+    case GateType::A311OI:
+      return ~((in0 & in1 & in2) | in3 | in4);
+    case GateType::A41O:
+      return (in0 & in1 & in2 & in3) | in4;
+    case GateType::AND3B:
+      return ~in0 & in1 & in2;
+    case GateType::AND4B:
+      return ~in0 & in1 & in2 & in3;
+    case GateType::MUX2I:
+      return ~((~in2 & in0) | (in2 & in1));
+    case GateType::MUX4: {
+      const uint64_t in5 = pick(inputs, 5);
+      return (~in4 & ~in5 & in0) | (in4 & ~in5 & in1) |
+             (~in4 & in5 & in2) | (in4 & in5 & in3);
+    }
+    case GateType::O211A:
+      return (in0 | in1) & in2 & in3;
+    case GateType::O21BA:
+      return (in0 | in1) & ~in2;
+    case GateType::O221A:
+      return (in0 | in1) & (in2 | in3) & in4;
+    case GateType::O2111A:
+      return (in0 | in1) & in2 & in3 & in4;
+    case GateType::O2111AI:
+      return ~((in0 | in1) & in2 & in3 & in4);
+    case GateType::O2BB2AI:
+      return (in0 & in1) | ~(in2 | in3);
+    case GateType::O41A:
+      return (in0 | in1 | in2 | in3) & in4;
+    case GateType::O41AI:
+      return ~((in0 | in1 | in2 | in3) & in4);
     default:
       throw ParseError("Unsupported gate type in eval_gate");
   }

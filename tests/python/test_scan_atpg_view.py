@@ -274,3 +274,105 @@ def test_schema_version_on_module_attributes() -> None:
     view, _ = build_scan_atpg_view(generic, manifest)
     attrs = view["modules"]["tiny_scan_multichain"]["attributes"]
     assert attrs["faultflow_atpg_view_schema_ver"] == ATPG_VIEW_SCHEMA_VER
+
+
+def _ff_to_ff_fixture() -> tuple[dict[str, Any], dict[str, Any]]:
+    """FF A's Q directly drives FF B's D (a shift-register / pipeline stage).
+
+    `ff_a` sorts before `ff_b`, so A's Q->PPI rewrite rewires B's D pin BEFORE B
+    is processed.  The manifest's data_net for B (net 10 = A's Q) is then stale.
+    """
+    generic = {
+        "modules": {
+            "tiny_ff_to_ff": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "CLK": {"direction": "input", "bits": [2]},
+                    "scan_in": {"direction": "input", "bits": [3]},
+                    "scan_en": {"direction": "input", "bits": [4]},
+                    "D": {"direction": "input", "bits": [5]},
+                    "scan_out": {"direction": "output", "bits": [8]},
+                    "Q": {"direction": "output", "bits": [12]},
+                },
+                "cells": {
+                    "ff_a": {
+                        "type": "$scanff_faultflow",
+                        "parameters": {},
+                        "attributes": {},
+                        "connections": {
+                            "CLK": [2],
+                            "D": [5],
+                            "SDI": [3],
+                            "SE": [4],
+                            "Q": [10],
+                        },
+                    },
+                    "ff_b": {
+                        "type": "$scanff_faultflow",
+                        "parameters": {},
+                        "attributes": {},
+                        # D = ff_a.Q (net 10); SDI from the scan_in port so net 10
+                        # has a single (functional) consumer -> no D-branch.
+                        "connections": {
+                            "CLK": [2],
+                            "D": [10],
+                            "SDI": [3],
+                            "SE": [4],
+                            "Q": [12],
+                        },
+                    },
+                },
+                "netnames": {
+                    "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+                    "D": {"hide_name": 0, "bits": [5], "attributes": {}},
+                    "n10": {"hide_name": 0, "bits": [10], "attributes": {}},
+                    "Q": {"hide_name": 0, "bits": [12], "attributes": {}},
+                },
+            }
+        }
+    }
+    manifest = {
+        "top": "tiny_ff_to_ff",
+        "clock_net": 2,
+        "scan_enable": "scan_en",
+        "scan_inputs": ["scan_in"],
+        "scan_outputs": ["scan_out"],
+        "cells": [
+            {
+                "instance": "ff_a",
+                "chain_index": 0,
+                "chain_position": 0,
+                "q_net": 10,
+                "data_net": 5,
+            },
+            {
+                "instance": "ff_b",
+                "chain_index": 0,
+                "chain_position": 1,
+                "q_net": 12,
+                "data_net": 10,
+            },
+        ],
+    }
+    return generic, manifest
+
+
+def test_ff_to_ff_d_observe_follows_rewired_pin() -> None:
+    """Regression: FF A.Q -> FF B.D with A processed first.
+
+    B's observe buffer must follow the rewired D pin (A's PPI net), not the stale
+    manifest data_net (10), which dangles after A is popped and its Q rewired.
+    Before the fix, __ppo_ff_b observed a driverless net and read constant 0,
+    diverging from the real netlist's captured value (the PicoRV32a chain-3
+    golden mismatch).
+    """
+    generic, manifest = _ff_to_ff_fixture()
+    view, port_map = build_scan_atpg_view(generic, manifest)
+    module = view["modules"]["tiny_ff_to_ff"]
+    ppi_a_bit = module["ports"][port_map["ff_a"]["ppi_port"]]["bits"][0]
+
+    observe_b = module["cells"]["$ffobserve_ff_b"]
+    assert observe_b["connections"]["A"] == [ppi_a_bit]
+    assert port_map["ff_b"]["boundary"]["d_observe_net_id"] == ppi_a_bit
+    # The stale data_net (10) must not be what B observes.
+    assert port_map["ff_b"]["boundary"]["d_observe_net_id"] != 10

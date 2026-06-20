@@ -54,9 +54,20 @@ GateType parse_gate_type(const std::string& s) {
       {"NOR2B", GateType::NOR2B},   {"NOR3B", GateType::NOR3B},
       {"NOR4B", GateType::NOR4B},   {"OR3B", GateType::OR3B},
       {"OR4B", GateType::OR4B},     {"ADDF", GateType::ADDF_S},
+      {"ADDF_CO", GateType::ADDF_CO},
       {"ADDH", GateType::ADDH_S},   {"CONST0", GateType::CONST0},
       {"CONST1", GateType::CONST1}, {"WBR_IN", GateType::WBR_IN},
       {"WBR_OUT", GateType::WBR_OUT},
+      // Sky130 compound gates
+      {"A211O", GateType::A211O},     {"A222OI", GateType::A222OI},
+      {"A2BB2OI", GateType::A2BB2OI}, {"A311O", GateType::A311O},
+      {"A311OI", GateType::A311OI},   {"A41O", GateType::A41O},
+      {"AND3B", GateType::AND3B},     {"AND4B", GateType::AND4B},
+      {"MUX2I", GateType::MUX2I},     {"MUX4", GateType::MUX4},
+      {"O211A", GateType::O211A},     {"O21BA", GateType::O21BA},
+      {"O221A", GateType::O221A},     {"O2111A", GateType::O2111A},
+      {"O2111AI", GateType::O2111AI}, {"O2BB2AI", GateType::O2BB2AI},
+      {"O41A", GateType::O41A},       {"O41AI", GateType::O41AI},
   };
   auto it = kMap.find(s);
   if (it == kMap.end()) {

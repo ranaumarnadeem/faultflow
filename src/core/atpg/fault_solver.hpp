@@ -36,6 +36,17 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
                                     const SatSolveOptions& options,
                                     std::map<std::string, bool>& out);
 
+// IEEE 1500 mode-aware variant. Uses mc.observable_nets for the detection
+// clause instead of cg.observable. For EXTEST mode, decouples WBR_IN from its
+// passthrough source (forces TO_CORE = 0 via unit clauses so the core input
+// is safe-zero while the FROM_SYS PI remains a free observable variable).
+SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
+                                    const std::vector<AtpgPiInfo>& pis,
+                                    const CompactFault& fault,
+                                    const SatSolveOptions& options,
+                                    std::map<std::string, bool>& out,
+                                    const ModeConfig& mc);
+
 // Two-frame combinational (broadside) transition-fault ATPG. Emits a launch
 // vector (v1_out) and capture vector (v2_out). `fault.type` selects the
 // transition: SA0 = slow-to-rise (good 0->1), SA1 = slow-to-fall (good 1->0).

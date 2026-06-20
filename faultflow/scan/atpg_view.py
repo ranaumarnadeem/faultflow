@@ -159,6 +159,25 @@ def _drop_dangling_scan_ports(
             netnames.pop(name, None)
 
 
+def _current_data_net(cell: dict[str, Any], fallback: int) -> int:
+    """The FF's D-pin net as it is *currently* wired.
+
+    FFs are processed in instance-sort order, and each rewires its own Q net to a
+    PPI bit everywhere in the module. When FF A's Q directly drives FF B's D (a
+    shift-register / pipeline stage) and A is processed before B, A's rewrite has
+    already replaced B's D pin with A's PPI net by the time B is processed. The
+    manifest's `data_net` is the *pre-rewire* value and is now stale, so the
+    observe buffer must be built from the cell's live D connection instead.
+    Falls back to the manifest value if the D pin is not a single integer net
+    (e.g. tied to a constant).
+    """
+    conns = cell.get("connections", {})
+    if not isinstance(conns, dict):
+        return fallback
+    bits = _all_int_bits(conns.get(DATA_PIN, []))
+    return bits[0] if len(bits) == 1 else fallback
+
+
 def _net_name_for_bit(module: dict[str, Any], bit: int) -> str | None:
     netnames = module.get("netnames", {})
     if not isinstance(netnames, dict):
@@ -321,7 +340,9 @@ def build_scan_atpg_view(
             raise ScanError(f"{instance}: expected scan FF cell type")
 
         q_net = int(record["q_net"])
-        d_net = int(record["data_net"])
+        # Read D from the live cell connection, not the manifest: a prior FF's
+        # Q->PPI rewrite may have already rewired this D pin (FF-to-FF stage).
+        d_net = _current_data_net(cell, int(record["data_net"]))
         record_clock_net = int(record.get("clock_net", -1))
         ppi_port = _ppi_name(instance)
         ppi_bit = next_id

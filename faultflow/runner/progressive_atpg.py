@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -135,6 +137,7 @@ def _accept_and_simulate(
     vector_index: int,
     unsupported: str,
     blackbox_instances: list[str],
+    test_mode: str = "",
     on_vector_accepted: Callable[[dict[str, bool], int | None], None] | None,
 ) -> None:
     fault_id = fault_ids[0] if len(fault_ids) == 1 else None
@@ -156,6 +159,7 @@ def _accept_and_simulate(
         vector_index,
         unsupported,
         blackbox_instances,
+        test_mode,
     )
     core.update_run_vector_count(db_path, run_id, vector_index)
 
@@ -262,6 +266,39 @@ def _should_stall(
     return all(outcome in allowed for outcome in round_outcomes)
 
 
+def _tie_xz_netlist(src: Path, dst: Path) -> int:
+    """Replace all 'x'/'z' constant bits with 0 in a Yosys JSON netlist.
+
+    Fixes bits in ports, cell connections, and netnames (all three places
+    where Yosys JSON can carry x/z literals).  Returns the number tied.
+    """
+    netlist = json.loads(src.read_text())
+    count = 0
+
+    def fix_bits(bits: list) -> list:
+        nonlocal count
+        out = []
+        for b in bits:
+            if b in ("x", "z"):
+                out.append(0)
+                count += 1
+            else:
+                out.append(b)
+        return out
+
+    for mod in netlist.get("modules", {}).values():
+        for port in mod.get("ports", {}).values():
+            port["bits"] = fix_bits(port.get("bits", []))
+        for cell in mod.get("cells", {}).values():
+            for pin in cell.get("connections", {}):
+                cell["connections"][pin] = fix_bits(cell["connections"][pin])
+        for nn in mod.get("netnames", {}).values():
+            nn["bits"] = fix_bits(nn.get("bits", []))
+
+    dst.write_text(json.dumps(netlist, indent=2))
+    return count
+
+
 def run_progressive_native_atpg(
     cfg: FaultflowConfig,
     netlist: Path,
@@ -319,13 +356,25 @@ def run_progressive_native_atpg(
 
     input_order = _port_names(netlist, cfg.top, "input")
     effective_db_path = str(db_path if db_path is not None else cfg.db_path)
-    json_path = str(netlist)
+
+    _tmpdir: tempfile.TemporaryDirectory | None = None
+    if cfg.simulation.tie_xz:
+        _tmpdir = tempfile.TemporaryDirectory(prefix="faultflow_tiexz_")
+        _tied_path = Path(_tmpdir.name) / netlist.name
+        _n = _tie_xz_netlist(netlist, _tied_path)
+        if _n:
+            log.info("tie_xz: tied %d x/z bits to 0 in %s", _n, netlist.name)
+        json_path = str(_tied_path)
+    else:
+        json_path = str(netlist)
+
     effective_cell_map = str(
         cell_map_path if cell_map_path is not None else cfg.cell_lib
     )
     unsupported = cfg.simulation.unsupported_cells
 
     bb_instances = list(cfg.blackbox_instances)
+    test_mode = cfg.test_mode
     core.ensure_faults_enumerated(
         json_path,
         effective_cell_map,
@@ -415,6 +464,7 @@ def run_progressive_native_atpg(
                     vector_index=vector_index,
                     unsupported=unsupported,
                     blackbox_instances=bb_instances,
+                    test_mode=test_mode,
                     on_vector_accepted=on_vector_accepted,
                 )
                 fault_sim_seconds += time.perf_counter() - sim_started
@@ -438,6 +488,7 @@ def run_progressive_native_atpg(
                     cfg.atpg.sat_timeout_seconds,
                     unsupported,
                     bb_instances,
+                    test_mode,
                 )
             )
             atpg_seconds += time.perf_counter() - atpg_started
@@ -460,6 +511,7 @@ def run_progressive_native_atpg(
                     candidate,
                     unsupported,
                     bb_instances,
+                    test_mode,
                 )
                 fault_sim_seconds += time.perf_counter() - sim_started
                 if verified:
@@ -482,6 +534,7 @@ def run_progressive_native_atpg(
                         vector_index=vector_index,
                         unsupported=unsupported,
                         blackbox_instances=bb_instances,
+                        test_mode=test_mode,
                         on_vector_accepted=on_vector_accepted,
                     )
                     fault_sim_seconds += time.perf_counter() - sim_started
@@ -615,7 +668,18 @@ def run_progressive_transition_atpg(
 
     input_order = _port_names(netlist, cfg.top, "input")
     effective_db_path = str(db_path if db_path is not None else cfg.db_path)
-    json_path = str(netlist)
+
+    _tmpdir2: tempfile.TemporaryDirectory | None = None
+    if cfg.simulation.tie_xz:
+        _tmpdir2 = tempfile.TemporaryDirectory(prefix="faultflow_tiexz_")
+        _tied_path2 = Path(_tmpdir2.name) / netlist.name
+        _n2 = _tie_xz_netlist(netlist, _tied_path2)
+        if _n2:
+            log.info("tie_xz: tied %d x/z bits to 0 in %s", _n2, netlist.name)
+        json_path = str(_tied_path2)
+    else:
+        json_path = str(netlist)
+
     effective_cell_map = str(
         cell_map_path if cell_map_path is not None else cfg.cell_lib
     )

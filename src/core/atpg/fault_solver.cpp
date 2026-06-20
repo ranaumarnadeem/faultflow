@@ -5,9 +5,12 @@
 #include <algorithm>
 #include <functional>
 #include <stdexcept>
+#include <unordered_set>
 #include <vector>
 
 #include "atpg/cnf_encoder.hpp"
+#include "common/types.hpp"
+#include "ir/compiled_graph/compiled_graph.hpp"
 
 namespace faultflow::atpg {
 namespace {
@@ -154,6 +157,104 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
 
   std::vector<int> diff_vars;
   for (uint32_t obs : cg.observable) {
+    const int d = vars.next++;
+    add_xor_def(solver, vars.free_vars.at(obs), vars.faulty_vars.at(obs), d);
+    diff_vars.push_back(d);
+  }
+  if (diff_vars.empty()) {
+    throw std::runtime_error("SAT ATPG requires at least one observable output");
+  }
+  add_clause(solver, diff_vars);
+
+  const int result = solver.solve();
+  const SatSolveResult mapped =
+      map_cadical_result(result, result == 0 && had_solver_limits(options));
+  if (mapped != SatSolveResult::SAT) {
+    return mapped;
+  }
+
+  out.clear();
+  for (const AtpgPiInfo& pi : pis) {
+    out[pi.name] = solver.val(vars.free_vars.at(pi.compiled)) > 0;
+  }
+  return SatSolveResult::SAT;
+}
+
+SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
+                                    const std::vector<AtpgPiInfo>& pis,
+                                    const CompactFault& fault,
+                                    const SatSolveOptions& options,
+                                    std::map<std::string, bool>& out,
+                                    const ModeConfig& mc) {
+  // FUNCTIONAL mode: fall back to the standard path with unchanged observation.
+  if (mc.mode == TestMode::FUNCTIONAL) {
+    return solve_stuck_at_fault(cg, pis, fault, options, out);
+  }
+
+  CnfVarMap vars(cg.net_count);
+  CaDiCaL::Solver solver;
+  apply_solver_limits(solver, options);
+
+  // Build a fast-lookup set for safe-zero nets. In EXTEST mode these are the
+  // TO_CORE outputs of WBR_IN cells (core inputs forced to 0 so the core is
+  // decoupled from the interconnect under test).
+  const std::unordered_set<uint32_t> safe_zero_set(mc.safe_zero_nets.begin(),
+                                                    mc.safe_zero_nets.end());
+
+  for (const SimNode& node : cg.nodes) {
+    if (node.type == GateType::INPUT) {
+      continue;
+    }
+    // EXTEST: WBR_IN.TO_CORE is a safe-zero net. Break the BUF(FROM_SYS ->
+    // TO_CORE) constraint and force TO_CORE = 0 via unit clauses so FROM_SYS
+    // stays free (it is observed in mc.observable_nets as the interconnect input).
+    if (node.type == GateType::WBR_IN && safe_zero_set.count(node.out)) {
+      add_unit(solver, -vars.free_vars.at(node.out));
+      if (node.out != fault.net_index) {
+        add_unit(solver, -vars.faulty_vars.at(node.out));
+      }
+      continue;
+    }
+    const auto input_nets = inputs_of(node);
+    std::vector<int> free_inputs;
+    std::vector<int> faulty_inputs;
+    free_inputs.reserve(input_nets.size());
+    faulty_inputs.reserve(input_nets.size());
+    for (uint32_t input : input_nets) {
+      free_inputs.push_back(vars.free_vars.at(input));
+      faulty_inputs.push_back(vars.faulty_vars.at(input));
+    }
+    add_gate_cnf(solver, node.type, free_inputs, vars.free_vars.at(node.out));
+    if (node.out != fault.net_index) {
+      add_gate_cnf(solver, node.type, faulty_inputs,
+                   vars.faulty_vars.at(node.out));
+    }
+  }
+
+  std::vector<int> pi_literals;
+  pi_literals.reserve(pis.size());
+  for (const AtpgPiInfo& pi : pis) {
+    pi_literals.push_back(vars.free_vars.at(pi.compiled));
+    if (pi.compiled != fault.net_index) {
+      add_equiv(solver, vars.free_vars.at(pi.compiled),
+                vars.faulty_vars.at(pi.compiled));
+    }
+  }
+
+  for (const std::string& blocked : options.blocked_patterns) {
+    if (blocked.size() != pis.size()) {
+      throw std::runtime_error("blocked pattern length mismatch");
+    }
+    add_blocking_clause(solver, pi_literals, assignment_from_pattern(blocked));
+  }
+
+  add_unit(solver, (fault.type == FaultType::SA1)
+                       ? vars.faulty_vars.at(fault.net_index)
+                       : -vars.faulty_vars.at(fault.net_index));
+
+  // Use mode-specific observable set.
+  std::vector<int> diff_vars;
+  for (uint32_t obs : mc.observable_nets) {
     const int d = vars.next++;
     add_xor_def(solver, vars.free_vars.at(obs), vars.faulty_vars.at(obs), d);
     diff_vars.push_back(d);

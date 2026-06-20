@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <string>
 
 namespace faultflow {
 
@@ -83,6 +84,25 @@ enum class GateType {
   CONST1,
   INPUT,
   DFF,
+  // Sky130-specific compound gates not covered by existing primitives.
+  A211O,    // (in0&in1)|in2|in3
+  A222OI,   // ~((in0&in1)|(in2&in3)|(in4&in5))
+  A2BB2OI,  // (in0|in1)&~(in2&in3)  [in0=A1_N, in1=A2_N — bubbled]
+  A311O,    // (in0&in1&in2)|in3|in4
+  A311OI,   // ~((in0&in1&in2)|in3|in4)
+  A41O,     // (in0&in1&in2&in3)|in4
+  AND3B,    // ~in0 & in1 & in2
+  AND4B,    // ~in0 & in1 & in2 & in3
+  MUX2I,    // ~((~in2&in0)|(in2&in1))  inverting MUX2
+  MUX4,     // (in0&~in4&~in5)|(in1&in4&~in5)|(in2&~in4&in5)|(in3&in4&in5)
+  O211A,    // (in0|in1)&in2&in3
+  O21BA,    // (in0|in1)&~in2
+  O221A,    // (in0|in1)&(in2|in3)&in4
+  O2111A,   // (in0|in1)&in2&in3&in4
+  O2111AI,  // ~((in0|in1)&in2&in3&in4)
+  O2BB2AI,  // (in0&in1)|~(in2|in3)  [in0=A1_N, in1=A2_N — bubbled]
+  O41A,     // (in0|in1|in2|in3)&in4
+  O41AI,    // ~((in0|in1|in2|in3)&in4)
   // IEEE 1500 wrapper boundary cells. WBR_IN sits on a core input (drives the
   // core-side net); WBR_OUT sits on a core output (drives the system-side net).
   // In FUNCTIONAL mode both are plain buffers; INTEST/EXTEST reconfigure them
@@ -97,6 +117,14 @@ enum class NodeType { GATE, FF, LATCH, CONST, TBUF, ICG };
 // INTEST = test the core internals; EXTEST = test the interconnect around the
 // core. Carried on SimState; reconfigures the control/observe point sets.
 enum class TestMode : uint8_t { FUNCTIONAL = 0, INTEST = 1, EXTEST = 2 };
+
+// Parse a Python-side test_mode string ("functional"/"intest"/"extest").
+// Empty string and "functional" both return FUNCTIONAL (safe default).
+inline TestMode parse_test_mode(const std::string& s) {
+  if (s == "intest") return TestMode::INTEST;
+  if (s == "extest") return TestMode::EXTEST;
+  return TestMode::FUNCTIONAL;
+}
 
 enum class TriggerType : uint8_t { POSEDGE = 0, NEGEDGE = 1 };
 

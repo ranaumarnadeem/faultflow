@@ -44,6 +44,13 @@ class GoldenRefSim {
   std::vector<std::map<int, bool>> simulate_sequence_fault_free(
       const CompiledSimGraph& cg, const TestVector& vec) const;
 
+  // Fast path: snapshot only the given Yosys net IDs each sampled cycle. Used
+  // by the scan-pattern sim, which reads a handful of ports out of a large
+  // graph and does not need a full net-wide map per cycle.
+  std::vector<std::map<int, bool>> simulate_sequence_fault_free(
+      const CompiledSimGraph& cg, const TestVector& vec,
+      const std::vector<int>& sample_yids) const;
+
   std::vector<std::map<int, bool>> simulate_sequence_with_fault(
       const CompiledSimGraph& cg, const TestVector& vec,
       const CompactFault& fault) const;

@@ -52,6 +52,22 @@ std::map<int, bool> snapshot(const CompiledSimGraph& cg,
   return out;
 }
 
+// Restricted snapshot: only the requested Yosys net IDs. Used by the scan
+// pattern sim, which reads a handful of ports out of a large graph each cycle,
+// so building a full net-wide map per cycle is wasted work.
+std::map<int, bool> snapshot_sampled(const CompiledSimGraph& cg,
+                                     const std::vector<bool>& values,
+                                     const std::vector<int>& sample_yids) {
+  std::map<int, bool> out;
+  for (int yid : sample_yids) {
+    auto it = cg.yosys_to_compiled.find(yid);
+    if (it != cg.yosys_to_compiled.end()) {
+      out[yid] = values[static_cast<size_t>(it->second)];
+    }
+  }
+  return out;
+}
+
 void seed_ff_outputs(const CompiledSimGraph& cg,
                      const std::vector<bool>& ff_states,
                      std::vector<bool>& values, const CompactFault* fault) {
@@ -65,6 +81,11 @@ void seed_ff_outputs(const CompiledSimGraph& cg,
 void evaluate_combinational(const CompiledSimGraph& cg,
                             std::vector<bool>& values,
                             const CompactFault* fault) {
+  // Reused across nodes so the hot per-node eval does not heap-allocate a fresh
+  // vector each time (the scan-pattern sim runs this thousands of times over a
+  // large graph; the per-node alloc dominated the runtime).
+  std::vector<bool> ins;
+  ins.reserve(6);
   const auto eval_node = [&](const SimNode& sn) {
     if (sn.type == GateType::INPUT || sn.type == GateType::DFF) {
       return;
@@ -79,7 +100,7 @@ void evaluate_combinational(const CompiledSimGraph& cg,
       apply_fault(values, fault, sn.out);
       return;
     }
-    std::vector<bool> ins;
+    ins.clear();
     const uint32_t in_slots[] = {sn.in0, sn.in1, sn.in2, sn.in3, sn.in4,
                                  sn.in5};
     for (uint32_t slot : in_slots) {
@@ -403,16 +424,15 @@ std::map<int, bool> GoldenRefSim::simulate_with_fault(
   return out;
 }
 
-std::vector<std::map<int, bool>> GoldenRefSim::simulate_sequence_fault_free(
-    const CompiledSimGraph& cg, const TestVector& vec) const {
-  CompactFault none;
-  none.exclusion = FaultExclusion::BLACKBOX;
-  return simulate_sequence_with_fault(cg, vec, none);
-}
+namespace {
 
-std::vector<std::map<int, bool>> GoldenRefSim::simulate_sequence_with_fault(
-    const CompiledSimGraph& cg, const TestVector& vec,
-    const CompactFault& fault) const {
+// Shared sequential driver. When sample_yids is non-null each sampled cycle is
+// snapshotted to only those Yosys net IDs (fast path for the scan-pattern sim);
+// when null the full net-wide snapshot is taken (general/golden behaviour).
+std::vector<std::map<int, bool>> run_sequence(const CompiledSimGraph& cg,
+                                              const TestVector& vec,
+                                              const CompactFault& fault,
+                                              const std::vector<int>* sample_yids) {
   std::vector<bool> values(cg.net_count, false);
   std::vector<bool> prev_values(cg.net_count, false);
   std::vector<bool> ff_states(cg.ff_configs.size(), false);
@@ -438,13 +458,37 @@ std::vector<std::map<int, bool>> GoldenRefSim::simulate_sequence_with_fault(
       evaluate_combinational(cg, values, cycle_fault);
     }
     if (cycle.sample_outputs) {
-      samples.push_back(snapshot(cg, values));
+      samples.push_back(sample_yids ? snapshot_sampled(cg, values, *sample_yids)
+                                    : snapshot(cg, values));
     }
     for (size_t i = 0; i < values.size(); ++i) {
       prev_values[i] = values[i];
     }
   }
   return samples;
+}
+
+}  // namespace
+
+std::vector<std::map<int, bool>> GoldenRefSim::simulate_sequence_fault_free(
+    const CompiledSimGraph& cg, const TestVector& vec) const {
+  CompactFault none;
+  none.exclusion = FaultExclusion::BLACKBOX;
+  return run_sequence(cg, vec, none, nullptr);
+}
+
+std::vector<std::map<int, bool>> GoldenRefSim::simulate_sequence_fault_free(
+    const CompiledSimGraph& cg, const TestVector& vec,
+    const std::vector<int>& sample_yids) const {
+  CompactFault none;
+  none.exclusion = FaultExclusion::BLACKBOX;
+  return run_sequence(cg, vec, none, &sample_yids);
+}
+
+std::vector<std::map<int, bool>> GoldenRefSim::simulate_sequence_with_fault(
+    const CompiledSimGraph& cg, const TestVector& vec,
+    const CompactFault& fault) const {
+  return run_sequence(cg, vec, fault, nullptr);
 }
 
 bool GoldenRefSim::is_sequence_detected(

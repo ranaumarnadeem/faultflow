@@ -83,6 +83,9 @@ class SimulationConfig:
     unsupported_cells: str = "fail"
     verify: bool = False
     verify_tool: str = "iverilog"
+    # Tie Yosys "x"/"z" constant bits to 0 before simulation.
+    # Required for netlists with unconnected/don't-care inputs (e.g. unused scan pins).
+    tie_xz: bool = False
 
 
 @dataclass(frozen=True)
@@ -402,6 +405,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             unsupported_cells=unsupported,
             verify=_bool(parser, "simulation", "verify", False),
             verify_tool=verify_tool,
+            tie_xz=_bool(parser, "simulation", "tie_xz", False),
         ),
         atpg=AtpgConfig(
             tool=atpg_tool,

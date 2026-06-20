@@ -1,0 +1,145 @@
+{
+  "creator": "faultflow fixture generator (IEEE 1500 wrapped c17)",
+  "modules": {
+    "c17_wrapped": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "N1":  {"direction": "input",  "bits": [2]},
+        "N2":  {"direction": "input",  "bits": [3]},
+        "N3":  {"direction": "input",  "bits": [4]},
+        "N6":  {"direction": "input",  "bits": [5]},
+        "N7":  {"direction": "input",  "bits": [6]},
+        "N22": {"direction": "output", "bits": [25]},
+        "N23": {"direction": "output", "bits": [26]}
+      },
+      "cells": {
+        "wi_n1": {
+          "hide_name": 0,
+          "type": "$wbc_in_faultflow",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"FROM_SYS": "input", "TO_CORE": "output"},
+          "connections": {"FROM_SYS": [2], "TO_CORE": [20]}
+        },
+        "wi_n2": {
+          "hide_name": 0,
+          "type": "$wbc_in_faultflow",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"FROM_SYS": "input", "TO_CORE": "output"},
+          "connections": {"FROM_SYS": [3], "TO_CORE": [21]}
+        },
+        "wi_n3": {
+          "hide_name": 0,
+          "type": "$wbc_in_faultflow",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"FROM_SYS": "input", "TO_CORE": "output"},
+          "connections": {"FROM_SYS": [4], "TO_CORE": [22]}
+        },
+        "wi_n6": {
+          "hide_name": 0,
+          "type": "$wbc_in_faultflow",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"FROM_SYS": "input", "TO_CORE": "output"},
+          "connections": {"FROM_SYS": [5], "TO_CORE": [23]}
+        },
+        "wi_n7": {
+          "hide_name": 0,
+          "type": "$wbc_in_faultflow",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"FROM_SYS": "input", "TO_CORE": "output"},
+          "connections": {"FROM_SYS": [6], "TO_CORE": [24]}
+        },
+        "inv1": {
+          "hide_name": 0,
+          "type": "INVX1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "Y": "output"},
+          "connections": {"A": [21], "Y": [9]}
+        },
+        "nand1": {
+          "hide_name": 0,
+          "type": "NAND2X1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "Y": "output"},
+          "connections": {"A": [20], "B": [22], "Y": [10]}
+        },
+        "and1": {
+          "hide_name": 0,
+          "type": "AND2X1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "Y": "output"},
+          "connections": {"A": [22], "B": [23], "Y": [11]}
+        },
+        "oai1": {
+          "hide_name": 0,
+          "type": "OAI21X1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "C": "input", "Y": "output"},
+          "connections": {"A": [9], "B": [11], "C": [10], "Y": [7]}
+        },
+        "nor1": {
+          "hide_name": 0,
+          "type": "NOR2X1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "Y": "output"},
+          "connections": {"A": [21], "B": [24], "Y": [12]}
+        },
+        "nor2": {
+          "hide_name": 0,
+          "type": "NOR2X1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "Y": "output"},
+          "connections": {"A": [11], "B": [12], "Y": [8]}
+        },
+        "wo_n22": {
+          "hide_name": 0,
+          "type": "$wbc_out_faultflow",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"FROM_CORE": "input", "TO_SYS": "output"},
+          "connections": {"FROM_CORE": [7], "TO_SYS": [25]}
+        },
+        "wo_n23": {
+          "hide_name": 0,
+          "type": "$wbc_out_faultflow",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"FROM_CORE": "input", "TO_SYS": "output"},
+          "connections": {"FROM_CORE": [8], "TO_SYS": [26]}
+        }
+      },
+      "netnames": {
+        "N1":     {"hide_name": 0, "bits": [2],  "attributes": {}},
+        "N2":     {"hide_name": 0, "bits": [3],  "attributes": {}},
+        "N3":     {"hide_name": 0, "bits": [4],  "attributes": {}},
+        "N6":     {"hide_name": 0, "bits": [5],  "attributes": {}},
+        "N7":     {"hide_name": 0, "bits": [6],  "attributes": {}},
+        "n1_core":{"hide_name": 0, "bits": [20], "attributes": {}},
+        "n2_core":{"hide_name": 0, "bits": [21], "attributes": {}},
+        "n3_core":{"hide_name": 0, "bits": [22], "attributes": {}},
+        "n6_core":{"hide_name": 0, "bits": [23], "attributes": {}},
+        "n7_core":{"hide_name": 0, "bits": [24], "attributes": {}},
+        "n9":     {"hide_name": 1, "bits": [9],  "attributes": {}},
+        "n10":    {"hide_name": 1, "bits": [10], "attributes": {}},
+        "n11":    {"hide_name": 1, "bits": [11], "attributes": {}},
+        "n12":    {"hide_name": 1, "bits": [12], "attributes": {}},
+        "n22_core":{"hide_name": 0, "bits": [7], "attributes": {}},
+        "n23_core":{"hide_name": 0, "bits": [8], "attributes": {}},
+        "N22":    {"hide_name": 0, "bits": [25], "attributes": {}},
+        "N23":    {"hide_name": 0, "bits": [26], "attributes": {}}
+      }
+    }
+  }
+}

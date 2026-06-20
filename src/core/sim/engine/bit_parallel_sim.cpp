@@ -288,6 +288,61 @@ bool BitParallelSim::simulate_single_fault(const CompiledSimGraph& cg,
 
 uint64_t BitParallelSim::simulate_batch(const CompiledSimGraph& cg,
                                         const TestVector& vec,
+                                        const FaultBatch& batch,
+                                        const ModeConfig& mc) const {
+  SimState state;
+  state.test_mode = mc.mode;
+  state.init(cg.net_count, 1, static_cast<int>(cg.ff_configs.size()));
+  for (const auto& [idx, value] : vec.initial_ff_state) {
+    if (idx < state.initial_ff_state.size()) {
+      state.initial_ff_state[idx] = value ? ~0ULL : 0ULL;
+    }
+  }
+  state.reset_ff_states();
+
+  uint64_t detected = 0ULL;
+  for (const TestCycle& cycle : cycles_for(vec)) {
+    FaultBatch inactive_batch;
+    const FaultBatch& active_batch = cycle.fault_active ? batch : inactive_batch;
+    // Broadcast real PIs (indexed in cg.pi_nets).
+    auto& nv = state.current_values();
+    for (int pi_idx : cg.pi_nets) {
+      const int yid = cg.compiled_to_yosys[pi_idx];
+      const bool val = cycle.inputs.count(yid) ? cycle.inputs.at(yid) : false;
+      nv[pi_idx] = val ? ~0ULL : 0ULL;
+    }
+    // Broadcast mode-specific stimulus (control points not in pi_nets).
+    for (uint32_t s : mc.stimulus_nets) {
+      const int yid = cg.compiled_to_yosys[s];
+      const bool val = cycle.inputs.count(yid) ? cycle.inputs.at(yid) : false;
+      nv[s] = val ? ~0ULL : 0ULL;
+    }
+    for (int i = 0; i < active_batch.size; ++i) {
+      inject_faults(nv, active_batch, active_batch.faults[i].net_index);
+    }
+    seed_ff_outputs(state, cg, active_batch);
+    evaluate_combinational_mode(state, cg, active_batch, mc);
+    update_ff_states(state, cg);
+    seed_ff_outputs(state, cg, active_batch);
+    evaluate_combinational_mode(state, cg, active_batch, mc);
+    for (int i = 0; i < cycle.settle_cycles; ++i) {
+      seed_ff_outputs(state, cg, active_batch);
+      evaluate_combinational_mode(state, cg, active_batch, mc);
+    }
+    if (cycle.sample_outputs) {
+      for (uint32_t obs : mc.observable_nets) {
+        const uint64_t word = nv[obs];
+        const uint64_t golden = (word & 1ULL) ? ~0ULL : 0ULL;
+        detected |= word ^ golden;
+      }
+    }
+    state.prev_values = nv;
+  }
+  return detected & batch.mask;
+}
+
+uint64_t BitParallelSim::simulate_batch(const CompiledSimGraph& cg,
+                                        const TestVector& vec,
                                         const FaultBatch& batch) const {
   const auto samples = simulate_batch_samples(cg, vec, batch);
   uint64_t detected = 0ULL;

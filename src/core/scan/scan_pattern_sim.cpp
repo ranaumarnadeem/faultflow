@@ -307,6 +307,23 @@ bool scan_observations_equal(const ScanPatternResult& lhs,
          lhs.unload_seqs == rhs.unload_seqs;
 }
 
+// Yosys net IDs the scan-pattern result actually reads: functional outputs and
+// per-chain scan outputs. Restricting snapshots to these turns the per-cycle
+// snapshot from O(net_count) into O(ports), which is decisive on large designs.
+std::vector<int> scan_sample_yids(const ParsedGraph& parsed,
+                                  const ScanPatternRequest& request) {
+  std::vector<int> yids;
+  yids.reserve(request.functional_output_ports.size() +
+               request.scan_output_ports.size());
+  for (const auto& port : request.functional_output_ports) {
+    yids.push_back(parsed.net_id_by_name(port));
+  }
+  for (const auto& port : request.scan_output_ports) {
+    yids.push_back(parsed.net_id_by_name(port));
+  }
+  return yids;
+}
+
 ScanPatternResult simulate_scan_pattern(
     const std::string& json_path, const std::string& cell_map_path,
     const ScanPatternRequest& request, const std::string& unsupported_policy) {
@@ -317,7 +334,8 @@ ScanPatternResult simulate_scan_pattern(
 
   const TestVector vec = build_scan_pattern_vector(parsed, request);
   GoldenRefSim sim;
-  const auto samples = sim.simulate_sequence_fault_free(cg, vec);
+  const auto samples =
+      sim.simulate_sequence_fault_free(cg, vec, scan_sample_yids(parsed, request));
   return extract_scan_observations(parsed, request, samples);
 }
 
@@ -332,7 +350,8 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
 
   const TestVector vec = build_scan_pattern_vector(parsed, request.pattern);
   GoldenRefSim golden_sim;
-  const auto golden_samples = golden_sim.simulate_sequence_fault_free(cg, vec);
+  const auto golden_samples = golden_sim.simulate_sequence_fault_free(
+      cg, vec, scan_sample_yids(parsed, request.pattern));
 
   ScanProtocolFaultSimResult result;
   result.golden =

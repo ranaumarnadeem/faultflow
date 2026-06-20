@@ -7,6 +7,7 @@
 
 #include "atpg/fault_solver.hpp"
 #include "atpg/sat_atpg.hpp"
+#include "common/types.hpp"
 #include "db/sqlite_store.hpp"
 #include "fault/collapser/fault_collapser.hpp"
 #include "fault/enumerator/fault_enumerator.hpp"
@@ -248,7 +249,8 @@ SolveFaultResult solve_fault_for_db(
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances,
+    const std::string& test_mode) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -265,8 +267,14 @@ SolveFaultResult solve_fault_for_db(
   options.blocked_patterns = blocked_patterns;
 
   std::map<std::string, bool> vector;
-  const SatSolveResult result =
-      solve_stuck_at_fault(ctx.cg, pis, fault, options, vector);
+  const TestMode mode = parse_test_mode(test_mode);
+  SatSolveResult result;
+  if (mode == TestMode::FUNCTIONAL) {
+    result = solve_stuck_at_fault(ctx.cg, pis, fault, options, vector);
+  } else {
+    const ModeConfig mc = build_mode_config(ctx.cg, mode);
+    result = solve_stuck_at_fault(ctx.cg, pis, fault, options, vector, mc);
+  }
 
   SolveFaultResult out;
   out.result = solve_result_name(result);
@@ -281,7 +289,8 @@ bool verify_fault_vector(
     const std::string& db_path, int64_t fault_id,
     const std::map<std::string, bool>& vector,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances,
+    const std::string& test_mode) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -294,8 +303,16 @@ bool verify_fault_vector(
     }
     return tv;
   }();
-  return golden.is_detected(ctx.cg, golden.simulate_fault_free(ctx.cg, vec),
-                            golden.simulate_with_fault(ctx.cg, vec, fault));
+  const TestMode mode = parse_test_mode(test_mode);
+  if (mode == TestMode::FUNCTIONAL || ctx.cg.wrapper_cells.empty()) {
+    return golden.is_detected(ctx.cg, golden.simulate_fault_free(ctx.cg, vec),
+                              golden.simulate_with_fault(ctx.cg, vec, fault));
+  }
+  const ModeConfig mc = build_mode_config(ctx.cg, mode);
+  return golden.is_detected(ctx.cg,
+                             golden.simulate_fault_free(ctx.cg, vec, mc),
+                             golden.simulate_with_fault(ctx.cg, vec, fault, mc),
+                             mc);
 }
 
 std::vector<ProgressiveDetection> simulate_incremental(
@@ -305,7 +322,8 @@ std::vector<ProgressiveDetection> simulate_incremental(
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances,
+    const std::string& test_mode) {
   if (new_vectors.empty() || fault_ids.empty()) {
     return {};
   }
@@ -316,6 +334,10 @@ std::vector<ProgressiveDetection> simulate_incremental(
   for (const auto& raw : new_vectors) {
     vectors.push_back(vector_from_map(ctx.parsed, raw, input_order));
   }
+
+  const TestMode mode = parse_test_mode(test_mode);
+  const bool use_mode = (mode != TestMode::FUNCTIONAL) && !ctx.cg.wrapper_cells.empty();
+  const ModeConfig mc = use_mode ? build_mode_config(ctx.cg, mode) : ModeConfig{};
 
   BitParallelSim sim;
   std::vector<ProgressiveDetection> detections;
@@ -329,8 +351,9 @@ std::vector<ProgressiveDetection> simulate_incremental(
           std::min(begin + kFaultLanesPerWord, active.size());
       const FaultBatch batch = make_batch(active, begin, end);
       ++g_simulation_instrumentation.batch_fault_calls;
-      const uint64_t detected_mask =
-          sim.simulate_batch(ctx.cg, vectors[vi], batch);
+      const uint64_t detected_mask = use_mode
+          ? sim.simulate_batch(ctx.cg, vectors[vi], batch, mc)
+          : sim.simulate_batch(ctx.cg, vectors[vi], batch);
       for (size_t i = begin; i < end; ++i) {
         const CompactFault& lane = batch.faults[i - begin];
         if ((detected_mask & lane.sa_mask) != 0) {
@@ -355,13 +378,17 @@ std::vector<int64_t> simulate_tentative_detections(
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances,
+    const std::string& test_mode) {
   if (fault_ids.empty()) {
     return {};
   }
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const TestVector tv = vector_from_map(ctx.parsed, vector, input_order);
+  const TestMode mode = parse_test_mode(test_mode);
+  const bool use_mode = (mode != TestMode::FUNCTIONAL) && !ctx.cg.wrapper_cells.empty();
+  const ModeConfig mc = use_mode ? build_mode_config(ctx.cg, mode) : ModeConfig{};
   BitParallelSim sim;
   std::vector<int64_t> detected;
   const std::vector<ActiveFaultRecord> active =
@@ -370,7 +397,9 @@ std::vector<int64_t> simulate_tentative_detections(
     const size_t end = std::min(begin + kFaultLanesPerWord, active.size());
     const FaultBatch batch = make_batch(active, begin, end);
     ++g_simulation_instrumentation.batch_fault_calls;
-    const uint64_t detected_mask = sim.simulate_batch(ctx.cg, tv, batch);
+    const uint64_t detected_mask = use_mode
+        ? sim.simulate_batch(ctx.cg, tv, batch, mc)
+        : sim.simulate_batch(ctx.cg, tv, batch);
     for (size_t i = begin; i < end; ++i) {
       const CompactFault& lane = batch.faults[i - begin];
       if ((detected_mask & lane.sa_mask) != 0) {

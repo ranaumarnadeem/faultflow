@@ -46,6 +46,13 @@ class BitParallelSim {
   uint64_t simulate_batch(const CompiledSimGraph& cg, const TestVector& vec,
                           const FaultBatch& batch) const;
 
+  // IEEE 1500 mode-aware batch simulation. Broadcasts PIs + ModeConfig stimulus
+  // nets, evaluates via evaluate_combinational_mode, and checks detection over
+  // mc.observable_nets. Handles single-cycle combinational and multi-cycle
+  // sequential vectors; WBR cells are evaluated per mode on every cycle.
+  uint64_t simulate_batch(const CompiledSimGraph& cg, const TestVector& vec,
+                          const FaultBatch& batch, const ModeConfig& mc) const;
+
   std::vector<std::vector<uint64_t>> simulate_batch_samples(
       const CompiledSimGraph& cg, const TestVector& vec,
       const FaultBatch& batch) const;
