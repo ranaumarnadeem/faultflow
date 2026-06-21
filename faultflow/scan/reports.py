@@ -83,6 +83,19 @@ def manifest_from_result(
             }
             for chain in result.chains
         ],
+        "wrapper_chains": [
+            {
+                "index": chain.index,
+                "scan_in": chain.scan_in,
+                "scan_out": chain.scan_out,
+                "scan_in_net": chain.scan_in_net,
+                "scan_out_net": chain.scan_out_net,
+                "length": chain.length,
+                "cells": [cell.instance for cell in chain.cells],
+                "cell_records": [_cell_row(cell) for cell in chain.cells],
+            }
+            for chain in result.wrapper_chains
+        ],
         "cells": [_cell_row(cell) for cell in result.cells],
         "ineligible_ffs": [
             {
@@ -116,6 +129,16 @@ def dry_run_manifest(plan: ScanPlan) -> dict[str, object]:
                 "cells": [cell.instance for cell in chain.cells],
             }
             for chain in plan.chains
+        ],
+        "wrapper_chains": [
+            {
+                "index": chain.index,
+                "scan_in": chain.scan_in,
+                "scan_out": chain.scan_out,
+                "length": chain.length,
+                "cells": [cell.instance for cell in chain.cells],
+            }
+            for chain in plan.wrapper_chains
         ],
         "ineligible_ffs": [
             {

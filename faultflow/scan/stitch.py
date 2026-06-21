@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import fnmatch
 import json
 from dataclasses import dataclass
@@ -16,6 +17,13 @@ DEFAULT_SCAN_IN = "scan_in"
 DEFAULT_SCAN_OUT = "scan_out"
 DEFAULT_SCAN_ENABLE = "scan_en"
 
+# Attributes set by wrap_ports on WBR scan cells; used to collect the wrapper chain.
+WBR_SCAN_ATTR = "faultflow_wbr"
+WBR_CHAIN_ATTR = "faultflow_wbr_chain"
+WBR_BIT_ATTR = "wbr_bit"
+DEFAULT_WBR_SCAN_IN = "wbr_si"
+DEFAULT_WBR_SCAN_OUT = "wbr_so"
+
 INELIGIBLE_REASONS = {
     "has_async_reset",
     "has_async_set",
@@ -26,6 +34,7 @@ INELIGIBLE_REASONS = {
     "no_output_pin",
     "unknown_cell_type",
     "existing_scan_cell",
+    "wbr_scan_cell",
     "unsupported_ff_shape",
     "multiple_clock_nets",
 }
@@ -77,6 +86,7 @@ class ScanPlan:
     chains: list[ScanChainRecord]
     cells: list[ScanCellRecord]
     ineligible_ffs: list[IneligibleFF]
+    wrapper_chains: list[ScanChainRecord]  # WBR scan cells; empty if wbr_model=buffer
 
 
 @dataclass(frozen=True)
@@ -93,6 +103,21 @@ class _EligibleFF:
     clock_net: int
     data_net: int
     q_net: int
+
+
+@dataclass(frozen=True)
+class _WBRCell:
+    """One WBR scan boundary cell, ordered into a wrapper chain."""
+
+    instance: str
+    cell_type: str
+    chain_group: int  # faultflow_wbr_chain attribute
+    bit_pos: int  # wbr_bit attribute
+    clock_net: int
+    cti_net: int  # CTI — scan chain in
+    cto_net: int  # CTO — scan chain out (= q)
+    se_net: int
+    func_net: int  # FROM_SYS / FROM_CORE; -1 if absent
 
 
 def _truthy_attr(value: object) -> bool:
@@ -287,6 +312,11 @@ def _collect_ffs(
                 IneligibleFF(str(instance), cell_type, "existing_scan_cell")
             )
             continue
+        # WBR scan cells ($wbc_*_scan_faultflow) form the wrapper chain — skip here.
+        attrs = cell.get("attributes", {})
+        if isinstance(attrs, dict) and WBR_SCAN_ATTR in attrs:
+            ineligible.append(IneligibleFF(str(instance), cell_type, "wbr_scan_cell"))
+            continue
         match = _lookup_cell(cell_map, cell_type)
         if match is None:
             if _is_ffish(cell_type):
@@ -467,7 +497,127 @@ def _build_plan(
         chains=chains,
         cells=records,
         ineligible_ffs=ineligible,
+        wrapper_chains=[],  # populated by callers after _collect_wbr_cells
     )
+
+
+def _collect_wbr_cells(
+    module: dict[str, Any], cell_map: dict[str, Any]
+) -> list[_WBRCell]:
+    """Collect WBR scan cells (tagged faultflow_wbr), ordered by chain group + bit."""
+    cells = module.get("cells", {})
+    if not isinstance(cells, dict):
+        return []
+    result: list[_WBRCell] = []
+    for instance, cell in sorted(cells.items()):
+        if not isinstance(cell, dict):
+            continue
+        attrs = cell.get("attributes", {})
+        if not isinstance(attrs, dict) or WBR_SCAN_ATTR not in attrs:
+            continue
+        cell_type = str(cell.get("type", ""))
+        match = _lookup_cell(cell_map, cell_type)
+        if match is None:
+            raise ScanError(
+                f"{instance}: WBR scan cell {cell_type!r} not found in cell map"
+            )
+        _, entry = match
+        wbr = entry.get("wbr", {})
+        if not isinstance(wbr, dict) or not wbr.get("scan"):
+            raise ScanError(
+                f"{instance}: {cell_type!r} does not have wbr.scan=true in cell map"
+            )
+        conns = cell.get("connections", {})
+        if not isinstance(conns, dict):
+            raise ScanError(f"{instance}: WBR scan cell has no connections")
+        cti_pin = str(wbr.get("chain_in_pin", "CTI"))
+        cto_pin = str(wbr.get("chain_out_pin", "CTO"))
+        se_pin = str(wbr.get("scan_enable_pin", "SE"))
+        clk_pin = str(wbr.get("clock_pin", "CLK"))
+        func_pin = str(wbr.get("func_in_pin", "FROM_SYS"))
+        chain_group = int(str(attrs.get(WBR_CHAIN_ATTR, "0")))
+        bit_pos = int(str(attrs.get(WBR_BIT_ATTR, "0")))
+        func_bits = conns.get(func_pin)
+        func_net = _maybe_one_bit(func_bits) if func_bits is not None else None
+        result.append(
+            _WBRCell(
+                instance=str(instance),
+                cell_type=cell_type,
+                chain_group=chain_group,
+                bit_pos=bit_pos,
+                clock_net=_one_bit(conns.get(clk_pin), f"{instance}.{clk_pin}"),
+                cti_net=_one_bit(conns.get(cti_pin), f"{instance}.{cti_pin}"),
+                cto_net=_one_bit(conns.get(cto_pin), f"{instance}.{cto_pin}"),
+                se_net=_one_bit(conns.get(se_pin), f"{instance}.{se_pin}"),
+                func_net=func_net if func_net is not None else -1,
+            )
+        )
+    return sorted(result, key=lambda c: (c.chain_group, c.bit_pos))
+
+
+def _build_wrapper_chains(
+    module: dict[str, Any],
+    wbr_cells: list[_WBRCell],
+    wbr_scan_in_base: str = DEFAULT_WBR_SCAN_IN,
+    wbr_scan_out_base: str = DEFAULT_WBR_SCAN_OUT,
+) -> list[ScanChainRecord]:
+    """Build wrapper ScanChainRecords from ordered WBR cells.
+
+    The wrapper chain ports (wbr_si / wbr_so) are created by wrap_ports and must
+    already exist in the module — this function reads them, not creates them.
+    """
+    if not wbr_cells:
+        return []
+    groups: dict[int, list[_WBRCell]] = {}
+    for cell in wbr_cells:
+        groups.setdefault(cell.chain_group, []).append(cell)
+    ports = module.get("ports", {})
+    ports = ports if isinstance(ports, dict) else {}
+    num_groups = len(groups)
+    chains: list[ScanChainRecord] = []
+    for group_idx in sorted(groups):
+        group = sorted(groups[group_idx], key=lambda c: c.bit_pos)
+        si_name = (
+            wbr_scan_in_base if num_groups == 1 else f"{wbr_scan_in_base}_{group_idx}"
+        )
+        so_name = (
+            wbr_scan_out_base if num_groups == 1 else f"{wbr_scan_out_base}_{group_idx}"
+        )
+        si_port = ports.get(si_name)
+        si_net = (
+            _maybe_one_bit(si_port.get("bits")) if isinstance(si_port, dict) else None
+        )
+        if si_net is None:
+            raise ScanError(
+                f"wrapper scan-in port {si_name!r} not found in module; "
+                "run wrap_ports with wbr_model='scan' first"
+            )
+        records: list[ScanCellRecord] = []
+        for pos, cell in enumerate(group):
+            records.append(
+                ScanCellRecord(
+                    instance=cell.instance,
+                    original_type=cell.cell_type,
+                    chain_index=group_idx,
+                    chain_position=pos,
+                    clock_net=cell.clock_net,
+                    data_net=cell.func_net if cell.func_net >= 0 else 0,
+                    scan_in_net=cell.cti_net,
+                    scan_enable_net=cell.se_net,
+                    q_net=cell.cto_net,
+                )
+            )
+        chains.append(
+            ScanChainRecord(
+                index=group_idx,
+                scan_in=si_name,
+                scan_out=so_name,
+                scan_in_net=si_net,
+                scan_out_net=group[-1].cto_net,
+                cells=records,
+            )
+        )
+    return chains
 
 
 def plan_scan_json(
@@ -490,7 +640,7 @@ def plan_scan_json(
     next_id = _next_net_id(module)
     scan_in_bits = [next_id + index for index in range(chain_count)]
     scan_enable_bit = next_id + chain_count
-    return _build_plan(
+    plan = _build_plan(
         top=top_name,
         module=module,
         eligible=eligible,
@@ -503,6 +653,9 @@ def plan_scan_json(
         scan_enable_bit=scan_enable_bit,
         scan_in_bits=scan_in_bits,
     )
+    wbr_cells = _collect_wbr_cells(module, cell_map)
+    wrapper_chains = _build_wrapper_chains(module, wbr_cells)
+    return dataclasses.replace(plan, wrapper_chains=wrapper_chains)
 
 
 def stitch_scan_json(
@@ -542,6 +695,10 @@ def stitch_scan_json(
         scan_enable_bit=scan_enable_bit,
         scan_in_bits=scan_in_bits,
     )
+    # Collect wrapper chain from WBR scan cells (already skipped by _collect_ffs).
+    # _collect_wbr_cells reads the pre-existing wbr_si/wbr_so ports from wrap_ports.
+    wbr_cells = _collect_wbr_cells(stitched_module, cell_map)
+    wrapper_chains = _build_wrapper_chains(stitched_module, wbr_cells)
 
     for chain in plan.chains:
         _add_port(stitched_module, chain.scan_in, "input", chain.scan_in_net)
@@ -601,4 +758,5 @@ def stitch_scan_json(
         chains=plan.chains,
         cells=plan.cells,
         ineligible_ffs=plan.ineligible_ffs,
+        wrapper_chains=wrapper_chains,
     )

@@ -163,7 +163,7 @@ class FaultflowConfig:
     # or "scan" (native shiftable $wbc_*_scan_faultflow, Stage 4). The scan model
     # adds the wrapper boundary register as a real scan chain — control/observe
     # points and fault sites differ, so it is part of the fingerprint.
-    wbr_model: str = "buffer"
+    wbr_model: str = "scan"
 
     @property
     def output_dir(self) -> Path:
@@ -387,7 +387,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     if test_mode not in {"functional", "intest", "extest"}:
         raise ConfigError("testmode.mode must be 'functional', 'intest', or 'extest'")
 
-    wbr_model = parser.get("wrap", "wbr_model", fallback="buffer").strip().lower()
+    wbr_model = parser.get("wrap", "wbr_model", fallback="scan").strip().lower()
     if wbr_model not in {"buffer", "scan"}:
         raise ConfigError("wrap.wbr_model must be 'buffer' or 'scan'")
 

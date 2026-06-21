@@ -40,6 +40,7 @@ from faultflow.scan.site_resolution import (
     build_site_key_index,
     fault_type_to_sa_code,
 )
+from faultflow.scan.errors import ScanError
 from faultflow.scan.verify import reduced_protocol_matches
 
 log = logging.getLogger(__name__)
@@ -741,6 +742,19 @@ def run_progressive_scan_atpg(
     launch_mode: str = "loc",
 ) -> tuple[VectorSet, AtpgStats, int, float, float]:
     from faultflow.runner.runner import _load_core, _port_names
+
+    # S4.8 — the 1-FF WBC is correct ONLY under single-capture INTEST.
+    # LOC/LOS two-capture sequences clobber q before the second frame, so a
+    # scan-WBR block with wbr_model="scan" must never run transition ATPG until
+    # the 2-FF upgrade lands. Fail loudly rather than silently mis-deliver.
+    if cfg.wbr_model == "scan" and transition:
+        raise ScanError(
+            "wbr_model='scan' does not support transition (LOC/LOS) ATPG: "
+            "the 1-FF WBC delivers stimulus for exactly one capture cycle; "
+            "a second capture clobbers q and corrupts boundary stimulus. "
+            "Use wbr_model='buffer' for transition faults, or upgrade to a "
+            "2-FF WBC first."
+        )
 
     los = transition and launch_mode == "los"
     los_couple_ports: list[tuple[str, str]] = []

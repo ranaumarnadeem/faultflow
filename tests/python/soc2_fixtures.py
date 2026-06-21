@@ -19,7 +19,13 @@ from typing import Any
 
 
 def block_json(top: str) -> dict[str, Any]:
-    """A scan-inserted + IEEE-1500 wrapped standalone block top."""
+    """A scan-inserted + IEEE-1500 scan-WBC wrapped standalone block top.
+
+    Net map:
+      2=CLK  3=D  4=scan_in  5=scan_en  6=Q  7=wbr_si  8=wbr_se
+      9=__core_D  10=n_d  11=q(=scan_out)  12=core_q  13=wbr_chain  14=wbr_so
+    Wrapper chain: wbr_si(7) -> __wi_D[CTI->CTO=13] -> __wo_Q[CTI->CTO=14] -> wbr_so
+    """
     return {
         "creator": "soc2 fixture",
         "modules": {
@@ -31,22 +37,42 @@ def block_json(top: str) -> dict[str, Any]:
                     "scan_in": {"direction": "input", "bits": [4]},
                     "scan_en": {"direction": "input", "bits": [5]},
                     "Q": {"direction": "output", "bits": [6]},
-                    "scan_out": {"direction": "output", "bits": [10]},
+                    "scan_out": {"direction": "output", "bits": [11]},
+                    "wbr_si": {"direction": "input", "bits": [7]},
+                    "wbr_se": {"direction": "input", "bits": [8]},
+                    "wbr_so": {"direction": "output", "bits": [14]},
                 },
                 "cells": {
-                    "__wi_D": _cell(
-                        "$wbc_in_faultflow",
-                        {"FROM_SYS": [3], "TO_CORE": [8]},
-                        {"FROM_SYS": "input", "TO_CORE": "output"},
+                    "__wi_D": _scan_wbc(
+                        "$wbc_in_scan_faultflow",
+                        {
+                            "CLK": [2],
+                            "FROM_SYS": [3],
+                            "CTI": [7],
+                            "SE": [8],
+                            "TO_CORE": [9],
+                            "CTO": [13],
+                        },
+                        {
+                            "CLK": "input",
+                            "FROM_SYS": "input",
+                            "CTI": "input",
+                            "SE": "input",
+                            "TO_CORE": "output",
+                            "CTO": "output",
+                        },
+                        wbr="in",
+                        chain=0,
+                        bit=0,
                     ),
                     "g0": _cell(
                         "sky130_fd_sc_hd__inv_1",
-                        {"A": [8], "Y": [9]},
+                        {"A": [9], "Y": [10]},
                         {"A": "input", "Y": "output"},
                     ),
                     "u0": _cell(
                         "$scanff_faultflow",
-                        {"CLK": [2], "D": [9], "SDI": [4], "SE": [5], "Q": [10]},
+                        {"CLK": [2], "D": [10], "SDI": [4], "SE": [5], "Q": [11]},
                         {
                             "CLK": "input",
                             "D": "input",
@@ -57,13 +83,30 @@ def block_json(top: str) -> dict[str, Any]:
                     ),
                     "g1": _cell(
                         "sky130_fd_sc_hd__inv_1",
-                        {"A": [10], "Y": [11]},
+                        {"A": [11], "Y": [12]},
                         {"A": "input", "Y": "output"},
                     ),
-                    "__wo_Q": _cell(
-                        "$wbc_out_faultflow",
-                        {"FROM_CORE": [11], "TO_SYS": [6]},
-                        {"FROM_CORE": "input", "TO_SYS": "output"},
+                    "__wo_Q": _scan_wbc(
+                        "$wbc_out_scan_faultflow",
+                        {
+                            "CLK": [2],
+                            "FROM_CORE": [12],
+                            "CTI": [13],
+                            "SE": [8],
+                            "TO_SYS": [6],
+                            "CTO": [14],
+                        },
+                        {
+                            "CLK": "input",
+                            "FROM_CORE": "input",
+                            "CTI": "input",
+                            "SE": "input",
+                            "TO_SYS": "output",
+                            "CTO": "output",
+                        },
+                        wbr="out",
+                        chain=0,
+                        bit=1,
                     ),
                 },
                 "netnames": {
@@ -71,12 +114,16 @@ def block_json(top: str) -> dict[str, Any]:
                     "D": _net(3),
                     "scan_in": _net(4),
                     "scan_en": _net(5),
-                    "__core_D": _net(8),
-                    "n_d": _net(9),
-                    "q": _net(10),
-                    "core_q": _net(11),
                     "Q": _net(6),
-                    "scan_out": _net(10),
+                    "wbr_si": _net(7),
+                    "wbr_se": _net(8),
+                    "__core_D": _net(9),
+                    "n_d": _net(10),
+                    "q": _net(11),
+                    "core_q": _net(12),
+                    "__wbr_chain": _net(13),
+                    "wbr_so": _net(14),
+                    "scan_out": _net(11),
                 },
             }
         },
@@ -84,6 +131,12 @@ def block_json(top: str) -> dict[str, Any]:
 
 
 def block_manifest(top: str) -> dict[str, Any]:
+    """Pre-authored manifest for the scan-WBC block fixture.
+
+    Net map mirrors block_json:
+      2=CLK  3=D  4=scan_in  5=scan_en  6=Q  7=wbr_si  8=wbr_se
+      9=__core_D  10=n_d  11=q(scan_out)  12=core_q  13=__wbr_chain  14=wbr_so
+    """
     return {
         "version": 2,
         "top": top,
@@ -99,7 +152,7 @@ def block_manifest(top: str) -> dict[str, Any]:
                 "scan_in": "scan_in",
                 "scan_out": "scan_out",
                 "scan_in_net": 4,
-                "scan_out_net": 10,
+                "scan_out_net": 11,
                 "length": 1,
                 "cells": ["u0"],
             }
@@ -111,13 +164,59 @@ def block_manifest(top: str) -> dict[str, Any]:
                 "chain_index": 0,
                 "chain_position": 0,
                 "clock_net": 2,
-                "data_net": 9,
+                "data_net": 10,
                 "scan_in_net": 4,
                 "scan_enable_net": 5,
-                "q_net": 10,
+                "q_net": 11,
             }
         ],
-        "ineligible_ffs": [],
+        "wrapper_chains": [
+            {
+                "index": 0,
+                "scan_in": "wbr_si",
+                "scan_out": "wbr_so",
+                "scan_in_net": 7,
+                "scan_out_net": 14,
+                "length": 2,
+                "cells": ["__wi_D", "__wo_Q"],
+                "cell_records": [
+                    {
+                        "instance": "__wi_D",
+                        "original_type": "$wbc_in_scan_faultflow",
+                        "chain_index": 0,
+                        "chain_position": 0,
+                        "clock_net": 2,
+                        "data_net": 3,
+                        "scan_in_net": 7,
+                        "scan_enable_net": 8,
+                        "q_net": 13,
+                    },
+                    {
+                        "instance": "__wo_Q",
+                        "original_type": "$wbc_out_scan_faultflow",
+                        "chain_index": 0,
+                        "chain_position": 1,
+                        "clock_net": 2,
+                        "data_net": 12,
+                        "scan_in_net": 13,
+                        "scan_enable_net": 8,
+                        "q_net": 14,
+                    },
+                ],
+            }
+        ],
+        "ineligible_ffs": [
+            {
+                "instance": "__wi_D",
+                "cell_type": "$wbc_in_scan_faultflow",
+                "reason": "wbr_scan_cell",
+            },
+            {
+                "instance": "__wo_Q",
+                "cell_type": "$wbc_out_scan_faultflow",
+                "reason": "wbr_scan_cell",
+            },
+        ],
     }
 
 
@@ -297,6 +396,25 @@ def _wbc(
     so the aggregator can tie this assembly wrapper to the block it was tested in."""
     cell = _cell(ctype, conns, dirs)
     cell["attributes"] = {"faultflow_block": block, "faultflow_wbc": wbc}
+    return cell
+
+
+def _scan_wbc(
+    ctype: str,
+    conns: dict[str, list[int]],
+    dirs: dict[str, str],
+    *,
+    wbr: str,
+    chain: int,
+    bit: int,
+) -> dict:
+    """A shiftable IEEE-1500 scan WBC tagged for stitch + aggregate identification."""
+    cell = _cell(ctype, conns, dirs)
+    cell["attributes"] = {
+        "faultflow_wbr": wbr,
+        "faultflow_wbr_chain": str(chain),
+        "wbr_bit": str(bit),
+    }
     return cell
 
 

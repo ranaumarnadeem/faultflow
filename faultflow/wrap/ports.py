@@ -56,7 +56,7 @@ def wrap_ports(
     src: dict[str, Any],
     top: str | None = None,
     *,
-    wbr_model: str = "buffer",
+    wbr_model: str = "scan",
     targets: list[str] | None = None,
     scan_in: str = "wbr_si",
     scan_out: str = "wbr_so",
