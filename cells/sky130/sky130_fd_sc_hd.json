@@ -184,6 +184,19 @@
       "Y": "Y"
     }
   },
+  "sky130_fd_sc_hd__nand4bb_*": {
+    "node_type": "GATE",
+    "gate_type": "NAND4BB",
+    "inputs": [
+      "A1_N",
+      "A2_N",
+      "B1",
+      "B2"
+    ],
+    "outputs": {
+      "Y": "Y"
+    }
+  },
   "sky130_fd_sc_hd__nor2_*": {
     "node_type": "GATE",
     "gate_type": "NOR2",
@@ -414,6 +427,20 @@
     ],
     "outputs": {
       "Y": "Y"
+    }
+  },
+  "sky130_fd_sc_hd__a2111o_*": {
+    "node_type": "GATE",
+    "gate_type": "A2111O",
+    "inputs": [
+      "A1",
+      "A2",
+      "B1",
+      "C1",
+      "D1"
+    ],
+    "outputs": {
+      "X": "X"
     }
   },
   "sky130_fd_sc_hd__a221o_*": {
@@ -667,6 +694,20 @@
     ],
     "outputs": {
       "Y": "Y"
+    }
+  },
+  "sky130_fd_sc_hd__o32a_*": {
+    "node_type": "GATE",
+    "gate_type": "O32A",
+    "inputs": [
+      "A1",
+      "A2",
+      "A3",
+      "B1",
+      "B2"
+    ],
+    "outputs": {
+      "X": "X"
     }
   },
   "sky130_fd_sc_hd__lpflow_inputiso1p_*": {

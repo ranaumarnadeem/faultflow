@@ -49,6 +49,7 @@ enum class GateType {
   A22OI,
   A211OI,
   A2111OI,
+  A2111O,   // (in0&in1)|in2|in3|in4
   A221O,
   A221OI,
   A31O,
@@ -68,9 +69,11 @@ enum class GateType {
   O311A,
   O311AI,
   O32AI,
+  O32A,     // (in0|in1|in2)&(in3|in4)
   NAND2B,
   NAND3B,
   NAND4B,
+  NAND4BB,  // in0|in1|~in2|~in3 [A1_N,A2_N bubbled; B1,B2 normal]
   NOR2B,
   NOR3B,
   NOR4B,

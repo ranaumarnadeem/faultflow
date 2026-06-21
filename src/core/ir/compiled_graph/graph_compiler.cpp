@@ -147,6 +147,7 @@ void wire_inputs(SimNode& sn, GateType gt,
       wire_seq({"A1", "A2", "B1", "C1"});
       break;
     case GateType::A2111OI:
+    case GateType::A2111O:
       wire_seq({"A1", "A2", "B1", "C1", "D1"});
       break;
     case GateType::A221O:
@@ -164,6 +165,7 @@ void wire_inputs(SimNode& sn, GateType gt,
     case GateType::A32O:
     case GateType::A32OI:
     case GateType::O32AI:
+    case GateType::O32A:
       wire_seq({"A1", "A2", "A3", "B1", "B2"});
       break;
     case GateType::A41O:
@@ -216,6 +218,12 @@ void wire_inputs(SimNode& sn, GateType gt,
       wire("B", sn.in1);
       wire("C_N", sn.in2);
       wire("D_N", sn.in3);
+      break;
+    case GateType::NAND4BB:
+      wire("A1_N", sn.in0);
+      wire("A2_N", sn.in1);
+      wire("B1", sn.in2);
+      wire("B2", sn.in3);
       break;
     case GateType::O2111A:
     case GateType::O2111AI:

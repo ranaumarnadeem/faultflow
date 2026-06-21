@@ -90,6 +90,8 @@ uint64_t eval_bitwise(GateType type, const std::vector<uint64_t>& inputs) {
       return ~((in0 & in1) | in2 | in3);
     case GateType::A2111OI:
       return ~((in0 & in1) | in2 | in3 | in4);
+    case GateType::A2111O:
+      return (in0 & in1) | in2 | in3 | in4;
     case GateType::A221O:
       return (in0 & in1) | (in2 & in3) | in4;
     case GateType::A221OI:
@@ -128,12 +130,16 @@ uint64_t eval_bitwise(GateType type, const std::vector<uint64_t>& inputs) {
       return ~((in0 | in1 | in2) & in3 & in4);
     case GateType::O32AI:
       return ~((in0 | in1 | in2) & (in3 | in4));
+    case GateType::O32A:
+      return (in0 | in1 | in2) & (in3 | in4);
     case GateType::NAND2B:
       return in0 | ~in1;
     case GateType::NAND3B:
       return in0 | ~in1 | ~in2;
     case GateType::NAND4B:
       return in0 | ~in1 | ~in2 | ~in3;
+    case GateType::NAND4BB:
+      return in0 | in1 | ~in2 | ~in3;
     case GateType::NOR2B:
       return ~in0 & in1;
     case GateType::NOR3B:
