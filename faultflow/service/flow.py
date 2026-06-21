@@ -261,6 +261,58 @@ class FlowService:
             "simulation_seconds": run.get("fault_simulation_seconds", 0.0),
         }
 
+    def run_project(
+        self,
+        project_path: Path,
+        *,
+        max_rounds: int | None = None,
+        target_coverage: float | None = None,
+        clean: bool = False,
+    ) -> OperationResult:
+        """Run per-block INTEST + assembly EXTEST, then aggregate the chip number."""
+        from faultflow.project.aggregate import aggregate_project
+        from faultflow.project.manifest import load_project
+        from faultflow.project.orchestrator import run_project as orchestrate
+        from faultflow.reporter.soc import write_soc_report
+
+        project = load_project(project_path)
+        log.info("project start  name=%s blocks=%d", project.name, len(project.blocks))
+        scopes = orchestrate(
+            project,
+            run_atpg=self.run_atpg,
+            max_rounds=max_rounds,
+            target_coverage=target_coverage,
+            clean=clean,
+        )
+        chip = aggregate_project(project.name, scopes)
+        out_dir = (project.root / "output" / project.name).resolve()
+        json_path, txt_path = write_soc_report(chip, out_dir)
+        log.info(
+            "project done  name=%s chip_coverage=%s",
+            project.name,
+            (
+                "n/a"
+                if chip.chip_coverage_percent is None
+                else f"{chip.chip_coverage_percent:.3f}%"
+            ),
+        )
+        cov = (
+            "n/a"
+            if chip.chip_coverage_percent is None
+            else f"{chip.chip_coverage_percent:.3f}%"
+        )
+        return OperationResult(
+            "run_project",
+            project.name,
+            (
+                f"project complete name={project.name} scopes={len(chip.scopes)} "
+                f"chip_denominator={chip.chip_denominator} "
+                f"chip_detected={chip.chip_detected} chip_coverage={cov} "
+                f"report={txt_path} json={json_path}"
+            ),
+            artifacts={"soc_report": txt_path, "soc_json": json_path},
+        )
+
     def write_report(self, cfg: FaultflowConfig) -> ReportResult:
         log.info("report  writing  top=%s ...", cfg.top)
         path = write_unified_report(cfg)

@@ -132,6 +132,31 @@ def _parser() -> argparse.ArgumentParser:
     )
     add_wrapper_mode_opts(extest)
 
+    project = sub.add_parser(
+        "project",
+        help=(
+            "Hierarchical project: run per-block INTEST + assembly EXTEST and "
+            "aggregate one chip coverage number"
+        ),
+    )
+    project.add_argument(
+        "-p", "--project", type=Path, required=True, help="Project manifest JSON"
+    )
+    project.add_argument("--clean", action="store_true", help="Clean scope workspaces")
+    project.add_argument(
+        "--max",
+        type=int,
+        metavar="ROUNDS",
+        help="Max progressive ATPG rounds per scope",
+    )
+    project.add_argument(
+        "-t",
+        dest="target_coverage",
+        type=float,
+        metavar="PCT",
+        help="Target coverage percent per scope",
+    )
+
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
     status.add_argument(
@@ -239,6 +264,24 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "run":
             return _handle_run(args, parser)
+        if args.command == "project":
+            if args.max is not None and args.max < 1:
+                parser.error("--max must be >= 1")
+            if args.target_coverage is not None and not (
+                0.0 < args.target_coverage <= 100.0
+            ):
+                parser.error("-t must be in (0, 100]")
+            print(
+                FlowService(runner_factory=Runner)
+                .run_project(
+                    args.project,
+                    max_rounds=args.max,
+                    target_coverage=args.target_coverage,
+                    clean=args.clean,
+                )
+                .message
+            )
+            return 0
         cfg = load_config(Path(args.config), args.top)
         service = FlowService(runner_factory=Runner)
         if args.command == "init":

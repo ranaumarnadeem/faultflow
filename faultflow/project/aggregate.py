@@ -1,0 +1,355 @@
+"""Aggregate per-scope coverage into one chip number, with ownership guards.
+
+The chip coverage of a hierarchical project is the disjoint union of each block's
+INTEST coverage (``core + WBC inward``) and the assembly's interconnect EXTEST
+coverage (``WBC outward + interconnect``). For that union to be trustworthy it must
+be both **disjoint** (no fault owned by two scopes) AND **complete** (every chip
+fault owned by some scope) — disjointness alone is optimistic, silently dropping the
+wrapper ring's dead-in-this-mode faults.
+
+OWNING-ROLE RULE (the heart of it). Ownership is by (WBC pin) SIDE, not by which
+scope can observe the fault: a WBC's INWARD pins (``TO_CORE``/``FROM_CORE``) are
+always block-owned; its OUTWARD pins (``FROM_SYS``/``TO_SYS``) are always
+assembly-owned; non-WBC faults are owned by the scope they live in. So when the
+assembly blackboxes a core (making the WBC-inward nets observable as TPs), it *can*
+detect those faults but does NOT chip-own them — they are ``foreign`` here and owned
+once via the block. A block excludes its WBC-outward (``wbr_decoupled``); the
+assembly owns it (``handoff``). Each fault is classified into exactly one of:
+
+    owned              — owning role == this scope's role AND in this denominator
+    foreign            — in this denominator but the OTHER role owns it
+    handoff            — excluded here (wbr_decoupled) but the OTHER role owns it
+    excluded_by_design — clock/reset/scan/blackbox + AU/redundant + collapsed
+
+Guards (on the UNCOLLAPSED canonical fault universe, keyed net-id-independently by
+``(boundary_block, boundary_wbc, pin, side, fault_type)`` so a boundary fault is the
+same identity in the block and assembly netlists): (1) disjoint tops; (2) no
+canonical key chip-owned by two scopes; (3) handoff completeness — every handed-off
+WBC fault (a block's WBC-outward, the assembly's WBC-inward) is chip-owned by another
+scope, else the chip number is optimistic by that wrapper population.
+
+NOTE (Stage 1): the transparent-buffer wrapper has no EXTEST-mux / capture path, so
+the wrapper-outward population is small; these guards grow real teeth with the native
+scan WBC (Stage 4), proven by a dedicated gap-closing fixture.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from faultflow.db import connect, latest_campaign_id, summary
+from faultflow.project.orchestrator import ScopeRun
+
+# WBC cell types + the (pin -> side) classification, shared with the fusion layer.
+_WBR_IN_TYPES = {"$wbc_in_faultflow", "\\$wbc_in_faultflow"}
+_WBR_OUT_TYPES = {"$wbc_out_faultflow", "\\$wbc_out_faultflow"}
+_WBR_SCAN_IN_TYPES = {"$wbc_in_scan_faultflow", "\\$wbc_in_scan_faultflow"}
+_WBR_SCAN_OUT_TYPES = {"$wbc_out_scan_faultflow", "\\$wbc_out_scan_faultflow"}
+
+# Exclusion tags that hand a fault to the OTHER scope (cross-scope ownership).
+_CROSS_SCOPE_EXCLUSIONS = {
+    "wbr_decoupled",
+    "wbr_inward_excluded",
+    "wbr_outward_excluded",
+}
+
+
+class AggregateError(RuntimeError):
+    """A guard failed — the chip number would be wrong."""
+
+
+# A WBC pin is "inward" (core-facing → block-owned) or "outward" (system-facing →
+# assembly-owned), independent of which scope happens to observe it.
+_INWARD_PINS = {"TO_CORE", "FROM_CORE"}
+_OUTWARD_PINS = {"FROM_SYS", "TO_SYS"}
+
+
+@dataclass(frozen=True)
+class ScopeCoverage:
+    kind: str
+    name: str
+    top: str
+    campaign_id: int
+    denominator: int  # the scope's OWN summary denominator (informational)
+    detected: int  # the scope's OWN summary detected (informational)
+    owned: int  # faults this scope CHIP-owns (by the owning-role rule)
+    owned_detected: int  # chip-owned faults that are detected
+    foreign: int  # in this scope's denominator but owned by the OTHER role
+    handoff: int  # excluded here (wbr_decoupled) but owned by the OTHER role
+    excluded_by_design: int
+    total_sites: int
+    coverage_percent: float | None
+
+
+@dataclass
+class ChipCoverage:
+    project: str
+    chip_denominator: int = 0
+    chip_detected: int = 0
+    chip_coverage_percent: float | None = None
+    scopes: list[ScopeCoverage] = field(default_factory=list)
+    guards: dict[str, Any] = field(default_factory=dict)
+
+
+def _int_bits(value: Any) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    return [b for b in value if isinstance(b, int)]
+
+
+def _wbc_pin_index(
+    netlist: Path, top: str
+) -> dict[int, tuple[str | None, str, str, str]]:
+    """Map yosys net id -> (boundary_block, boundary_wbc, pin, side) for every WBC pin.
+
+    A boundary fault maps to the same canonical identity across the block netlist
+    (where it was INTEST-tested) and the assembly netlist (where its outward side is
+    EXTEST-tested). The tie is the *boundary id*:
+      * an assembly wrapper carries ``attributes.faultflow_block`` /
+        ``faultflow_wbc`` naming the block + block-WBC instance it represents;
+      * a block's own wrapper has no such attributes, so its boundary id defaults to
+        ``(scope_name, instance)`` (resolved by the caller).
+    `boundary_block` is None when untagged (use the scope name). `side` is "in"
+    (WBR_IN) or "out" (WBR_OUT).
+    """
+    data = json.loads(netlist.read_text(encoding="utf-8"))
+    modules = data.get("modules", {})
+    module = modules.get(top)
+    if not isinstance(module, dict):
+        return {}
+    cells = module.get("cells", {})
+    if not isinstance(cells, dict):
+        return {}
+    index: dict[int, tuple[str | None, str, str, str]] = {}
+    for inst, cell in cells.items():
+        if not isinstance(cell, dict):
+            continue
+        ctype = cell.get("type")
+        if ctype in _WBR_IN_TYPES or ctype in _WBR_SCAN_IN_TYPES:
+            side = "in"
+        elif ctype in _WBR_OUT_TYPES or ctype in _WBR_SCAN_OUT_TYPES:
+            side = "out"
+        else:
+            continue
+        attrs = cell.get("attributes", {})
+        attrs = attrs if isinstance(attrs, dict) else {}
+        block = attrs.get("faultflow_block")
+        boundary_wbc = str(attrs.get("faultflow_wbc", inst))
+        boundary_block = str(block) if isinstance(block, str) and block else None
+        conns = cell.get("connections", {})
+        if not isinstance(conns, dict):
+            continue
+        for pin, bits in conns.items():
+            for bit in _int_bits(bits):
+                index[bit] = (boundary_block, boundary_wbc, str(pin), side)
+    return index
+
+
+def _net_id_of(fault_site_key: str, net_id: int) -> int:
+    """Prefer the explicit net_id column; fall back to parsing the site key."""
+    if net_id >= 0:
+        return net_id
+    parts = fault_site_key.split(":")
+    if len(parts) >= 2 and parts[0] == "net":
+        try:
+            return int(parts[1])
+        except ValueError:
+            return -1
+    return -1
+
+
+def _canonical_key(
+    scope_name: str,
+    fault_site_key: str,
+    fault_type: str,
+    net_id: int,
+    wbc_pins: dict[int, tuple[str | None, str, str, str]],
+) -> tuple[Any, ...]:
+    """Canonical, net-id-independent fault identity.
+
+    A WBC fault's key is ``(wbc, boundary_block, boundary_wbc, pin, side,
+    fault_type)``: it is net-id-independent and shared between the block netlist
+    (where the wrapper's inward side is INTEST-owned) and the assembly netlist
+    (where the same wrapper's outward side is EXTEST-owned), so a handed-off
+    boundary fault is recognised as the same site across scopes. ``boundary_block``
+    defaults to the scope name for an untagged (block-local) wrapper. Non-WBC faults
+    are scope-local and never collide across scopes.
+    """
+    nid = _net_id_of(fault_site_key, net_id)
+    pin = wbc_pins.get(nid)
+    if pin is not None:
+        boundary_block = pin[0] or scope_name
+        return ("wbc", boundary_block, pin[1], pin[2], pin[3], fault_type)
+    return ("local", scope_name, fault_site_key, fault_type)
+
+
+@dataclass(frozen=True)
+class _ScopeKeys:
+    owned: set[tuple[Any, ...]]  # keys this scope CHIP-owns (by the owning-role rule)
+    handoff: set[tuple[Any, ...]]  # keys owned by the OTHER role (foreign + excluded)
+
+
+def _owning_role(pin: tuple[str | None, str, str, str] | None, scope_role: str) -> str:
+    """Which scope role owns a fault: WBC-inward -> block, WBC-outward -> assembly,
+    non-WBC -> the scope it lives in. Independent of which scope can observe it."""
+    if pin is None:
+        return scope_role
+    pin_name = pin[2]
+    if pin_name in _INWARD_PINS:
+        return "block"
+    if pin_name in _OUTWARD_PINS:
+        return "assembly"
+    return scope_role
+
+
+def _scope_coverage(scope: ScopeRun) -> tuple[ScopeCoverage, _ScopeKeys]:
+    """Read one scope's DB + netlist; classify every fault by the owning-role rule.
+
+    A fault is CHIP-owned by this scope iff its owning role == this scope's role AND
+    it is in this scope's coverage denominator. The assembly's blackboxed core makes
+    the WBC-inward nets observable, so the assembly *can* detect them — but they are
+    block-owned (`foreign` here), counted only once via the block. A block's
+    WBC-outward is excluded here (`wbr_decoupled`) and owned by the assembly
+    (`handoff`).
+    """
+    if not scope.db_path.exists():
+        raise AggregateError(f"scope {scope.name!r}: no database at {scope.db_path}")
+    scope_role = "block" if scope.kind == "block" else "assembly"
+    wbc_pins = _wbc_pin_index(scope.netlist, scope.top)
+    with connect(scope.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        campaign_id = latest_campaign_id(conn, scope.campaign_type)
+        if campaign_id is None:
+            raise AggregateError(
+                f"scope {scope.name!r}: no {scope.campaign_type} campaign"
+            )
+        data = summary(conn, campaign_id=campaign_id)
+        rows = conn.execute(
+            """
+            SELECT fault_site_key, fault_type, net_id, status, exclusion,
+                   collapsed_into
+            FROM faults WHERE campaign_id = ?
+            """,
+            (campaign_id,),
+        ).fetchall()
+
+    owned = owned_detected = foreign = handoff = excluded_by_design = 0
+    owned_keys: set[tuple[Any, ...]] = set()
+    handoff_keys: set[tuple[Any, ...]] = set()
+    for row in rows:
+        exclusion = str(row["exclusion"])
+        status = str(row["status"])
+        collapsed = row["collapsed_into"] is not None
+        net = int(row["net_id"])
+        pin = wbc_pins.get(_net_id_of(str(row["fault_site_key"]), net))
+        role = _owning_role(pin, scope_role)
+        in_denom = exclusion == "none" and status != "redundant" and not collapsed
+        key = _canonical_key(
+            scope.name,
+            str(row["fault_site_key"]),
+            str(row["fault_type"]),
+            net,
+            wbc_pins,
+        )
+        if in_denom and role == scope_role:
+            owned += 1
+            if status == "detected":
+                owned_detected += 1
+            owned_keys.add(key)
+        elif in_denom and role != scope_role:
+            # Detectable here, but another role owns it (e.g. assembly's WBC-inward).
+            foreign += 1
+            handoff_keys.add(key)
+        elif exclusion in _CROSS_SCOPE_EXCLUSIONS:
+            # Excluded here, owned by the other role (e.g. block's WBC-outward).
+            handoff += 1
+            if key[0] == "wbc":
+                handoff_keys.add(key)
+        else:
+            excluded_by_design += 1
+
+    total = len(rows)
+    if owned + foreign + handoff + excluded_by_design != total:
+        raise AggregateError(
+            f"scope {scope.name!r}: partition does not cover all {total} fault sites"
+        )
+    cov = ScopeCoverage(
+        kind=scope.kind,
+        name=scope.name,
+        top=scope.top,
+        campaign_id=campaign_id,
+        denominator=int(data.get("denominator", 0)),
+        detected=int(data.get("detected", 0)),
+        owned=owned,
+        owned_detected=owned_detected,
+        foreign=foreign,
+        handoff=handoff,
+        excluded_by_design=excluded_by_design,
+        total_sites=total,
+        coverage_percent=data.get("test_coverage_percent"),
+    )
+    return cov, _ScopeKeys(owned=owned_keys, handoff=handoff_keys)
+
+
+def aggregate_project(project_name: str, scopes: list[ScopeRun]) -> ChipCoverage:
+    """Disjoint-union the scope coverages into a chip number, enforcing the guards."""
+    if not scopes:
+        raise AggregateError("project has no scopes to aggregate")
+
+    # Guard 1 — disjoint tops.
+    tops = [s.top for s in scopes]
+    if len(set(tops)) != len(tops):
+        raise AggregateError(f"scope tops are not pairwise distinct: {tops}")
+
+    chip = ChipCoverage(project=project_name)
+    all_owned: dict[tuple[Any, ...], str] = {}
+    all_handoff: set[tuple[Any, ...]] = set()
+    overlaps: list[dict[str, Any]] = []
+    for scope in scopes:
+        cov, keys = _scope_coverage(scope)
+        chip.scopes.append(cov)
+        chip.chip_denominator += cov.owned
+        chip.chip_detected += cov.owned_detected
+        # Guard 2 — no canonical key chip-owned by two scopes (double-count).
+        for key in keys.owned:
+            prev = all_owned.get(key)
+            if prev is not None and prev != scope.name:
+                overlaps.append({"key": list(key), "scopes": [prev, scope.name]})
+            else:
+                all_owned[key] = scope.name
+        all_handoff |= keys.handoff
+
+    if overlaps:
+        raise AggregateError(f"faults double-counted across scopes: {overlaps}")
+
+    # Guard 3 — chip-wide handoff completeness: every WBC fault a scope hands off
+    # (its WBC-outward excluded as wbr_decoupled, or the assembly's WBC-inward that
+    # is block-owned) MUST be chip-owned by another scope. An unowned handoff means
+    # the chip number is OPTIMISTIC by exactly that wrapper population. This is the
+    # check that "folds the WBC ring into the assembly fault universe".
+    unowned = sorted(
+        {":".join(map(str, k[1:])) for k in all_handoff if k not in all_owned}
+    )
+    if unowned:
+        raise AggregateError(
+            "wrapper-boundary faults handed off by one scope are owned by no other "
+            "scope (the chip number would be optimistic) — the assembly must wrap + "
+            f"EXTEST these block boundaries: {unowned}"
+        )
+    if chip.chip_denominator <= 0:
+        raise AggregateError("chip denominator is zero — nothing to cover")
+
+    chip.chip_coverage_percent = 100.0 * chip.chip_detected / chip.chip_denominator
+    chip.guards = {
+        "tops_disjoint": True,
+        "no_double_count": True,
+        "partition_total": True,
+        "handoff_complete": True,
+        "owned_sites": len(all_owned),
+        "handoff_sites": len(all_handoff),
+    }
+    return chip
