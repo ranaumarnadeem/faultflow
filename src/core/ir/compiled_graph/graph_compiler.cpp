@@ -140,7 +140,9 @@ void wire_inputs(SimNode& sn, GateType gt,
     case GateType::O22AI:
       wire_seq({"A1", "A2", "B1", "B2"});
       break;
+    case GateType::A211O:
     case GateType::A211OI:
+    case GateType::O211A:
     case GateType::O211AI:
       wire_seq({"A1", "A2", "B1", "C1"});
       break;
@@ -149,6 +151,7 @@ void wire_inputs(SimNode& sn, GateType gt,
       break;
     case GateType::A221O:
     case GateType::A221OI:
+    case GateType::O221A:
     case GateType::O221AI:
       wire_seq({"A1", "A2", "B1", "B2", "C1"});
       break;
@@ -163,11 +166,15 @@ void wire_inputs(SimNode& sn, GateType gt,
     case GateType::O32AI:
       wire_seq({"A1", "A2", "A3", "B1", "B2"});
       break;
+    case GateType::A41O:
     case GateType::A41OI:
+    case GateType::O41A:
+    case GateType::O41AI:
       wire_seq({"A1", "A2", "A3", "A4", "B1"});
       break;
     case GateType::O21A:
     case GateType::O21AI:
+    case GateType::O21BA:
     case GateType::O21BAI:
       wire_seq({"A1", "A2", "B1"});
       wire("B1_N", sn.in2);
@@ -175,6 +182,44 @@ void wire_inputs(SimNode& sn, GateType gt,
     case GateType::O311A:
     case GateType::O311AI:
       wire_seq({"A1", "A2", "A3", "B1", "C1"});
+      break;
+    case GateType::A311O:
+      wire_seq({"A1", "A2", "A3", "B1", "C1"});
+      break;
+    case GateType::A222OI:
+      wire_seq({"A1", "A2", "B1", "B2", "C1", "C2"});
+      break;
+    case GateType::A2BB2OI:
+    case GateType::O2BB2AI:
+    case GateType::O2BB2A:
+      wire("A1_N", sn.in0);
+      wire("A2_N", sn.in1);
+      wire("B1", sn.in2);
+      wire("B2", sn.in3);
+      break;
+    case GateType::AND3B:
+      wire("A_N", sn.in0);
+      wire("B", sn.in1);
+      wire("C", sn.in2);
+      break;
+    case GateType::AND4B:
+      wire("A_N", sn.in0);
+      wire("B", sn.in1);
+      wire("C", sn.in2);
+      wire("D", sn.in3);
+      break;
+    case GateType::MUX2I:
+      wire_seq({"A0", "A1", "S"});
+      break;
+    case GateType::NOR4BB:
+      wire("A", sn.in0);
+      wire("B", sn.in1);
+      wire("C_N", sn.in2);
+      wire("D_N", sn.in3);
+      break;
+    case GateType::O2111A:
+    case GateType::O2111AI:
+      wire_seq({"A1", "A2", "B1", "C1", "D1"});
       break;
     case GateType::ADDF_S:
     case GateType::ADDF_CO:

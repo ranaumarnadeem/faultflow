@@ -74,6 +74,7 @@ enum class GateType {
   NOR2B,
   NOR3B,
   NOR4B,
+  NOR4BB,  // ~in0 & ~in1 & in2 & in3 [A,B,C_N,D_N — last two pre-inverted]
   OR3B,
   OR4B,
   ADDF_S,
@@ -101,6 +102,7 @@ enum class GateType {
   O2111A,   // (in0|in1)&in2&in3&in4
   O2111AI,  // ~((in0|in1)&in2&in3&in4)
   O2BB2AI,  // (in0&in1)|~(in2|in3)  [in0=A1_N, in1=A2_N — bubbled]
+  O2BB2A,   // ~(in0&in1)&(in2|in3)  [in0=A1_N, in1=A2_N — bubbled]
   O41A,     // (in0|in1|in2|in3)&in4
   O41AI,    // ~((in0|in1|in2|in3)&in4)
   // IEEE 1500 wrapper boundary cells. WBR_IN sits on a core input (drives the

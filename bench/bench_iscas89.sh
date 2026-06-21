@@ -169,6 +169,9 @@ max_rounds          = ${ATPG_MAX_ROUNDS}
 sat_timeout_seconds = ${SAT_TIMEOUT}
 compaction          = reverse
 
+[wrap]
+wbr_model = buffer
+
 [scan]
 chains           = ${chains}
 max_chain_length =

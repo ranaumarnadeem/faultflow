@@ -52,7 +52,8 @@ GateType parse_gate_type(const std::string& s) {
       {"O32AI", GateType::O32AI},   {"NAND2B", GateType::NAND2B},
       {"NAND3B", GateType::NAND3B}, {"NAND4B", GateType::NAND4B},
       {"NOR2B", GateType::NOR2B},   {"NOR3B", GateType::NOR3B},
-      {"NOR4B", GateType::NOR4B},   {"OR3B", GateType::OR3B},
+      {"NOR4B", GateType::NOR4B},   {"NOR4BB", GateType::NOR4BB},
+      {"OR3B", GateType::OR3B},
       {"OR4B", GateType::OR4B},     {"ADDF", GateType::ADDF_S},
       {"ADDF_CO", GateType::ADDF_CO},
       {"ADDH", GateType::ADDH_S},   {"CONST0", GateType::CONST0},
@@ -67,7 +68,8 @@ GateType parse_gate_type(const std::string& s) {
       {"O211A", GateType::O211A},     {"O21BA", GateType::O21BA},
       {"O221A", GateType::O221A},     {"O2111A", GateType::O2111A},
       {"O2111AI", GateType::O2111AI}, {"O2BB2AI", GateType::O2BB2AI},
-      {"O41A", GateType::O41A},       {"O41AI", GateType::O41AI},
+      {"O2BB2A", GateType::O2BB2A},  {"O41A", GateType::O41A},
+      {"O41AI", GateType::O41AI},
   };
   auto it = kMap.find(s);
   if (it == kMap.end()) {
