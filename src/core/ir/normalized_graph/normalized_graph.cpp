@@ -258,6 +258,16 @@ NormalizedGraph NormalizedGraph::from_parsed(
     node.gate_type =
         entry->node_type == NodeType::FF ? GateType::DFF : entry->gate_type;
 
+    // A scan WBR cell lowers into TWO nodes: this FF half (drives the scan-chain
+    // output CTO = ff.output) and a separate mode-mux node (drives the functional
+    // output TO_CORE/TO_SYS, emitted below). So the FF half must NOT claim the
+    // drive net here — the mode-mux is its real driver.
+    const bool is_scan_wbr = entry->wbr.present && entry->wbr.scan;
+    const std::string wbr_drive_logical =
+        is_scan_wbr
+            ? (entry->wbr.is_input ? entry->wbr.core_pin : entry->wbr.sys_pin)
+            : std::string();
+
     for (const auto& in_pin : entry->inputs) {
       auto it = cell.conns.find(in_pin);
       if (it != cell.conns.end() && !it->second.empty()) {
@@ -265,6 +275,9 @@ NormalizedGraph NormalizedGraph::from_parsed(
       }
     }
     for (const auto& [logical, lib_pin] : entry->outputs) {
+      if (is_scan_wbr && logical == wbr_drive_logical) {
+        continue;  // driven by the mode-mux node, not the FF half
+      }
       auto it = cell.conns.find(lib_pin);
       if (it != cell.conns.end() && !it->second.empty()) {
         const int out_net = it->second.front();
@@ -303,10 +316,51 @@ NormalizedGraph NormalizedGraph::from_parsed(
       wc.core_net = core_it->second.front();
       wc.sys_net = sys_it->second.front();
       wc.is_input = entry->wbr.is_input;
+      if (is_scan_wbr) {
+        auto cto_it = cell.conns.find(entry->wbr.chain_out_pin);
+        if (cto_it == cell.conns.end() || cto_it->second.empty()) {
+          throw ParseError("scan WBR cell missing CTO connection: " + inst);
+        }
+        wc.scan = true;
+        wc.cto_net = cto_it->second.front();
+        node.wbr_scan = true;
+        node.wbr_is_input = entry->wbr.is_input;
+        node.wbr_drive_net = entry->wbr.is_input ? wc.core_net : wc.sys_net;
+      }
       ng.wrapper_cells.push_back(wc);
     }
 
     ng.nodes[node.id] = std::move(node);
+
+    // Mode-mux half of a scan WBR cell. A GATE node (WBR_IN/WBR_OUT) so the
+    // fixpoint levelize orders it after its real inputs — critical for a WBR_OUT
+    // whose FUNCTIONAL passthrough (in0 = CFI = FROM_CORE) reads a deep core net.
+    // in0 = CFI (func input), in1 = CTO (q). Drives the functional output net;
+    // build_mode_config selects FUNCTIONAL(=CFI) / DRIVE_FROM_FF(=q) / safe-0.
+    if (is_scan_wbr) {
+      NormNode mux;
+      mux.id = next_node_id++;
+      mux.instance = inst + "$wbrmux";
+      mux.type = NodeType::GATE;
+      mux.gate_type =
+          entry->wbr.is_input ? GateType::WBR_IN : GateType::WBR_OUT;
+      const int cfi_net = cell.conns.at(entry->wbr.func_in_pin).front();
+      const int cto_net = cell.conns.at(entry->wbr.chain_out_pin).front();
+      const int drive_net =
+          cell.conns
+              .at(entry->wbr.is_input ? entry->wbr.core_pin : entry->wbr.sys_pin)
+              .front();
+      mux.input_pins[entry->wbr.func_in_pin] = cfi_net;
+      mux.input_pins[entry->wbr.chain_out_pin] = cto_net;
+      mux.output_pins[entry->wbr.is_input ? entry->wbr.core_pin
+                                          : entry->wbr.sys_pin] = drive_net;
+      if (ng.nets[drive_net].driver >= 0) {
+        throw ParseError("Multiple drivers on net " +
+                         std::to_string(drive_net));
+      }
+      ng.nets[drive_net].driver = mux.id;
+      ng.nodes[mux.id] = std::move(mux);
+    }
   }
 
   // PI source pseudo-nodes (INPUT)

@@ -167,6 +167,20 @@ CellWBRMetadata parse_wbr_metadata(const nlohmann::json& node) {
   }
   wbr.core_pin = node.at("core_pin").get<std::string>();
   wbr.sys_pin = node.at("sys_pin").get<std::string>();
+  wbr.scan = node.value("scan", false);
+  if (wbr.scan) {
+    for (const char* pin : {"func_in_pin", "chain_in_pin", "chain_out_pin",
+                            "scan_enable_pin", "clock_pin"}) {
+      if (!node.contains(pin)) {
+        throw ParseError(std::string("scan WBR metadata missing pin: ") + pin);
+      }
+    }
+    wbr.func_in_pin = node.at("func_in_pin").get<std::string>();
+    wbr.chain_in_pin = node.at("chain_in_pin").get<std::string>();
+    wbr.chain_out_pin = node.at("chain_out_pin").get<std::string>();
+    wbr.scan_enable_pin = node.at("scan_enable_pin").get<std::string>();
+    wbr.clock_pin = node.at("clock_pin").get<std::string>();
+  }
   return wbr;
 }
 
@@ -209,6 +223,23 @@ CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node)
        entry.gate_type == GateType::WBR_OUT) &&
       !entry.wbr.present) {
     throw ParseError("WBR cell map entry missing wbr metadata: " + pattern);
+  }
+  // A scan WBR cell is BOTH an FF (capture/shift) and a wrapper (mode mux). Its
+  // ff: and wbr: blocks must agree on the shared pins so downstream code can
+  // trust either view (the lowering reads ff.* for the FF half and wbr.core_pin/
+  // sys_pin for the mode-mux drive net).
+  if (entry.wbr.present && entry.wbr.scan) {
+    if (entry.node_type != NodeType::FF || !entry.ff.present) {
+      throw ParseError("scan WBR cell must be node_type FF with ff metadata: " +
+                       pattern);
+    }
+    if (entry.ff.data != entry.wbr.func_in_pin ||
+        entry.ff.scan_in != entry.wbr.chain_in_pin ||
+        entry.ff.output != entry.wbr.chain_out_pin ||
+        entry.ff.scan_enable != entry.wbr.scan_enable_pin ||
+        entry.ff.clock != entry.wbr.clock_pin) {
+      throw ParseError("scan WBR ff/wbr pin cross-check mismatch: " + pattern);
+    }
   }
   return entry;
 }

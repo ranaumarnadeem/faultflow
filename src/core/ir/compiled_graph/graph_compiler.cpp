@@ -52,12 +52,17 @@ void wire_inputs(SimNode& sn, GateType gt,
       wire("A", sn.in0);
       break;
     // IEEE 1500 wrapper cells: the functional data input feeds in0 (the WBR
-    // node drives its stable output net; FUNCTIONAL = buffer of in0).
+    // node drives its stable output net; FUNCTIONAL = buffer of in0). For the
+    // shiftable scan variant the mode-mux also reads the FF state q via the CTO
+    // pin -> in1 (build_mode_config selects in0=CFI vs in1=q per mode); the
+    // transparent buffer cells have no CTO pin, so in1 stays UNUSED for them.
     case GateType::WBR_IN:
       wire("FROM_SYS", sn.in0);
+      wire("CTO", sn.in1);
       break;
     case GateType::WBR_OUT:
       wire("FROM_CORE", sn.in0);
+      wire("CTO", sn.in1);
       break;
     case GateType::INPUT:
     case GateType::DFF:
@@ -511,6 +516,13 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
     cwc.core_idx = static_cast<uint32_t>(cit->second);
     cwc.sys_idx = static_cast<uint32_t>(sit->second);
     cwc.is_input = wc.is_input;
+    if (wc.scan) {
+      cwc.scan = true;
+      auto qit = cg.yosys_to_compiled.find(wc.cto_net);
+      if (qit != cg.yosys_to_compiled.end()) {
+        cwc.cto_idx = static_cast<uint32_t>(qit->second);
+      }
+    }
     cg.wrapper_cells.push_back(cwc);
   }
 
@@ -542,6 +554,23 @@ ModeConfig build_mode_config(const CompiledSimGraph& cg, TestMode mode) {
   // on mode (IEEE 1500 boundary truth table). The driven net (core for WBR_IN,
   // sys for WBR_OUT) is either a stimulus (skip, retain broadcast) or forced 0.
   for (const auto& wc : cg.wrapper_cells) {
+    // Native shiftable WBR: the FF state q drives the active functional output
+    // (INTEST: WBR_IN -> core; EXTEST: WBR_OUT -> interconnect); the inactive
+    // side is held safe-0. Control + observe happen through the wrapper scan
+    // chain (load q / unload q), NOT via broadcast stimulus or combinational
+    // observe-point sets, so only the per-net mode-mux action is set here.
+    if (wc.scan) {
+      const bool active =
+          (mode == TestMode::INTEST) ? wc.is_input : !wc.is_input;
+      const uint32_t drive = wc.is_input ? wc.core_idx : wc.sys_idx;
+      if (active) {
+        mc.wbr_action[drive] = set(WbrAction::DRIVE_FROM_FF);
+      } else {
+        push_unique(mc.safe_zero_nets, drive);
+        mc.wbr_action[drive] = set(WbrAction::FORCE_ZERO);
+      }
+      continue;
+    }
     if (mode == TestMode::INTEST) {
       if (wc.is_input) {  // drive core inputs (control)
         push_unique(mc.stimulus_nets, wc.core_idx);

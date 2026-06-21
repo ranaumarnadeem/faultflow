@@ -35,11 +35,28 @@ struct CellFFMetadata {
 // IEEE 1500 wrapper boundary cell metadata. `is_input` marks a cell on a core
 // INPUT port (drives the core side) vs a core OUTPUT port (drives the system
 // side). `core_pin`/`sys_pin` name the two functional data pins.
+//
+// When `scan` (Stage 4 native shiftable WBR), the cell is ALSO a scan FF
+// (node_type == FF): it lowers into a scan-FF half (capturing `func_in_pin`,
+// shifting via `chain_in_pin`/`chain_out_pin`) plus a mode-dependent output mux
+// that drives the functional output net (`core_pin` for an input cell,
+// `sys_pin` for an output cell) from the FF state `q` in INTEST/EXTEST. The five
+// scan pins are required iff `scan`; they mirror the `ff:` block so either view
+// is authoritative (cross-checked at parse time):
+//   func_in_pin == ff.data, chain_in_pin == ff.scan_in,
+//   chain_out_pin == ff.output (== CTO/q), scan_enable_pin == ff.scan_enable,
+//   clock_pin == ff.clock.
 struct CellWBRMetadata {
   bool present = false;
   bool is_input = false;
   std::string core_pin;
   std::string sys_pin;
+  bool scan = false;
+  std::string func_in_pin;      // CFI — functional input captured by the FF
+  std::string chain_in_pin;     // CTI — wrapper-chain scan in
+  std::string chain_out_pin;    // CTO — wrapper-chain scan out (== q)
+  std::string scan_enable_pin;  // SE
+  std::string clock_pin;        // CLK
 };
 
 struct CellMapEntry {

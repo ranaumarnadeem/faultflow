@@ -153,8 +153,10 @@ void BitParallelSim::evaluate_combinational_mode(SimState& state,
           // control point: keep the broadcast stimulus value.
         } else if (act == static_cast<uint8_t>(WbrAction::FORCE_ZERO)) {
           nv[sn.out] = 0ULL;
+        } else if (act == static_cast<uint8_t>(WbrAction::DRIVE_FROM_FF)) {
+          nv[sn.out] = gather_input(nv, sn.in1);  // scan WBR: drive from FF q
         } else {
-          nv[sn.out] = gather_input(nv, sn.in0);
+          nv[sn.out] = gather_input(nv, sn.in0);  // PASS: FUNCTIONAL buffer (CFI)
         }
         inject_faults(nv, batch, sn.out);
         continue;
@@ -386,6 +388,21 @@ std::vector<std::vector<uint64_t>> BitParallelSim::simulate_batch_samples(
   }
   state.reset_ff_states();
 
+  // Mode-faithful scan-protocol replay for native shiftable WBR cells: the
+  // boundary mode-mux drives from the loaded FF state q in INTEST/EXTEST. Built
+  // once (mode is fixed for the run); FUNCTIONAL keeps the plain hot path.
+  const bool use_mode = vec.test_mode != TestMode::FUNCTIONAL &&
+                        !cg.wrapper_cells.empty();
+  const ModeConfig mode_cfg =
+      use_mode ? build_mode_config(cg, vec.test_mode) : ModeConfig{};
+  const auto eval = [&](const FaultBatch& b) {
+    if (use_mode) {
+      evaluate_combinational_mode(state, cg, b, mode_cfg);
+    } else {
+      evaluate_combinational(state, cg, b);
+    }
+  };
+
   std::vector<std::vector<uint64_t>> samples;
   std::vector<TestCycle> cyc_scratch;
   for (const TestCycle& cycle : cycles_for(vec, cyc_scratch)) {
@@ -397,13 +414,13 @@ std::vector<std::vector<uint64_t>> BitParallelSim::simulate_batch_samples(
                     active_batch.faults[i].net_index);
     }
     seed_ff_outputs(state, cg, active_batch);
-    evaluate_combinational(state, cg, active_batch);
+    eval(active_batch);
     update_ff_states(state, cg);
     seed_ff_outputs(state, cg, active_batch);
-    evaluate_combinational(state, cg, active_batch);
+    eval(active_batch);
     for (int i = 0; i < cycle.settle_cycles; ++i) {
       seed_ff_outputs(state, cg, active_batch);
-      evaluate_combinational(state, cg, active_batch);
+      eval(active_batch);
     }
     if (cycle.sample_outputs) {
       samples.push_back(state.current_values());

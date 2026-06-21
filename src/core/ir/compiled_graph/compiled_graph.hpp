@@ -36,6 +36,11 @@ struct CompiledWrapperCell {
   uint32_t core_idx = 0;
   uint32_t sys_idx = 0;
   bool is_input = false;
+  // Stage 4 native shiftable WBR. When `scan`, the cell's functional output is
+  // driven by the FF state q (= cto_idx) in INTEST/EXTEST (WbrAction::DRIVE_FROM_FF)
+  // instead of a broadcast stimulus net; `cto_idx` is that scan-chain/state net.
+  bool scan = false;
+  uint32_t cto_idx = UNUSED_INPUT;
 };
 
 struct CompiledSimGraph {
@@ -65,7 +70,14 @@ std::string canonical_site_key(const CompiledSimGraph& cg, uint32_t cidx);
 // driven net's CompiledNetIndex). PASS = buffer (FUNCTIONAL passthrough);
 // SKIP_STIMULUS = leave the broadcast value in place (control point);
 // FORCE_ZERO = drive the inactive wrapper side to 0 (safe value).
-enum class WbrAction : uint8_t { PASS = 0, SKIP_STIMULUS = 1, FORCE_ZERO = 2 };
+// DRIVE_FROM_FF (Stage 4 scan WBR): drive the functional output from the FF
+// state q (the mode-mux SimNode's in1 = the CTO net), not a broadcast stimulus.
+enum class WbrAction : uint8_t {
+  PASS = 0,
+  SKIP_STIMULUS = 1,
+  FORCE_ZERO = 2,
+  DRIVE_FROM_FF = 3
+};
 
 // Mode-dependent control/observe reconfiguration derived from a CompiledSimGraph
 // and a TestMode. Built ONCE per run (mode is fixed for a run) and reused — not

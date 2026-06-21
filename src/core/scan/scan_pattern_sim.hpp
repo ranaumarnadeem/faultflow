@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "common/types.hpp"
+
 namespace faultflow::scan {
 
 constexpr int kScanProtocolFaultBatchSize = 63;
@@ -35,6 +37,11 @@ struct ScanPatternRequest {
   // window (LOC launch/LOS launch-shift/capture pulses). All clocks are still
   // pulsed during load and unload. Empty = pulse all (regression-safe default).
   std::vector<std::string> active_clock_ports;
+  // IEEE 1500 wrapper mode. With native shiftable WBR cells, INTEST/EXTEST makes
+  // the boundary mode-mux drive the core/interconnect from the loaded FF state q;
+  // FUNCTIONAL (default) keeps wrapper cells transparent. Carried onto the built
+  // TestVector so the sequential sims pick the mode-aware evaluator.
+  TestMode test_mode = TestMode::FUNCTIONAL;
 };
 
 // Returns true if clock i should be pulsed during the launch/capture window.

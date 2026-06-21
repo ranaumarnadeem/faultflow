@@ -38,6 +38,13 @@ struct NormNode {
   std::map<std::string, int> output_pins;
   int level = 0;
   FFConfig ff_config;
+  // Stage 4 native shiftable WBR: this FF node is the scan-FF half of a wrapper
+  // cell. GraphCompiler lowers it into the FF (drives ff_config.output_net = CTO)
+  // PLUS a mode-mux node driving `wbr_drive_net` (TO_CORE for an input cell,
+  // TO_SYS for an output cell) from the FF state in INTEST/EXTEST.
+  bool wbr_scan = false;
+  int wbr_drive_net = -1;
+  bool wbr_is_input = false;
 };
 
 // IEEE 1500 wrapper boundary cell, in NormalizedGraph (YosysNetID) space.
@@ -49,6 +56,11 @@ struct NormWrapperCell {
   YosysNetID core_net = 0;
   YosysNetID sys_net = 0;
   bool is_input = false;
+  // Stage 4 native shiftable WBR. `scan` marks the cell as a real boundary-scan
+  // cell (vs a transparent buffer); `cto_net` is the FF state / scan-chain output
+  // net (q), which the mode-mux drives the functional output from in INTEST/EXTEST.
+  bool scan = false;
+  YosysNetID cto_net = 0;
 };
 
 struct NormalizedGraph {

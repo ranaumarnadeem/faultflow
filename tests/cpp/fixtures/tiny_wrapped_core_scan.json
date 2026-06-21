@@ -1,0 +1,67 @@
+{
+  "creator": "faultflow fixture (IEEE 1500 native shiftable WBR scan core)",
+  "modules": {
+    "tiny_wrapped_core_scan": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "CLK":  {"direction": "input",  "bits": [2]},
+        "SE":   {"direction": "input",  "bits": [3]},
+        "wsi":  {"direction": "input",  "bits": [4]},
+        "sysA": {"direction": "input",  "bits": [5]},
+        "sysB": {"direction": "input",  "bits": [6]},
+        "sysY": {"direction": "output", "bits": [12]},
+        "wso":  {"direction": "output", "bits": [13]}
+      },
+      "cells": {
+        "wi0": {
+          "hide_name": 0,
+          "type": "$wbc_in_scan_faultflow",
+          "parameters": {},
+          "attributes": {"faultflow_wbr": "input", "faultflow_wbr_chain": "0", "wbr_bit": "0"},
+          "port_directions": {"CLK": "input", "FROM_SYS": "input", "CTI": "input", "SE": "input", "TO_CORE": "output", "CTO": "output"},
+          "connections": {"CLK": [2], "FROM_SYS": [5], "CTI": [4], "SE": [3], "TO_CORE": [7], "CTO": [9]}
+        },
+        "wi1": {
+          "hide_name": 0,
+          "type": "$wbc_in_scan_faultflow",
+          "parameters": {},
+          "attributes": {"faultflow_wbr": "input", "faultflow_wbr_chain": "0", "wbr_bit": "1"},
+          "port_directions": {"CLK": "input", "FROM_SYS": "input", "CTI": "input", "SE": "input", "TO_CORE": "output", "CTO": "output"},
+          "connections": {"CLK": [2], "FROM_SYS": [6], "CTI": [9], "SE": [3], "TO_CORE": [8], "CTO": [10]}
+        },
+        "g_core": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__xor2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "X": "output"},
+          "connections": {"A": [7], "B": [8], "X": [11]}
+        },
+        "wo0": {
+          "hide_name": 0,
+          "type": "$wbc_out_scan_faultflow",
+          "parameters": {},
+          "attributes": {"faultflow_wbr": "output", "faultflow_wbr_chain": "0", "wbr_bit": "2"},
+          "port_directions": {"CLK": "input", "FROM_CORE": "input", "CTI": "input", "SE": "input", "TO_SYS": "output", "CTO": "output"},
+          "connections": {"CLK": [2], "FROM_CORE": [11], "CTI": [10], "SE": [3], "TO_SYS": [12], "CTO": [13]}
+        }
+      },
+      "netnames": {
+        "CLK":  {"hide_name": 0, "bits": [2],  "attributes": {}},
+        "SE":   {"hide_name": 0, "bits": [3],  "attributes": {}},
+        "wsi":  {"hide_name": 0, "bits": [4],  "attributes": {}},
+        "sysA": {"hide_name": 0, "bits": [5],  "attributes": {}},
+        "sysB": {"hide_name": 0, "bits": [6],  "attributes": {}},
+        "ci0":  {"hide_name": 0, "bits": [7],  "attributes": {}},
+        "ci1":  {"hide_name": 0, "bits": [8],  "attributes": {}},
+        "q0":   {"hide_name": 0, "bits": [9],  "attributes": {}},
+        "q1":   {"hide_name": 0, "bits": [10], "attributes": {}},
+        "co":   {"hide_name": 0, "bits": [11], "attributes": {}},
+        "sysY": {"hide_name": 0, "bits": [12], "attributes": {}},
+        "wso":  {"hide_name": 0, "bits": [13], "attributes": {}}
+      }
+    }
+  }
+}

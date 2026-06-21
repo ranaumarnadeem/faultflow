@@ -237,6 +237,74 @@
     "outputs": {"TO_SYS": "TO_SYS"},
     "wbr": {"side": "output", "core_pin": "FROM_CORE", "sys_pin": "TO_SYS"}
   },
+  "$wbc_in_scan_faultflow": {
+    "node_type": "FF",
+    "inputs": ["CLK", "FROM_SYS", "CTI", "SE"],
+    "outputs": {"TO_CORE": "TO_CORE", "CTO": "CTO"},
+    "ff": {
+      "clock": "CLK",
+      "data": "FROM_SYS",
+      "output": "CTO",
+      "trigger": "POSEDGE",
+      "scan": {"in": "CTI", "enable": "SE", "enable_polarity": "HIGH"}
+    },
+    "wbr": {
+      "side": "input", "core_pin": "TO_CORE", "sys_pin": "FROM_SYS",
+      "scan": true, "func_in_pin": "FROM_SYS", "chain_in_pin": "CTI",
+      "chain_out_pin": "CTO", "scan_enable_pin": "SE", "clock_pin": "CLK"
+    }
+  },
+  "\\$wbc_in_scan_faultflow": {
+    "node_type": "FF",
+    "inputs": ["CLK", "FROM_SYS", "CTI", "SE"],
+    "outputs": {"TO_CORE": "TO_CORE", "CTO": "CTO"},
+    "ff": {
+      "clock": "CLK",
+      "data": "FROM_SYS",
+      "output": "CTO",
+      "trigger": "POSEDGE",
+      "scan": {"in": "CTI", "enable": "SE", "enable_polarity": "HIGH"}
+    },
+    "wbr": {
+      "side": "input", "core_pin": "TO_CORE", "sys_pin": "FROM_SYS",
+      "scan": true, "func_in_pin": "FROM_SYS", "chain_in_pin": "CTI",
+      "chain_out_pin": "CTO", "scan_enable_pin": "SE", "clock_pin": "CLK"
+    }
+  },
+  "$wbc_out_scan_faultflow": {
+    "node_type": "FF",
+    "inputs": ["CLK", "FROM_CORE", "CTI", "SE"],
+    "outputs": {"TO_SYS": "TO_SYS", "CTO": "CTO"},
+    "ff": {
+      "clock": "CLK",
+      "data": "FROM_CORE",
+      "output": "CTO",
+      "trigger": "POSEDGE",
+      "scan": {"in": "CTI", "enable": "SE", "enable_polarity": "HIGH"}
+    },
+    "wbr": {
+      "side": "output", "core_pin": "FROM_CORE", "sys_pin": "TO_SYS",
+      "scan": true, "func_in_pin": "FROM_CORE", "chain_in_pin": "CTI",
+      "chain_out_pin": "CTO", "scan_enable_pin": "SE", "clock_pin": "CLK"
+    }
+  },
+  "\\$wbc_out_scan_faultflow": {
+    "node_type": "FF",
+    "inputs": ["CLK", "FROM_CORE", "CTI", "SE"],
+    "outputs": {"TO_SYS": "TO_SYS", "CTO": "CTO"},
+    "ff": {
+      "clock": "CLK",
+      "data": "FROM_CORE",
+      "output": "CTO",
+      "trigger": "POSEDGE",
+      "scan": {"in": "CTI", "enable": "SE", "enable_polarity": "HIGH"}
+    },
+    "wbr": {
+      "side": "output", "core_pin": "FROM_CORE", "sys_pin": "TO_SYS",
+      "scan": true, "func_in_pin": "FROM_CORE", "chain_in_pin": "CTI",
+      "chain_out_pin": "CTO", "scan_enable_pin": "SE", "clock_pin": "CLK"
+    }
+  },
   "LATCH": {"node_type": "LATCH"},
   "TBUFX*": {"node_type": "TBUF"},
   "PAD*": {"node_type": "GATE", "gate_type": "BUF", "unsupported": true}

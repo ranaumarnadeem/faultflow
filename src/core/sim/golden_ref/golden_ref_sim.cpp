@@ -80,7 +80,8 @@ void seed_ff_outputs(const CompiledSimGraph& cg,
 
 void evaluate_combinational(const CompiledSimGraph& cg,
                             std::vector<bool>& values,
-                            const CompactFault* fault) {
+                            const CompactFault* fault,
+                            const ModeConfig* mc = nullptr) {
   // Reused across nodes so the hot per-node eval does not heap-allocate a fresh
   // vector each time (the scan-pattern sim runs this thousands of times over a
   // large graph; the per-node alloc dominated the runtime).
@@ -97,6 +98,26 @@ void evaluate_combinational(const CompiledSimGraph& cg,
     }
     if (sn.type == GateType::CONST1) {
       values[sn.out] = true;
+      apply_fault(values, fault, sn.out);
+      return;
+    }
+    // Wrapper cells: FUNCTIONAL (mc == nullptr) is a transparent buffer of CFI
+    // (in0); under a ModeConfig a native scan WBR drives its functional output
+    // from the FF state q (in1) on its active side, or safe-0 on the inactive
+    // side. Handled here so the sequential scan-protocol gate is mode-faithful.
+    if (sn.type == GateType::WBR_IN || sn.type == GateType::WBR_OUT) {
+      const uint8_t act = (mc != nullptr)
+                              ? mc->wbr_action[sn.out]
+                              : static_cast<uint8_t>(WbrAction::PASS);
+      if (act == static_cast<uint8_t>(WbrAction::SKIP_STIMULUS)) {
+        // control point: keep the value already in place.
+      } else if (act == static_cast<uint8_t>(WbrAction::FORCE_ZERO)) {
+        values[sn.out] = false;
+      } else if (act == static_cast<uint8_t>(WbrAction::DRIVE_FROM_FF)) {
+        values[sn.out] = (sn.in1 != UNUSED_INPUT) ? values[sn.in1] : false;
+      } else {
+        values[sn.out] = (sn.in0 != UNUSED_INPUT) ? values[sn.in0] : false;
+      }
       apply_fault(values, fault, sn.out);
       return;
     }
@@ -177,6 +198,9 @@ std::vector<bool> run_comb_mode(const CompiledSimGraph& cg, const TestVector& ve
         // control point: keep the broadcast stimulus value.
       } else if (act == static_cast<uint8_t>(WbrAction::FORCE_ZERO)) {
         values[sn.out] = false;
+      } else if (act == static_cast<uint8_t>(WbrAction::DRIVE_FROM_FF)) {
+        values[sn.out] =
+            (sn.in1 != UNUSED_INPUT) ? values[sn.in1] : false;  // FF state q
       } else {
         values[sn.out] = (sn.in0 != UNUSED_INPUT) ? values[sn.in0] : false;
       }
@@ -445,17 +469,26 @@ std::vector<std::map<int, bool>> run_sequence(const CompiledSimGraph& cg,
       fault.exclusion == FaultExclusion::NONE ? &fault : nullptr;
   std::vector<std::map<int, bool>> samples;
 
+  // Mode-faithful scan-protocol replay: with native shiftable WBR cells the
+  // boundary mode-mux must drive the core/interconnect from the loaded FF state
+  // q in INTEST/EXTEST. Build the ModeConfig once (mode is fixed for the run).
+  const bool use_mode = vec.test_mode != TestMode::FUNCTIONAL &&
+                        !cg.wrapper_cells.empty();
+  const ModeConfig mode_cfg =
+      use_mode ? build_mode_config(cg, vec.test_mode) : ModeConfig{};
+  const ModeConfig* mcp = use_mode ? &mode_cfg : nullptr;
+
   for (const TestCycle& cycle : cycles_for(vec)) {
     const CompactFault* cycle_fault = cycle.fault_active ? active_fault : nullptr;
     broadcast_inputs(cg, cycle, values, cycle_fault);
     seed_ff_outputs(cg, ff_states, values, cycle_fault);
-    evaluate_combinational(cg, values, cycle_fault);
+    evaluate_combinational(cg, values, cycle_fault, mcp);
     update_ff_states(cg, values, prev_values, ff_states);
     seed_ff_outputs(cg, ff_states, values, cycle_fault);
-    evaluate_combinational(cg, values, cycle_fault);
+    evaluate_combinational(cg, values, cycle_fault, mcp);
     for (int i = 0; i < cycle.settle_cycles; ++i) {
       seed_ff_outputs(cg, ff_states, values, cycle_fault);
-      evaluate_combinational(cg, values, cycle_fault);
+      evaluate_combinational(cg, values, cycle_fault, mcp);
     }
     if (cycle.sample_outputs) {
       samples.push_back(sample_yids ? snapshot_sampled(cg, values, *sample_yids)
