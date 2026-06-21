@@ -1691,6 +1691,46 @@ class Runner:
         view, pseudo_port_map = build_scan_atpg_view(
             _load_json_object(generic_json), manifest
         )
+
+        # INTEST: fuse the wrapper boundary into the scan-reduced view so the
+        # wrapper boundary cells become pseudo-PI/PO alongside the scan FFs.
+        wbr_stimulus: dict[str, str] = {}
+        wbr_observe: dict[str, str] = {}
+        wbr_decoupled: frozenset[int] = frozenset()
+        test_mode = str(self.cfg.test_mode)
+        if test_mode == "extest":
+            # EXTEST controls the wrapper system side (top OUTPUT nets) and
+            # observes the system side of the inputs (top INPUT / interconnect
+            # nets). The scan golden gate reconciles against a plain FUNCTIONAL
+            # simulation of the *generic* netlist, which respects port directions
+            # and therefore cannot drive an output or observe an input. Wiring
+            # EXTEST through sim --scan needs a mode-aware generic gate and is
+            # deferred. The combinational EXTEST path (sim, without --scan) is
+            # unaffected.
+            raise RunnerError(
+                "EXTEST is not supported through sim --scan yet: the scan golden "
+                "gate cannot reconcile interconnect-side control/observe through a "
+                "functional generic simulation. Use INTEST for scan-integrated "
+                "wrapper coverage, or the combinational EXTEST path (sim without "
+                "--scan)."
+            )
+        if test_mode == "intest":
+            from faultflow.scan.wbr_view import (
+                build_wbr_generic_name_map,
+                fuse_wbr_into_view,
+            )
+
+            generic_data = _load_json_object(generic_json)
+            view, wbr_port_map = fuse_wbr_into_view(view, self.cfg.top, test_mode)
+            wbr_stimulus, wbr_observe, _decoupled = build_wbr_generic_name_map(
+                generic_data,
+                self.cfg.top,
+                wbr_port_map,
+                test_mode,
+                manifest,
+            )
+            wbr_decoupled = frozenset(_decoupled)
+
         atpg_view_path = self.cfg.intermediate_dir / "scan_atpg_view.json"
         pseudo_map_path = self.cfg.intermediate_dir / "scan_pseudo_port_map.json"
         atpg_view_path.write_text(
@@ -1713,10 +1753,16 @@ class Runner:
             generic_json,
             pseudo_port_map,
             functional_output_order,
+            wbr_stimulus_name_by_port=wbr_stimulus,
+            wbr_observe_name_by_port=wbr_observe,
+            wbr_decoupled_bits=wbr_decoupled,
         )
 
         from faultflow.scan.atpg_view import ATPG_VIEW_SCHEMA_VER
 
+        # An INTEST campaign cannot resume against a FUNCTIONAL one: test_mode is
+        # part of config_hash (see _config_fingerprint_payload), and the fused
+        # atpg_view netlist_hash also differs, so the resume guard already holds.
         fp = self._fingerprint(netlist)
         fp["manifest_hash"] = str(manifest.get("generic_json_hash", ""))
         fp["atpg_view_schema_ver"] = ATPG_VIEW_SCHEMA_VER
