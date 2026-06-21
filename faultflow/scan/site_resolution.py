@@ -43,6 +43,7 @@ def build_scan_execution_map(
     unsupported: str,
     pseudo_port_map: dict[str, dict[str, Any]],
     manifest: Mapping[str, Any],
+    wbr_decoupled_bits: frozenset[int] = frozenset(),
 ) -> tuple[dict[str, int], dict[str, str]]:
     generic_rows: list[dict[str, Any]] = list(
         core.list_site_keys(str(generic_json_path), str(generic_cell_map), unsupported)
@@ -89,6 +90,11 @@ def build_scan_execution_map(
         key = str(row["site_key"])
         yid = int(row["yosys_net_id"])
         kind = str(row["kind"])
+        # INTEST/EXTEST: system-side nets decoupled from the fused view have no
+        # reduced mapping and must be excluded rather than raising boundary_map_missing.
+        if yid in wbr_decoupled_bits:
+            exclusions[key] = "wbr_decoupled"
+            continue
         if yid in scan_chain_yids:
             exclusions[key] = "scan_chain"
             continue

@@ -183,6 +183,132 @@ def _drop_ppo_ports_and_observers(module: dict[str, Any]) -> None:
                 container.pop(name, None)
 
 
+def _bit_to_name_index(module: dict[str, Any]) -> dict[int, str]:
+    """Build a deterministic int-net-id -> name map for a top module.
+
+    Prefers a top-level port name over a netname entry. Among duplicates (two
+    ports / netnames share the same bit) the lexicographically smallest name
+    wins so the result is deterministic across JSON key orderings.
+    """
+
+    def _lex_smallest_by_bit(container: Any) -> dict[int, str]:
+        out: dict[int, str] = {}
+        if not isinstance(container, dict):
+            return out
+        for name, entry in container.items():
+            if not isinstance(entry, dict):
+                continue
+            for bit in _all_int_bits(entry.get("bits")):
+                if bit not in out or str(name) < out[bit]:
+                    out[bit] = str(name)
+        return out
+
+    net_idx = _lex_smallest_by_bit(module.get("netnames", {}))
+    port_idx = _lex_smallest_by_bit(module.get("ports", {}))
+    # Ports always win over netnames; within each tier the lex-smallest name wins
+    # so the result is deterministic across JSON key orderings.
+    return {**net_idx, **port_idx}
+
+
+def build_wbr_generic_name_map(
+    generic_json: dict[str, Any],
+    top: str,
+    wbr_port_map: dict[str, dict[str, Any]],
+    mode: str,
+    manifest: dict[str, Any] | None = None,
+) -> tuple[dict[str, str], dict[str, str], set[int]]:
+    """Map fused INTEST boundary port names back to their generic-netlist names.
+
+    The C++ scan golden gate always simulates the *generic* netlist (which still
+    carries the real ``$wbc_*`` transparent-buffer cells) in plain FUNCTIONAL
+    mode, so before handing it stimulus / observe keys we must translate the
+    fused names (``__wbi_*``, ``__wbo_*``) back to the generic top-port names
+    that carry the same physical signal.
+
+    In INTEST this reconciliation is exact because the boundary control/observe
+    aligns with port direction:
+      * wbc_in  : ``__wbi_<inst>`` drives the core net == (through the transparent
+                  buffer) the wbc_in system-side **input** port ``name(sys_net)``.
+      * wbc_out : ``__wbo_<inst>`` observes the core net == the wbc_out system-side
+                  **output** port ``name(sys_net)``.
+    The system-side ``sys_net`` bits are decoupled (their top ports were dropped
+    from the fused view) and must be tagged ``wbr_decoupled`` in the generic
+    denominator.
+
+    EXTEST is intentionally NOT supported here: it would need to drive a top
+    OUTPUT net and observe a top INPUT/internal net, which a direction-respecting
+    functional simulation of the generic netlist cannot do (see
+    ``Runner._sim_scan``). FUNCTIONAL needs no mapping.
+
+    Returns ``(stimulus_name_by_fused_port, observe_name_by_fused_port,
+    decoupled_generic_bits)``.
+
+    Guard: stimulus entries whose resolved generic name is a clock / scan-enable
+    / scan-input port (from ``manifest``) are omitted — those pins are driven by
+    the scan protocol, not the wrapper. An unresolvable boundary net (no generic
+    port or netname) is a hard error: it would otherwise leak a literal fused
+    ``__wbi_*``/``__wbo_*`` name into the generic sim as an unknown port.
+    """
+    if mode == "functional":
+        return {}, {}, set()
+    if mode != "intest":
+        raise ScanError(
+            "build_wbr_generic_name_map supports only INTEST golden-gate "
+            f"reconciliation, not {mode!r} (see Runner._sim_scan)"
+        )
+
+    _, module = _top_module(generic_json, top)
+    bit_name = _bit_to_name_index(module)
+
+    # Build the set of clock / scan-enable / scan-input port names we must not
+    # drive — those are owned by the scan protocol, not the wrapper boundary.
+    clock_scan_ports: set[str] = set()
+    if manifest is not None:
+        clock_nets_raw = manifest.get("clock_nets")
+        if isinstance(clock_nets_raw, list):
+            clock_ids = [int(n) for n in clock_nets_raw if isinstance(n, int)]
+        else:
+            clk = manifest.get("clock_net")
+            clock_ids = [int(clk)] if isinstance(clk, int) else []
+        for cid in clock_ids:
+            if cid in bit_name:
+                clock_scan_ports.add(bit_name[cid])
+        se = manifest.get("scan_enable")
+        if isinstance(se, str):
+            clock_scan_ports.add(se)
+        for si in manifest.get("scan_inputs", []):
+            clock_scan_ports.add(str(si))
+
+    stimulus: dict[str, str] = {}
+    observe: dict[str, str] = {}
+    decoupled: set[int] = set()
+
+    for instance, entry in wbr_port_map.items():
+        fused_port = str(entry.get("port", ""))
+        sys_net = int(entry.get("sys_net", -1))
+        role = str(entry.get("role", ""))  # "ppi" = input, "ppo" = output
+
+        # sys_net is the generic signal that the fused view decoupled.
+        if sys_net >= 0:
+            decoupled.add(sys_net)
+        generic_name = bit_name.get(sys_net, "")
+        if not generic_name:
+            raise ScanError(
+                f"wrapper boundary {instance}: system net {sys_net} has no port "
+                f"or netname in generic top {top!r}; cannot reconcile to the "
+                "scan golden gate"
+            )
+        if role == "ppi":
+            # __wbi_<inst> drives what used to be the sys-side input port.
+            if generic_name not in clock_scan_ports:
+                stimulus[fused_port] = generic_name
+        else:
+            # __wbo_<inst> observes what used to be the sys-side output port.
+            observe[fused_port] = generic_name
+
+    return stimulus, observe, decoupled
+
+
 def fuse_wbr_into_view(
     view: dict[str, Any], top: str, mode: str = "intest"
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:

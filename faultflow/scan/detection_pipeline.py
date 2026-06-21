@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +29,7 @@ from faultflow.runner.progressive_atpg import (
 from faultflow.runner.runner import RunnerError
 from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX
 from faultflow.scan.cell_map import resolve_scan_cell_map
-from faultflow.scan.protocol import serialize_vector
+from faultflow.scan.protocol import ScanPattern, serialize_vector
 from faultflow.scan.domain_reach import (
     compute_cross_domain_net_ids,
     tag_cross_domain_exclusions,
@@ -53,6 +53,12 @@ class ScanPipelineContext:
     pseudo_port_map: dict[str, dict[str, Any]]
     functional_output_order: list[str]
     q_stem_site_keys: frozenset[str]
+    # INTEST/EXTEST boundary name-mapping (empty for FUNCTIONAL).
+    # Maps fused pseudo-port names back to their generic-netlist counterparts
+    # so the golden gate can drive/observe the real (un-fused) netlist.
+    wbr_stimulus_name_by_port: dict[str, str] = field(default_factory=dict)
+    wbr_observe_name_by_port: dict[str, str] = field(default_factory=dict)
+    wbr_decoupled_bits: frozenset[int] = frozenset()
 
 
 @dataclass
@@ -68,6 +74,9 @@ def build_scan_pipeline_context(
     generic_json: Path,
     pseudo_port_map: dict[str, dict[str, Any]],
     functional_output_order: list[str],
+    wbr_stimulus_name_by_port: dict[str, str] | None = None,
+    wbr_observe_name_by_port: dict[str, str] | None = None,
+    wbr_decoupled_bits: frozenset[int] | None = None,
 ) -> ScanPipelineContext:
     q_stems = {
         str(entry["boundary"]["q_stem_site_key"])
@@ -81,6 +90,11 @@ def build_scan_pipeline_context(
         pseudo_port_map=pseudo_port_map,
         functional_output_order=functional_output_order,
         q_stem_site_keys=frozenset(q_stems),
+        wbr_stimulus_name_by_port=wbr_stimulus_name_by_port or {},
+        wbr_observe_name_by_port=wbr_observe_name_by_port or {},
+        wbr_decoupled_bits=(
+            wbr_decoupled_bits if wbr_decoupled_bits is not None else frozenset()
+        ),
     )
 
 
@@ -189,15 +203,31 @@ def _protocol_fault_sim_kwargs(
     scan_outputs = ctx.manifest.get("scan_outputs", [])
     if not isinstance(scan_inputs, list) or not isinstance(scan_outputs, list):
         raise RunnerError("manifest scan_inputs/scan_outputs must be lists")
+    # INTEST/EXTEST: remap fused boundary port names to generic netlist names.
+    # capture_pi_values carries both __wbi_ stimulus and __wbo_ observe keys, so
+    # the rename must cover both maps (see _process_scan_candidate).
+    stim_map = ctx.wbr_stimulus_name_by_port
+    obs_map = ctx.wbr_observe_name_by_port
+    rename = {**stim_map, **obs_map}
+    gate_pi_values = (
+        {rename.get(k, k): v for k, v in pattern.capture_pi_values.items()}
+        if rename
+        else pattern.capture_pi_values
+    )
+    gate_output_ports = (
+        [obs_map.get(p, p) for p in ctx.functional_output_order]
+        if obs_map
+        else ctx.functional_output_order
+    )
     return {
         "clock_ports": clock_ports,
         "scan_enable_port": str(ctx.manifest["scan_enable"]),
         "scan_input_ports": [str(name) for name in scan_inputs],
         "scan_output_ports": [str(name) for name in scan_outputs],
-        "functional_output_ports": ctx.functional_output_order,
+        "functional_output_ports": gate_output_ports,
         "max_chain_length": int(ctx.manifest.get("max_chain_length", 0)),
         "load_seqs": pattern.load_seqs,
-        "capture_pi_values": pattern.capture_pi_values,
+        "capture_pi_values": gate_pi_values,
     }
 
 
@@ -432,14 +462,43 @@ def _process_scan_candidate(
     )
     conn.commit()
 
+    # INTEST/EXTEST: remap fused boundary port names to generic netlist names
+    # so the golden gate drives/observes the unwrapped (generic) netlist correctly.
+    # `serialize_vector` packs every non-PPI/PPO key (both __wbi_ stimulus AND
+    # __wbo_ observe outputs that bled into materialized_launch) into
+    # capture_pi_values, so the rename must cover BOTH maps -- otherwise an
+    # unmapped __wbo_ key reaches the generic sim as an unknown port.
+    _stim_map = scan_ctx.wbr_stimulus_name_by_port
+    _obs_map = scan_ctx.wbr_observe_name_by_port
+    _rename = {**_stim_map, **_obs_map}
+    if _rename:
+        gate_scan_pattern = ScanPattern(
+            load_seqs=scan_pattern.load_seqs,
+            capture_pi_values={
+                _rename.get(k, k): v for k, v in scan_pattern.capture_pi_values.items()
+            },
+            expected_unload=scan_pattern.expected_unload,
+        )
+    else:
+        gate_scan_pattern = scan_pattern
+    gate_output_order = (
+        [_obs_map.get(p, p) for p in scan_ctx.functional_output_order]
+        if _obs_map
+        else scan_ctx.functional_output_order
+    )
+    gate_reduced = (
+        {_obs_map.get(k, k): v for k, v in reduced_expectation.items()}
+        if _obs_map
+        else reduced_expectation
+    )
     try:
         reduced_protocol_matches(
             scan_ctx.cfg,
             scan_ctx.manifest,
             scan_ctx.generic_json,
-            scan_pattern,
-            reduced_vector=reduced_expectation,
-            functional_output_order=scan_ctx.functional_output_order,
+            gate_scan_pattern,
+            reduced_vector=gate_reduced,
+            functional_output_order=gate_output_order,
             loc_two_capture=is_loc,
             los_two_capture=is_los,
             los_launch_scan_in=head_bits,
@@ -737,6 +796,7 @@ def run_progressive_scan_atpg(
         unsupported,
         scan_ctx.pseudo_port_map,
         scan_ctx.manifest,
+        scan_ctx.wbr_decoupled_bits,
     )
     # For transition faults in multi-domain designs, tag cross-domain fault sites.
     if cfg.fault_model.model == "transition":

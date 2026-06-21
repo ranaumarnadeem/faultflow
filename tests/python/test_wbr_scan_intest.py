@@ -27,7 +27,12 @@ from pathlib import Path
 
 import pytest
 
-from faultflow.scan.wbr_view import WBI_PREFIX, WBO_PREFIX, fuse_wbr_into_view
+from faultflow.scan.wbr_view import (
+    WBI_PREFIX,
+    WBO_PREFIX,
+    build_wbr_generic_name_map,
+    fuse_wbr_into_view,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 CELL_MAP = ROOT / "cells/osu/osu035.json"
@@ -134,6 +139,29 @@ def test_functional_mode_is_noop() -> None:
     fused, port_map = fuse_wbr_into_view(_reduced_wrapped_view(), TOP, "functional")
     assert port_map == {}
     assert "IN" in fused["modules"][TOP]["ports"]  # untouched
+
+
+def test_build_wbr_generic_name_map_intest() -> None:
+    """The fused boundary ports map back to the generic top-port names, and the
+    system-side nets are collected as decoupled (so they leave the denominator)."""
+    # name mapping is computed against the *generic* (pre-fusion) netlist, while
+    # the port map comes from fusing a separate copy.
+    generic = _reduced_wrapped_view()
+    _, port_map = fuse_wbr_into_view(_reduced_wrapped_view(), TOP, "intest")
+
+    stim, obs, decoupled = build_wbr_generic_name_map(generic, TOP, port_map, "intest")
+
+    assert stim == {f"{WBI_PREFIX}wbc_in0": "IN"}
+    assert obs == {f"{WBO_PREFIX}wbc_out0": "OUT"}
+    assert decoupled == {2, 7}  # IN net + OUT net are decoupled in INTEST
+
+
+def test_build_wbr_generic_name_map_functional_is_empty() -> None:
+    generic = _reduced_wrapped_view()
+    stim, obs, decoupled = build_wbr_generic_name_map(generic, TOP, {}, "functional")
+    assert stim == {}
+    assert obs == {}
+    assert decoupled == set()
 
 
 @pytest.mark.golden

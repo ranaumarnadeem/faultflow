@@ -83,6 +83,80 @@ def _parser() -> argparse.ArgumentParser:
         help="Override [fault_model] model for this sim run",
     )
 
+    def add_wrapper_mode_opts(p: argparse.ArgumentParser) -> None:
+        add_common(p)
+        p.add_argument(
+            "--purge",
+            action="store_true",
+            help="Remove transient junk inside output/<top>/.faultflow/ before run",
+        )
+        p.add_argument(
+            "--clean",
+            action="store_true",
+            help=(
+                "Remove output/<top>/.faultflow/ internal workspace before run; "
+                "deliverables at output/<top>/ are kept. Needed when switching "
+                "between intest/extest (test mode is part of the campaign "
+                "fingerprint)"
+            ),
+        )
+        p.add_argument(
+            "--max",
+            type=int,
+            metavar="ROUNDS",
+            help="Maximum progressive ATPG rounds (default: [atpg] max_rounds or 20)",
+        )
+        p.add_argument(
+            "-t",
+            dest="target_coverage",
+            type=float,
+            metavar="PCT",
+            help="Target coverage percent to stop ATPG (default: [report] threshold)",
+        )
+
+    intest = sub.add_parser(
+        "intest",
+        help=(
+            "IEEE 1500 INTEST: scan-integrated wrapper coverage of the core "
+            "(== sim --scan with test mode forced to intest)"
+        ),
+    )
+    add_wrapper_mode_opts(intest)
+
+    extest = sub.add_parser(
+        "extest",
+        help=(
+            "IEEE 1500 EXTEST: wrapper-boundary / interconnect coverage with the "
+            "core held safe (combinational ATPG on the fused boundary view)"
+        ),
+    )
+    add_wrapper_mode_opts(extest)
+
+    project = sub.add_parser(
+        "project",
+        help=(
+            "Hierarchical project: run per-block INTEST + assembly EXTEST and "
+            "aggregate one chip coverage number"
+        ),
+    )
+    project.add_argument(
+        "-p", "--project", type=Path, required=True, help="Project manifest JSON"
+    )
+    project.add_argument("--clean", action="store_true", help="Clean scope workspaces")
+    project.add_argument(
+        "--max",
+        type=int,
+        metavar="ROUNDS",
+        help="Max progressive ATPG rounds per scope",
+    )
+    project.add_argument(
+        "-t",
+        dest="target_coverage",
+        type=float,
+        metavar="PCT",
+        help="Target coverage percent per scope",
+    )
+
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
     status.add_argument(
@@ -190,6 +264,24 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "run":
             return _handle_run(args, parser)
+        if args.command == "project":
+            if args.max is not None and args.max < 1:
+                parser.error("--max must be >= 1")
+            if args.target_coverage is not None and not (
+                0.0 < args.target_coverage <= 100.0
+            ):
+                parser.error("-t must be in (0, 100]")
+            print(
+                FlowService(runner_factory=Runner)
+                .run_project(
+                    args.project,
+                    max_rounds=args.max,
+                    target_coverage=args.target_coverage,
+                    clean=args.clean,
+                )
+                .message
+            )
+            return 0
         cfg = load_config(Path(args.config), args.top)
         service = FlowService(runner_factory=Runner)
         if args.command == "init":
@@ -236,6 +328,26 @@ def main(argv: list[str] | None = None) -> int:
                 print(service.run_atpg(cfg, **sim_kwargs).message)
             else:
                 print(service.run_atpg(cfg, **sim_kwargs, ext=args.ext).message)
+        elif args.command in ("intest", "extest"):
+            import dataclasses
+
+            if args.max is not None and args.max < 1:
+                parser.error("--max must be >= 1")
+            if args.target_coverage is not None and not (
+                0.0 < args.target_coverage <= 100.0
+            ):
+                parser.error("-t must be in (0, 100]")
+            mode_cfg = dataclasses.replace(cfg, test_mode=args.command)
+            print(
+                service.run_atpg(
+                    mode_cfg,
+                    purge=args.purge,
+                    clean=args.clean,
+                    max_rounds=args.max,
+                    target_coverage=args.target_coverage,
+                    scan=True,
+                ).message
+            )
         elif args.command == "status":
             print(service.status(cfg, scan=args.scan).message)
         elif args.command == "scan":
