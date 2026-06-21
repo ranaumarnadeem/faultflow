@@ -32,9 +32,12 @@ def test_redundancy_model_id_is_stable() -> None:
         "include_clock_faults": 0,
         "include_reset_faults": 0,
     }
-    # fault_model, launch, and blackbox_instances are part of the fingerprint;
-    # absent -> stuck_at / loc / [].
-    assert redundancy_model_id(fp) == "abc|def|0|fail|0|0|stuck_at|loc|[]"
+    # fault_model, launch, blackbox_instances, test_mode, and wbr_model are part
+    # of the fingerprint; absent -> stuck_at / loc / [] / functional / buffer.
+    assert (
+        redundancy_model_id(fp)
+        == "abc|def|0|fail|0|0|stuck_at|loc|[]|functional|buffer"
+    )
 
 
 def test_summary_includes_redundant(tmp_path: Path) -> None:

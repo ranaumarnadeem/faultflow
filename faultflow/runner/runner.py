@@ -251,6 +251,10 @@ class Runner:
             # IEEE 1500 test mode reconfigures the observable/control point sets,
             # so INTEST and EXTEST are distinct runs from FUNCTIONAL.
             "test_mode": self.cfg.test_mode,
+            # The native shiftable WBR model adds the boundary register as a scan
+            # chain (new control/observe points + fault sites), so buffer<->scan is
+            # a distinct campaign.
+            "wbr_model": self.cfg.wbr_model,
         }
 
     def _rendered_yosys_script(self, source: Path | None = None) -> str:
@@ -306,6 +310,8 @@ class Runner:
             "include_reset_faults": int(self.cfg.fault_model.include_reset_faults),
             "fault_model": self.cfg.fault_model.model,
             "blackbox_instances": list(self.cfg.blackbox_instances),
+            "test_mode": self.cfg.test_mode,
+            "wbr_model": self.cfg.wbr_model,
         }
 
     def _stored_fingerprint(

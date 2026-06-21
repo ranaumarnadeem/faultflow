@@ -591,7 +591,8 @@ py::dict simulate_scan_pattern_py(
     const std::string& unsupported_policy, bool loc_two_capture,
     bool los_two_capture,
     const std::map<int, bool>& los_launch_scan_in,
-    const std::vector<std::string>& active_clock_ports) {
+    const std::vector<std::string>& active_clock_ports,
+    const std::string& test_mode = "") {
   scan::ScanPatternRequest request;
   request.clock_ports = clock_ports;
   request.clock_off_states = clock_off_states;
@@ -606,6 +607,7 @@ py::dict simulate_scan_pattern_py(
   request.los_two_capture = los_two_capture;
   request.los_launch_scan_in = los_launch_scan_in;
   request.active_clock_ports = active_clock_ports;
+  request.test_mode = parse_test_mode(test_mode);
   const scan::ScanPatternResult result = scan::simulate_scan_pattern(
       json_path, cell_map_path, request, unsupported_policy);
   py::dict out;
@@ -632,7 +634,8 @@ py::dict simulate_scan_protocol_faults_py(
     const std::vector<std::pair<uint32_t, uint8_t>>& faults,
     const std::string& unsupported_policy, bool loc_two_capture,
     bool los_two_capture, const std::map<int, bool>& los_launch_scan_in,
-    const std::vector<std::string>& active_clock_ports) {
+    const std::vector<std::string>& active_clock_ports,
+    const std::string& test_mode = "") {
   scan::ScanProtocolFaultRequest request;
   request.pattern.clock_ports = clock_ports;
   request.pattern.clock_off_states = clock_off_states;
@@ -647,6 +650,7 @@ py::dict simulate_scan_protocol_faults_py(
   request.pattern.los_two_capture = los_two_capture;
   request.pattern.los_launch_scan_in = los_launch_scan_in;
   request.pattern.active_clock_ports = active_clock_ports;
+  request.pattern.test_mode = parse_test_mode(test_mode);
   request.faults.reserve(faults.size());
   for (const auto& [net_index, fault_type] : faults) {
     scan::ScanProtocolFaultSpec spec;
@@ -845,7 +849,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("capture_pi_values"), py::arg("unsupported_policy") = "fail",
         py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
         py::arg("los_launch_scan_in") = std::map<int, bool>{},
-        py::arg("active_clock_ports") = std::vector<std::string>{});
+        py::arg("active_clock_ports") = std::vector<std::string>{},
+        py::arg("test_mode") = "");
   m.def("simulate_scan_protocol_faults",
         &faultflow::simulate_scan_protocol_faults_py,
         py::arg("json_path"), py::arg("cell_map_path"),
@@ -858,7 +863,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("unsupported_policy") = "fail",
         py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
         py::arg("los_launch_scan_in") = std::map<int, bool>{},
-        py::arg("active_clock_ports") = std::vector<std::string>{});
+        py::arg("active_clock_ports") = std::vector<std::string>{},
+        py::arg("test_mode") = "");
   m.def("list_site_keys", &faultflow::list_site_keys_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail");
 }

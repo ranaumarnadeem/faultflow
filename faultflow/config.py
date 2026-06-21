@@ -159,6 +159,11 @@ class FaultflowConfig:
     # EXTEST reconfigure the wrapper boundary control/observe points, so they are
     # distinct runs (part of the fingerprint).
     test_mode: str = "functional"
+    # IEEE 1500 wrapper boundary cell model: "buffer" (transparent $wbc_*_faultflow)
+    # or "scan" (native shiftable $wbc_*_scan_faultflow, Stage 4). The scan model
+    # adds the wrapper boundary register as a real scan chain — control/observe
+    # points and fault sites differ, so it is part of the fingerprint.
+    wbr_model: str = "buffer"
 
     @property
     def output_dir(self) -> Path:
@@ -382,6 +387,10 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     if test_mode not in {"functional", "intest", "extest"}:
         raise ConfigError("testmode.mode must be 'functional', 'intest', or 'extest'")
 
+    wbr_model = parser.get("wrap", "wbr_model", fallback="buffer").strip().lower()
+    if wbr_model not in {"buffer", "scan"}:
+        raise ConfigError("wrap.wbr_model must be 'buffer' or 'scan'")
+
     return FaultflowConfig(
         path=cfg_path,
         top=top,
@@ -438,4 +447,5 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             max_points=_int(parser, "testpoint", "max_points", 10),
         ),
         test_mode=test_mode,
+        wbr_model=wbr_model,
     )
