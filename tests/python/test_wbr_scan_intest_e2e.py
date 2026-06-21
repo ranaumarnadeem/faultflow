@@ -321,13 +321,54 @@ def test_intest_scan_fusion_yields_real_coverage(
         assert orphan == 0
 
 
-def test_extest_scan_is_rejected(tmp_path: Path) -> None:
-    """EXTEST via sim --scan is not reconcilable through a functional generic
-    gate (it would drive top outputs / observe top inputs), so the runner must
-    reject it with a clear, actionable error rather than silently mis-grade.
-    Needs no C++ core: the guard fires before any simulation."""
-    from faultflow.runner import RunnerError
-
+@pytest.mark.golden
+def test_extest_scan_yields_interconnect_coverage(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """EXTEST fuses to a combinational boundary view (core safed, __ppo_ dropped)
+    and runs plain native ATPG on it. The wrapper boundary nets (D's FROM_SYS =
+    net 3, Q's TO_SYS = net 6) are controllable+observable interconnect faults
+    and must be detected; the dead-core nets behind the const-0 safe (e.g. the
+    D-cone net 9) are unobservable here and must be redundant/excluded, leaving
+    the denominator so coverage reflects the testable boundary."""
     runner = _install_wrapped_scan_workspace(tmp_path, mode="extest")
-    with pytest.raises(RunnerError, match="EXTEST is not supported through sim --scan"):
-        runner.sim(scan=True)
+
+    # Routes through Runner.sim -> _sim_extest (combinational ATPG on fused view).
+    result = runner.sim(scan=True)
+    assert "mode=extest" in result
+
+    db_path = runner.cfg.db_path
+    campaign_id = _scan_campaign_id(db_path)
+
+    with connect(db_path) as conn:
+        cov = summary(conn, campaign_id=campaign_id)
+        # Real interconnect coverage (boundary faults detected, dead core out).
+        assert cov["coverage_percent"] > 0.0
+
+        # A wrapper-boundary fault (net 3 = D/FROM_SYS or net 6 = Q/TO_SYS) is
+        # detected -- these are exactly what EXTEST is meant to cover.
+        boundary_detected = conn.execute(
+            """
+            SELECT COUNT(*) FROM faults
+            WHERE campaign_id = ?
+              AND status = 'detected'
+              AND (fault_site_key LIKE 'net:3:%' OR fault_site_key LIKE 'net:6:%')
+            """,
+            (campaign_id,),
+        ).fetchone()[0]
+        assert boundary_detected > 0, "no wrapper-boundary fault detected in EXTEST"
+
+        # The behind-safe core net 9 is unobservable in the EXTEST view, so it
+        # must NOT count toward the denominator (redundant or excluded).
+        core_in_denom = conn.execute(
+            """
+            SELECT COUNT(*) FROM faults
+            WHERE campaign_id = ?
+              AND fault_site_key LIKE 'net:9:%'
+              AND exclusion = 'none'
+              AND collapsed_into IS NULL
+              AND status != 'redundant'
+            """,
+            (campaign_id,),
+        ).fetchone()[0]
+        assert core_in_denom == 0, "dead-core fault wrongly left in EXTEST denominator"

@@ -1465,6 +1465,16 @@ class Runner:
                 "format would be required."
             )
         if scan:
+            # EXTEST tests only the wrapper boundary/interconnect with a dead
+            # core, so its fused view is combinational -- it runs through plain
+            # native ATPG, not the scan protocol pipeline (see _sim_extest).
+            if str(self.cfg.test_mode) == "extest":
+                return self._sim_extest(
+                    purge=purge,
+                    clean=clean,
+                    max_rounds=max_rounds,
+                    target_coverage=target_coverage,
+                )
             return self._sim_scan(
                 purge=purge,
                 clean=clean,
@@ -1697,23 +1707,9 @@ class Runner:
         wbr_stimulus: dict[str, str] = {}
         wbr_observe: dict[str, str] = {}
         wbr_decoupled: frozenset[int] = frozenset()
+        # EXTEST is routed to _sim_extest before reaching here (see sim()); this
+        # path handles FUNCTIONAL and INTEST scan campaigns only.
         test_mode = str(self.cfg.test_mode)
-        if test_mode == "extest":
-            # EXTEST controls the wrapper system side (top OUTPUT nets) and
-            # observes the system side of the inputs (top INPUT / interconnect
-            # nets). The scan golden gate reconciles against a plain FUNCTIONAL
-            # simulation of the *generic* netlist, which respects port directions
-            # and therefore cannot drive an output or observe an input. Wiring
-            # EXTEST through sim --scan needs a mode-aware generic gate and is
-            # deferred. The combinational EXTEST path (sim, without --scan) is
-            # unaffected.
-            raise RunnerError(
-                "EXTEST is not supported through sim --scan yet: the scan golden "
-                "gate cannot reconcile interconnect-side control/observe through a "
-                "functional generic simulation. Use INTEST for scan-integrated "
-                "wrapper coverage, or the combinational EXTEST path (sim without "
-                "--scan)."
-            )
         if test_mode == "intest":
             from faultflow.scan.wbr_view import (
                 build_wbr_generic_name_map,
@@ -1852,6 +1848,133 @@ class Runner:
         return (
             f"sim complete top={self.cfg.top} mode=scan "
             f"vectors={vectors.count}{scan_compaction_note} "
+            f"source={vectors.source} sidecar={atpg_view_path} "
+            f"coverage={report['summary']['coverage_percent']:.3f}% "
+            f"atpg_seconds={atpg_seconds:.3f} "
+            f"fault_sim_seconds={fault_sim_seconds:.3f} "
+            f"atpg_terminal={atpg_stats.terminal_reason} "
+            f"report={txt_path} json={json_path}{purge_note}{clean_note}"
+        )
+
+    def _sim_extest(
+        self,
+        *,
+        purge: bool = False,
+        clean: bool = False,
+        max_rounds: int | None = None,
+        target_coverage: float | None = None,
+    ) -> str:
+        """EXTEST coverage on a scan-wrapped core.
+
+        EXTEST holds the core dead/safe and tests only the wrapper boundary +
+        interconnect, so after fusing the scan-reduced view with
+        ``fuse_wbr_into_view(mode="extest")`` the result is a COMBINATIONAL
+        netlist: ``__wbo_ctl_*`` inputs + top PIs drive the interconnect,
+        ``__wbi_obs_*`` outputs + top POs observe it, and the core is const-0
+        safed with its scan observe points dropped. We therefore run plain
+        combinational native ATPG on the fused view -- not the scan protocol
+        pipeline, which exists only to reconcile abstracted FF Q-stems that this
+        view doesn't have. Dead-core faults are unobservable here and fall out as
+        SAT-redundant, so coverage reflects the testable interconnect.
+        """
+        from faultflow.runner.progressive_atpg import (
+            redundancy_model_id,
+            run_progressive_native_atpg,
+        )
+        from faultflow.scan.atpg_view import ATPG_VIEW_SCHEMA_VER
+        from faultflow.scan.cell_map import resolve_scan_cell_map
+        from faultflow.scan.wbr_view import (
+            WBR_SCAN_EXTEST_VIEW_SCHEMA_VER,
+            fuse_wbr_into_view,
+        )
+
+        total_start = time.perf_counter()
+        self.cfg.ensure_workspace()
+        cleaned = self._clean_workspace() if clean else 0
+        removed = self._purge_transients() if purge else 0
+
+        manifest = self._preflight_sim_scan()
+        generic_json = Path(str(manifest["generic_json"]))
+        view, _pseudo_port_map = build_scan_atpg_view(
+            _load_json_object(generic_json), manifest
+        )
+        view, _wbr_port_map = fuse_wbr_into_view(view, self.cfg.top, "extest")
+
+        atpg_view_path = self.cfg.intermediate_dir / "scan_atpg_view.json"
+        atpg_view_path.write_text(
+            json.dumps(view, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        netlist = atpg_view_path
+        scan_cell_map = resolve_scan_cell_map(self.cfg)
+
+        fp = self._fingerprint(netlist)
+        fp["manifest_hash"] = str(manifest.get("generic_json_hash", ""))
+        # The fused EXTEST view is structurally distinct from the INTEST/FUNCTIONAL
+        # views (different netlist_hash) and test_mode is in config_hash, so the
+        # EXTEST campaign is already isolated; tag the schema ver for clarity.
+        fp["atpg_view_schema_ver"] = (
+            f"{ATPG_VIEW_SCHEMA_VER}+{WBR_SCAN_EXTEST_VIEW_SCHEMA_VER}"
+        )
+        with self._db(scan=True) as conn:
+            campaign_id = self._check_fingerprint(conn, fp, scan=True)
+            abort_pending_candidates(conn, campaign_id)
+
+        model_id = redundancy_model_id(fp)
+        # Fusion removed every $wbc_* cell (replaced by const-0 safe drivers +
+        # observe buffers + ctl/obs ports), so cg.wrapper_cells is empty and the
+        # C++ mode-aware gate is a no-op: combinational ATPG runs plain on the
+        # EXTEST configuration already baked into the netlist structure.
+        vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
+            run_progressive_native_atpg(
+                self.cfg,
+                netlist,
+                model_id,
+                campaign_id=campaign_id,
+                max_rounds=max_rounds,
+                target_coverage=target_coverage,
+                cell_map_path=scan_cell_map,
+            )
+        )
+
+        if self.cfg.atpg.compaction != "none":
+            from faultflow.runner.compaction import compact_run
+
+            vectors, run_id, raw_vectors = compact_run(
+                json_path=str(netlist),
+                cell_map_path=str(scan_cell_map),
+                db_path=str(self.cfg.db_path),
+                campaign_id=campaign_id,
+                run_id=run_id,
+                vectors=vectors,
+                unsupported=self.cfg.simulation.unsupported_cells,
+            )
+        else:
+            raw_vectors = vectors.count
+
+        total_seconds = time.perf_counter() - total_start
+        self._write_run_timings(run_id, atpg_seconds, fault_sim_seconds, total_seconds)
+
+        scan_context = {
+            "pseudo_port_map": {},
+            "manifest_hash": str(manifest.get("generic_json_hash", "")),
+        }
+        with self._db(scan=True) as conn:
+            json_path, txt_path, report = write_reports(
+                conn,
+                self.cfg,
+                scan_context=scan_context,
+                campaign_id=campaign_id,
+            )
+
+        purge_note = f" purged_transients={removed}" if purge else ""
+        clean_note = f" cleaned_db_files={cleaned}" if clean else ""
+        compaction_note = (
+            f" raw_vectors={raw_vectors}" if raw_vectors != vectors.count else ""
+        )
+        return (
+            f"sim complete top={self.cfg.top} mode=extest "
+            f"vectors={vectors.count}{compaction_note} "
             f"source={vectors.source} sidecar={atpg_view_path} "
             f"coverage={report['summary']['coverage_percent']:.3f}% "
             f"atpg_seconds={atpg_seconds:.3f} "
