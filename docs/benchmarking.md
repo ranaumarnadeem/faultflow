@@ -81,6 +81,70 @@ The native ATPG can be compared against a reference flow:
   `[fault_model] model = stuck_at` and then `model = transition` gives a side-by-side
   coverage comparison for the two fault models.
 
+## Reference baseline: Fault v0.9.4
+
+[Fault](https://github.com/AUCOHL/Fault) is an open-source fault simulator for combinational
+and sequential logic. It uses a probabilistic (PRNG) test-vector generation strategy and supports
+scan insertion for test compression.
+
+The key methodological difference between Fault and faultflow is the **netlist representation**:
+Fault removes flip-flops before simulation (a combinational "cut"), while faultflow preserves the
+sequential circuit topology and uses native SAT ATPG or user-supplied vectors to exercise it
+directly. This means coverage numbers are not directly comparable — Fault's coverage is over the
+cut (combinational) netlist, while faultflow's ISCAS-89 results are for sequential scan-aware
+patterns. For ISCAS-85 (already combinational), the methodology is closer, though Fault adds a
+`dummy_clk` port not connected to any logic.
+
+### ISCAS-85 (Combinational)
+
+Pure combinational logic (Fault injects a `dummy_clk` port into RTL before synthesis).
+
+| Design | Gates | Fault Sites | Coverage | Compact TVs | Synth | Sim |
+|--------|------:|------------:|---------:|------------:|------:|----:|
+| c17 | 6 | 25 | 100.00% | 4 | 31s | 36s |
+| c432 | 101 | 388 | 98.71% | 18 | 30s | 44s |
+| c499 | 174 | 603 | 96.10% | 16 | 30s | 48s |
+
+### ISCAS-89 (Sequential)
+
+Sequential circuits with flip-flops removed by Fault's combinational cut. Coverage is over the
+resulting cut (combinational) netlist, not the original sequential circuit.
+
+| Design | Gates | Fault Sites | Coverage | Compact TVs | Synth | Sim |
+|--------|------:|------------:|---------:|------------:|------:|----:|
+| s27 | 15 | 45 | 86.67% | 6 | 34s | 43s |
+| s208 | 53 | 162 | 79.63% | 12 | 34s | 55s |
+| s298 | 91 | 280 | 90.00% | 11 | 32s | 1m00s |
+| s344 | 102 | 317 | 90.54% | 9 | 34s | 1m00s |
+| s349 | 102 | 317 | 90.54% | 9 | 34s | 58s |
+| s382 | 127 | 376 | 88.83% | 9 | 34s | 1m07s |
+| s386 | 106 | 355 | 81.97% | 15 | 28s | 1m01s |
+| s400 | 129 | 376 | 86.17% | 13 | 32s | 45s |
+| s444 | 127 | 369 | 88.35% | 11 | 26s | 1m11s |
+| s510 | 168 | 586 | 95.22% | 38 | 40s | 59s |
+| s526 | 130 | 388 | 88.40% | 14 | 33s | 1m05s |
+| s641 | 150 | 491 | 89.31% | 18 | 31s | 1m12s |
+| s713 | 151 | 494 | 89.78% | 21 | 31s | 1m07s |
+| s820 | 190 | 681 | 83.99% | 30 | 32s | 1m12s |
+| s832 | 202 | 715 | 84.90% | 28 | 31s | 1m03s |
+| s1196 | 364 | 1244 | 87.70% | 45 | 27s | 1m31s |
+| s1238 | 402 | 1372 | 87.06% | 43 | 28s | 1m26s |
+| s1423 | 510 | 1517 | 85.86% | 29 | 30s | 1m28s |
+| s1488 | 403 | 1445 | 92.87% | 42 | 29s | 1m28s |
+| s1494 | 402 | 1455 | 93.64% | 35 | 31s | 1m24s |
+| s5378 | 1023 | 3014 | 80.23% | 54 | 34s | 2m22s |
+
+### Fault baseline notes
+
+- **Gates**: post-synthesis gate count from `yosys stat` (OSU035 standard cells; sequential cells excluded from ABC mapping).
+- **Fault Sites**: stuck-at-0/stuck-at-1 sites in the (cut, combinational) netlist per Fault's enumerator.
+- **Coverage**: percentage of fault sites detected by the final compacted test-vector set.
+- **Compact TVs**: vector count after Fault's internal compaction pass.
+- **Synth**: wall-clock time for `fault synth` (Yosys synthesis).
+- **Sim**: wall-clock time for fault simulation (Fault's PRNG, default ceiling 200 vectors).
+
+For raw data and methodology, see `benchmark_fault.md` in the repository root.
+
 ## On C++ micro-benchmarks
 
 ```{note}
