@@ -10,7 +10,7 @@ import pytest
 
 from faultflow.wrap import WrapError, wrap_ports
 
-_REPO = Path(__file__).resolve().parents[2]
+_REPO = Path(__file__).resolve().parents[3]
 _CELL_MAP = _REPO / "cells" / "sky130" / "sky130_fd_sc_hd.json"
 
 

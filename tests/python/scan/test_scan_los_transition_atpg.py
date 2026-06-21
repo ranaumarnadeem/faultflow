@@ -18,7 +18,7 @@ from faultflow.scan.detection_pipeline import (
 )
 from faultflow.scan.reports import hash_file, manifest_from_result, utc_timestamp
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 
 

@@ -11,7 +11,7 @@ from faultflow.scan.atpg_view import build_scan_atpg_view
 from faultflow.scan.reports import manifest_from_result
 from faultflow.scan import stitch_scan_json
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 
 

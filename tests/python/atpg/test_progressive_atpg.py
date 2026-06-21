@@ -92,7 +92,7 @@ def test_duplicate_suppression_drops_repeated_patterns() -> None:
 
 
 def _tiny_inv_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     fixture = root / "tests/cpp/fixtures/tiny_inv.json"
     if not fixture.exists():
         pytest.skip("tiny_inv fixture missing")
@@ -182,7 +182,7 @@ def test_progressive_native_atpg_tiny_inv(
 def test_threshold_met_stops_before_complete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     netlist = root / "tests/benchmarks/iscas85/synth_sky130/c432.json"
     if not netlist.exists():
         pytest.skip("c432 netlist missing")
@@ -436,7 +436,7 @@ def test_resume_preserves_detected_faults(
 def test_coverage_report_includes_atpg_stats(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     cfg, netlist = _tiny_inv_cfg(tmp_path, monkeypatch)
     _, stats, run_id, _, _ = _run_atpg(cfg, netlist, _model_id())
 
@@ -559,7 +559,7 @@ def test_runner_ext_skips_progressive_atpg(
         f"""
 [design]
 netlist = {netlist}
-cell_lib = {Path(__file__).resolve().parents[2] / "cells/sky130/sky130_fd_sc_hd.json"}
+cell_lib = {Path(__file__).resolve().parents[3] / "cells/sky130/sky130_fd_sc_hd.json"}
 
 [simulation]
 unsupported_cells = fail

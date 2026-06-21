@@ -18,7 +18,7 @@ from campaign_fixtures import campaign_id_for_cfg
 from faultflow.runner.runner import FingerprintMismatchError, RunnerError
 import faultflow.runner.runner as runner_mod
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 
 
 def _run_atpg(cfg, netlist, model: str, **kwargs: object):

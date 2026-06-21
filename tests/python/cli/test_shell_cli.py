@@ -61,7 +61,7 @@ def test_unified_report_without_campaign_is_partial(
         f"""
 [design]
 netlist = {tmp_path / "design.json"}
-cell_lib = {Path(__file__).resolve().parents[2] / "cells/sky130/sky130_fd_sc_hd.json"}
+cell_lib = {Path(__file__).resolve().parents[3] / "cells/sky130/sky130_fd_sc_hd.json"}
 """.strip() + "\n",
         encoding="utf-8",
     )

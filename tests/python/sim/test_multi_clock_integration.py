@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 PRE_STITCH = ROOT / "tests/fixtures/multi_clock/pre_stitch.json"
 POST_STITCH = ROOT / "tests/fixtures/multi_clock/two_domain_3ff.json"

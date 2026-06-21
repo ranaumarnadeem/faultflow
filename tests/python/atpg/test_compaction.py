@@ -11,7 +11,7 @@ from faultflow.db import connect, init_schema, summary
 from faultflow.runner import Runner
 import faultflow.runner.runner as runner_mod
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 C17_JSON = ROOT / "tests/benchmarks/iscas85/synth_sky130/c17.json"
 SKY130_CELL_LIB = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 SKY130_LIBERTY = ROOT / "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib"

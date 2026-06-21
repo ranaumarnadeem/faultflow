@@ -17,7 +17,7 @@ from faultflow.scan.atpg_view import (
 )
 from faultflow.scan.reports import manifest_from_result
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 MULTICHAIN_FIXTURE = ROOT / "tests/cpp/fixtures/tiny_scan_multichain.json"
 

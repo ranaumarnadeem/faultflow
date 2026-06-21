@@ -22,7 +22,7 @@ from faultflow.retarget.verify_soc import verify_soc
 from faultflow.scan.protocol import ScanPattern
 from faultflow.wrap import wrap_ports
 
-_REPO = Path(__file__).resolve().parents[2]
+_REPO = Path(__file__).resolve().parents[3]
 _CELL_MAP = _REPO / "cells" / "sky130" / "sky130_fd_sc_hd.json"
 
 

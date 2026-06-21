@@ -36,7 +36,7 @@ from faultflow.scan.wbr_view import (
     fuse_wbr_into_view,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = ROOT / "cells/osu/osu035.json"
 TOP = "core_extest"
 

@@ -28,7 +28,7 @@ from faultflow.scan.site_resolution import (
 )
 from db_v3_helpers import insert_campaign, insert_fault_row, insert_run
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 RECONVERGE = ROOT / "tests/cpp/fixtures/tiny_reconverge.json"
 

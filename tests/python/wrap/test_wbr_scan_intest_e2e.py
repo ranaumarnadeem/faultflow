@@ -41,7 +41,7 @@ from faultflow.db import connect, summary
 from faultflow.runner import Runner
 from faultflow.scan.reports import hash_file, utc_timestamp
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 TOP = "tiny_wrapped_dff"
 

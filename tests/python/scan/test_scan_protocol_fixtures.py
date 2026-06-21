@@ -11,7 +11,7 @@ from faultflow.scan.detection_pipeline import _materialize_reduced_outputs
 from faultflow.scan.protocol import serialize_vector
 from faultflow.scan.site_resolution import build_scan_execution_map
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_ROOT = ROOT / "tests/fixtures/scan_protocol/single_chain"
 GENERIC = FIXTURE_ROOT / "generic.json"
 MANIFEST = FIXTURE_ROOT / "manifest.json"

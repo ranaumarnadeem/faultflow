@@ -305,7 +305,7 @@ def test_coverage_report_schema_and_denominator_invariant(
     schema_dir = tmp_path / "schemas"
     schema_dir.mkdir(parents=True)
     shutil.copy(
-        Path(__file__).resolve().parents[2] / "schemas/coverage.schema.json",
+        Path(__file__).resolve().parents[3] / "schemas/coverage.schema.json",
         schema_dir / "coverage.schema.json",
     )
     cfg_path = tmp_path / "config.ofs"
@@ -387,7 +387,7 @@ def test_coverage_report_text_includes_protocol_fields(
     schema_dir = tmp_path / "schemas"
     schema_dir.mkdir(parents=True)
     shutil.copy(
-        Path(__file__).resolve().parents[2] / "schemas/coverage.schema.json",
+        Path(__file__).resolve().parents[3] / "schemas/coverage.schema.json",
         schema_dir / "coverage.schema.json",
     )
     cfg_path = tmp_path / "config.ofs"
@@ -443,7 +443,7 @@ def test_ext_without_bench_sidecar_raises(
         f"""
 [design]
 netlist = {netlist}
-cell_lib = {Path(__file__).resolve().parents[2] / "cells/sky130/sky130_fd_sc_hd.json"}
+cell_lib = {Path(__file__).resolve().parents[3] / "cells/sky130/sky130_fd_sc_hd.json"}
 
 [simulation]
 unsupported_cells = fail

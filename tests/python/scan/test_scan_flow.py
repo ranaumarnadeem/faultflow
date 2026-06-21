@@ -19,7 +19,7 @@ from faultflow.scan import (
     write_scan_techmap,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 
 

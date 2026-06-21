@@ -12,7 +12,7 @@ from faultflow.runner.progressive_atpg import AtpgStats
 from faultflow.scan import stitch_scan_json
 from faultflow.scan.reports import hash_file, manifest_from_result, utc_timestamp
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 
 

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 FIXTURE = ROOT / "tests/python/fixtures/c17_wrapped.json"
 UNWRAPPED = ROOT / "tests/benchmarks/iscas85/synth/c17.json"
 CELL_MAP = ROOT / "cells/osu/osu035.json"

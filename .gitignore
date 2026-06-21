@@ -30,4 +30,6 @@ parser.out
 parsetab.py
 config.ofs.example*
 
-docs/
+docs/plans
+docs/superpowers
+docs/integration
