@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import io
+import shutil
+import sys
 from dataclasses import dataclass
+
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
 
 
 @dataclass(frozen=True)
@@ -270,28 +277,90 @@ CATEGORY_ORDER = (
 )
 
 
+def _is_tty() -> bool:
+    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+
+def _make_console() -> tuple[Console, io.StringIO]:
+    buf = io.StringIO()
+    tty = _is_tty()
+    try:
+        width = shutil.get_terminal_size().columns if tty else 9999
+    except Exception:
+        width = 88
+    return Console(file=buf, highlight=False, force_terminal=tty, width=width), buf
+
+
+def _usage_text(usage: str) -> Text:
+    """Bold command name, dim flags/args."""
+    parts = usage.split(" ", 1)
+    t = Text(parts[0], style="bold")
+    if len(parts) > 1:
+        t.append(" " + parts[1], style="dim")
+    return t
+
+
 def render_help_overview() -> str:
-    width = max(len(item.usage) for item in COMMAND_HELP.values())
-    lines = ["Faultflow commands", ""]
+    console, buf = _make_console()
+
+    console.print(Text("faultflow", style="bold"))
+    console.print()
+
     for category in CATEGORY_ORDER:
         entries = [item for item in COMMAND_HELP.values() if item.category == category]
         if not entries:
             continue
-        lines.append(category)
+
+        console.print(Text("  " + category, style="bold cyan"))
+
+        tbl = Table(box=None, show_header=False, padding=(0, 2, 0, 4), show_edge=False)
+        tbl.add_column(no_wrap=True)
+        tbl.add_column()
         for item in entries:
-            lines.append(f"  {item.usage:<{width}}  {item.summary}")
-        lines.append("")
-    lines.append('Use "help <command>" for details.')
-    return "\n".join(lines)
+            tbl.add_row(_usage_text(item.usage), Text(item.summary, style="dim"))
+        console.print(tbl)
+        console.print()
+
+    # The exact literal substring must survive for the test assertion.
+    footer = Text('  Use "', style="dim")
+    footer.append("help <command>", style="bold")
+    footer.append('" for details.', style="dim")
+    console.print(footer)
+    return buf.getvalue()
 
 
 def render_command_help(command: str) -> str:
     item = COMMAND_HELP[command]
-    lines = [command, "", f"Usage: {item.usage}", "", item.summary + "."]
+    console, buf = _make_console()
+
+    # Header — must start with bare command name (test: text.startswith("add_scan"))
+    header = Text(command, style="bold bright_white")
+    header.append("  ")
+    header.append(item.summary, style="dim")
+    console.print(header)
+    console.print()
+
+    # Usage: prefix dim, args bold — use Text to avoid markup parsing of [] in usage
+    usage_line = Text()
+    usage_line.append("Usage: ", style="dim")
+    usage_line.append(item.usage, style="bold")
+    console.print(usage_line)
+
     if item.details:
-        lines.extend(["", item.details])
+        console.print()
+        console.print(Text("  " + item.details))
+
     if item.requires:
-        lines.extend(["", "Requires:", f"  {item.requires}"])
+        console.print()
+        console.print(Text("Requires:", style="dim"))
+        console.print(Text("  " + item.requires))
+
     if item.example:
-        lines.extend(["", "Example:", f"  {item.example}"])
-    return "\n".join(lines)
+        console.print()
+        console.print(Text("Example:", style="dim"))
+        for line in item.example.split("\n"):
+            t = Text("  ")
+            t.append(line, style="bold green")
+            console.print(t)
+
+    return buf.getvalue()
