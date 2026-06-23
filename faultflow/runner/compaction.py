@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import sqlite3
 import time
 
@@ -187,6 +188,58 @@ def _cubes_compatible(a: dict[str, bool], b: dict[str, bool]) -> bool:
     return all(b[name] == a[name] for name in b if name in a)
 
 
+def _pack_cubes(detect, cubes: list[dict]) -> list[dict[str, bool]]:
+    """Greedy best-fit cube merge over ``cubes`` in the given order; every merge is
+    re-simulation-verified (members stay detected). Returns the packed vectors.
+    Does NOT mutate the input cubes, so the same list can be packed under several
+    orders. Each ``cube`` is ``{"spec": {name:bool}, "vector": {name:bool},
+    "newly": set[int]}``.
+    """
+    open_cubes: list[dict] = []
+    for cube in cubes:
+        spec = cube["spec"]
+        newly = cube["newly"]
+        placed = False
+        for oc in open_cubes:
+            if not _cubes_compatible(oc["spec"], spec):
+                continue
+            trial = dict(oc["vector"])
+            trial.update(spec)
+            members = oc["members"] | newly
+            if members.issubset(detect(trial, members)):
+                oc["vector"] = trial
+                oc["spec"] = {**oc["spec"], **spec}
+                oc["members"] = members
+                placed = True
+                break
+        if not placed:
+            # Standalone: the original (fully-specified) vector detects newly.
+            open_cubes.append(
+                {
+                    "spec": dict(spec),
+                    "members": set(newly),
+                    "vector": dict(cube["vector"]),
+                }
+            )
+    return [oc["vector"] for oc in open_cubes]
+
+
+def _order_cubes(cubes: list[dict], order_idx: int) -> list[dict]:
+    """Cube processing order for a packing pass (PO-DTC: the order secondaries are
+    tried changes how many fit). 0 = as-selected (the M3 default, so the kept best
+    is always <= single-order); 1 = most don't-cares first; 2 = fewest first;
+    >=3 = seeded shuffles (deterministic)."""
+    if order_idx == 0:
+        return list(cubes)
+    if order_idx == 1:
+        return sorted(cubes, key=lambda c: len(c["spec"]))
+    if order_idx == 2:
+        return sorted(cubes, key=lambda c: -len(c["spec"]))
+    shuffled = list(cubes)
+    random.Random(order_idx).shuffle(shuffled)
+    return shuffled
+
+
 def compact_run_dynamic(
     *,
     json_path: str,
@@ -196,17 +249,20 @@ def compact_run_dynamic(
     run_id: int,
     vectors: VectorSet,
     unsupported: str,
+    pack_orders: int = 1,
 ) -> tuple[VectorSet, int, int]:
     """Dynamic compaction via sim-verified cube packing.
 
     Selects the contributing vectors (reverse-order, like ``compact_run``),
     X-extracts each sparse vector's don't-cares, then greedily merges compatible
     cubes — RE-SIMULATING every merge to confirm all member faults stay detected.
-    Produces NEW packed patterns, fewer than reverse when don't-cares allow.
-    Coverage is preserved by construction (fault status is untouched; every packed
-    pattern's members are sim-verified). Falls back to ``compact_run`` if packing
-    fails to beat it or yields an invalid set, so dynamic is always <= reverse and
-    always correct.
+    With ``pack_orders > 1`` (PO-DTC, M4) the cube merge is tried under several
+    orders and the fewest-vector result is kept; the cubes are X-extracted ONCE
+    and reused across orders. Produces NEW packed patterns, fewer than reverse when
+    don't-cares allow. Coverage is preserved by construction (fault status is
+    untouched; every packed pattern's members are sim-verified). Falls back to
+    ``compact_run`` if packing fails to beat it or yields an invalid set, so
+    dynamic is always <= reverse and always correct.
     """
     raw_count = vectors.count
     input_order = vectors.input_order
@@ -251,37 +307,27 @@ def compact_run_dynamic(
             contributions.append((vector, newly))
             remaining.difference_update(newly)
 
-    # 2. Pack: X-extract a cube per sparse contribution, best-fit-merge into an open
-    #    packed pattern (re-sim verified). Dense patterns stay fully specified (so
-    #    they never merge and stand alone, exactly as reverse would keep them).
-    open_cubes: list[dict] = []  # {"spec": {name:bool}, "members": set, "vector": dict}
+    # 2. X-extract a cube per sparse contribution ONCE (the expensive, order-
+    #    independent step). Dense patterns (>threshold faults) stay fully specified
+    #    so they never merge and stand alone, exactly as reverse would keep them.
+    cubes: list[dict] = []
     for vector, newly in contributions:
         if len(newly) > _DYNAMIC_DENSE_FAULTS:
             spec = {name: bool(vector.get(name, False)) for name in input_order}
         else:
             spec = _extract_cube(detect, vector, input_order, newly)
-        placed = False
-        for oc in open_cubes:
-            if not _cubes_compatible(oc["spec"], spec):
-                continue
-            trial = dict(oc["vector"])
-            trial.update(spec)
-            members = oc["members"] | newly
-            if members.issubset(detect(trial, members)):
-                oc["vector"] = trial
-                oc["spec"] = {**oc["spec"], **spec}
-                oc["members"] = members
-                placed = True
-                break
-        if not placed:
-            # Standalone: the original (fully-specified) vector detects newly.
-            open_cubes.append(
-                {"spec": spec, "members": set(newly), "vector": dict(vector)}
-            )
+        cubes.append({"spec": spec, "vector": dict(vector), "newly": set(newly)})
 
-    packed = [oc["vector"] for oc in open_cubes]
+    # 3. Pack under several orders (PO-DTC); keep the fewest-vector result. Order 0
+    #    is the single-order default, so the kept result is always <= single-order.
+    best: list[dict[str, bool]] | None = None
+    for order_idx in range(max(1, pack_orders)):
+        candidate = _pack_cubes(detect, _order_cubes(cubes, order_idx))
+        if best is None or len(candidate) < len(best):
+            best = candidate
+    packed = best if best is not None else []
 
-    # 3. Safety net: the packed set must detect every originally-detected fault and
+    # 4. Safety net: the packed set must detect every originally-detected fault and
     #    be no larger than reverse; otherwise fall back to the proven reverse result.
     packed_detected: set[int] = set()
     for vector in packed:
@@ -298,7 +344,7 @@ def compact_run_dynamic(
             unsupported=unsupported,
         )
 
-    # 4. Write the packed set as a new compacted run (mirrors compact_run).
+    # 5. Write the packed set as a new compacted run (mirrors compact_run).
     source = f"compacted_{vectors.source}"
     patterns = [_pattern(vector, input_order) for vector in packed]
     with connect(db_path) as conn:

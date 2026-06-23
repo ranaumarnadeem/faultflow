@@ -79,7 +79,10 @@ max_rounds = 20
         unsupported="fail",
     )
     rev_vs, _r, _ = compact_run(**common)  # type: ignore[arg-type]
-    dyn_vs, _d, _ = compact_run_dynamic(**common)  # type: ignore[arg-type]
+    # M4: multi-order packing (keeps the fewest-vector result over 3 orders).
+    dyn_vs, _d, _ = compact_run_dynamic(  # type: ignore[arg-type]
+        pack_orders=3, **common
+    )
 
     # Dynamic is never worse than reverse (it merges, or falls back to reverse).
     assert dyn_vs.count <= rev_vs.count

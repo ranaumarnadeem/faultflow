@@ -1619,20 +1619,27 @@ class Runner:
                         compact_run_dynamic,
                     )
 
-                    _compactor = (
-                        compact_run_dynamic
-                        if self.cfg.atpg.compaction == "dynamic"
-                        else compact_run
-                    )
-                    vectors, run_id, raw_vector_count = _compactor(
-                        json_path=str(netlist),
-                        cell_map_path=str(self.cfg.cell_lib),
-                        db_path=str(self.cfg.db_path),
-                        campaign_id=campaign_id,
-                        run_id=run_id,
-                        vectors=vectors,
-                        unsupported=self.cfg.simulation.unsupported_cells,
-                    )
+                    if self.cfg.atpg.compaction == "dynamic":
+                        vectors, run_id, raw_vector_count = compact_run_dynamic(
+                            json_path=str(netlist),
+                            cell_map_path=str(self.cfg.cell_lib),
+                            db_path=str(self.cfg.db_path),
+                            campaign_id=campaign_id,
+                            run_id=run_id,
+                            vectors=vectors,
+                            unsupported=self.cfg.simulation.unsupported_cells,
+                            pack_orders=self.cfg.atpg.pack_orders,
+                        )
+                    else:
+                        vectors, run_id, raw_vector_count = compact_run(
+                            json_path=str(netlist),
+                            cell_map_path=str(self.cfg.cell_lib),
+                            db_path=str(self.cfg.db_path),
+                            campaign_id=campaign_id,
+                            run_id=run_id,
+                            vectors=vectors,
+                            unsupported=self.cfg.simulation.unsupported_cells,
+                        )
                 vector_source = vectors.source
             if verify_enabled:
                 if transition:

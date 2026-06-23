@@ -106,6 +106,9 @@ class AtpgConfig:
     # cone of influence (provably verdict-equivalent; cuts SAT time). Applies to
     # the FUNCTIONAL stuck-at path only for now.
     cone_restrict: bool = True
+    # Dynamic compaction (compaction=dynamic): number of secondary-fault packing
+    # orders to try, keeping the fewest-vector result (PO-DTC). 1 = single order.
+    pack_orders: int = 1
 
 
 @dataclass(frozen=True)
@@ -435,6 +438,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             compaction=atpg_compaction,
             fault_drop_sat=_bool(parser, "atpg", "fault_drop_sat", True),
             cone_restrict=_bool(parser, "atpg", "cone_restrict", True),
+            pack_orders=_int(parser, "atpg", "pack_orders", 1),
         ),
         report=ReportConfig(
             output=_path(parser, "report", "output", "coverage.rpt"),
