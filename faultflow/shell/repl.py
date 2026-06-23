@@ -10,6 +10,7 @@ from faultflow.config import ConfigError, load_config
 from faultflow.project.profiles import profile_for_cell_map
 from faultflow.shell.external import ExternalCommandResult, run_external
 from faultflow.shell.formatting import format_error, format_prompt, format_result
+from faultflow.shell.lineedit import enable_line_editing
 from faultflow.shell.session import ProjectSession
 from faultflow.shell.tcl_bridge import TclBridge
 
@@ -69,6 +70,7 @@ def run_shell(
             raise ConfigError(str(exc)) from exc
         return 0
 
+    enable_line_editing(commands=bridge.command_names)
     pending = ""
     while True:
         try:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import io
 import shutil
 import sys
@@ -338,6 +339,30 @@ def render_help_overview() -> str:
     footer.append("help <command>", style="bold")
     footer.append('" for details.', style="dim")
     console.print(footer)
+    return buf.getvalue()
+
+
+def render_command_matches(pattern: str) -> str | None:
+    """Render a flat table of commands whose names match a glob pattern.
+
+    Returns None when nothing matches so the caller can raise. Used by
+    ``help <glob>`` (e.g. ``help re*`` lists every command starting with re).
+    """
+    names = sorted(fnmatch.filter(COMMAND_HELP.keys(), pattern))
+    if not names:
+        return None
+    console, buf = _make_console()
+
+    console.print(Text(f'commands matching "{pattern}"', style="bold"))
+    console.print()
+
+    tbl = Table(box=None, show_header=False, padding=(0, 2, 0, 4), show_edge=False)
+    tbl.add_column(no_wrap=True)
+    tbl.add_column()
+    for name in names:
+        item = COMMAND_HELP[name]
+        tbl.add_row(_usage_text(item.usage), Text(item.summary, style="dim"))
+    console.print(tbl)
     return buf.getvalue()
 
 

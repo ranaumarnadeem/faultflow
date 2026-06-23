@@ -8,6 +8,7 @@ from faultflow.shell.errors import ShellError, unsupported
 from faultflow.shell.help_text import (
     COMMAND_HELP,
     render_command_help,
+    render_command_matches,
     render_help_overview,
 )
 from faultflow.shell.logging_setup import log_exception
@@ -65,6 +66,11 @@ proc {name} {{args}} {{
     return [dict get $envelope result]
 }}
 """)
+
+    @property
+    def command_names(self) -> tuple[str, ...]:
+        """Registered command names, for shell tab-completion and help globs."""
+        return tuple(sorted(self._handlers))
 
     def _dict(self, values: dict[str, Any]) -> Any:
         args: list[Any] = []
@@ -502,11 +508,17 @@ proc {name} {{args}} {{
         if len(args) > 1:
             raise ShellError("usage: help ?COMMAND?", "CONFIG", "INVALID_OPTION")
         if args:
-            if args[0] not in COMMAND_HELP:
-                raise ShellError(
-                    f"unknown command: {args[0]}", "CONFIG", "INVALID_OPTION"
-                )
-            return render_command_help(args[0])
+            token = args[0]
+            if token in COMMAND_HELP:
+                return render_command_help(token)
+            if any(ch in token for ch in "*?["):
+                rendered = render_command_matches(token)
+                if rendered is None:
+                    raise ShellError(
+                        f"no commands match: {token}", "CONFIG", "INVALID_OPTION"
+                    )
+                return rendered
+            raise ShellError(f"unknown command: {token}", "CONFIG", "INVALID_OPTION")
         return render_help_overview()
 
     def _quit(self, args: list[str]) -> Any:

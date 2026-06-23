@@ -45,3 +45,28 @@ def test_help_unknown_command_uses_invalid_option_error(tmp_path: Path) -> None:
 
     assert exc.value.code == ("FAULTFLOW", "CONFIG", "INVALID_OPTION")
     assert "unknown command" in str(exc.value)
+
+
+def test_help_glob_lists_matching_commands(tmp_path: Path) -> None:
+    text = str(_bridge(tmp_path).call("help", "re*"))
+
+    assert "report" in text
+    assert "reset" in text
+    assert "read_netlist" in text
+    assert "use_lib_cells" not in text  # does not start with "re"
+
+
+def test_help_glob_star_lists_all_commands(tmp_path: Path) -> None:
+    text = str(_bridge(tmp_path).call("help", "*"))
+
+    assert "read_netlist" in text
+    assert "synth" in text
+    assert "quit" in text
+
+
+def test_help_glob_no_match_errors(tmp_path: Path) -> None:
+    with pytest.raises(ShellError) as exc:
+        _bridge(tmp_path).call("help", "zz*")
+
+    assert exc.value.code == ("FAULTFLOW", "CONFIG", "INVALID_OPTION")
+    assert "no commands match" in str(exc.value)

@@ -7,3 +7,4 @@
 #
 # Doc build dependencies are separate, in docs/requirements.txt.
 jsonschema>=4.0
+rich>=13.0
