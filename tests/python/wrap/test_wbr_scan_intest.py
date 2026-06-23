@@ -31,6 +31,7 @@ from faultflow.scan.wbr_view import (
     WBI_PREFIX,
     WBO_PREFIX,
     build_wbr_generic_name_map,
+    extract_wbr_cells,
     fuse_wbr_into_view,
 )
 
@@ -133,6 +134,127 @@ def test_fuse_exposes_wbr_boundary_as_pseudo_ports() -> None:
     assert port_map["wbc_in0"]["role"] == "ppi"
     assert port_map["wbc_in0"]["core_net"] == 3
     assert port_map["wbc_out0"]["role"] == "ppo"
+
+
+def _scan_model_wrapped_view() -> dict:
+    """A scan-reduced wrapped core whose boundary uses the NATIVE SHIFTABLE
+    scan-model cells (`$wbc_*_scan_faultflow`) and a wrapper scan chain
+    (wbr_si -> __wi_D -> __wo_Q -> wbr_so).
+
+        D(sys 3) -> __wi_D -TO_CORE 9-> INV g0 -FROM_CORE 12-> __wo_Q -> Q(sys 6)
+        wrapper chain: wbr_si 7 -> __wi_D.CTO 13 -> __wo_Q.CTI 13 -> wbr_so 14
+    """
+    return {
+        "creator": "test fixture",
+        "modules": {
+            TOP: {
+                "attributes": {"top": "00000000000000000000000000000001"},
+                "ports": {
+                    "CLK": {"direction": "input", "bits": [2]},
+                    "D": {"direction": "input", "bits": [3]},
+                    "Q": {"direction": "output", "bits": [6]},
+                    "wbr_si": {"direction": "input", "bits": [7]},
+                    "wbr_se": {"direction": "input", "bits": [8]},
+                    "wbr_so": {"direction": "output", "bits": [14]},
+                },
+                "cells": {
+                    "__wi_D": _cell(
+                        "$wbc_in_scan_faultflow",
+                        {
+                            "CLK": [2],
+                            "FROM_SYS": [3],
+                            "CTI": [7],
+                            "SE": [8],
+                            "TO_CORE": [9],
+                            "CTO": [13],
+                        },
+                        {
+                            "CLK": "input",
+                            "FROM_SYS": "input",
+                            "CTI": "input",
+                            "SE": "input",
+                            "TO_CORE": "output",
+                            "CTO": "output",
+                        },
+                    ),
+                    "g0": _cell(
+                        "INVX1", {"A": [9], "Y": [12]}, {"A": "input", "Y": "output"}
+                    ),
+                    "__wo_Q": _cell(
+                        "$wbc_out_scan_faultflow",
+                        {
+                            "CLK": [2],
+                            "FROM_CORE": [12],
+                            "CTI": [13],
+                            "SE": [8],
+                            "TO_SYS": [6],
+                            "CTO": [14],
+                        },
+                        {
+                            "CLK": "input",
+                            "FROM_CORE": "input",
+                            "CTI": "input",
+                            "SE": "input",
+                            "TO_SYS": "output",
+                            "CTO": "output",
+                        },
+                    ),
+                },
+                "netnames": {
+                    "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+                    "D": {"hide_name": 0, "bits": [3], "attributes": {}},
+                    "Q": {"hide_name": 0, "bits": [6], "attributes": {}},
+                    "wbr_si": {"hide_name": 0, "bits": [7], "attributes": {}},
+                    "wbr_se": {"hide_name": 0, "bits": [8], "attributes": {}},
+                    "__core_D": {"hide_name": 0, "bits": [9], "attributes": {}},
+                    "core_q": {"hide_name": 0, "bits": [12], "attributes": {}},
+                    "wbr_chain": {"hide_name": 0, "bits": [13], "attributes": {}},
+                    "wbr_so": {"hide_name": 0, "bits": [14], "attributes": {}},
+                },
+            }
+        },
+    }
+
+
+def test_extract_wbr_cells_matches_scan_model_with_chain_nets() -> None:
+    mod = _scan_model_wrapped_view()["modules"][TOP]
+    recs = {r.instance: r for r in extract_wbr_cells(mod)}
+
+    assert set(recs) == {"__wi_D", "__wo_Q"}
+    assert recs["__wi_D"].is_input is True
+    assert recs["__wi_D"].core_net == 9  # TO_CORE
+    assert recs["__wi_D"].sys_net == 3  # FROM_SYS
+    assert set(recs["__wi_D"].chain_nets) == {7, 8, 13}  # CTI, SE, CTO
+    assert recs["__wo_Q"].is_input is False
+    assert recs["__wo_Q"].core_net == 12  # FROM_CORE
+    assert recs["__wo_Q"].sys_net == 6  # TO_SYS
+    assert set(recs["__wo_Q"].chain_nets) == {13, 8, 14}  # CTI, SE, CTO
+
+
+def test_fuse_scan_model_wbr_reduces_and_drops_chain_ports() -> None:
+    fused, port_map = fuse_wbr_into_view(_scan_model_wrapped_view(), TOP, "intest")
+    mod = fused["modules"][TOP]
+    ports = mod["ports"]
+    cells = mod["cells"]
+
+    # Core boundary nets became controllable / observed pseudo-ports.
+    assert ports[f"{WBI_PREFIX}__wi_D"]["bits"] == [9]
+    assert ports[f"{WBI_PREFIX}__wi_D"]["direction"] == "input"
+    assert ports[f"{WBO_PREFIX}__wo_Q"]["direction"] == "output"
+
+    # Both scan-model WBR cells are gone -> the view is combinational (no FF/wbc).
+    assert "__wi_D" not in cells
+    assert "__wo_Q" not in cells
+    assert not any("wbc" in str(c.get("type", "")) for c in cells.values())
+    assert "g0" in cells  # core logic preserved
+
+    # System-side ports decoupled AND the dangling wrapper scan-chain ports
+    # (wbr_si / wbr_se / wbr_so) dropped.
+    for dropped in ("D", "Q", "wbr_si", "wbr_se", "wbr_so"):
+        assert dropped not in ports, f"{dropped} should be dropped"
+
+    assert port_map["__wi_D"]["role"] == "ppi"
+    assert port_map["__wo_Q"]["role"] == "ppo"
 
 
 def test_functional_mode_is_noop() -> None:
