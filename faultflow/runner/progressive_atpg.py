@@ -478,7 +478,15 @@ def run_progressive_native_atpg(
             active_rows = _active_fault_rows(conn, campaign_id)
             active_ids = [int(row["id"]) for row in active_rows]
 
+        # M1: grade each accepted SAT pattern against every still-undetected
+        # fault this round (fortuitous-detection dropping), then skip the faults
+        # a prior pattern already covered instead of re-solving them. Mirrors the
+        # random branch (fault_ids=active_ids) and the scan path.
+        drop_sat = cfg.atpg.fault_drop_sat
+        remaining = set(active_ids)
         for fault_id in active_ids:
+            if drop_sat and fault_id not in remaining:
+                continue
             blocked = sorted(rejected_patterns.get(fault_id, set()))
             atpg_started = time.perf_counter()
             solved = dict(
@@ -534,7 +542,7 @@ def run_progressive_native_atpg(
                         vector_source=vector_source,
                         vector=candidate,
                         input_order=input_order,
-                        fault_ids=[fault_id],
+                        fault_ids=sorted(remaining) if drop_sat else [fault_id],
                         vector_index=vector_index,
                         unsupported=unsupported,
                         blackbox_instances=bb_instances,
@@ -542,6 +550,13 @@ def run_progressive_native_atpg(
                         on_vector_accepted=on_vector_accepted,
                     )
                     fault_sim_seconds += time.perf_counter() - sim_started
+                    if drop_sat:
+                        with connect(effective_db_path) as conn:
+                            init_schema(conn)
+                            remaining.intersection_update(
+                                int(r["id"])
+                                for r in _active_fault_rows(conn, campaign_id)
+                            )
                     round_tracker.sat_outcomes.append("SAT")
                 else:
                     stats.rejected_candidates += 1
@@ -793,7 +808,14 @@ def run_progressive_transition_atpg(
             active_rows = _active_fault_rows(conn, campaign_id)
             active_ids = [int(row["id"]) for row in active_rows]
 
+        # M1 (transition twin): grade each accepted launch/capture pair against
+        # every still-undetected fault this round, then skip already-covered
+        # faults instead of re-solving them. Mirrors the random branch.
+        drop_sat = cfg.atpg.fault_drop_sat
+        remaining = set(active_ids)
         for fault_id in active_ids:
+            if drop_sat and fault_id not in remaining:
+                continue
             blocked = sorted(rejected_patterns.get(fault_id, set()))
             atpg_started = time.perf_counter()
             solved = dict(
@@ -850,12 +872,19 @@ def run_progressive_transition_atpg(
                         launch=launch,
                         capture=capture,
                         input_order=input_order,
-                        fault_ids=[fault_id],
+                        fault_ids=sorted(remaining) if drop_sat else [fault_id],
                         vector_index=vector_index,
                         unsupported=unsupported,
                         blackbox_instances=bb_instances,
                     )
                     fault_sim_seconds += time.perf_counter() - sim_started
+                    if drop_sat:
+                        with connect(effective_db_path) as conn:
+                            init_schema(conn)
+                            remaining.intersection_update(
+                                int(r["id"])
+                                for r in _active_fault_rows(conn, campaign_id)
+                            )
                     round_tracker.sat_outcomes.append("SAT")
                 else:
                     stats.rejected_candidates += 1

@@ -204,6 +204,12 @@ unsupported_cells = fail
 random_vectors = 64
 max_rounds = 20
 sat_timeout_seconds = 10
+# This test exercises the THRESHOLD_MET terminal branch in isolation. With the
+# default per-SAT-pattern fault dropping on, c432 classifies all faults in-round
+# and terminates COMPLETE (checked before THRESHOLD_MET), short-circuiting the
+# branch under test -- so pin the optimization off here. (M1 coverage-equivalence
+# is covered by test_fault_drop_sat_preserves_coverage.)
+fault_drop_sat = false
 
 [report]
 threshold = 95.0
@@ -223,6 +229,78 @@ threshold = 95.0
         data = summary(conn)
     assert data["undetected"] > 0
     assert float(data["coverage_percent"] or 0.0) >= 95.0
+
+
+@pytest.mark.integration
+def test_fault_drop_sat_preserves_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M1: grading an accepted SAT pattern against all remaining faults keeps the
+    fault universe (denominator) identical, never regresses coverage (it can only
+    find more real, simulator-verified detections -- on c432 it recovers faults
+    the one-fault loop abandons as duplicate patterns), and yields no more
+    pre-compaction vectors."""
+    import dataclasses
+
+    from faultflow.config import load_config
+
+    root = Path(__file__).resolve().parents[3]
+    netlist = root / "tests/benchmarks/iscas85/synth_sky130/c432.json"
+    if not netlist.exists():
+        pytest.skip("c432 netlist missing")
+    monkeypatch.chdir(tmp_path)
+
+    def _run(drop: bool):
+        cfg_path = tmp_path / f"c432_{drop}.ofs"
+        cfg_path.write_text(
+            f"""
+[design]
+netlist = {netlist}
+cell_lib = {root / "cells/sky130/sky130_fd_sc_hd.json"}
+
+[fault_model]
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+random_vectors = 64
+max_rounds = 20
+sat_timeout_seconds = 10
+fault_drop_sat = {"true" if drop else "false"}
+""".strip() + "\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(cfg_path, top="c432")
+        cfg = dataclasses.replace(cfg, output_root=tmp_path / f"out_{drop}")
+        cfg.output_dir.mkdir(parents=True, exist_ok=True)
+        _, stats, _, _, _ = _run_atpg(cfg, netlist, _model_id(), target_coverage=100.0)
+        with connect(cfg.db_path) as conn:
+            init_schema(conn)
+            data = summary(conn)
+        return stats, data
+
+    on_stats, on = _run(True)
+    off_stats, off = _run(False)
+
+    # Same fault universe (pure enumeration).
+    assert on["denominator"] == off["denominator"]
+    # M1 detects AT LEAST as many real faults: simulating an accepted pattern
+    # against all remaining faults recovers detectable faults the one-fault loop
+    # abandons as duplicate patterns (rejected at line `if key in seen_patterns`).
+    # All detections are simulator-verified, so coverage can only improve, never
+    # regress. (On c432 this strictly improves: ~570 vs ~561 detected.)
+    assert on["detected"] >= off["detected"]
+    assert on["undetected"] <= off["undetected"]
+    assert (on["coverage_percent"] or 0.0) >= (off["coverage_percent"] or 0.0)
+    # Policy-3 partition holds in both runs (redundant is excluded from the
+    # denominator; denominator = detected + undetected).
+    for d in (on, off):
+        assert d["detected"] + d["undetected"] == d["denominator"]
+    assert on["redundant"] == off["redundant"]  # same truly-redundant set
+    # M1 win: never MORE pre-compaction vectors than the one-fault path.
+    assert on_stats.accepted_vectors <= off_stats.accepted_vectors
 
 
 @pytest.mark.unit

@@ -98,6 +98,10 @@ class AtpgConfig:
     max_rounds: int = 20
     sat_timeout_seconds: int = 10
     compaction: str = "reverse"
+    # When true, an accepted+verified SAT pattern is fault-simulated against ALL
+    # remaining undetected faults this round (dropping fortuitous detections),
+    # not just its target fault. Coverage-identical; cuts SAT calls + raw vectors.
+    fault_drop_sat: bool = True
 
 
 @dataclass(frozen=True)
@@ -425,6 +429,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             max_rounds=_int(parser, "atpg", "max_rounds", 20),
             sat_timeout_seconds=_int(parser, "atpg", "sat_timeout_seconds", 10),
             compaction=atpg_compaction,
+            fault_drop_sat=_bool(parser, "atpg", "fault_drop_sat", True),
         ),
         report=ReportConfig(
             output=_path(parser, "report", "output", "coverage.rpt"),
