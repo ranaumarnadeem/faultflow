@@ -85,6 +85,22 @@ def build_scan_execution_map(
             bit for bit in port.get("bits", []) if isinstance(bit, int)
         )
 
+    # IEEE 1500 wrapper boundary cells (buffer- and scan-model). A scan-model cell
+    # lowers (in the C++ normalizer) to an FF half + a `$wbrmux` half, so its core
+    # net fans out to both and its branch sites have no consumer in the fused view
+    # (the cell is removed). Grade those branches at the core net itself -- the
+    # fused view preserves it as a stem (PPI-driven for inputs, observe-tapped for
+    # outputs). The cell's scan-chain nets (CTI/SE/CTO) are wrapper infrastructure
+    # and leave the denominator (tagged scan_chain). Buffer cells carry no chain
+    # nets, so this is a no-op for them.
+    from faultflow.scan.wbr_view import extract_wbr_cells
+
+    wbr_records = extract_wbr_cells(module)
+    wbr_core_bits = {rec.core_net for rec in wbr_records}
+    wbr_chain_bits: set[int] = set()
+    for rec in wbr_records:
+        wbr_chain_bits.update(rec.chain_nets)
+
     for raw_row in generic_rows:
         row = dict(raw_row)
         key = str(row["site_key"])
@@ -101,6 +117,13 @@ def build_scan_execution_map(
         if yid in scan_internal_yids:
             exclusions[key] = "scan_internal"
             continue
+        if yid in wbr_chain_bits:
+            # Wrapper scan-chain infrastructure (wbr_si/se/so + inter-cell chain).
+            # The combinational INTEST view makes the boundary directly
+            # controllable/observable and abstracts the shift path away, so these
+            # leave the denominator -- exactly like the main chain's SDI nets.
+            exclusions[key] = "scan_chain"
+            continue
         if (
             kind == "branch"
             and str(row.get("consumer_instance", "")) in scan_instances
@@ -111,6 +134,12 @@ def build_scan_execution_map(
         direct = reduced_by_key.get(key)
         if direct is not None:
             execution[key] = int(direct["compiled_net_index"])
+            continue
+        # WBR boundary core net: branches into the removed wrapper cell (and its
+        # two-node lowering) have no reduced consumer; grade them at the core net,
+        # which the fused view keeps as a stem.
+        if yid in wbr_core_bits and yid in reduced_stems:
+            execution[key] = reduced_stems[yid]
             continue
         q_entry = q_boundaries.get(yid)
         if q_entry is not None:

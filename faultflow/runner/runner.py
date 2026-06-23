@@ -1442,16 +1442,28 @@ class Runner:
             )
         ineligible = manifest.get("ineligible_ffs", [])
         if isinstance(ineligible, list) and ineligible:
-            names = ", ".join(
-                sorted(
-                    str(item.get("instance", "?"))
-                    for item in ineligible
-                    if isinstance(item, dict)
+            # WBR scan cells are deliberately routed to the wrapper chain (fused
+            # into the view downstream by fuse_wbr_into_view), NOT the main scan
+            # chain -- they are not a full-scan blocker. Genuinely unscannable FFs
+            # (unsupported_ff_shape, unknown_cell_type, existing_scan_cell) are.
+            blockers = [
+                item
+                for item in ineligible
+                if isinstance(item, dict) and item.get("reason") != "wbr_scan_cell"
+            ]
+            wbr_count = len(ineligible) - len(blockers)
+            if wbr_count:
+                log.info(
+                    "scan preflight: %d WBR cell(s) routed to wrapper chain",
+                    wbr_count,
                 )
-            )
-            raise RunnerError(
-                f"sim --scan requires full scan; ineligible FFs remain: {names}"
-            )
+            if blockers:
+                names = ", ".join(
+                    sorted(str(item.get("instance", "?")) for item in blockers)
+                )
+                raise RunnerError(
+                    f"sim --scan requires full scan; ineligible FFs remain: {names}"
+                )
         return manifest
 
     def sim(

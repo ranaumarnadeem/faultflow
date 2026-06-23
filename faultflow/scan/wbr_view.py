@@ -53,6 +53,15 @@ _CONST0_LITERAL = "0"
 # Pin names are fixed by the cell definitions in the cell maps.
 _WBR_IN_TYPES = {"$wbc_in_faultflow", "\\$wbc_in_faultflow"}
 _WBR_OUT_TYPES = {"$wbc_out_faultflow", "\\$wbc_out_faultflow"}
+# Native shiftable scan-model WBR cells. They expose the SAME core/sys pins as the
+# buffer model (TO_CORE/FROM_SYS, FROM_CORE/TO_SYS) and, in FUNCTIONAL mode, drive
+# the core net from the sys net (the mode-mux half lowers to a WBR_IN/WBR_OUT
+# buffer in the C++ normalizer) -- so the buffer-model fusion below reduces them
+# identically. The only extra: they carry a scan chain (CTI/SE/CTO) whose top
+# ports go dangling once the cell is removed and must be dropped.
+_WBR_SCAN_IN_TYPES = {"$wbc_in_scan_faultflow", "\\$wbc_in_scan_faultflow"}
+_WBR_SCAN_OUT_TYPES = {"$wbc_out_scan_faultflow", "\\$wbc_out_scan_faultflow"}
+_WBR_SCAN_CHAIN_PINS = ("CTI", "SE", "CTO")  # NOT CLK (shared with core/main FFs)
 _WBR_IN_CORE_PIN = "TO_CORE"
 _WBR_IN_SYS_PIN = "FROM_SYS"
 _WBR_OUT_CORE_PIN = "FROM_CORE"
@@ -65,6 +74,9 @@ class WbrRecord:
     core_net: int
     sys_net: int
     is_input: bool
+    # Scan-chain/enable net ids (CTI, SE, CTO) for scan-model cells; empty for
+    # buffer-model cells. The fusion pass drops the matching dangling top ports.
+    chain_nets: tuple[int, ...] = ()
 
 
 def _single_bit(cell: dict[str, Any], pin: str, instance: str) -> int:
@@ -75,8 +87,28 @@ def _single_bit(cell: dict[str, Any], pin: str, instance: str) -> int:
     return bits[0]
 
 
+def _scan_chain_nets(cell: dict[str, Any]) -> tuple[int, ...]:
+    """Net ids on a scan WBR cell's chain/enable pins (CTI, SE, CTO).
+
+    Their top ports (wbr_si / wbr_se / wbr_so) go dangling once the cell is
+    removed from the fused view, so the fusion pass drops them. CLK is excluded
+    on purpose -- it is shared with the core and the main scan FFs.
+    """
+    conns = cell.get("connections", {})
+    nets: list[int] = []
+    if isinstance(conns, dict):
+        for pin in _WBR_SCAN_CHAIN_PINS:
+            nets.extend(_all_int_bits(conns.get(pin)))
+    return tuple(nets)
+
+
 def extract_wbr_cells(module: dict[str, Any]) -> list[WbrRecord]:
-    """All IEEE 1500 boundary cells in `module`, sorted by instance name."""
+    """All IEEE 1500 boundary cells in `module`, sorted by instance name.
+
+    Matches both the buffer-model (`$wbc_*_faultflow`) and native shiftable
+    scan-model (`$wbc_*_scan_faultflow`) cells; scan cells additionally carry
+    their dangling chain-port nets in `WbrRecord.chain_nets`.
+    """
     cells = module.get("cells", {})
     if not isinstance(cells, dict):
         raise ScanError("top module cells must be an object")
@@ -85,22 +117,26 @@ def extract_wbr_cells(module: dict[str, Any]) -> list[WbrRecord]:
         if not isinstance(cell, dict):
             continue
         ctype = cell.get("type")
-        if ctype in _WBR_IN_TYPES:
+        if ctype in _WBR_IN_TYPES or ctype in _WBR_SCAN_IN_TYPES:
+            scan = ctype in _WBR_SCAN_IN_TYPES
             records.append(
                 WbrRecord(
                     instance=str(instance),
                     core_net=_single_bit(cell, _WBR_IN_CORE_PIN, str(instance)),
                     sys_net=_single_bit(cell, _WBR_IN_SYS_PIN, str(instance)),
                     is_input=True,
+                    chain_nets=_scan_chain_nets(cell) if scan else (),
                 )
             )
-        elif ctype in _WBR_OUT_TYPES:
+        elif ctype in _WBR_OUT_TYPES or ctype in _WBR_SCAN_OUT_TYPES:
+            scan = ctype in _WBR_SCAN_OUT_TYPES
             records.append(
                 WbrRecord(
                     instance=str(instance),
                     core_net=_single_bit(cell, _WBR_OUT_CORE_PIN, str(instance)),
                     sys_net=_single_bit(cell, _WBR_OUT_SYS_PIN, str(instance)),
                     is_input=False,
+                    chain_nets=_scan_chain_nets(cell) if scan else (),
                 )
             )
     return sorted(records, key=lambda r: r.instance)
@@ -353,6 +389,9 @@ def fuse_wbr_into_view(
     sys_nets_to_drop: set[int] = set()
 
     for rec in records:
+        # Scan-model cells leave their chain ports (wbr_si/wbr_se/wbr_so)
+        # dangling once removed; drop them alongside the decoupled sys ports.
+        sys_nets_to_drop.update(rec.chain_nets)
         if rec.is_input:
             # Core input net -> controllable pseudo-PI. Removing the wrapper cell
             # leaves core_net driver-less; the new input port drives it.
@@ -414,8 +453,11 @@ def _fuse_wbr_extest(
     records = extract_wbr_cells(module)
     next_id = _next_net_id(module)
     wbr_port_map: dict[str, dict[str, Any]] = {}
+    chain_nets_to_drop: set[int] = set()
 
     for rec in records:
+        # Scan-model cells leave their chain ports dangling once removed.
+        chain_nets_to_drop.update(rec.chain_nets)
         if rec.is_input:
             # OBSERVE the system side: tap sys_net (FROM_SYS) to a new output.
             # SAFE the core side: drop the wrapper and tie core_net (TO_CORE) to 0.
@@ -455,6 +497,7 @@ def _fuse_wbr_extest(
     # __ppi_* inputs feed only dead, unobserved core logic and are left as-is.
     # Top-level PIs/POs are KEPT (EXTEST stimulus / observables).
     _drop_ppo_ports_and_observers(module)
+    _drop_top_ports_by_bit(module, chain_nets_to_drop)
 
     attrs = module.setdefault("attributes", {})
     if isinstance(attrs, dict):

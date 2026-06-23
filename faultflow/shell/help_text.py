@@ -29,6 +29,18 @@ COMMAND_HELP = {
         "No design may already be loaded.",
         "read_netlist examples/serial_adder.v -top serial_adder",
     ),
+    "load_json": CommandHelp(
+        "Project",
+        "load_json PATH -top MODULE",
+        "Load a synthesized Yosys JSON",
+        "Loads an already-synthesized gate-level Yosys JSON directly, skipping "
+        "synth (rejects Verilog -- use read_netlist for that). After synth the "
+        "synthesized JSON is loaded automatically, so this is mainly for resuming "
+        "from a previously synthesized netlist.",
+        "No design may already be loaded.",
+        "load_json output/serial_adder/intermediate/serial_adder.json "
+        "-top serial_adder",
+    ),
     "use_lib_cells": CommandHelp(
         "Project",
         "use_lib_cells PROFILE",

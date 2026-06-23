@@ -20,6 +20,7 @@ class TclBridge:
         self.interp = tkinter.Tcl()
         self._handlers: dict[str, Callable[[list[str]], Any]] = {
             "read_netlist": self._read_netlist,
+            "load_json": self._load_json,
             "use_lib_cells": self._use_lib_cells,
             "synth": self._synth,
             "add_scan": self._add_scan,
@@ -184,6 +185,15 @@ proc {name} {{args}} {{
                 "INVALID_OPTION",
             )
         return self.session.read_netlist(Path(args[0]), args[2])
+
+    def _load_json(self, args: list[str]) -> Any:
+        if len(args) != 3 or args[1] != "-top":
+            raise ShellError(
+                "usage: load_json PATH -top MODULE",
+                "CONFIG",
+                "INVALID_OPTION",
+            )
+        return self.session.load_json(Path(args[0]), args[2])
 
     def _use_lib_cells(self, args: list[str]) -> Any:
         if len(args) != 1:

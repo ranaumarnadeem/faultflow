@@ -430,9 +430,33 @@ class ProjectSession:
         self.synthesized = True
         self.scan_inserted = False
         self.scan_checked = False
+        # Switch the active design to the synthesized Yosys JSON so subsequent
+        # commands (check_cells, add_scan, run_atpg, write_netlist, ...) operate
+        # on it directly -- the user does not have to locate the output path.
+        netlist_json = result.artifacts.get("netlist_json")
+        if netlist_json is not None:
+            self.source = Path(netlist_json)
+            self.source_kind = "yosys_json"
         self.checkpoint()
         self._refresh_report()
         return result
+
+    def load_json(self, path: Path, top: str) -> OperationResult:
+        """Load an already-synthesized Yosys JSON netlist directly (no synth).
+
+        Thin JSON-only wrapper over read_netlist: rejects Verilog with a clear
+        message so the two entry points stay distinct. Mainly for resuming from a
+        previously synthesized netlist -- after ``synth`` the synthesized JSON is
+        loaded automatically.
+        """
+        if path.suffix.lower() != ".json":
+            raise ShellError(
+                "load_json expects a Yosys JSON netlist; "
+                "use read_netlist for Verilog",
+                "INPUT",
+                "UNSUPPORTED_EXTENSION",
+            )
+        return self.read_netlist(path, top)
 
     def add_scan(self, **options: object) -> OperationResult:
         if not self.synthesized:
