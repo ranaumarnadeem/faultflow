@@ -89,6 +89,8 @@ unsupported_cells = fail
 mode = comb
 random_vectors = 0
 max_rounds = 3
+[wrap]
+wbr_model = buffer
 """.strip() + "\n",
         encoding="utf-8",
     )

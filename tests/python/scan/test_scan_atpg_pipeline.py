@@ -229,6 +229,59 @@ def test_preflight_sim_scan_rejects_ineligible_ffs(
         runner._preflight_sim_scan()
 
 
+def test_preflight_sim_scan_allows_wbr_scan_cells(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # WBR scan cells live in the wrapper chain (fused downstream by
+    # fuse_wbr_into_view), not the main scan chain -- they must not block
+    # sim --scan even though they are reported as ineligible.
+    monkeypatch.chdir(tmp_path)
+    runner, _generic, manifest = _install_passing_scan_workspace(tmp_path)
+    manifest["ineligible_ffs"] = [
+        {
+            "instance": "__wi_D",
+            "cell_type": "$wbc_in_scan_faultflow",
+            "reason": "wbr_scan_cell",
+        },
+        {
+            "instance": "__wo_Q",
+            "cell_type": "$wbc_out_scan_faultflow",
+            "reason": "wbr_scan_cell",
+        },
+    ]
+    manifest_path = runner.cfg.scan_manifest_path
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    result = runner._preflight_sim_scan()
+    assert result.get("ineligible_ffs")  # returns the manifest, does not raise
+
+
+def test_preflight_sim_scan_mixed_ineligible_names_only_real_blocker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A genuine blocker mixed with WBR cells still raises, but the message names
+    # only the real blocker -- the exempt WBR cell is not reported.
+    monkeypatch.chdir(tmp_path)
+    runner, _generic, manifest = _install_passing_scan_workspace(tmp_path)
+    manifest["ineligible_ffs"] = [
+        {
+            "instance": "__wi_D",
+            "cell_type": "$wbc_in_scan_faultflow",
+            "reason": "wbr_scan_cell",
+        },
+        {
+            "instance": "u_bad",
+            "cell_type": "DFFPOSX1",
+            "reason": "unsupported_ff_shape",
+        },
+    ]
+    manifest_path = runner.cfg.scan_manifest_path
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(RunnerError, match="ineligible FFs remain") as exc:
+        runner._preflight_sim_scan()
+    assert "u_bad" in str(exc.value)
+    assert "__wi_D" not in str(exc.value)
+
+
 def test_comb_and_scan_share_unified_db_path(tmp_path: Path) -> None:
     source = tmp_path / "tiny_dff.json"
     source.write_text(json.dumps(_tiny_dff_json(), indent=2) + "\n", encoding="utf-8")
