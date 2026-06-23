@@ -364,8 +364,8 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         raise ConfigError("Only atpg.mode=comb is supported")
 
     atpg_compaction = parser.get("atpg", "compaction", fallback="reverse")
-    if atpg_compaction not in {"none", "reverse"}:
-        raise ConfigError("atpg.compaction must be 'none' or 'reverse'")
+    if atpg_compaction not in {"none", "reverse", "dynamic"}:
+        raise ConfigError("atpg.compaction must be 'none', 'reverse', or 'dynamic'")
 
     # Fault model: `model` is canonical; `type` is a back-compat alias (older
     # configs carried `type = stuck_at`). Prefer `model` when both are present.

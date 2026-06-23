@@ -1614,9 +1614,17 @@ class Runner:
                         unsupported=self.cfg.simulation.unsupported_cells,
                     )
                 else:
-                    from faultflow.runner.compaction import compact_run
+                    from faultflow.runner.compaction import (
+                        compact_run,
+                        compact_run_dynamic,
+                    )
 
-                    vectors, run_id, raw_vector_count = compact_run(
+                    _compactor = (
+                        compact_run_dynamic
+                        if self.cfg.atpg.compaction == "dynamic"
+                        else compact_run
+                    )
+                    vectors, run_id, raw_vector_count = _compactor(
                         json_path=str(netlist),
                         cell_map_path=str(self.cfg.cell_lib),
                         db_path=str(self.cfg.db_path),
