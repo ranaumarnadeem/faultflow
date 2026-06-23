@@ -3,6 +3,7 @@ add_library(
   sim/gate_eval.cpp
   atpg/cnf_encoder.cpp
   atpg/compaction.cpp
+  atpg/cone.cpp
   atpg/fault_solver.cpp
   atpg/progressive_atpg.cpp
   atpg/sat_atpg.cpp

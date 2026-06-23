@@ -309,11 +309,11 @@ py::dict solve_fault_atpg(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode = "") {
+    const std::string& test_mode = "", bool cone_restrict = true) {
   const atpg::SolveFaultResult result = atpg::solve_fault_for_db(
       json_path, cell_map_path, db_path, fault_id, blocked_patterns,
       conflict_limit, sat_timeout_seconds, unsupported_policy,
-      blackbox_instances, test_mode);
+      blackbox_instances, test_mode, cone_restrict);
   py::dict out;
   out["result"] = result.result;
   out["vector"] = result.vector;
@@ -747,7 +747,7 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("sat_timeout_seconds") = 10,
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("test_mode") = "");
+        py::arg("test_mode") = "", py::arg("cone_restrict") = true);
   m.def("verify_fault_candidate", &faultflow::verify_fault_candidate,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("vector"),

@@ -22,6 +22,7 @@ add_executable(
   fault/test_transition_faults.cpp
   db/test_sqlite_store.cpp
   atpg/test_cnf_truth_tables.cpp
+  atpg/test_cone_equivalence.cpp
   atpg/test_miter_sat.cpp
   atpg/test_transition_atpg.cpp
   atpg/test_scan_transition_atpg.cpp

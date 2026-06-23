@@ -501,6 +501,7 @@ def run_progressive_native_atpg(
                     unsupported,
                     bb_instances,
                     test_mode,
+                    cfg.atpg.cone_restrict,
                 )
             )
             atpg_seconds += time.perf_counter() - atpg_started

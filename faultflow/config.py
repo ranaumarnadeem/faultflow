@@ -102,6 +102,10 @@ class AtpgConfig:
     # remaining undetected faults this round (dropping fortuitous detections),
     # not just its target fault. Coverage-identical; cuts SAT calls + raw vectors.
     fault_drop_sat: bool = True
+    # When true, restrict each combinational stuck-at per-fault CNF to the fault's
+    # cone of influence (provably verdict-equivalent; cuts SAT time). Applies to
+    # the FUNCTIONAL stuck-at path only for now.
+    cone_restrict: bool = True
 
 
 @dataclass(frozen=True)
@@ -430,6 +434,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             sat_timeout_seconds=_int(parser, "atpg", "sat_timeout_seconds", 10),
             compaction=atpg_compaction,
             fault_drop_sat=_bool(parser, "atpg", "fault_drop_sat", True),
+            cone_restrict=_bool(parser, "atpg", "cone_restrict", True),
         ),
         report=ReportConfig(
             output=_path(parser, "report", "output", "coverage.rpt"),

@@ -19,6 +19,10 @@ struct SatSolveOptions {
   int conflict_limit = -1;
   int sat_timeout_seconds = 10;
   std::vector<std::string> blocked_patterns;
+  // Restrict each per-fault CNF to the fault's cone of influence (provably
+  // verdict-equivalent to the whole-circuit miter). Default false keeps the
+  // whole-circuit path as the A/B control and the equivalence oracle.
+  bool cone_restrict = false;
 };
 
 // CaDiCaL mapping: 10=SAT, 20=UNSAT, 0=UNKNOWN. Interrupt from conflict/time

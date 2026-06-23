@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "atpg/cnf_encoder.hpp"
+#include "atpg/cone.hpp"
 #include "common/types.hpp"
 #include "ir/compiled_graph/compiled_graph.hpp"
 
@@ -50,6 +51,55 @@ void apply_solver_limits(CaDiCaL::Solver& solver, const SatSolveOptions& options
 
 bool had_solver_limits(const SatSolveOptions& options) {
   return options.conflict_limit >= 0 || options.sat_timeout_seconds > 0;
+}
+
+// Cone masks driving the dual-rail miter. When `cone_restrict` is false the masks
+// are all-ones and `observed` is the full observable set, so the encoding below
+// is byte-identical to the whole-circuit miter (the A/B control). When true the
+// masks come from the fault's cone of influence: nodes outside in_support get no
+// good CNF; nodes outside in_outcone get no faulty CNF and their faulty value is
+// aliased to the good var (good == faulty there by construction). An empty
+// reached-observable set (`redundant`) means the fault drives nothing observable
+// — structurally redundant, so the caller returns UNSAT without solving.
+struct ConeMasks {
+  std::vector<char> in_outcone;
+  std::vector<char> in_support;
+  std::vector<uint32_t> observed;
+  bool redundant = false;
+};
+
+ConeMasks build_cone_masks(const CompiledSimGraph& cg, uint32_t fault_net,
+                           const std::vector<uint32_t>& observable_set,
+                           bool cone_restrict) {
+  ConeMasks m;
+  const size_t n = static_cast<size_t>(cg.net_count);
+  if (cone_restrict) {
+    std::vector<char> flag(n, 0);
+    for (uint32_t obs : observable_set) {
+      if (obs < static_cast<uint32_t>(cg.net_count)) {
+        flag[obs] = 1;
+      }
+    }
+    const std::vector<int> driver = build_driver_index(cg);
+    FaultCone cone = extract_fault_cone(cg, fault_net, driver, flag);
+    m.in_outcone = std::move(cone.in_outcone);
+    m.in_support = std::move(cone.in_support);
+    m.observed = std::move(cone.reached_observables);
+    m.redundant = m.observed.empty();
+  } else {
+    m.in_outcone.assign(n, 1);
+    m.in_support.assign(n, 1);
+    m.observed = observable_set;
+  }
+  return m;
+}
+
+// Faulty-machine input literal: the faulty var inside the out-cone, else the
+// good var (good == faulty outside the cone — the aliasing that shrinks the CNF).
+inline int faulty_input_lit(const CnfVarMap& vars, const ConeMasks& masks,
+                            uint32_t net) {
+  return masks.in_outcone[net] ? vars.faulty_vars.at(net)
+                               : vars.free_vars.at(net);
 }
 
 }  // namespace
@@ -114,21 +164,33 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
   CaDiCaL::Solver solver;
   apply_solver_limits(solver, options);
 
+  const std::vector<uint32_t> observable_set(cg.observable.begin(),
+                                             cg.observable.end());
+  const ConeMasks masks = build_cone_masks(cg, fault.net_index, observable_set,
+                                           options.cone_restrict);
+  if (masks.redundant) {
+    return SatSolveResult::UNSAT;  // fault reaches no observable -> redundant
+  }
+
   for (const SimNode& node : cg.nodes) {
     if (node.type == GateType::INPUT) {
       continue;
     }
     const auto input_nets = inputs_of(node);
-    std::vector<int> free_inputs;
-    std::vector<int> faulty_inputs;
-    free_inputs.reserve(input_nets.size());
-    faulty_inputs.reserve(input_nets.size());
-    for (uint32_t input : input_nets) {
-      free_inputs.push_back(vars.free_vars.at(input));
-      faulty_inputs.push_back(vars.faulty_vars.at(input));
+    if (masks.in_support[node.out]) {
+      std::vector<int> free_inputs;
+      free_inputs.reserve(input_nets.size());
+      for (uint32_t input : input_nets) {
+        free_inputs.push_back(vars.free_vars.at(input));
+      }
+      add_gate_cnf(solver, node.type, free_inputs, vars.free_vars.at(node.out));
     }
-    add_gate_cnf(solver, node.type, free_inputs, vars.free_vars.at(node.out));
-    if (node.out != fault.net_index) {
+    if (masks.in_outcone[node.out] && node.out != fault.net_index) {
+      std::vector<int> faulty_inputs;
+      faulty_inputs.reserve(input_nets.size());
+      for (uint32_t input : input_nets) {
+        faulty_inputs.push_back(faulty_input_lit(vars, masks, input));
+      }
       add_gate_cnf(solver, node.type, faulty_inputs,
                    vars.faulty_vars.at(node.out));
     }
@@ -138,7 +200,7 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
   pi_literals.reserve(pis.size());
   for (const AtpgPiInfo& pi : pis) {
     pi_literals.push_back(vars.free_vars.at(pi.compiled));
-    if (pi.compiled != fault.net_index) {
+    if (pi.compiled != fault.net_index && masks.in_outcone[pi.compiled]) {
       add_equiv(solver, vars.free_vars.at(pi.compiled),
                 vars.faulty_vars.at(pi.compiled));
     }
@@ -156,7 +218,7 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
                        : -vars.faulty_vars.at(fault.net_index));
 
   std::vector<int> diff_vars;
-  for (uint32_t obs : cg.observable) {
+  for (uint32_t obs : masks.observed) {
     const int d = vars.next++;
     add_xor_def(solver, vars.free_vars.at(obs), vars.faulty_vars.at(obs), d);
     diff_vars.push_back(d);

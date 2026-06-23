@@ -57,7 +57,7 @@ SolveFaultResult solve_fault_for_db(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {},
-    const std::string& test_mode = "");
+    const std::string& test_mode = "", bool cone_restrict = true);
 
 bool verify_fault_vector(
     const std::string& json_path, const std::string& cell_map_path,

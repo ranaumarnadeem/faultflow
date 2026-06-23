@@ -250,7 +250,7 @@ SolveFaultResult solve_fault_for_db(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode) {
+    const std::string& test_mode, bool cone_restrict) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -268,6 +268,9 @@ SolveFaultResult solve_fault_for_db(
 
   std::map<std::string, bool> vector;
   const TestMode mode = parse_test_mode(test_mode);
+  // Cone restriction is implemented for the FUNCTIONAL stuck-at path only; the
+  // mode-aware (INTEST/EXTEST) path ignores the flag and stays whole-circuit.
+  options.cone_restrict = cone_restrict && mode == TestMode::FUNCTIONAL;
   SatSolveResult result;
   if (mode == TestMode::FUNCTIONAL) {
     result = solve_stuck_at_fault(ctx.cg, pis, fault, options, vector);
