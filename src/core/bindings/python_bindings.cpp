@@ -406,12 +406,13 @@ py::dict solve_scan_transition_fault_atpg(
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances,
+    bool cone_restrict = true) {
   const atpg::SolveTransitionResult result =
       atpg::solve_scan_transition_fault_for_db(
           json_path, cell_map_path, db_path, fault_id, blocked_patterns,
           conflict_limit, sat_timeout_seconds, unsupported_policy,
-          blackbox_instances);
+          blackbox_instances, cone_restrict);
   py::dict out;
   out["result"] = result.result;
   out["launch"] = result.launch;
@@ -426,12 +427,13 @@ py::dict solve_scan_los_transition_fault_atpg(
     const std::vector<std::string>& head_ppi_ports,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances,
+    bool cone_restrict = true) {
   const atpg::SolveTransitionResult result =
       atpg::solve_scan_los_transition_fault_for_db(
           json_path, cell_map_path, db_path, fault_id, couple_ports,
           head_ppi_ports, blocked_patterns, conflict_limit, sat_timeout_seconds,
-          unsupported_policy, blackbox_instances);
+          unsupported_policy, blackbox_instances, cone_restrict);
   py::dict out;
   out["result"] = result.result;
   out["launch"] = result.launch;
@@ -784,7 +786,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("blocked_patterns"), py::arg("conflict_limit") = 100000,
         py::arg("sat_timeout_seconds") = 10,
         py::arg("unsupported_policy") = "fail",
-        py::arg("blackbox_instances") = std::vector<std::string>{});
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("cone_restrict") = true);
   m.def("solve_scan_los_transition_fault_atpg",
         &faultflow::solve_scan_los_transition_fault_atpg, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("db_path"), py::arg("fault_id"),
@@ -792,7 +795,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("blocked_patterns"), py::arg("conflict_limit") = 100000,
         py::arg("sat_timeout_seconds") = 10,
         py::arg("unsupported_policy") = "fail",
-        py::arg("blackbox_instances") = std::vector<std::string>{});
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("cone_restrict") = true);
   m.def("verify_transition_candidate", &faultflow::verify_transition_candidate,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("launch"), py::arg("capture"),

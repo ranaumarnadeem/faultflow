@@ -985,6 +985,7 @@ def run_progressive_scan_atpg(
                         cfg.atpg.sat_conflict_limit,
                         cfg.atpg.sat_timeout_seconds,
                         unsupported,
+                        cone_restrict=cfg.atpg.cone_restrict,
                     )
                 )
             elif transition:
@@ -998,6 +999,7 @@ def run_progressive_scan_atpg(
                         cfg.atpg.sat_conflict_limit,
                         cfg.atpg.sat_timeout_seconds,
                         unsupported,
+                        cone_restrict=cfg.atpg.cone_restrict,
                     )
                 )
             else:

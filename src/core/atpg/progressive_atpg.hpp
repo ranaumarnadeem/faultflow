@@ -138,7 +138,8 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances = {});
+    const std::vector<std::string>& blackbox_instances = {},
+    bool cone_restrict = true);
 
 // ---- Transition model (scan launch-on-shift) -------------------------------
 // LOS couples (capture PPI == launch predecessor PPI) and chain-head PPIs (free
@@ -152,6 +153,7 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
     const std::vector<std::string>& head_ppi_ports,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances = {});
+    const std::vector<std::string>& blackbox_instances = {},
+    bool cone_restrict = true);
 
 }  // namespace faultflow::atpg

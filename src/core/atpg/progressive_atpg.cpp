@@ -480,7 +480,7 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances, bool cone_restrict) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -497,6 +497,9 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
   options.conflict_limit = conflict_limit;
   options.sat_timeout_seconds = sat_timeout_seconds;
   options.blocked_patterns = blocked_patterns;
+  // Scan LOC transition: cone restricts the two capture machines; launch frame
+  // full (the PPI<->PPO coupling needs every coupled PPO computed).
+  options.cone_restrict = cone_restrict;
 
   std::map<std::string, bool> launch;
   std::map<std::string, bool> capture;
@@ -519,7 +522,7 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
     const std::vector<std::string>& head_ppi_ports,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances, bool cone_restrict) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -573,6 +576,8 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
   options.conflict_limit = conflict_limit;
   options.sat_timeout_seconds = sat_timeout_seconds;
   options.blocked_patterns = blocked_patterns;
+  // Scan LOS transition: cone restricts the two capture machines; launch full.
+  options.cone_restrict = cone_restrict;
 
   std::map<std::string, bool> launch;
   std::map<std::string, bool> capture;
