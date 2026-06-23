@@ -830,6 +830,7 @@ def run_progressive_transition_atpg(
                     cfg.atpg.sat_timeout_seconds,
                     unsupported,
                     bb_instances,
+                    cfg.atpg.cone_restrict,
                 )
             )
             atpg_seconds += time.perf_counter() - atpg_started

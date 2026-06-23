@@ -263,31 +263,45 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
   const std::unordered_set<uint32_t> safe_zero_set(mc.safe_zero_nets.begin(),
                                                     mc.safe_zero_nets.end());
 
+  const ConeMasks masks = build_cone_masks(cg, fault.net_index,
+                                           mc.observable_nets,
+                                           options.cone_restrict);
+  if (masks.redundant) {
+    return SatSolveResult::UNSAT;  // fault reaches no observable -> redundant
+  }
+
   for (const SimNode& node : cg.nodes) {
     if (node.type == GateType::INPUT) {
       continue;
     }
-    // EXTEST: WBR_IN.TO_CORE is a safe-zero net. Break the BUF(FROM_SYS ->
-    // TO_CORE) constraint and force TO_CORE = 0 via unit clauses so FROM_SYS
-    // stays free (it is observed in mc.observable_nets as the interconnect input).
+    // EXTEST: WBR_IN.TO_CORE is a safe-zero net (core decoupled). Force it to 0
+    // in whichever machine the cone keeps; outside the cone it is unreferenced.
+    // A safe-zero net that side-feeds an out-cone gate is in `support`, so the
+    // aliased faulty input reads the forced-0 good var -> still correct.
     if (node.type == GateType::WBR_IN && safe_zero_set.count(node.out)) {
-      add_unit(solver, -vars.free_vars.at(node.out));
-      if (node.out != fault.net_index) {
+      if (masks.in_support[node.out]) {
+        add_unit(solver, -vars.free_vars.at(node.out));
+      }
+      if (masks.in_outcone[node.out] && node.out != fault.net_index) {
         add_unit(solver, -vars.faulty_vars.at(node.out));
       }
       continue;
     }
     const auto input_nets = inputs_of(node);
-    std::vector<int> free_inputs;
-    std::vector<int> faulty_inputs;
-    free_inputs.reserve(input_nets.size());
-    faulty_inputs.reserve(input_nets.size());
-    for (uint32_t input : input_nets) {
-      free_inputs.push_back(vars.free_vars.at(input));
-      faulty_inputs.push_back(vars.faulty_vars.at(input));
+    if (masks.in_support[node.out]) {
+      std::vector<int> free_inputs;
+      free_inputs.reserve(input_nets.size());
+      for (uint32_t input : input_nets) {
+        free_inputs.push_back(vars.free_vars.at(input));
+      }
+      add_gate_cnf(solver, node.type, free_inputs, vars.free_vars.at(node.out));
     }
-    add_gate_cnf(solver, node.type, free_inputs, vars.free_vars.at(node.out));
-    if (node.out != fault.net_index) {
+    if (masks.in_outcone[node.out] && node.out != fault.net_index) {
+      std::vector<int> faulty_inputs;
+      faulty_inputs.reserve(input_nets.size());
+      for (uint32_t input : input_nets) {
+        faulty_inputs.push_back(faulty_input_lit(vars, masks, input));
+      }
       add_gate_cnf(solver, node.type, faulty_inputs,
                    vars.faulty_vars.at(node.out));
     }
@@ -297,7 +311,7 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
   pi_literals.reserve(pis.size());
   for (const AtpgPiInfo& pi : pis) {
     pi_literals.push_back(vars.free_vars.at(pi.compiled));
-    if (pi.compiled != fault.net_index) {
+    if (pi.compiled != fault.net_index && masks.in_outcone[pi.compiled]) {
       add_equiv(solver, vars.free_vars.at(pi.compiled),
                 vars.faulty_vars.at(pi.compiled));
     }
@@ -314,9 +328,9 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
                        ? vars.faulty_vars.at(fault.net_index)
                        : -vars.faulty_vars.at(fault.net_index));
 
-  // Use mode-specific observable set.
+  // Mode-specific observable set, restricted to the reached observables (R).
   std::vector<int> diff_vars;
-  for (uint32_t obs : mc.observable_nets) {
+  for (uint32_t obs : masks.observed) {
     const int d = vars.next++;
     add_xor_def(solver, vars.free_vars.at(obs), vars.faulty_vars.at(obs), d);
     diff_vars.push_back(d);
@@ -374,27 +388,48 @@ SatSolveResult solve_two_frame_transition(
   CaDiCaL::Solver solver;
   apply_solver_limits(solver, options);
 
+  // Cone masks restrict the two CAPTURE-frame machines (good + faulty); the
+  // LAUNCH frame stays full because the scan LOC/LOS PI coupling forces every
+  // capture PPI equal to its launch PPO regardless of the fault, so the launch
+  // frame must be able to compute all coupled PPOs. Restricting 2 of 3 machines
+  // is still verdict-preserving. Empty reached-observable set => redundant.
+  const std::vector<uint32_t> observable_set(cg.observable.begin(),
+                                             cg.observable.end());
+  const ConeMasks masks = build_cone_masks(cg, fault.net_index, observable_set,
+                                           options.cone_restrict);
+  if (masks.redundant) {
+    return SatSolveResult::UNSAT;
+  }
+
   for (const SimNode& node : cg.nodes) {
     if (node.type == GateType::INPUT) {
       continue;
     }
     const auto input_nets = inputs_of(node);
+    // Launch frame: full good machine (no fault anywhere).
     std::vector<int> launch_inputs;
-    std::vector<int> free_inputs;
-    std::vector<int> faulty_inputs;
     launch_inputs.reserve(input_nets.size());
-    free_inputs.reserve(input_nets.size());
-    faulty_inputs.reserve(input_nets.size());
     for (uint32_t input : input_nets) {
       launch_inputs.push_back(launch_vars.at(input));
-      free_inputs.push_back(vars.free_vars.at(input));
-      faulty_inputs.push_back(vars.faulty_vars.at(input));
     }
-    // Launch frame: full good machine (no fault anywhere).
     add_gate_cnf(solver, node.type, launch_inputs, launch_vars.at(node.out));
-    // Capture frame: good + faulty copies (faulty skips the fault net).
-    add_gate_cnf(solver, node.type, free_inputs, vars.free_vars.at(node.out));
-    if (node.out != fault.net_index) {
+    // Capture good machine: over the fault's support.
+    if (masks.in_support[node.out]) {
+      std::vector<int> free_inputs;
+      free_inputs.reserve(input_nets.size());
+      for (uint32_t input : input_nets) {
+        free_inputs.push_back(vars.free_vars.at(input));
+      }
+      add_gate_cnf(solver, node.type, free_inputs, vars.free_vars.at(node.out));
+    }
+    // Capture faulty machine: only inside the out-cone (faulty skips the fault
+    // net; inputs outside the out-cone alias to the capture good var).
+    if (masks.in_outcone[node.out] && node.out != fault.net_index) {
+      std::vector<int> faulty_inputs;
+      faulty_inputs.reserve(input_nets.size());
+      for (uint32_t input : input_nets) {
+        faulty_inputs.push_back(faulty_input_lit(vars, masks, input));
+      }
       add_gate_cnf(solver, node.type, faulty_inputs,
                    vars.faulty_vars.at(node.out));
     }
@@ -408,7 +443,7 @@ SatSolveResult solve_two_frame_transition(
   for (const AtpgPiInfo& pi : pis) {
     launch_pi_literals.push_back(launch_vars.at(pi.compiled));
     capture_pi_literals.push_back(vars.free_vars.at(pi.compiled));
-    if (pi.compiled != fault.net_index) {
+    if (pi.compiled != fault.net_index && masks.in_outcone[pi.compiled]) {
       add_equiv(solver, vars.free_vars.at(pi.compiled),
                 vars.faulty_vars.at(pi.compiled));
     }
@@ -456,9 +491,9 @@ SatSolveResult solve_two_frame_transition(
                        ? vars.faulty_vars.at(fault.net_index)
                        : -vars.faulty_vars.at(fault.net_index));
 
-  // Miter: at least one observable differs between capture good and faulty.
+  // Miter: at least one reached observable differs between capture good/faulty.
   std::vector<int> diff_vars;
-  for (uint32_t obs : cg.observable) {
+  for (uint32_t obs : masks.observed) {
     const int d = vars.next++;
     add_xor_def(solver, vars.free_vars.at(obs), vars.faulty_vars.at(obs), d);
     diff_vars.push_back(d);

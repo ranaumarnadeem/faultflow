@@ -96,7 +96,8 @@ SolveTransitionResult solve_transition_fault_for_db(
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances = {});
+    const std::vector<std::string>& blackbox_instances = {},
+    bool cone_restrict = true);
 
 bool verify_transition_fault_vector(
     const std::string& json_path, const std::string& cell_map_path,

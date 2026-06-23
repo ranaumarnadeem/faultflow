@@ -268,9 +268,10 @@ SolveFaultResult solve_fault_for_db(
 
   std::map<std::string, bool> vector;
   const TestMode mode = parse_test_mode(test_mode);
-  // Cone restriction is implemented for the FUNCTIONAL stuck-at path only; the
-  // mode-aware (INTEST/EXTEST) path ignores the flag and stays whole-circuit.
-  options.cone_restrict = cone_restrict && mode == TestMode::FUNCTIONAL;
+  // Cone restriction applies to both the FUNCTIONAL and the mode-aware
+  // (INTEST/EXTEST) stuck-at paths; the mode-aware path keeps the safe-zero WBR
+  // forcing inside the cone.
+  options.cone_restrict = cone_restrict;
   SatSolveResult result;
   if (mode == TestMode::FUNCTIONAL) {
     result = solve_stuck_at_fault(ctx.cg, pis, fault, options, vector);
@@ -440,7 +441,7 @@ SolveTransitionResult solve_transition_fault_for_db(
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances, bool cone_restrict) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -456,6 +457,9 @@ SolveTransitionResult solve_transition_fault_for_db(
   options.conflict_limit = conflict_limit;
   options.sat_timeout_seconds = sat_timeout_seconds;
   options.blocked_patterns = blocked_patterns;
+  // Broadside two-frame transition: cone restricts the two capture machines;
+  // the launch frame stays full. Scan LOC/LOS transition stays whole-circuit.
+  options.cone_restrict = cone_restrict;
 
   std::map<std::string, bool> launch;
   std::map<std::string, bool> capture;

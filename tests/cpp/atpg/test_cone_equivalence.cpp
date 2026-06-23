@@ -51,11 +51,56 @@ void check_cone_equivalence(const std::string& rel) {
   REQUIRE(checked > 0);
 }
 
+// Same gate for the broadside two-frame transition path: the cone restricts the
+// two capture-frame machines (launch frame stays full), so the SAT/UNSAT verdict
+// per transition fault must match the whole-circuit transition miter.
+void check_transition_cone_equivalence(const std::string& rel) {
+  const ParsedGraph pg = test::load_parsed_benchmark(rel);
+  const NormalizedGraph ng = test::load_normalized_benchmark(rel);
+  const CompiledSimGraph cg = test::load_compiled_benchmark(rel);
+  const auto pis = ordered_pis(pg, cg);
+  const auto faults = enumerate_faults(ng, cg);
+
+  SatSolveOptions full;
+  full.conflict_limit = -1;
+  full.sat_timeout_seconds = 0;
+  full.cone_restrict = false;
+  SatSolveOptions cone = full;
+  cone.cone_restrict = true;
+
+  size_t checked = 0;
+  for (const auto& fault : faults) {
+    if (fault.exclusion != FaultExclusion::NONE) {
+      continue;
+    }
+    std::map<std::string, bool> a1, a2, b1, b2;
+    const SatSolveResult r_full =
+        solve_transition_fault(cg, pis, fault, full, a1, a2);
+    const SatSolveResult r_cone =
+        solve_transition_fault(cg, pis, fault, cone, b1, b2);
+    INFO("transition fault net_index="
+         << fault.net_index << " type=" << static_cast<int>(fault.type));
+    REQUIRE(r_full == r_cone);
+    ++checked;
+  }
+  REQUIRE(checked > 0);
+}
+
 }  // namespace
 
 TEST_CASE("Cone SAT verdict == whole-circuit on c17",
           "[atpg][cone][equivalence]") {
   check_cone_equivalence("iscas85/synth_sky130/c17.json");
+}
+
+TEST_CASE("Cone transition verdict == whole-circuit on c17",
+          "[atpg][cone][equivalence]") {
+  check_transition_cone_equivalence("iscas85/synth_sky130/c17.json");
+}
+
+TEST_CASE("Cone transition verdict == whole-circuit on c432",
+          "[atpg][cone][equivalence]") {
+  check_transition_cone_equivalence("iscas85/synth_sky130/c432.json");
 }
 
 TEST_CASE("Cone SAT verdict == whole-circuit on c432",
