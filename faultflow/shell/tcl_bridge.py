@@ -144,6 +144,15 @@ proc {name} {{args}} {{
                         "errorcode": ("FAULTFLOW", "INTERNAL", "UNEXPECTED"),
                     }
                 )
+            except KeyboardInterrupt as exc:
+                log_exception(self.session.output_root, self.session.top)
+                return self._dict(
+                    {
+                        "status": "error",
+                        "message": "KeyboardInterrupt",
+                        "errorcode": ("FAULTFLOW", "INTERNAL", "INTERRUPTED"),
+                    }
+                )
 
         return invoke
 

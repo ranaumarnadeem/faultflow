@@ -31,6 +31,7 @@ from faultflow.config import (
 from faultflow.db import (
     CAMPAIGN_TYPE_COMB,
     CAMPAIGN_TYPE_SCAN,
+    CAMPAIGN_TYPE_SCAN_EXTEST,
     SchemaError,
     abort_pending_candidates,
     connect,
@@ -1943,14 +1944,13 @@ class Runner:
 
         fp = self._fingerprint(netlist)
         fp["manifest_hash"] = str(manifest.get("generic_json_hash", ""))
-        # The fused EXTEST view is structurally distinct from the INTEST/FUNCTIONAL
-        # views (different netlist_hash) and test_mode is in config_hash, so the
-        # EXTEST campaign is already isolated; tag the schema ver for clarity.
         fp["atpg_view_schema_ver"] = (
             f"{ATPG_VIEW_SCHEMA_VER}+{WBR_SCAN_EXTEST_VIEW_SCHEMA_VER}"
         )
+        # EXTEST uses a separate campaign_type so it never collides with the
+        # INTEST/scan campaign in ensure_campaign's latest-campaign lookup.
         with self._db(scan=True) as conn:
-            campaign_id = self._check_fingerprint(conn, fp, scan=True)
+            campaign_id = ensure_campaign(conn, CAMPAIGN_TYPE_SCAN_EXTEST, fp)
             abort_pending_candidates(conn, campaign_id)
 
         model_id = redundancy_model_id(fp)
