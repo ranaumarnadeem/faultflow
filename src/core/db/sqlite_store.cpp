@@ -549,7 +549,7 @@ void mark_fault_detected(const std::string& db_path, int64_t campaign_id,
   SQLite::Transaction txn(db);
   SQLite::Statement q(db,
                       "UPDATE faults SET status='detected', detected_by_vector=?, "
-                      "protocol_unresolved=0 WHERE id=?");
+                      "protocol_unresolved=0 WHERE id=? AND status='undetected'");
   q.bind(1, vector_index);
   q.bind(2, fault_id);
   q.exec();

@@ -1,6 +1,7 @@
 from faultflow.db.campaign import (
     CAMPAIGN_TYPE_COMB,
     CAMPAIGN_TYPE_SCAN,
+    CAMPAIGN_TYPE_SCAN_EXTEST,
     SchemaError,
     abort_pending_candidates,
     ensure_campaign,
@@ -12,6 +13,7 @@ from faultflow.db.sqlite import connect, init_schema, summary
 __all__ = [
     "CAMPAIGN_TYPE_COMB",
     "CAMPAIGN_TYPE_SCAN",
+    "CAMPAIGN_TYPE_SCAN_EXTEST",
     "SchemaError",
     "abort_pending_candidates",
     "connect",

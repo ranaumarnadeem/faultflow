@@ -254,6 +254,16 @@ def _scan_campaign_id(db_path: Path) -> int:
     return int(row[0])
 
 
+def _extest_campaign_id(db_path: Path) -> int:
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM campaigns WHERE campaign_type = 'scan_extest'"
+            " ORDER BY id LIMIT 1"
+        ).fetchone()
+    assert row is not None, "no scan_extest campaign created"
+    return int(row[0])
+
+
 @pytest.mark.golden
 def test_intest_scan_fusion_yields_real_coverage(
     tmp_path: Path, require_cpp_core: None
@@ -338,7 +348,7 @@ def test_extest_scan_yields_interconnect_coverage(
     assert "mode=extest" in result
 
     db_path = runner.cfg.db_path
-    campaign_id = _scan_campaign_id(db_path)
+    campaign_id = _extest_campaign_id(db_path)
 
     with connect(db_path) as conn:
         cov = summary(conn, campaign_id=campaign_id)

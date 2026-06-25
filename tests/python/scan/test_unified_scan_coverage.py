@@ -525,7 +525,7 @@ def test_scan_stalled_when_protocol_sim_never_passes(
 
     monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
     monkeypatch.setattr(core, "solve_fault_atpg", fake_solve)
-    monkeypatch.setattr(core, "simulate_tentative", empty_tentative)
+    monkeypatch.setattr(core, "simulate_tentative_preloaded", empty_tentative)
     monkeypatch.setattr(core, "simulate_scan_protocol_faults", failing_protocol_sim)
     monkeypatch.setattr(core, "verify_fault_candidate", lambda *_a, **_k: True)
     monkeypatch.setattr(
@@ -750,9 +750,10 @@ def test_fault_dropping_skips_faults_detected_by_an_earlier_candidate(
         return {"result": "SAT", "vector": candidate}
 
     def detect_every_active(*_args: object, **_kwargs: object) -> list[int]:
-        fault_ids = _args[5]
-        assert isinstance(fault_ids, list)
-        return list(fault_ids)
+        # _args[2] is the preloaded list of (fault_id, net_index, type) tuples
+        preloaded = _args[2]
+        assert isinstance(preloaded, list)
+        return [int(t[0]) for t in preloaded]
 
     def pass_every_lane(*_args: object, **kwargs: object) -> dict[str, object]:
         faults = kwargs["faults"]
@@ -762,7 +763,7 @@ def test_fault_dropping_skips_faults_detected_by_an_earlier_candidate(
     monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
     monkeypatch.setattr(core, "solve_fault_atpg", solve_once)
     monkeypatch.setattr(core, "verify_fault_candidate", lambda *_a, **_k: True)
-    monkeypatch.setattr(core, "simulate_tentative", detect_every_active)
+    monkeypatch.setattr(core, "simulate_tentative_preloaded", detect_every_active)
     monkeypatch.setattr(core, "simulate_scan_protocol_faults", pass_every_lane)
     monkeypatch.setattr(
         "faultflow.scan.detection_pipeline.reduced_protocol_matches",

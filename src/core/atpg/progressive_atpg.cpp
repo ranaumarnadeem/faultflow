@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <random>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 #include "atpg/fault_solver.hpp"
@@ -687,6 +688,95 @@ std::vector<int64_t> simulate_transition_tentative_detections(
   std::vector<int64_t> detected;
   const std::vector<ActiveFaultRecord> active =
       load_active_fault_records(db_path, fault_ids, true);
+  for (size_t begin = 0; begin < active.size(); begin += kFaultLanesPerWord) {
+    const size_t end = std::min(begin + kFaultLanesPerWord, active.size());
+    const FaultBatch batch = make_batch(active, begin, end);
+    ++g_simulation_instrumentation.batch_fault_calls;
+    const uint64_t detected_mask =
+        sim.simulate_transition_batch(ctx.cg, v1, v2, batch);
+    for (size_t i = begin; i < end; ++i) {
+      const CompactFault& lane = batch.faults[i - begin];
+      if ((detected_mask & lane.sa_mask) != 0) {
+        detected.push_back(active[i].fault_id);
+      }
+    }
+  }
+  return detected;
+}
+
+std::vector<int64_t> simulate_tentative_from_preloaded(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::vector<std::tuple<int64_t, uint32_t, uint8_t>>& preloaded,
+    const std::map<std::string, bool>& vector,
+    const std::vector<std::string>& input_order,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances,
+    const std::string& test_mode) {
+  if (preloaded.empty()) {
+    return {};
+  }
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  const TestVector tv = vector_from_map(ctx.parsed, vector, input_order);
+  const TestMode mode = parse_test_mode(test_mode);
+  const bool use_mode = (mode != TestMode::FUNCTIONAL) && !ctx.cg.wrapper_cells.empty();
+  const ModeConfig mc = use_mode ? build_mode_config(ctx.cg, mode) : ModeConfig{};
+  BitParallelSim sim;
+
+  std::vector<ActiveFaultRecord> active;
+  active.reserve(preloaded.size());
+  for (const auto& [fault_id, net_index, type] : preloaded) {
+    CompactFault cf;
+    cf.net_index = net_index;
+    cf.type = static_cast<FaultType>(type);
+    active.push_back({fault_id, cf});
+  }
+
+  std::vector<int64_t> detected;
+  for (size_t begin = 0; begin < active.size(); begin += kFaultLanesPerWord) {
+    const size_t end = std::min(begin + kFaultLanesPerWord, active.size());
+    const FaultBatch batch = make_batch(active, begin, end);
+    ++g_simulation_instrumentation.batch_fault_calls;
+    const uint64_t detected_mask = use_mode
+        ? sim.simulate_batch(ctx.cg, tv, batch, mc)
+        : sim.simulate_batch(ctx.cg, tv, batch);
+    for (size_t i = begin; i < end; ++i) {
+      const CompactFault& lane = batch.faults[i - begin];
+      if ((detected_mask & lane.sa_mask) != 0) {
+        detected.push_back(active[i].fault_id);
+      }
+    }
+  }
+  return detected;
+}
+
+std::vector<int64_t> simulate_transition_tentative_from_preloaded(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::vector<std::tuple<int64_t, uint32_t, uint8_t>>& preloaded,
+    const std::map<std::string, bool>& launch,
+    const std::map<std::string, bool>& capture,
+    const std::vector<std::string>& input_order,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  if (preloaded.empty()) {
+    return {};
+  }
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  const TestVector v1 = vector_from_map(ctx.parsed, launch, input_order);
+  const TestVector v2 = vector_from_map(ctx.parsed, capture, input_order);
+  BitParallelSim sim;
+
+  std::vector<ActiveFaultRecord> active;
+  active.reserve(preloaded.size());
+  for (const auto& [fault_id, net_index, type] : preloaded) {
+    CompactFault cf;
+    cf.net_index = net_index;
+    cf.type = static_cast<FaultType>(type);
+    active.push_back({fault_id, cf});
+  }
+
+  std::vector<int64_t> detected;
   for (size_t begin = 0; begin < active.size(); begin += kFaultLanesPerWord) {
     const size_t end = std::min(begin + kFaultLanesPerWord, active.size());
     const FaultBatch batch = make_batch(active, begin, end);

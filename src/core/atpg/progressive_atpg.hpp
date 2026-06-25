@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -122,6 +123,28 @@ std::vector<int64_t> simulate_transition_tentative_detections(
     const std::map<std::string, bool>& capture,
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
+
+// Tentative simulation using pre-loaded fault records (no DB round-trips).
+// Each entry in `preloaded` is (fault_id, compiled_net_index, type: 0=SA0/1=SA1).
+// Records already known to be excluded/collapsed are excluded by the caller
+// (_active_fault_rows filters them); this function runs sim on all provided records.
+std::vector<int64_t> simulate_tentative_from_preloaded(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::vector<std::tuple<int64_t, uint32_t, uint8_t>>& preloaded,
+    const std::map<std::string, bool>& vector,
+    const std::vector<std::string>& input_order,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {},
+    const std::string& test_mode = "");
+
+std::vector<int64_t> simulate_transition_tentative_from_preloaded(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::vector<std::tuple<int64_t, uint32_t, uint8_t>>& preloaded,
+    const std::map<std::string, bool>& launch,
+    const std::map<std::string, bool>& capture,
+    const std::vector<std::string>& input_order,
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {});
 

@@ -655,29 +655,34 @@ def _process_scan_candidate(
             )
             return False, True
 
-    active_ids = [row.fault_id for row in active_rows]
+    # Build pre-loaded records from active_rows (already in memory — no DB round-trips).
+    # Each tuple: (fault_id, compiled_net_index, type: 0=SA0/1=SA1).
+    # active_rows may contain stale (already-detected) faults between random vectors;
+    # mark_fault_detected guards against overwrites with AND status='undetected'.
+    _preloaded = [
+        (row.fault_id, row.net_index, 1 if row.fault_type == "SA1" else 0)
+        for row in active_rows
+    ]
     if transition:
         tentative = list(
-            core.simulate_transition_tentative(
+            core.simulate_transition_tentative_preloaded(
                 reduced_json_path,
                 reduced_cell_map,
-                db_path,
+                _preloaded,
                 vector,
                 capture_vector,
                 input_order,
-                active_ids,
                 unsupported,
             )
         )
     else:
         tentative = list(
-            core.simulate_tentative(
+            core.simulate_tentative_preloaded(
                 reduced_json_path,
                 reduced_cell_map,
-                db_path,
+                _preloaded,
                 vector,
                 input_order,
-                active_ids,
                 unsupported,
             )
         )

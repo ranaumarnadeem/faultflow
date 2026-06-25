@@ -11,7 +11,8 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS campaigns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    campaign_type TEXT NOT NULL CHECK (campaign_type IN ('comb', 'scan')),
+    campaign_type TEXT NOT NULL
+        CHECK (campaign_type IN ('comb', 'scan', 'scan_extest')),
     top TEXT NOT NULL,
     netlist_hash TEXT NOT NULL,
     cell_lib_hash TEXT NOT NULL,
@@ -208,6 +209,47 @@ def _is_legacy_schema(conn: sqlite3.Connection) -> bool:
     return not _table_exists(conn, "campaigns")
 
 
+def _migrate_campaigns_constraint(conn: sqlite3.Connection) -> None:
+    """Rebuild campaigns table if its CHECK constraint predates scan_extest support."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='campaigns'"
+    ).fetchone()
+    if row is None or "'scan_extest'" in row[0]:
+        return
+    # SQLite cannot ALTER a CHECK constraint; rebuild the table in-place.
+    # foreign_keys must be OFF to DROP a table that other tables reference.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.executescript(
+        "BEGIN;"
+        "CREATE TABLE campaigns_new ("
+        "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "    campaign_type TEXT NOT NULL"
+        "        CHECK (campaign_type IN ('comb', 'scan', 'scan_extest')),"
+        "    top TEXT NOT NULL,"
+        "    netlist_hash TEXT NOT NULL,"
+        "    cell_lib_hash TEXT NOT NULL,"
+        "    config_hash TEXT NOT NULL,"
+        "    template_hash TEXT NOT NULL,"
+        "    yosys_version TEXT NOT NULL,"
+        "    faultflow_version TEXT NOT NULL,"
+        "    collapsing INTEGER NOT NULL,"
+        "    unsupported_cells TEXT NOT NULL,"
+        "    include_clock_faults INTEGER NOT NULL,"
+        "    include_reset_faults INTEGER NOT NULL,"
+        "    redundancy_model_id TEXT NOT NULL DEFAULT '',"
+        "    manifest_hash TEXT NOT NULL DEFAULT '',"
+        "    atpg_view_schema_ver TEXT NOT NULL DEFAULT '',"
+        "    fault_model TEXT NOT NULL DEFAULT 'stuck_at',"
+        "    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        ");"
+        "INSERT INTO campaigns_new SELECT * FROM campaigns;"
+        "DROP TABLE campaigns;"
+        "ALTER TABLE campaigns_new RENAME TO campaigns;"
+        "COMMIT;"
+    )
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     if _is_legacy_schema(conn):
         raise SchemaError(
@@ -216,6 +258,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         )
     conn.executescript(SCHEMA_V3)
     conn.executescript(SCHEMA_INDICES)
+    _migrate_campaigns_constraint(conn)
     conn.execute(f"PRAGMA user_version = {EXPECTED_USER_VERSION}")
     conn.commit()
 
