@@ -45,6 +45,7 @@ class TclBridge:
             "report_blackbox": self._report_blackbox,
             "add_tp": self._add_tp,
             "reject_tp": self._reject_tp,
+            "wrap": self._wrap,
             "set_testmode": self._set_testmode,
             "report_testmode": self._report_testmode,
             "check_cells": self._check_cells,
@@ -466,6 +467,61 @@ proc {name} {{args}} {{
         if args:
             raise ShellError("usage: reject_tp", "CONFIG", "INVALID_OPTION")
         return self.session.reject_tp()
+
+    def _wrap(self, args: list[str]) -> Any:
+        kwargs: dict[str, object] = {}
+        idx = 0
+        while idx < len(args):
+            flag = args[idx]
+            if flag == "-model":
+                if idx + 1 >= len(args):
+                    raise ShellError(
+                        "wrap: -model requires scan|buffer", "CONFIG", "INVALID_OPTION"
+                    )
+                kwargs["wbr_model"] = args[idx + 1]
+                idx += 2
+            elif flag == "-clock":
+                if idx + 1 >= len(args):
+                    raise ShellError(
+                        "wrap: -clock requires a port name", "CONFIG", "INVALID_OPTION"
+                    )
+                kwargs["clock"] = args[idx + 1]
+                idx += 2
+            elif flag == "-se":
+                if idx + 1 >= len(args):
+                    raise ShellError(
+                        "wrap: -se requires a port name", "CONFIG", "INVALID_OPTION"
+                    )
+                kwargs["scan_enable"] = args[idx + 1]
+                idx += 2
+            elif flag == "-si":
+                if idx + 1 >= len(args):
+                    raise ShellError(
+                        "wrap: -si requires a port name", "CONFIG", "INVALID_OPTION"
+                    )
+                kwargs["scan_in"] = args[idx + 1]
+                idx += 2
+            elif flag == "-so":
+                if idx + 1 >= len(args):
+                    raise ShellError(
+                        "wrap: -so requires a port name", "CONFIG", "INVALID_OPTION"
+                    )
+                kwargs["scan_out"] = args[idx + 1]
+                idx += 2
+            elif flag == "-o":
+                if idx + 1 >= len(args):
+                    raise ShellError(
+                        "wrap: -o requires a path", "CONFIG", "INVALID_OPTION"
+                    )
+                from pathlib import Path as _Path
+
+                kwargs["output"] = _Path(args[idx + 1])
+                idx += 2
+            else:
+                raise ShellError(
+                    f"wrap: unknown option {flag!r}", "CONFIG", "INVALID_OPTION"
+                )
+        return self.session.wrap(**kwargs)  # type: ignore[arg-type]
 
     def _set_testmode(self, args: list[str]) -> Any:
         if len(args) != 1:

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from faultflow.atpg import VectorSet
-from faultflow.config import FaultflowConfig
+from faultflow.config import FaultflowConfig, parse_timeout_schedule
 from faultflow.db import (
     CAMPAIGN_TYPE_COMB,
     CAMPAIGN_TYPE_SCAN,
@@ -80,7 +80,8 @@ def redundancy_model_id(fp: dict[str, Any]) -> str:
 def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[sqlite3.Row]:
     return conn.execute(
         """
-        SELECT id
+        SELECT id,
+               COALESCE(atpg_compiled_net_index, compiled_net_index) AS net_index
         FROM faults
         WHERE campaign_id = ?
           AND status = 'undetected'
@@ -91,6 +92,30 @@ def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[sqlit
         """,
         (campaign_id,),
     ).fetchall()
+
+
+def _cone_size_order(
+    core: Any,
+    json_path: str,
+    cell_map: str,
+    rows: list[sqlite3.Row],
+    unsupported: str,
+    blackbox_instances: list[str],
+) -> dict[int, int]:
+    """Structural cone size per fault id, for smallest-cone-first ordering.
+
+    One batched C++ call over the shared cached graph. The size is purely
+    structural, so it is computed once and reused across rounds.
+    """
+    sizes = core.compute_fault_cone_sizes(
+        json_path,
+        cell_map,
+        [int(row["id"]) for row in rows],
+        [int(row["net_index"]) for row in rows],
+        unsupported,
+        blackbox_instances,
+    )
+    return {int(fault_id): int(size) for fault_id, size in sizes.items()}
 
 
 def _fault_counts(conn: sqlite3.Connection, campaign_id: int) -> tuple[int, int]:
@@ -270,6 +295,33 @@ def _should_stall(
     return all(outcome in allowed for outcome in round_outcomes)
 
 
+def _escalation_headroom(
+    active_ids: list[int],
+    prior_timeout_count: dict[int, int],
+    timeout_tiers: list[int],
+) -> bool:
+    """True while a still-active fault has an untried, longer SAT-timeout tier.
+
+    This holds off the stall verdict: a fault that keeps timing out should be
+    retried at every tier of sat_timeout_schedule before the loop gives up,
+    otherwise the longest tiers -- the whole point of the schedule -- would never
+    be reached once a round stops making other progress.
+
+    prior_timeout_count[fault] is how many times the fault has already timed out,
+    which equals how many distinct tiers it has already been attempted at. A fault
+    has headroom only if it has actually timed out at least once (count >= 1) AND
+    has a longer tier still untried (count < number of tiers). Faults that have not
+    timed out -- e.g. protocol-sim failures -- carry no headroom and must not
+    suppress a stall. With no schedule (a single tier) headroom is always False, so
+    the stall behaviour is exactly as before.
+    """
+    tier_count = len(timeout_tiers)
+    return any(
+        0 < prior_timeout_count.get(fault_id, 0) < tier_count
+        for fault_id in active_ids
+    )
+
+
 def _tie_xz_netlist(src: Path, dst: Path) -> int:
     """Replace all 'x'/'z' constant bits with 0 in a Yosys JSON netlist.
 
@@ -425,6 +477,26 @@ def run_progressive_native_atpg(
         conn.commit()
         run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
 
+    # Escalating SAT timeout (see parse_timeout_schedule): each fault starts at
+    # the smallest tier and only escalates after it times out. prior_timeout_count
+    # persists across rounds so a repeatedly-timing-out fault gets more budget.
+    timeout_tiers = parse_timeout_schedule(
+        cfg.atpg.sat_timeout_schedule, cfg.atpg.sat_timeout_seconds
+    )
+    prior_timeout_count: dict[int, int] = {}
+    if len(timeout_tiers) > effective_max_rounds:
+        log.warning(
+            "atpg   sat_timeout_schedule has %d tiers but only %d rounds are "
+            "allowed; the longest tiers will never be reached",
+            len(timeout_tiers),
+            effective_max_rounds,
+        )
+
+    # Cone-size fault ordering (atpg.order_by_cone_size): structural cone size is
+    # computed once and reused to sort each round's SAT sweep smallest-cone-first.
+    cone_sizes: dict[int, int] = {}
+    order_faults = cfg.atpg.order_by_cone_size
+
     terminal = "MAX_ROUNDS"
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
@@ -478,6 +550,20 @@ def run_progressive_native_atpg(
             active_rows = _active_fault_rows(conn, campaign_id)
             active_ids = [int(row["id"]) for row in active_rows]
 
+        if order_faults and active_ids:
+            if not cone_sizes:
+                cone_sizes = _cone_size_order(
+                    core,
+                    json_path,
+                    effective_cell_map,
+                    active_rows,
+                    unsupported,
+                    bb_instances,
+                )
+            active_ids = sorted(
+                active_ids, key=lambda fid: cone_sizes.get(fid, 1 << 30)
+            )
+
         # M1: grade each accepted SAT pattern against every still-undetected
         # fault this round (fortuitous-detection dropping), then skip the faults
         # a prior pattern already covered instead of re-solving them. Mirrors the
@@ -488,6 +574,9 @@ def run_progressive_native_atpg(
             if drop_sat and fault_id not in remaining:
                 continue
             blocked = sorted(rejected_patterns.get(fault_id, set()))
+            tier_timeout = timeout_tiers[
+                min(prior_timeout_count.get(fault_id, 0), len(timeout_tiers) - 1)
+            ]
             atpg_started = time.perf_counter()
             solved = dict(
                 core.solve_fault_atpg(
@@ -497,7 +586,7 @@ def run_progressive_native_atpg(
                     fault_id,
                     blocked,
                     cfg.atpg.sat_conflict_limit,
-                    cfg.atpg.sat_timeout_seconds,
+                    tier_timeout,
                     unsupported,
                     bb_instances,
                     test_mode,
@@ -570,15 +659,19 @@ def run_progressive_native_atpg(
             elif result == "TIMEOUT":
                 stats.timeout += 1
                 round_tracker.sat_outcomes.append("TIMEOUT")
+                prior_timeout_count[fault_id] = prior_timeout_count.get(fault_id, 0) + 1
             else:
                 stats.unknown += 1
                 round_tracker.sat_outcomes.append("UNKNOWN")
+                prior_timeout_count[fault_id] = prior_timeout_count.get(fault_id, 0) + 1
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
             data = summary(conn, campaign_id=campaign_id)
             detected, redundant = _fault_counts(conn, campaign_id)
-            active_remaining = len(_active_fault_rows(conn, campaign_id))
+            active_rows_end = _active_fault_rows(conn, campaign_id)
+            active_remaining = len(active_rows_end)
+            active_ids_end = [int(row["id"]) for row in active_rows_end]
             coverage = data["coverage_percent"]
 
         _cov = coverage or 0.0
@@ -608,6 +701,8 @@ def run_progressive_native_atpg(
             prev_detected=prev_detected,
             prev_redundant=prev_redundant,
             round_outcomes=round_tracker.sat_outcomes,
+        ) and not _escalation_headroom(
+            active_ids_end, prior_timeout_count, timeout_tiers
         ):
             with connect(effective_db_path) as conn:
                 init_schema(conn)
@@ -754,6 +849,27 @@ def run_progressive_transition_atpg(
         conn.commit()
         run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
 
+    # Escalating SAT timeout (see parse_timeout_schedule): each fault starts at
+    # the smallest tier and only escalates after it times out. prior_timeout_count
+    # persists across rounds so a repeatedly-timing-out fault gets more budget.
+    timeout_tiers = parse_timeout_schedule(
+        cfg.atpg.sat_timeout_schedule, cfg.atpg.sat_timeout_seconds
+    )
+    prior_timeout_count: dict[int, int] = {}
+    if len(timeout_tiers) > effective_max_rounds:
+        log.warning(
+            "atpg   sat_timeout_schedule has %d tiers but only %d rounds are "
+            "allowed; the longest tiers will never be reached",
+            len(timeout_tiers),
+            effective_max_rounds,
+        )
+
+    if cfg.atpg.order_by_cone_size:
+        log.info(
+            "atpg   cone-size ordering not applied to transition faults; "
+            "using enumeration order"
+        )
+
     terminal = "MAX_ROUNDS"
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
@@ -818,6 +934,9 @@ def run_progressive_transition_atpg(
             if drop_sat and fault_id not in remaining:
                 continue
             blocked = sorted(rejected_patterns.get(fault_id, set()))
+            tier_timeout = timeout_tiers[
+                min(prior_timeout_count.get(fault_id, 0), len(timeout_tiers) - 1)
+            ]
             atpg_started = time.perf_counter()
             solved = dict(
                 core.solve_transition_fault_atpg(
@@ -827,7 +946,7 @@ def run_progressive_transition_atpg(
                     fault_id,
                     blocked,
                     cfg.atpg.sat_conflict_limit,
-                    cfg.atpg.sat_timeout_seconds,
+                    tier_timeout,
                     unsupported,
                     bb_instances,
                     cfg.atpg.cone_restrict,
@@ -899,15 +1018,19 @@ def run_progressive_transition_atpg(
             elif result == "TIMEOUT":
                 stats.timeout += 1
                 round_tracker.sat_outcomes.append("TIMEOUT")
+                prior_timeout_count[fault_id] = prior_timeout_count.get(fault_id, 0) + 1
             else:
                 stats.unknown += 1
                 round_tracker.sat_outcomes.append("UNKNOWN")
+                prior_timeout_count[fault_id] = prior_timeout_count.get(fault_id, 0) + 1
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
             data = summary(conn, campaign_id=campaign_id)
             detected, redundant = _fault_counts(conn, campaign_id)
-            active_remaining = len(_active_fault_rows(conn, campaign_id))
+            active_rows_end = _active_fault_rows(conn, campaign_id)
+            active_remaining = len(active_rows_end)
+            active_ids_end = [int(row["id"]) for row in active_rows_end]
             coverage = data["coverage_percent"]
 
         _cov = coverage or 0.0
@@ -937,6 +1060,8 @@ def run_progressive_transition_atpg(
             prev_detected=prev_detected,
             prev_redundant=prev_redundant,
             round_outcomes=round_tracker.sat_outcomes,
+        ) and not _escalation_headroom(
+            active_ids_end, prior_timeout_count, timeout_tiers
         ):
             with connect(effective_db_path) as conn:
                 init_schema(conn)

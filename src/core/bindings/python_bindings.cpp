@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "atpg/compaction.hpp"
+#include "atpg/cone.hpp"
 #include "atpg/progressive_atpg.hpp"
 #include "atpg/sat_atpg.hpp"
 #include "common/types.hpp"
@@ -717,6 +718,58 @@ py::list list_site_keys_py(const std::string& json_path,
   return out;
 }
 
+// Returns {fault_id: cone_support_size} for a batch of stuck-at sites. The
+// support size is the number of nets in the fault's structural cone -- its
+// transitive fan-out plus the fan-in feeding that fan-out. This approximates the
+// per-fault SAT problem size (the cone-restricted CNF allocates good-machine
+// variables over in_support and faulty-machine variables over in_outcone, and
+// in_support contains in_outcone), so ordering faults by ascending support size
+// runs the cheapest SAT calls first.
+//
+// The size is purely STRUCTURAL and so is independent of the test mode and
+// observation set: only which observables a cone happens to reach depends on the
+// mode, not the cone's size (see extract_fault_cone -- in_support/in_outcone are
+// built without consulting the observable). The metric is therefore the same for
+// FUNCTIONAL, INTEST and EXTEST, and no mode argument is needed.
+//
+// `net_indices[i]` is the CompiledNetIndex of fault `fault_ids[i]` -- the same
+// COALESCE(atpg_compiled_net_index, compiled_net_index) the solver loads.
+py::dict compute_fault_cone_sizes(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::vector<int64_t>& fault_ids,
+    const std::vector<int64_t>& net_indices,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  if (fault_ids.size() != net_indices.size()) {
+    throw std::invalid_argument(
+        "compute_fault_cone_sizes: fault_ids and net_indices length mismatch");
+  }
+  const CachedGraph& graph = load_cached_graph(
+      json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  const CompiledSimGraph& cg = graph.cg;
+
+  // Build the driver index ONCE for the whole batch; extract_fault_cone is then
+  // O(cone) per fault instead of rebuilding the O(net_count) index each time.
+  const std::vector<int> driver = atpg::build_driver_index(cg);
+  // Support size does not depend on the observation set, so pass an empty flag
+  // (reached_observables is left empty and ignored).
+  const std::vector<char> kNoObservable;
+
+  py::dict out;
+  for (size_t i = 0; i < fault_ids.size(); ++i) {
+    const int64_t net = net_indices[i];
+    int support = 0;
+    if (net >= 0 && net < cg.net_count) {
+      const atpg::FaultCone cone = atpg::extract_fault_cone(
+          cg, static_cast<uint32_t>(net), driver, kNoObservable);
+      support = static_cast<int>(
+          std::count(cone.in_support.begin(), cone.in_support.end(), 1));
+    }
+    out[py::int_(fault_ids[i])] = support;
+  }
+  return out;
+}
+
 }  // namespace faultflow
 
 PYBIND11_MODULE(_faultflow_core, m) {
@@ -873,4 +926,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("test_mode") = "");
   m.def("list_site_keys", &faultflow::list_site_keys_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail");
+  m.def("compute_fault_cone_sizes", &faultflow::compute_fault_cone_sizes,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("fault_ids"),
+        py::arg("net_indices"), py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
 }

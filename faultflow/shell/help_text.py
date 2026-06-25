@@ -135,6 +135,24 @@ COMMAND_HELP = {
         "add_tp must have been run at least once.",
         "reject_tp",
     ),
+    "wrap": CommandHelp(
+        "Test Mode",
+        "wrap [-model scan|buffer] [-clock PORT] [-se PORT] [-si PORT] [-so PORT] "
+        "[-o PATH]",
+        "Inject IEEE 1500 WBR cells on the boundary ports",
+        "Adds wrapper boundary register (WBR) cells to every non-clock port of the "
+        "current synthesized netlist. 'scan' model (default) emits native shiftable "
+        "$wbc_*_scan_faultflow cells stitched into a dedicated wrapper chain with "
+        "ports wbr_si/wbr_so/wbr_se; 'buffer' model emits transparent "
+        "$wbc_*_faultflow cells (no extra scan ports). -clock names the port to "
+        "leave unwrapped (shared clock; default: clk). The wrapped netlist is "
+        "saved alongside the source and becomes the new active design; scan "
+        "insertion state is cleared. After wrapping, use set_testmode intest or "
+        "extest before add_scan / run_atpg.",
+        "A synthesized Yosys JSON netlist.",
+        "wrap -model scan -clock clk\n"
+        "wrap -model scan -clock clk -se wbr_se -o /tmp/core_wrapped.json",
+    ),
     "set_testmode": CommandHelp(
         "Test Mode",
         "set_testmode functional|intest|extest",
@@ -217,9 +235,13 @@ COMMAND_HELP = {
         "Options",
         "set_option KEY VALUE",
         "Set a persistent flow option",
-        "Supported keys are shown by show_config.",
+        "Keys: atpg.max_rounds, atpg.sat_timeout_seconds,"
+        " atpg.sat_timeout_schedule, atpg.workers, report.threshold,"
+        " simulation.unsupported_cells. atpg.sat_timeout_schedule is a"
+        " comma list like 2,10,60 that escalates a fault's SAT timeout only"
+        " when it times out. atpg.workers sets parallel workers (1=serial).",
         "",
-        "set_option atpg.max_rounds 40",
+        "set_option atpg.sat_timeout_schedule 2,10,60",
     ),
     "unset_option": CommandHelp(
         "Options",

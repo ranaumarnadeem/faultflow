@@ -303,6 +303,60 @@ fault_drop_sat = {"true" if drop else "false"}
     assert on_stats.accepted_vectors <= off_stats.accepted_vectors
 
 
+@pytest.mark.integration
+def test_cone_ordering_preserves_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ordering faults by cone size only permutes the solve order, so the final
+    fault partition is identical: same denominator, detected, undetected, and
+    redundant whether the flag is on or off."""
+    import dataclasses
+
+    from faultflow.config import load_config
+
+    root = Path(__file__).resolve().parents[3]
+    netlist = root / "tests/benchmarks/iscas85/synth_sky130/c432.json"
+    if not netlist.exists():
+        pytest.skip("c432 netlist missing")
+    monkeypatch.chdir(tmp_path)
+
+    def _run(order: bool):
+        cfg_path = tmp_path / f"c432_order_{order}.ofs"
+        cfg_path.write_text(
+            f"""
+[design]
+netlist = {netlist}
+cell_lib = {root / "cells/sky130/sky130_fd_sc_hd.json"}
+
+[fault_model]
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+random_vectors = 64
+max_rounds = 20
+sat_timeout_seconds = 10
+order_by_cone_size = {"true" if order else "false"}
+""".strip() + "\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(cfg_path, top="c432")
+        cfg = dataclasses.replace(cfg, output_root=tmp_path / f"out_order_{order}")
+        cfg.output_dir.mkdir(parents=True, exist_ok=True)
+        _run_atpg(cfg, netlist, _model_id(), target_coverage=100.0)
+        with connect(cfg.db_path) as conn:
+            init_schema(conn)
+            return summary(conn)
+
+    on = _run(True)
+    off = _run(False)
+
+    for key in ("denominator", "detected", "undetected", "redundant"):
+        assert on[key] == off[key], f"{key} differs with cone ordering"
+
+
 @pytest.mark.unit
 def test_max_rounds_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg, netlist = _tiny_inv_cfg(tmp_path, monkeypatch)

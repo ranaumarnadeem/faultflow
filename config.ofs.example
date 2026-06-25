@@ -41,9 +41,18 @@ random_vectors       = 64
 sat_conflict_limit   = 100000
 max_rounds           = 20
 sat_timeout_seconds  = 10
+# Escalating per-fault SAT timeout. Empty (default) keeps the single fixed
+# sat_timeout_seconds. A comma list smallest-first like "2,10,60" attempts each
+# fault at the short timeout first and only gives a fault more time once it has
+# timed out, so easy faults clear fast and long budgets go to the hard ones.
+sat_timeout_schedule =
 # Test-set compaction after ATPG: reverse (reverse-order fault-sim static
 # compaction, coverage-preserving; default) or none.
 compaction           = reverse
+# Order faults by ascending structural cone size (smallest first) so the quickest
+# SAT calls run first and detect more faults incidentally early. Coverage is
+# identical either way; false (default) keeps enumeration order. Stuck-at only.
+order_by_cone_size   = false
 
 [report]
 output    = coverage.rpt

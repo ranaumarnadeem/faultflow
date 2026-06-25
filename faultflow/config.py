@@ -46,6 +46,36 @@ def parse_bool_value(value: str, key: str = "boolean") -> bool:
     raise ConfigError(f"{key} must be one of true/false, 1/0, yes/no, or on/off")
 
 
+def parse_timeout_schedule(value: str, fallback: int) -> list[int]:
+    """Parse the escalating SAT-timeout schedule string into a list of seconds.
+
+    The schedule is a comma-separated list of positive integers, smallest first
+    (e.g. ``"2,10,60"``): a fault is first attempted with the smallest timeout
+    and only escalates to a longer one if it times out. An empty string means
+    "no schedule" and yields a single tier equal to ``fallback`` (the plain
+    ``sat_timeout_seconds``), which reproduces the original fixed-timeout
+    behaviour exactly.
+    """
+    text = value.strip()
+    if not text:
+        return [fallback]
+    tiers: list[int] = []
+    for token in text.split(","):
+        token = token.strip()
+        try:
+            seconds = int(token)
+        except ValueError:
+            raise ConfigError(
+                f"sat_timeout_schedule entries must be integers, got {token!r}"
+            )
+        if seconds < 1:
+            raise ConfigError(
+                f"sat_timeout_schedule entries must be >= 1 second, got {seconds}"
+            )
+        tiers.append(seconds)
+    return tiers
+
+
 def _bool(parser: ConfigParser, section: str, key: str, default: bool) -> bool:
     if not parser.has_option(section, key):
         return default
@@ -97,6 +127,12 @@ class AtpgConfig:
     sat_conflict_limit: int = 100000
     max_rounds: int = 20
     sat_timeout_seconds: int = 10
+    # Escalating per-fault SAT timeout. Empty string keeps the single fixed
+    # sat_timeout_seconds (original behaviour). A comma-separated list like
+    # "2,10,60" attempts each fault at the smallest timeout first and only
+    # escalates a fault that times out, so easy faults clear fast and long
+    # budgets are reserved for hard ones. Parsed by parse_timeout_schedule().
+    sat_timeout_schedule: str = ""
     compaction: str = "reverse"
     # When true, an accepted+verified SAT pattern is fault-simulated against ALL
     # remaining undetected faults this round (dropping fortuitous detections),
@@ -109,6 +145,14 @@ class AtpgConfig:
     # Dynamic compaction (compaction=dynamic): number of secondary-fault packing
     # orders to try, keeping the fewest-vector result (PO-DTC). 1 = single order.
     pack_orders: int = 1
+    # Order faults by ascending cone size (smallest structural cone first) so the
+    # quickest SAT calls happen first and detect more faults incidentally early.
+    # False keeps the original database (enumeration) order. Coverage-identical.
+    order_by_cone_size: bool = False
+    # Parallel fault-simulation workers (0 = auto-detect logical CPU count).
+    # Each worker owns its own SimState over the shared immutable CompiledSimGraph.
+    # The coordinator merges detected sets; the DB writer remains single-threaded.
+    workers: int = 1
 
 
 @dataclass(frozen=True)
@@ -370,6 +414,14 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     if atpg_compaction not in {"none", "reverse", "dynamic"}:
         raise ConfigError("atpg.compaction must be 'none', 'reverse', or 'dynamic'")
 
+    atpg_sat_timeout_schedule = parser.get(
+        "atpg", "sat_timeout_schedule", fallback=""
+    ).strip()
+    # Validate eagerly so a malformed schedule fails at config load, not mid-run.
+    parse_timeout_schedule(
+        atpg_sat_timeout_schedule, _int(parser, "atpg", "sat_timeout_seconds", 10)
+    )
+
     # Fault model: `model` is canonical; `type` is a back-compat alias (older
     # configs carried `type = stuck_at`). Prefer `model` when both are present.
     fault_model = parser.get(
@@ -435,10 +487,13 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             sat_conflict_limit=_int(parser, "atpg", "sat_conflict_limit", 100000),
             max_rounds=_int(parser, "atpg", "max_rounds", 20),
             sat_timeout_seconds=_int(parser, "atpg", "sat_timeout_seconds", 10),
+            sat_timeout_schedule=atpg_sat_timeout_schedule,
             compaction=atpg_compaction,
             fault_drop_sat=_bool(parser, "atpg", "fault_drop_sat", True),
             cone_restrict=_bool(parser, "atpg", "cone_restrict", True),
             pack_orders=_int(parser, "atpg", "pack_orders", 1),
+            order_by_cone_size=_bool(parser, "atpg", "order_by_cone_size", False),
+            workers=_int(parser, "atpg", "workers", 1),
         ),
         report=ReportConfig(
             output=_path(parser, "report", "output", "coverage.rpt"),

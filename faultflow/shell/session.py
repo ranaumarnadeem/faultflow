@@ -10,11 +10,13 @@ from typing import Any
 from faultflow.config import (
     AtpgConfig,
     ClockSpec,
+    ConfigError,
     FaultflowConfig,
     FaultModelConfig,
     ReportConfig,
     ScanConfig,
     SimulationConfig,
+    parse_timeout_schedule,
 )
 from faultflow.project.profiles import TechnologyProfile, get_profile
 from faultflow.service import ArtifactPolicy, FlowService, OperationResult
@@ -409,6 +411,13 @@ class ProjectSession:
                     cfg,
                     atpg=replace(cfg.atpg, sat_timeout_seconds=int(value)),
                 )
+            elif key == "atpg.workers":
+                cfg = replace(cfg, atpg=replace(cfg.atpg, workers=int(value)))
+            elif key == "atpg.sat_timeout_schedule":
+                cfg = replace(
+                    cfg,
+                    atpg=replace(cfg.atpg, sat_timeout_schedule=value),
+                )
             elif key == "report.threshold":
                 cfg = replace(cfg, report=replace(cfg.report, threshold=float(value)))
             elif key == "simulation.unsupported_cells":
@@ -457,6 +466,84 @@ class ProjectSession:
                 "UNSUPPORTED_EXTENSION",
             )
         return self.read_netlist(path, top)
+
+    def wrap(
+        self,
+        *,
+        wbr_model: str = "scan",
+        clock: str = "clk",
+        scan_enable: str = "wbr_se",
+        scan_in: str = "wbr_si",
+        scan_out: str = "wbr_so",
+        targets: list[str] | None = None,
+        output: Path | None = None,
+    ) -> OperationResult:
+        """Inject IEEE 1500 WBR cells onto the boundary ports of the current netlist.
+
+        Saves the wrapped JSON next to the source (or to ``output`` if given),
+        then updates the session to point at the wrapped file so subsequent
+        add_scan / run_atpg commands operate on the wrapped netlist.
+        """
+        if self.top is None or self.source is None:
+            raise precondition("run read_netlist first", "NO_DESIGN")
+        if self.source_kind != "yosys_json":
+            raise precondition(
+                "wrap needs a synthesized Yosys JSON; run synth first",
+                "SYNTH_REQUIRED",
+            )
+        import json as _json
+
+        from faultflow.wrap.ports import WrapError, wrap_ports
+
+        src = _json.loads(self.source.read_text(encoding="utf-8"))
+        try:
+            dst = wrap_ports(
+                src,
+                self.top,
+                wbr_model=wbr_model,
+                clock=clock,
+                scan_in=scan_in,
+                scan_out=scan_out,
+                scan_enable=scan_enable,
+                targets=targets,
+            )
+        except WrapError as exc:
+            raise ShellError(str(exc), "CONFIG", "WRAP_FAILED") from exc
+
+        if output is None:
+            out_dir = self.source.parent
+            output = out_dir / f"{self.top}_wrapped.json"
+
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(_json.dumps(dst, indent=2) + "\n", encoding="utf-8")
+
+        modules = dst.get("modules", {})
+        mod = modules.get(self.top, {})
+        cells = mod.get("cells", {})
+        n_wbr_in = sum(
+            1 for c in cells.values() if str(c.get("type", "")).startswith("$wbc_in")
+        )
+        n_wbr_out = sum(
+            1 for c in cells.values() if str(c.get("type", "")).startswith("$wbc_out")
+        )
+
+        self.source = output
+        self.source_kind = "yosys_json"
+        self.scan_inserted = False
+        self.scan_checked = False
+        self.scan_campaign_stale = False
+        self.checkpoint()
+
+        msg = (
+            f"wrapped {n_wbr_in} wbc_in + {n_wbr_out} wbc_out "
+            f"({wbr_model} model) -> {output}"
+        )
+        return OperationResult(
+            "wrap",
+            self.top,
+            msg,
+            artifacts={"wrapped_netlist": output},
+        )
 
     def add_scan(self, **options: object) -> OperationResult:
         if not self.synthesized:
@@ -562,11 +649,26 @@ class ProjectSession:
         allowed = {
             "atpg.max_rounds",
             "atpg.sat_timeout_seconds",
+            "atpg.sat_timeout_schedule",
+            "atpg.workers",
             "report.threshold",
             "simulation.unsupported_cells",
         }
         if key not in allowed:
             raise ShellError(f"unsupported option: {key}", "CONFIG", "INVALID_OPTION")
+        if key in {"atpg.max_rounds", "atpg.sat_timeout_seconds", "atpg.workers"}:
+            try:
+                if int(value) < 1:
+                    raise ValueError
+            except ValueError:
+                raise ShellError(
+                    f"{key} must be a positive integer", "CONFIG", "INVALID_VALUE"
+                )
+        if key == "atpg.sat_timeout_schedule":
+            try:
+                parse_timeout_schedule(value, 1)
+            except ConfigError as exc:
+                raise ShellError(str(exc), "CONFIG", "INVALID_VALUE")
         self.options[key] = value
         if self.top is not None:
             self.checkpoint()

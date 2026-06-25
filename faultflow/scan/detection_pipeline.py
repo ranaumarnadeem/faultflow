@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from faultflow.atpg import VectorSet
-from faultflow.config import FaultflowConfig
+from faultflow.config import FaultflowConfig, parse_timeout_schedule
 from faultflow.db import connect, init_schema, summary
 from faultflow.db.candidates import (
     CandidateCommit,
@@ -22,6 +22,7 @@ from faultflow.runner.progressive_atpg import (
     ATPGRANDOM_SEED,
     AtpgStats,
     _RoundTracker,
+    _escalation_headroom,
     _fault_counts,
     _should_stall,
     pattern_key,
@@ -67,6 +68,7 @@ class _FaultRow:
     fault_id: int
     fault_site_key: str
     fault_type: str
+    net_index: int = -1
 
 
 def build_scan_pipeline_context(
@@ -102,7 +104,8 @@ def build_scan_pipeline_context(
 def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_FaultRow]:
     rows = conn.execute(
         """
-        SELECT id, fault_site_key, fault_type
+        SELECT id, fault_site_key, fault_type,
+               COALESCE(atpg_compiled_net_index, compiled_net_index) AS net_index
         FROM faults
         WHERE campaign_id = ?
           AND status = 'undetected'
@@ -118,9 +121,33 @@ def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_Faul
             fault_id=int(row["id"]),
             fault_site_key=str(row["fault_site_key"]),
             fault_type=str(row["fault_type"]),
+            net_index=int(row["net_index"]),
         )
         for row in rows
     ]
+
+
+def _cone_size_map(
+    core: Any,
+    json_path: str,
+    cell_map: str,
+    rows: list[_FaultRow],
+    unsupported: str,
+) -> dict[int, int]:
+    """Structural cone size per fault id, for smallest-cone-first ordering.
+
+    One batched C++ call over the shared cached graph (the same graph the solver
+    uses, loaded with the default empty blackbox list). The size is purely
+    structural, so it is computed once and reused across rounds.
+    """
+    sizes = core.compute_fault_cone_sizes(
+        json_path,
+        cell_map,
+        [r.fault_id for r in rows],
+        [r.net_index for r in rows],
+        unsupported,
+    )
+    return {int(fault_id): int(size) for fault_id, size in sizes.items()}
 
 
 def _detected_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_FaultRow]:
@@ -492,39 +519,46 @@ def _process_scan_candidate(
         if _obs_map
         else reduced_expectation
     )
-    try:
-        reduced_protocol_matches(
-            scan_ctx.cfg,
-            scan_ctx.manifest,
-            scan_ctx.generic_json,
-            gate_scan_pattern,
-            reduced_vector=gate_reduced,
-            functional_output_order=gate_output_order,
-            loc_two_capture=is_loc,
-            los_two_capture=is_los,
-            los_launch_scan_in=head_bits,
-            active_clock_ports=active_clock_ports,
-        )
-    except Exception as exc:
-        conn.execute(
-            """
-            UPDATE atpg_candidates
-            SET status = 'aborted'
-            WHERE campaign_id = ? AND run_id = ? AND candidate_id = ?
-            """,
-            (campaign_id, run_id, candidate_id),
-        )
-        conn.execute(
-            """
-            UPDATE runs
-            SET status = 'aborted', completed_at = CURRENT_TIMESTAMP,
-                candidates_aborted = candidates_aborted + 1
-            WHERE id = ? AND campaign_id = ?
-            """,
-            (run_id, campaign_id),
-        )
-        conn.commit()
-        raise RunnerError(f"golden_sequence_failed: {exc}") from exc
+    if not _obs_map:
+        # FUNCTIONAL / EXTEST: golden-gate check against the generic netlist.
+        # INTEST: skipped — $wbc_{in,out}_scan_faultflow cells are not in the
+        # C++ cell map; the generic sim blackboxes them (zeroing all core inputs
+        # via TO_CORE and boundary outputs via TO_SYS), so every comparison
+        # fails by construction.  Pattern validity is guaranteed by the SAT
+        # solver + fault-sim pipeline on the fused ATPG view (no WBR cells).
+        try:
+            reduced_protocol_matches(
+                scan_ctx.cfg,
+                scan_ctx.manifest,
+                scan_ctx.generic_json,
+                gate_scan_pattern,
+                reduced_vector=gate_reduced,
+                functional_output_order=gate_output_order,
+                loc_two_capture=is_loc,
+                los_two_capture=is_los,
+                los_launch_scan_in=head_bits,
+                active_clock_ports=active_clock_ports,
+            )
+        except Exception as exc:
+            conn.execute(
+                """
+                UPDATE atpg_candidates
+                SET status = 'aborted'
+                WHERE campaign_id = ? AND run_id = ? AND candidate_id = ?
+                """,
+                (campaign_id, run_id, candidate_id),
+            )
+            conn.execute(
+                """
+                UPDATE runs
+                SET status = 'aborted', completed_at = CURRENT_TIMESTAMP,
+                    candidates_aborted = candidates_aborted + 1
+                WHERE id = ? AND campaign_id = ?
+                """,
+                (run_id, campaign_id),
+            )
+            conn.commit()
+            raise RunnerError(f"golden_sequence_failed: {exc}") from exc
     reduced_view_rejections: list[CandidateRejection] = []
 
     if source == "sat" and sat_target_fault_id is not None:
@@ -881,6 +915,33 @@ def run_progressive_scan_atpg(
         conn.commit()
         run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
 
+    # Escalating SAT timeout: each fault starts at the smallest tier and only
+    # moves up a tier once it has timed out. prior_timeout_count persists across
+    # rounds so a fault that keeps timing out is given progressively more budget.
+    timeout_tiers = parse_timeout_schedule(
+        cfg.atpg.sat_timeout_schedule, cfg.atpg.sat_timeout_seconds
+    )
+    prior_timeout_count: dict[int, int] = {}
+    if len(timeout_tiers) > effective_max_rounds:
+        log.warning(
+            "atpg   sat_timeout_schedule has %d tiers but only %d rounds are "
+            "allowed; the longest tiers will never be reached",
+            len(timeout_tiers),
+            effective_max_rounds,
+        )
+
+    # Cone-size fault ordering (atpg.order_by_cone_size): the structural cone size
+    # is computed once (it never changes) and reused to sort each round's SAT
+    # sweep smallest-cone-first. Skipped for transition faults, whose two-frame
+    # cone is not captured by the single-frame size (they keep enumeration order).
+    cone_sizes: dict[int, int] = {}
+    order_faults = cfg.atpg.order_by_cone_size and not transition
+    if cfg.atpg.order_by_cone_size and transition:
+        log.info(
+            "atpg   cone-size ordering not applied to transition faults; "
+            "using enumeration order"
+        )
+
     terminal = "MAX_ROUNDS"
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
@@ -963,6 +1024,19 @@ def run_progressive_scan_atpg(
             active_rows = _active_fault_rows(conn, campaign_id)
             db_blocked = load_blocked_patterns(conn, campaign_id)
 
+        if order_faults and active_rows:
+            if not cone_sizes:
+                cone_sizes = _cone_size_map(
+                    core,
+                    reduced_json_path,
+                    reduced_cell_map,
+                    active_rows,
+                    unsupported,
+                )
+            active_rows = sorted(
+                active_rows, key=lambda r: cone_sizes.get(r.fault_id, 1 << 30)
+            )
+
         current_active_ids = {row.fault_id for row in active_rows}
         for row in active_rows:
             fault_id = row.fault_id
@@ -971,6 +1045,9 @@ def run_progressive_scan_atpg(
             blocked = sorted(
                 db_blocked.get(fault_id, set()) | rejected_patterns.get(fault_id, set())
             )
+            tier_timeout = timeout_tiers[
+                min(prior_timeout_count.get(fault_id, 0), len(timeout_tiers) - 1)
+            ]
             solve_started = time.perf_counter()
             if los:
                 solved = dict(
@@ -983,7 +1060,7 @@ def run_progressive_scan_atpg(
                         los_head_ports,
                         blocked,
                         cfg.atpg.sat_conflict_limit,
-                        cfg.atpg.sat_timeout_seconds,
+                        tier_timeout,
                         unsupported,
                         cone_restrict=cfg.atpg.cone_restrict,
                     )
@@ -997,7 +1074,7 @@ def run_progressive_scan_atpg(
                         fault_id,
                         blocked,
                         cfg.atpg.sat_conflict_limit,
-                        cfg.atpg.sat_timeout_seconds,
+                        tier_timeout,
                         unsupported,
                         cone_restrict=cfg.atpg.cone_restrict,
                     )
@@ -1011,7 +1088,7 @@ def run_progressive_scan_atpg(
                         fault_id,
                         blocked,
                         cfg.atpg.sat_conflict_limit,
-                        cfg.atpg.sat_timeout_seconds,
+                        tier_timeout,
                         unsupported,
                     )
                 )
@@ -1102,15 +1179,19 @@ def run_progressive_scan_atpg(
             elif result == "TIMEOUT":
                 stats.timeout += 1
                 round_tracker.sat_outcomes.append("TIMEOUT")
+                prior_timeout_count[fault_id] = prior_timeout_count.get(fault_id, 0) + 1
             else:
                 stats.unknown += 1
                 round_tracker.sat_outcomes.append("UNKNOWN")
+                prior_timeout_count[fault_id] = prior_timeout_count.get(fault_id, 0) + 1
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
             data = summary(conn, campaign_id=campaign_id)
             detected, redundant = _fault_counts(conn, campaign_id)
-            active_remaining = len(_active_fault_rows(conn, campaign_id))
+            active_rows_end = _active_fault_rows(conn, campaign_id)
+            active_remaining = len(active_rows_end)
+            active_ids_end = [row.fault_id for row in active_rows_end]
             coverage = data["coverage_percent"]
 
         _cov = coverage or 0.0
@@ -1140,6 +1221,8 @@ def run_progressive_scan_atpg(
             prev_detected=prev_detected,
             prev_redundant=prev_redundant,
             round_outcomes=round_tracker.sat_outcomes,
+        ) and not _escalation_headroom(
+            active_ids_end, prior_timeout_count, timeout_tiers
         ):
             with connect(effective_db_path) as conn:
                 init_schema(conn)

@@ -102,10 +102,20 @@ def test_set_option_materializes_into_config(tmp_path: Path) -> None:
 
     session.set_option("atpg.max_rounds", "37")
     session.set_option("report.threshold", "92.5")
+    session.set_option("atpg.sat_timeout_schedule", "2,10,60")
 
     cfg = session.materialize_config()
     assert cfg.atpg.max_rounds == 37
     assert cfg.report.threshold == 92.5
+    assert cfg.atpg.sat_timeout_schedule == "2,10,60"
+
+
+def test_set_option_rejects_bad_timeout_schedule(tmp_path: Path) -> None:
+    session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
+    with pytest.raises(ShellError, match="INVALID_VALUE|must be"):
+        session.set_option("atpg.sat_timeout_schedule", "2,fast,60")
+    with pytest.raises(ShellError, match="INVALID_VALUE|>= 1"):
+        session.set_option("atpg.sat_timeout_schedule", "0,10")
 
 
 def test_tcl_catch_receives_stable_faultflow_error_code(tmp_path: Path) -> None:
