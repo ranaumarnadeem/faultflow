@@ -76,6 +76,47 @@ def parse_timeout_schedule(value: str, fallback: int) -> list[int]:
     return tiers
 
 
+def interleave_easy_hard(sorted_items: list, workers: int, easy_reserve: int) -> list:
+    """Reorder a sorted fault list for mixed easy/hard parallel submission.
+
+    ``sorted_items`` must be sorted easy→hard (e.g. by ``(is_reconv, cone_size)``
+    ascending).  When ``workers >= 4`` and ``easy_reserve > 0``, each chunk of
+    ``workers`` items in the returned list contains ``easy_reserve`` items from
+    the front (easy/small-cone) and ``workers - easy_reserve`` items from the
+    back (hard/reconvergent).  The executor then always has a mix of fast and
+    slow faults running concurrently — easy slots free up quickly and are
+    refilled from the remaining easy pool, while hard slots stay busy for
+    their full SAT budget.
+
+    Returns the input list unchanged when workers < 4, easy_reserve <= 0, or
+    easy_reserve >= workers (degenerate cases that collapse to a single queue).
+    """
+    n = len(sorted_items)
+    if n == 0 or workers < 4 or easy_reserve <= 0 or easy_reserve >= workers:
+        return list(sorted_items)
+
+    result: list = []
+    front = 0
+    back = n - 1
+    hard_per_chunk = workers - easy_reserve
+
+    while front <= back:
+        easy_chunk: list = []
+        while len(easy_chunk) < easy_reserve and front <= back:
+            easy_chunk.append(sorted_items[front])
+            front += 1
+        # Pull hard items from the back; hardest (highest index) submitted first
+        # so they start as early as possible within the worker pool.
+        hard_chunk: list = []
+        while len(hard_chunk) < hard_per_chunk and back >= front:
+            hard_chunk.append(sorted_items[back])
+            back -= 1
+        result.extend(easy_chunk)
+        result.extend(hard_chunk)
+
+    return result
+
+
 def _bool(parser: ConfigParser, section: str, key: str, default: bool) -> bool:
     if not parser.has_option(section, key):
         return default
@@ -161,6 +202,14 @@ class AtpgConfig:
     # PDK tech tag passed to opentest _preflight. Empty string = auto-detect from
     # the cell_lib path (sky130 unless the path contains "osu035" or "osu").
     preflight_tech: str = ""
+    # When workers >= 4 and this is > 0, each parallel submission wave reserves
+    # this many slots for easy faults (small-cone / non-reconvergent, from the
+    # front of the sorted list) while the remaining workers - easy_fault_reserve
+    # slots run hard faults (large-cone / reconvergent, from the back). This
+    # keeps fast and slow faults running concurrently so easy slots cycle
+    # quickly while hard slots use their full timeout budget. Has no effect
+    # when workers < 4 or easy_fault_reserve <= 0 (degenerate: all one queue).
+    easy_fault_reserve: int = 2
 
 
 @dataclass(frozen=True)
@@ -504,6 +553,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             workers=_int(parser, "atpg", "workers", 1),
             preflight=_bool(parser, "atpg", "preflight", True),
             preflight_tech=parser.get("atpg", "preflight_tech", fallback="").strip(),
+            easy_fault_reserve=_int(parser, "atpg", "easy_fault_reserve", 2),
         ),
         report=ReportConfig(
             output=_path(parser, "report", "output", "coverage.rpt"),

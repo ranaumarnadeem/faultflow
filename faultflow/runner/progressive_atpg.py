@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from faultflow.atpg import VectorSet
-from faultflow.config import FaultflowConfig, parse_timeout_schedule
+from faultflow.config import (
+    FaultflowConfig,
+    interleave_easy_hard,
+    parse_timeout_schedule,
+)
 from faultflow.db import (
     CAMPAIGN_TYPE_COMB,
     CAMPAIGN_TYPE_SCAN,
@@ -584,6 +588,17 @@ def run_progressive_native_atpg(
                             _b_count,
                         )
 
+    _easy_reserve = cfg.atpg.easy_fault_reserve
+    if _parallel and _easy_reserve > 0 and cfg.atpg.workers >= 4:
+        log.info(
+            "atpg   easy/hard split: %d easy slots + %d hard slots per wave "
+            "(workers=%d, easy_fault_reserve=%d)",
+            _easy_reserve,
+            cfg.atpg.workers - _easy_reserve,
+            cfg.atpg.workers,
+            _easy_reserve,
+        )
+
     terminal = "MAX_ROUNDS"
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
@@ -674,6 +689,16 @@ def run_progressive_native_atpg(
         # workers==1 leaves _parallel_results empty; serial solve runs below.
         _parallel_results: dict[int, tuple[str, dict]] = {}
         if _parallel and _executor is not None and active_ids:
+            # Interleave easy/hard when easy_fault_reserve > 0 and workers >= 4.
+            # active_ids is sorted easy→hard; interleaving takes easy_reserve
+            # from the front and workers-easy_reserve from the back per chunk.
+            # The processing loop reads results by fault_id so order doesn't
+            # affect correctness — only submission order to the executor changes.
+            _dispatch_ids = (
+                interleave_easy_hard(active_ids, cfg.atpg.workers, _easy_reserve)
+                if _easy_reserve > 0 and cfg.atpg.workers >= 4
+                else active_ids
+            )
             _wave_args: list[Any] = [
                 (
                     "native_stuck_at",
@@ -693,7 +718,7 @@ def run_progressive_native_atpg(
                     list(bb_instances),
                     test_mode,
                 )
-                for fid in active_ids
+                for fid in _dispatch_ids
             ]
             _wave_started = time.perf_counter()
             try:

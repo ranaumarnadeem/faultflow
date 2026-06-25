@@ -248,13 +248,17 @@ COMMAND_HELP = {
         "Options",
         "set_option KEY VALUE",
         "Set a persistent flow option",
-        "Keys: atpg.max_rounds, atpg.preflight, atpg.sat_timeout_seconds,"
-        " atpg.sat_timeout_schedule, atpg.workers, report.threshold,"
-        " simulation.unsupported_cells. atpg.sat_timeout_schedule is a"
-        " comma list like 2,10,60 that escalates a fault's SAT timeout only"
-        " when it times out. atpg.workers sets parallel workers (1=serial);"
-        " prefer the WORKERS shorthand. atpg.preflight (true/false) enables"
-        " OT reconvergence pre-ordering and pre-certification (default true).",
+        "Keys: atpg.easy_fault_reserve, atpg.max_rounds, atpg.preflight,"
+        " atpg.sat_timeout_seconds, atpg.sat_timeout_schedule, atpg.workers,"
+        " report.threshold, simulation.unsupported_cells."
+        " atpg.sat_timeout_schedule is a comma list like 2,10,60 that"
+        " escalates a fault's SAT timeout only when it times out."
+        " atpg.workers sets parallel workers (1=serial); prefer WORKERS."
+        " atpg.easy_fault_reserve (default 2): when workers >= 4, reserve"
+        " this many slots per wave for easy (small-cone) faults while the"
+        " rest tackle hard faults simultaneously. Set to 0 to disable."
+        " atpg.preflight (true/false) enables OT reconvergence pre-ordering"
+        " and pre-certification (default true).",
         "",
         "set_option atpg.sat_timeout_schedule 2,10,60",
     ),

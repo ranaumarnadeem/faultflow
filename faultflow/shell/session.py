@@ -414,6 +414,10 @@ class ProjectSession:
                 )
             elif key == "atpg.workers":
                 cfg = replace(cfg, atpg=replace(cfg.atpg, workers=int(value)))
+            elif key == "atpg.easy_fault_reserve":
+                cfg = replace(
+                    cfg, atpg=replace(cfg.atpg, easy_fault_reserve=int(value))
+                )
             elif key == "atpg.sat_timeout_schedule":
                 cfg = replace(
                     cfg,
@@ -653,6 +657,7 @@ class ProjectSession:
 
     def set_option(self, key: str, value: str) -> OperationResult:
         allowed = {
+            "atpg.easy_fault_reserve",
             "atpg.max_rounds",
             "atpg.preflight",
             "atpg.sat_timeout_seconds",
@@ -670,6 +675,16 @@ class ProjectSession:
             except ValueError:
                 raise ShellError(
                     f"{key} must be a positive integer", "CONFIG", "INVALID_VALUE"
+                )
+        if key == "atpg.easy_fault_reserve":
+            try:
+                if int(value) < 0:
+                    raise ValueError
+            except ValueError:
+                raise ShellError(
+                    "atpg.easy_fault_reserve must be a non-negative integer",
+                    "CONFIG",
+                    "INVALID_VALUE",
                 )
         if key == "atpg.sat_timeout_schedule":
             try:

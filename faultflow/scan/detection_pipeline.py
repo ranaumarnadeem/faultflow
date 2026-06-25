@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from faultflow.atpg import VectorSet
-from faultflow.config import FaultflowConfig, parse_timeout_schedule
+from faultflow.config import (
+    FaultflowConfig,
+    interleave_easy_hard,
+    parse_timeout_schedule,
+)
 from faultflow.db import connect, init_schema, summary
 from faultflow.db.candidates import (
     CandidateCommit,
@@ -1066,6 +1070,17 @@ def run_progressive_scan_atpg(
                         core,
                     )
 
+    _easy_reserve = cfg.atpg.easy_fault_reserve
+    if _parallel and _easy_reserve > 0 and cfg.atpg.workers >= 4:
+        log.info(
+            "atpg   easy/hard split: %d easy slots + %d hard slots per wave "
+            "(workers=%d, easy_fault_reserve=%d)",
+            _easy_reserve,
+            cfg.atpg.workers - _easy_reserve,
+            cfg.atpg.workers,
+            _easy_reserve,
+        )
+
     terminal = "MAX_ROUNDS"
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
@@ -1185,6 +1200,16 @@ def run_progressive_scan_atpg(
         # serial solve path below runs unchanged (A/B control).
         _parallel_results: dict[int, tuple[str, dict]] = {}
         if _parallel and _executor is not None and active_rows:
+            # Build the submission order: when easy_fault_reserve > 0 and
+            # workers >= 4, interleave easy faults (front of sorted list)
+            # with hard faults (back) so each parallel chunk has both. The
+            # processing loop reads results from the dict by fault_id so it
+            # is unaffected by submission order.
+            _dispatch_rows = (
+                interleave_easy_hard(active_rows, cfg.atpg.workers, _easy_reserve)
+                if _easy_reserve > 0 and cfg.atpg.workers >= 4
+                else active_rows
+            )
             _wave_args: list[Any] = [
                 (
                     _solve_kind,
@@ -1210,7 +1235,7 @@ def run_progressive_scan_atpg(
                     [],  # bb_instances: not needed in scan fused-view path
                     "",  # test_mode: baked into the fused-view netlist
                 )
-                for row in active_rows
+                for row in _dispatch_rows
             ]
             _wave_started = time.perf_counter()
             try:

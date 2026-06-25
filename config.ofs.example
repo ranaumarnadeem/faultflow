@@ -68,6 +68,14 @@ preflight            = true
 # PDK tech tag passed to opentest _preflight (default: auto-detect from cell_lib
 # path — sky130 unless the path contains "osu035" or "osu").
 preflight_tech       =
+# Easy/hard worker split (default 2; only applies when workers >= 4).
+# Each parallel submission wave reserves this many slots for easy faults
+# (small-cone / non-reconvergent, front of the sorted list) while the
+# remaining workers-easy_fault_reserve slots run hard faults (large-cone /
+# reconvergent, back of the sorted list). This keeps fast and slow faults
+# running concurrently: easy slots cycle in ~2 s while hard slots exhaust
+# their full SAT budget. Set to 0 to disable (one flat queue).
+easy_fault_reserve   = 2
 
 [report]
 output    = coverage.rpt
