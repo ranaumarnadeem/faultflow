@@ -93,13 +93,15 @@ def build_scan_execution_map(
     # outputs). The cell's scan-chain nets (CTI/SE/CTO) are wrapper infrastructure
     # and leave the denominator (tagged scan_chain). Buffer cells carry no chain
     # nets, so this is a no-op for them.
-    from faultflow.scan.wbr_view import extract_wbr_cells
+    from faultflow.scan.wbr_view import extract_wbr_cells, extract_wbr_chain_bits
 
     wbr_records = extract_wbr_cells(module)
     wbr_core_bits = {rec.core_net for rec in wbr_records}
-    wbr_chain_bits: set[int] = set()
-    for rec in wbr_records:
-        wbr_chain_bits.update(rec.chain_nets)
+    # Use extract_wbr_chain_bits (not just rec.chain_nets) so that chain nets
+    # from constant-FROM_CORE WBR out cells are included: those cells are
+    # skipped by extract_wbr_cells but the C++ still lowers them and emits
+    # their CTO/CTI/SE fault sites in the generic site-key listing.
+    wbr_chain_bits: set[int] = extract_wbr_chain_bits(module)
 
     for raw_row in generic_rows:
         row = dict(raw_row)

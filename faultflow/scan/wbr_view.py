@@ -87,6 +87,20 @@ def _single_bit(cell: dict[str, Any], pin: str, instance: str) -> int:
     return bits[0]
 
 
+def _is_constant_bit(cell: dict[str, Any], pin: str) -> bool:
+    """True when `pin` is connected to a Yosys constant literal ("0"/"1"/"x"/"z")."""
+    conns = cell.get("connections", {})
+    if not isinstance(conns, dict):
+        return False
+    raw = conns.get(pin)
+    return (
+        isinstance(raw, list)
+        and len(raw) == 1
+        and isinstance(raw[0], str)
+        and raw[0] in {"0", "1", "x", "z"}
+    )
+
+
 def _scan_chain_nets(cell: dict[str, Any]) -> tuple[int, ...]:
     """Net ids on a scan WBR cell's chain/enable pins (CTI, SE, CTO).
 
@@ -119,6 +133,10 @@ def extract_wbr_cells(module: dict[str, Any]) -> list[WbrRecord]:
         ctype = cell.get("type")
         if ctype in _WBR_IN_TYPES or ctype in _WBR_SCAN_IN_TYPES:
             scan = ctype in _WBR_SCAN_IN_TYPES
+            # Skip input WBR cells whose TO_CORE is a constant (can't be
+            # driven: the system-side has no real net to controllability-test).
+            if _is_constant_bit(cell, _WBR_IN_CORE_PIN):
+                continue
             records.append(
                 WbrRecord(
                     instance=str(instance),
@@ -130,6 +148,13 @@ def extract_wbr_cells(module: dict[str, Any]) -> list[WbrRecord]:
             )
         elif ctype in _WBR_OUT_TYPES or ctype in _WBR_SCAN_OUT_TYPES:
             scan = ctype in _WBR_SCAN_OUT_TYPES
+            # Skip output WBR cells whose FROM_CORE is a constant literal
+            # ("0"/"1"/"x"): a constant-driven boundary bit is always fixed
+            # and cannot be an INTEST observation site. This occurs when
+            # Yosys ties off unused output port bits (e.g. mem_addr[0] in
+            # picorv32a where the lsb is permanently 0).
+            if _is_constant_bit(cell, _WBR_OUT_CORE_PIN):
+                continue
             records.append(
                 WbrRecord(
                     instance=str(instance),
@@ -140,6 +165,27 @@ def extract_wbr_cells(module: dict[str, Any]) -> list[WbrRecord]:
                 )
             )
     return sorted(records, key=lambda r: r.instance)
+
+
+def extract_wbr_chain_bits(module: dict[str, Any]) -> set[int]:
+    """CTI/SE/CTO net IDs from ALL WBR scan cells in *module*.
+
+    Unlike extract_wbr_cells, this includes cells skipped for INTEST
+    observation (e.g. constant-FROM_CORE WBR out cells). The C++ normalizer
+    still lowers those cells and their chain-net fault sites appear in the
+    generic site-key listing; callers must exclude them as ``scan_chain``.
+    """
+    cells = module.get("cells", {})
+    if not isinstance(cells, dict):
+        return set()
+    bits: set[int] = set()
+    for cell in cells.values():
+        if not isinstance(cell, dict):
+            continue
+        ctype = cell.get("type")
+        if ctype in (_WBR_SCAN_IN_TYPES | _WBR_SCAN_OUT_TYPES):
+            bits.update(_scan_chain_nets(cell))
+    return bits
 
 
 def _drop_top_ports_by_bit(module: dict[str, Any], bits: set[int]) -> None:
@@ -427,6 +473,26 @@ def fuse_wbr_into_view(
                 "core_net": rec.core_net,
                 "sys_net": rec.sys_net,
             }
+
+    # Second pass: remove constant-FROM_CORE WBR out cells that extract_wbr_cells
+    # skipped (they can't be INTEST observation sites, but they must be stripped so
+    # the fused view is purely combinational for the C++ SAT engine).
+    for instance in list(cells):
+        cell = cells.get(instance)
+        if not isinstance(cell, dict):
+            continue
+        ctype = cell.get("type")
+        if ctype not in (_WBR_OUT_TYPES | _WBR_SCAN_OUT_TYPES):
+            continue
+        if not _is_constant_bit(cell, _WBR_OUT_CORE_PIN):
+            continue
+        # Skipped by extract_wbr_cells: drop it and decouple sys/chain ports.
+        conns = cell.get("connections", {})
+        if isinstance(conns, dict):
+            sys_nets_to_drop.update(_all_int_bits(conns.get(_WBR_OUT_SYS_PIN)))
+            for pin in _WBR_SCAN_CHAIN_PINS:
+                sys_nets_to_drop.update(_all_int_bits(conns.get(pin)))
+        cells.pop(instance, None)
 
     _drop_top_ports_by_bit(module, sys_nets_to_drop)
 

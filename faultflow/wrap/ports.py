@@ -156,6 +156,11 @@ def wrap_ports(
                         {"FROM_SYS": [bit], "TO_CORE": [core_bit]},
                     )
             elif direction == "output":
+                # Skip constant-driven bits ("0"/"1"/"x"/"z"): they are
+                # permanently fixed and cannot be INTEST observation points.
+                # A non-integer `bit` value is a Yosys tie-off literal.
+                if not isinstance(bit, int):
+                    continue
                 sys_bit = alloc()[0]
                 netnames[f"__sys_{port_name}{suffix}"] = _net(sys_bit)
                 if scan:
