@@ -58,6 +58,16 @@ order_by_cone_size   = true
 # fork-capable OS (Linux/WSL); silently falls back to serial on Windows/spawn.
 # Also settable interactively in the shell: WORKERS 10
 workers              = 1
+# Run OT structural reconvergence analysis before ATPG (default true).
+# Requires the opentest binary on PATH. Falls back silently when unavailable.
+# Phase A: reconvergent-site faults are sorted last and skip the short timeout
+#   tier (they are likely hard/near-redundant).
+# Phase B: faults at canceling-path stems are pre-certified UNSAT (no SAT call).
+# Set to false to disable and reproduce the baseline ordering/timing behaviour.
+preflight            = true
+# PDK tech tag passed to opentest _preflight (default: auto-detect from cell_lib
+# path — sky130 unless the path contains "osu035" or "osu").
+preflight_tech       =
 
 [report]
 output    = coverage.rpt

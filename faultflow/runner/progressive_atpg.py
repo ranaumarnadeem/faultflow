@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import sqlite3
 import tempfile
 import time
@@ -23,6 +24,7 @@ from faultflow.db import (
 )
 from faultflow.runner.parallel_solve import solve_fault_worker
 from faultflow.runner.runner import RunnerError
+from faultflow.testpoint.preflight import PreflightData, run_preflight
 
 log = logging.getLogger(__name__)
 
@@ -522,6 +524,66 @@ def run_progressive_native_atpg(
             )
             _parallel = False
 
+    # OT structural reconvergence preflight (cfg.atpg.preflight).
+    # Phase A: reconvergent-site faults sorted last + tier bumped to skip the
+    # short timeout tier.
+    # Phase B: canceling-path stems marked UNSAT directly (no SAT call needed).
+    # Falls back silently if opentest is not on PATH.
+    _preflight: PreflightData | None = None
+    _reconv_fault_ids: frozenset[int] = frozenset()
+    if cfg.atpg.preflight:
+        _opentest_bin = shutil.which("opentest") or shutil.which("opentest-cli")
+        if _opentest_bin:
+            _lib = str(cfg.cell_lib).lower()
+            _tech = cfg.atpg.preflight_tech or (
+                "osu035" if ("osu035" in _lib or "osu" in _lib) else "sky130"
+            )
+            _preflight = run_preflight(
+                Path(json_path),
+                Path(json_path).parent / "preflight",
+                _opentest_bin,
+                _tech,
+            )
+            if _preflight:
+                # Build fault_id → net_id mapping from DB (one query, reused below).
+                with connect(effective_db_path) as conn:
+                    _fid_to_netid: dict[int, int] = {
+                        int(r["id"]): int(r["net_id"])
+                        for r in conn.execute(
+                            "SELECT id, net_id FROM faults WHERE campaign_id = ?",
+                            (campaign_id,),
+                        ).fetchall()
+                    }
+                _reconv_fault_ids = frozenset(
+                    fid
+                    for fid, nid in _fid_to_netid.items()
+                    if nid in _preflight.fanout_yosys_ids
+                )
+                _redundant_fault_ids = frozenset(
+                    fid
+                    for fid, nid in _fid_to_netid.items()
+                    if nid in _preflight.redundant_stem_ids
+                )
+                log.info(
+                    "atpg   preflight: %d reconvergent stems, %d canceling stems",
+                    len(_preflight.fanout_yosys_ids),
+                    len(_preflight.redundant_stem_ids),
+                )
+                # Phase B: pre-certify canceling-path faults as UNSAT.
+                if _redundant_fault_ids:
+                    _b_count = 0
+                    for _fid in _redundant_fault_ids:
+                        core.mark_fault_redundant(
+                            effective_db_path, _fid, redundancy_model
+                        )
+                        _b_count += 1
+                    if _b_count:
+                        log.info(
+                            "atpg   preflight Phase B: pre-certified %d faults"
+                            " as UNSAT",
+                            _b_count,
+                        )
+
     terminal = "MAX_ROUNDS"
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
@@ -575,8 +637,16 @@ def run_progressive_native_atpg(
             active_rows = _active_fault_rows(conn, campaign_id)
             active_ids = [int(row["id"]) for row in active_rows]
 
-        if order_faults and active_ids:
-            if not cone_sizes:
+        # Phase A: seed tier-skip for reconvergent-site faults before sort and
+        # before parallel dispatch so both paths pick up the updated count.
+        if _reconv_fault_ids:
+            for _fid in active_ids:
+                if _fid in _reconv_fault_ids:
+                    prior_timeout_count[_fid] = max(1, prior_timeout_count.get(_fid, 0))
+
+        # Sort: reconvergent-site faults last, smallest cone first within each group.
+        if (order_faults or _reconv_fault_ids) and active_ids:
+            if order_faults and not cone_sizes:
                 cone_sizes = _cone_size_order(
                     core,
                     json_path,
@@ -586,7 +656,11 @@ def run_progressive_native_atpg(
                     bb_instances,
                 )
             active_ids = sorted(
-                active_ids, key=lambda fid: cone_sizes.get(fid, 1 << 30)
+                active_ids,
+                key=lambda fid: (
+                    fid in _reconv_fault_ids,
+                    cone_sizes.get(fid, 1 << 30) if order_faults else 0,
+                ),
             )
 
         # M1: grade each accepted SAT pattern against every still-undetected

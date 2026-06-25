@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import sqlite3
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -46,6 +47,7 @@ from faultflow.scan.site_resolution import (
 )
 from faultflow.scan.errors import ScanError
 from faultflow.scan.verify import reduced_protocol_matches
+from faultflow.testpoint.preflight import PreflightData, run_preflight
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +74,7 @@ class _FaultRow:
     fault_site_key: str
     fault_type: str
     net_index: int = -1
+    net_id: int = -1
 
 
 def build_scan_pipeline_context(
@@ -107,7 +110,7 @@ def build_scan_pipeline_context(
 def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_FaultRow]:
     rows = conn.execute(
         """
-        SELECT id, fault_site_key, fault_type,
+        SELECT id, fault_site_key, fault_type, net_id,
                COALESCE(atpg_compiled_net_index, compiled_net_index) AS net_index
         FROM faults
         WHERE campaign_id = ?
@@ -125,6 +128,7 @@ def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_Faul
             fault_site_key=str(row["fault_site_key"]),
             fault_type=str(row["fault_type"]),
             net_index=int(row["net_index"]),
+            net_id=int(row["net_id"]),
         )
         for row in rows
     ]
@@ -204,6 +208,51 @@ def _termination_sweep_q_stems(
     )
     conn.commit()
     return int(cur.rowcount)
+
+
+def _mark_preflight_redundant(
+    db_path: str,
+    campaign_id: int,
+    stem_ids: frozenset[int],
+    redundancy_model: str,
+    q_stem_site_keys: frozenset[str],
+    core: Any,
+) -> int:
+    """Mark SA0/SA1 faults at canceling-path stems UNSAT without any SAT call.
+
+    Reuses the same core.mark_fault_redundant / core.mark_fault_protocol_unresolved
+    paths the round loop uses, so DB state stays consistent.
+    Returns the count of faults pre-certified.
+    """
+    if not stem_ids:
+        return 0
+    placeholders = ",".join("?" for _ in stem_ids)
+    with connect(db_path) as conn:
+        init_schema(conn)
+        rows = conn.execute(
+            f"""
+            SELECT id, fault_site_key
+            FROM faults
+            WHERE campaign_id = ?
+              AND status = 'undetected'
+              AND exclusion = 'none'
+              AND collapsed_into IS NULL
+              AND net_id IN ({placeholders})
+            """,
+            (campaign_id, *sorted(stem_ids)),
+        ).fetchall()
+    count = 0
+    for row in rows:
+        fault_id = int(row["id"])
+        site_key = str(row["fault_site_key"])
+        if site_key in q_stem_site_keys:
+            core.mark_fault_protocol_unresolved(db_path, fault_id)
+        else:
+            core.mark_fault_redundant(db_path, fault_id, redundancy_model)
+        count += 1
+    if count:
+        log.info("atpg   preflight Phase B: pre-certified %d faults as UNSAT", count)
+    return count
 
 
 def _protocol_fault_sim_kwargs(
@@ -979,6 +1028,44 @@ def run_progressive_scan_atpg(
     else:
         _solve_kind = "scan_stuck_at"
 
+    # OT structural reconvergence preflight (cfg.atpg.preflight, stuck-at only).
+    # Phase A: reconvergent-site faults are sorted last and their SAT timeout tier
+    # is bumped by 1 so the short (2 s) tier is skipped — these faults are likely
+    # hard or near-redundant and waste the short budget.
+    # Phase B: faults at canceling-path stems are marked UNSAT without any SAT call.
+    # Falls back silently if opentest is not on PATH or the preflight subprocess fails.
+    _preflight: PreflightData | None = None
+    _reconv_ids: frozenset[int] = frozenset()
+    if cfg.atpg.preflight and not transition:
+        _opentest_bin = shutil.which("opentest") or shutil.which("opentest-cli")
+        if _opentest_bin:
+            _lib = str(cfg.cell_lib).lower()
+            _tech = cfg.atpg.preflight_tech or (
+                "osu035" if ("osu035" in _lib or "osu" in _lib) else "sky130"
+            )
+            _preflight = run_preflight(
+                Path(reduced_json_path),
+                Path(reduced_json_path).parent / "preflight",
+                _opentest_bin,
+                _tech,
+            )
+            if _preflight:
+                _reconv_ids = _preflight.fanout_yosys_ids
+                log.info(
+                    "atpg   preflight: %d reconvergent stems, %d canceling stems",
+                    len(_preflight.fanout_yosys_ids),
+                    len(_preflight.redundant_stem_ids),
+                )
+                if _preflight.redundant_stem_ids:
+                    _mark_preflight_redundant(
+                        effective_db_path,
+                        campaign_id,
+                        _preflight.redundant_stem_ids,
+                        redundancy_model,
+                        scan_ctx.q_stem_site_keys,
+                        core,
+                    )
+
     terminal = "MAX_ROUNDS"
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
@@ -1061,8 +1148,21 @@ def run_progressive_scan_atpg(
             active_rows = _active_fault_rows(conn, campaign_id)
             db_blocked = load_blocked_patterns(conn, campaign_id)
 
-        if order_faults and active_rows:
-            if not cone_sizes:
+        # Phase A: seed a tier-skip for reconvergent-site faults so they start at
+        # the second timeout tier (skipping the short 2 s attempt). This is done
+        # once per round, before the sort and before parallel dispatch, so both
+        # paths pick up the updated prior_timeout_count.
+        if _reconv_ids:
+            for _row in active_rows:
+                if _row.net_id in _reconv_ids:
+                    prior_timeout_count[_row.fault_id] = max(
+                        1, prior_timeout_count.get(_row.fault_id, 0)
+                    )
+
+        # Sort: (1) reconvergent-site faults last, (2) smallest cone first within
+        # each group. Both criteria are independent; either can be inactive.
+        if (order_faults or _reconv_ids) and active_rows:
+            if order_faults and not cone_sizes:
                 cone_sizes = _cone_size_map(
                     core,
                     reduced_json_path,
@@ -1071,7 +1171,11 @@ def run_progressive_scan_atpg(
                     unsupported,
                 )
             active_rows = sorted(
-                active_rows, key=lambda r: cone_sizes.get(r.fault_id, 1 << 30)
+                active_rows,
+                key=lambda r: (
+                    r.net_id in _reconv_ids,
+                    cone_sizes.get(r.fault_id, 1 << 30) if order_faults else 0,
+                ),
             )
 
         current_active_ids = {row.fault_id for row in active_rows}

@@ -16,6 +16,7 @@ from faultflow.config import (
     ReportConfig,
     ScanConfig,
     SimulationConfig,
+    parse_bool_value,
     parse_timeout_schedule,
 )
 from faultflow.project.profiles import TechnologyProfile, get_profile
@@ -418,6 +419,11 @@ class ProjectSession:
                     cfg,
                     atpg=replace(cfg.atpg, sat_timeout_schedule=value),
                 )
+            elif key == "atpg.preflight":
+                cfg = replace(
+                    cfg,
+                    atpg=replace(cfg.atpg, preflight=parse_bool_value(value, key)),
+                )
             elif key == "report.threshold":
                 cfg = replace(cfg, report=replace(cfg.report, threshold=float(value)))
             elif key == "simulation.unsupported_cells":
@@ -648,6 +654,7 @@ class ProjectSession:
     def set_option(self, key: str, value: str) -> OperationResult:
         allowed = {
             "atpg.max_rounds",
+            "atpg.preflight",
             "atpg.sat_timeout_seconds",
             "atpg.sat_timeout_schedule",
             "atpg.workers",
@@ -667,6 +674,11 @@ class ProjectSession:
         if key == "atpg.sat_timeout_schedule":
             try:
                 parse_timeout_schedule(value, 1)
+            except ConfigError as exc:
+                raise ShellError(str(exc), "CONFIG", "INVALID_VALUE")
+        if key == "atpg.preflight":
+            try:
+                parse_bool_value(value, key)
             except ConfigError as exc:
                 raise ShellError(str(exc), "CONFIG", "INVALID_VALUE")
         self.options[key] = value

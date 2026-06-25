@@ -153,6 +153,14 @@ class AtpgConfig:
     # Each worker owns its own SimState over the shared immutable CompiledSimGraph.
     # The coordinator merges detected sets; the DB writer remains single-threaded.
     workers: int = 1
+    # Run OT structural reconvergence analysis before ATPG (requires opentest on PATH).
+    # Phase A: reconvergent-site faults are sorted last and skip the short timeout tier.
+    # Phase B: canceling-path stems are marked UNSAT without any SAT call.
+    # Falls back silently when opentest is unavailable.
+    preflight: bool = True
+    # PDK tech tag passed to opentest _preflight. Empty string = auto-detect from
+    # the cell_lib path (sky130 unless the path contains "osu035" or "osu").
+    preflight_tech: str = ""
 
 
 @dataclass(frozen=True)
@@ -494,6 +502,8 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             pack_orders=_int(parser, "atpg", "pack_orders", 1),
             order_by_cone_size=_bool(parser, "atpg", "order_by_cone_size", True),
             workers=_int(parser, "atpg", "workers", 1),
+            preflight=_bool(parser, "atpg", "preflight", True),
+            preflight_tech=parser.get("atpg", "preflight_tech", fallback="").strip(),
         ),
         report=ReportConfig(
             output=_path(parser, "report", "output", "coverage.rpt"),
