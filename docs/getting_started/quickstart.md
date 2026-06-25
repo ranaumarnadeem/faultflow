@@ -18,14 +18,14 @@ The repository ships a complete template. Copy it to `config.ofs`:
 cp config.ofs.example config.ofs
 ```
 
-Out of the box it points at the OSU035-mapped `c17` netlist:
+Out of the box it points at the Sky130-mapped `c17` netlist:
 
 ```ini
 [design]
-netlist   = tests/benchmarks/iscas85/synth/c17.json
+netlist   = tests/benchmarks/iscas85/synth_sky130/c17.json
 top       = c17
-cell_lib  = cells/osu/osu035.json
-liberty   = cells/osu/osu035_stdcells.lib
+cell_lib  = cells/sky130/sky130_fd_sc_hd.json
+liberty   = cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib
 
 [atpg]
 tool      = native      # built-in SAT ATPG

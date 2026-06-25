@@ -1,6 +1,7 @@
 # faultflow
 
-Gate-level stuck-at fault simulator for post-synthesis netlists from Yosys.
+Gate-level stuck-at and transition fault simulator with native SAT ATPG, for
+post-synthesis netlists from Yosys.
 
 ## Quick start
 

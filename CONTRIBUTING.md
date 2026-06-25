@@ -25,7 +25,7 @@ faultflow/
 │   ├── db/           SQLite campaign store
 │   └── bindings/     pybind11 module (_faultflow_core)
 ├── faultflow/       Python control plane (CLI, runner, reporter, shell, verify)
-├── cells/           OSU035 and Sky130 JSON cell maps + Liberty/models
+├── cells/           Sky130 (default) and OSU035 JSON cell maps + Liberty/models
 ├── schemas/         JSON schemas for the cell map, coverage, oracle response
 ├── tests/           C++ (Catch2) and Python (pytest); benchmark circuits
 ├── examples/        runnable example designs
@@ -111,6 +111,6 @@ Or, from `docs/`, `make html`. The site is published to GitHub Pages automatical
 
 ## Where the deep specs live
 
-The durable architecture reference is `.claude/CLAUDE.md`, and per-phase build specs and
-test specs live under `.claude/phaseN/`. The authoritative forward plan is
-`docs/plans/roadmap.md`, summarized on the [Roadmap](https://github.com/ranaumarnadeem/faultflow/blob/main/docs/roadmap.md) page.
+The durable architecture reference is `.claude/CLAUDE.md`, with the test-first contract in
+`.claude/tdd.md` and the current feature inventory in `.claude/feature.md`. The forward plan
+is the [Roadmap](https://github.com/ranaumarnadeem/faultflow/blob/main/docs/roadmap.md) page.

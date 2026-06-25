@@ -90,8 +90,9 @@ skipped — as the PicoRV32 example does.
 
 ## A reusable batch script
 
-The ISCAS-85 circuits (`c17`, `c432`, `c499`) ship as OSU035-mapped JSON under
-`tests/benchmarks/iscas85/synth/`. This script grades all three with the native ATPG
+The ISCAS-85 circuits (`c17`, `c432`, `c499`) ship as Sky130-mapped JSON under
+`tests/benchmarks/iscas85/synth_sky130/` (OSU035 under `…/synth/`). This script grades all three
+with the native ATPG
 by generating a small config per circuit. Save it as `run_iscas85.sh` at the repo
 root:
 
@@ -104,10 +105,10 @@ for top in c17 c432 c499; do
   cfg="$(mktemp --suffix=.ofs)"
   cat > "$cfg" <<EOF
 [design]
-netlist  = tests/benchmarks/iscas85/synth/${top}.json
+netlist  = tests/benchmarks/iscas85/synth_sky130/${top}.json
 top      = ${top}
-cell_lib = cells/osu/osu035.json
-liberty  = cells/osu/osu035_stdcells.lib
+cell_lib = cells/sky130/sky130_fd_sc_hd.json
+liberty  = cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib
 
 [atpg]
 tool     = native

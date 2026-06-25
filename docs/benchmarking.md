@@ -47,10 +47,10 @@ for top in c17 c432 c499; do
   cfg="$(mktemp --suffix=.ofs)"
   cat > "$cfg" <<EOF
 [design]
-netlist  = tests/benchmarks/iscas85/synth/${top}.json
+netlist  = tests/benchmarks/iscas85/synth_sky130/${top}.json
 top      = ${top}
-cell_lib = cells/osu/osu035.json
-liberty  = cells/osu/osu035_stdcells.lib
+cell_lib = cells/sky130/sky130_fd_sc_hd.json
+liberty  = cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib
 [atpg]
 tool     = native
 [report]

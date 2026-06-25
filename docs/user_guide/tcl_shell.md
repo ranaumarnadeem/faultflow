@@ -113,7 +113,7 @@ See [External tools](../external_tools.md).
 
 | Command | Summary |
 |---|---|
-| `write_netlist [-scan] [-techmap\|-notech] [-o PATH] [-verify]` | Publish a functional or scanned netlist |
+| `write_netlist [-scan] [-techmap\|-notech] [-o PATH]` | Publish a functional or scanned netlist (`-verify` is reserved; techmap verification is not yet implemented) |
 | `write_patterns` | Export ATPG patterns *(reserved; not yet implemented)* |
 
 ### Options / session

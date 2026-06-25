@@ -1,13 +1,12 @@
 # Roadmap
 
-This is the public summary of faultflow's forward plan. The authoritative, detailed
-version is [`docs/plans/roadmap.md`](https://github.com/ranaumarnadeem/faultflow/blob/main/docs/plans/roadmap.md)
-in the source tree.
+This is faultflow's forward plan: what is implemented today, and what is planned next.
 
 ## Done
 
 The combinational core, the supporting infrastructure, the verification gate, the
-sequential and scan flow, and the native SAT ATPG are implemented:
+sequential and scan flow, the native SAT ATPG, transition faults, multi-clock, and the
+DFT rule check are all implemented:
 
 - Bit-parallel combinational simulation, cross-checked against a scalar golden
   reference; binary (two-valued) signals.
@@ -16,42 +15,34 @@ sequential and scan flow, and the native SAT ATPG are implemented:
 - The optional iverilog verification gate.
 - Posedge **and** negedge D flip-flops (simulated, not just mapped), asynchronous
   set/reset, scan-chain insertion, and scan SAT ATPG (single clock).
-- Native C++ SAT ATPG on CaDiCaL; Sky130 HD support; equivalence/dominance fault
-  collapsing; reverse-order test-set compaction.
-- An initial transition-fault flow (combinational broadside, launch-on-capture) and
-  IEEE 1500 wrapper test modes.
-- An initial DFT rule-check command (`rule_check`), whose rule set continues to grow
-  (Phase 5 below).
+- Native C++ SAT ATPG on CaDiCaL, with cone-of-influence CNF restriction, escalating
+  per-fault timeouts, parallel multi-process solving, equivalence/dominance fault
+  collapsing, and both reverse-order and dynamic (sim-verified cube-packing) test-set
+  compaction.
+- Two PDKs: SkyWater Sky130 HD (default) and OSU035, driven by JSON cell maps.
+- **Transition faults** — slow-to-rise / slow-to-fall, two-frame combinational broadside
+  plus scan launch-on-capture (LOC) and launch-on-shift (LOS), with a two-frame iverilog
+  verification gate.
+- **IEEE 1500 wrapper test modes** (functional / INTEST / EXTEST), a native shiftable
+  wrapper boundary register, hierarchical block-to-SoC coverage aggregation, and
+  scan-pattern retargeting.
+- **Multi-clock** domain-aware test protocol (per-domain at-speed; cross-domain paths
+  masked).
+- A **DFT rule check** command (`rule_check`) whose structural rule set continues to grow.
+- OpenTestability test-point insertion (`add_tp` / `reject_tp`).
 
-## Planned sequence
+## Planned
 
-The order below is deliberate — each step is sequenced so the one after it can be built
-on solid ground.
+Two pieces of work remain, sequenced deliberately so the second builds on the first.
 
-| # | Phase | Scope | Touches the sim core? |
-|---|---|---|---|
-| 4 | **Transition faults** | Slow-to-rise / slow-to-fall, two-frame, single clock, launch-on-capture | frames = 2 only |
-| 5 | **DFT rule check (DRC)** | Scan/clock structural rules; an advisory or blocking pre-ATPG gate | no |
-| 6 | **Multi-clock** | Domain-aware test protocol; stuck-at first, then at-speed transition | minor |
-| 7 | **X-state** | Three-valued simulation core (initialization, unknowns, masking) | yes — the most invasive change |
-| 8 | **Latches** | A general level-sensitive latch model, built on X-state | yes |
-| — | **TBUF / tristate** | Deferred indefinitely; remains a hard error by policy | — |
-
-```{note}
-Phases 4 and 5 build on work already in the tree: an initial transition-fault flow and
-the `rule_check` command exist today. These phases formalize the two-frame coverage
-accounting and expand the structural rule set, respectively.
-```
+| Work | Scope | Touches the sim core? |
+|---|---|---|
+| **X-state** | Three-valued simulation core (initialization, unknowns, masking) | yes — the most invasive change |
+| **Latches** | A general level-sensitive latch model, built on X-state | yes |
+| **TBUF / tristate** | Deferred indefinitely; remains a hard error by policy | — |
 
 ### Why this order
 
-- **Transition faults first** — the one genuinely new fault model on the list, and its
-  foundation (negedge/posedge/async/scan simulation and scan ATPG) already exists.
-- **DFT rule check early** — it catches the structural hazards that multi-clock and scan
-  introduce, so the later coverage numbers are trustworthy. It does not touch the sim
-  core, so it is low-risk.
-- **Multi-clock before X-state and latches** — domain-aware protocol is independent of
-  X, and the current ISCAS targets are single-clock edge-flop designs.
 - **X-state before latches — a hard ordering.** A general latch model needs X for its
   uninitialized hold state and transparent-phase behavior, so X is done first and the
   latch model is written once, completely. X-state is also the most invasive change,

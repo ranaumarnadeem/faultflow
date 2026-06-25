@@ -18,10 +18,10 @@ cp config.ofs.example config.ofs
 
 ```ini
 [design]
-netlist   = tests/benchmarks/iscas85/synth/c17.json
+netlist   = tests/benchmarks/iscas85/synth_sky130/c17.json
 top       = c17
-cell_lib  = cells/osu/osu035.json
-liberty   = cells/osu/osu035_stdcells.lib
+cell_lib  = cells/sky130/sky130_fd_sc_hd.json
+liberty   = cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib
 yosys_ver = 0.61+129
 
 [fault_model]
@@ -35,7 +35,7 @@ include_reset_faults = false
 unsupported_cells = fail
 verify            = false
 verify_tool       = iverilog
-verilog_models    = cells/osu/osu035_stdcells.v
+verilog_models    = cells/sky130/sky130_fd_sc_hd.v
 
 [atpg]
 tool                = native
@@ -81,7 +81,7 @@ are: **Sky130 HD** — `cell_lib = cells/sky130/sky130_fd_sc_hd.json`,
 | Key | Allowed values | Default | Meaning |
 |---|---|---|---|
 | `model` (alias `type`) | `stuck_at`, `transition` | `stuck_at` | Fault model. `model` is preferred; `type` is a back-compat alias |
-| `launch` | `loc`, `los` | `loc` | Transition launch style. `los` is reserved/not implemented |
+| `launch` | `loc`, `los` | `loc` | Transition launch style for **scan** transition ATPG. `los` (launch-on-shift) is supported for the scan flow only; combinational broadside transition rejects `los` |
 | `collapsing` | bool | `false` | Enable equivalence/dominance fault collapsing. `transition` + `collapsing=true` is an error |
 | `include_clock_faults` | bool | `false` | Count clock-net faults in the denominator |
 | `include_reset_faults` | bool | `false` | Count reset-net faults in the denominator |

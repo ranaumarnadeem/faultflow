@@ -63,7 +63,7 @@ SA1 sets it); detection compares each observable lane against the golden bit.
 
 Gate evaluation (`src/core/sim/gate_eval.cpp`) is a branch-free bitwise table with no
 virtual calls — one `uint64_t` operation evaluates 64 universes at once. The engine is
-strictly **binary**; there is no X/Z value (a deliberate Phase-0 decision, with
+strictly **binary**; there is no X/Z value (a deliberate design decision, with
 three-valued simulation on the [roadmap](../roadmap.md)).
 
 Every result is cross-checked against a scalar **golden-reference simulator**
