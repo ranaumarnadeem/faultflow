@@ -41,22 +41,22 @@ random_vectors       = 64
 sat_conflict_limit   = 100000
 max_rounds           = 20
 sat_timeout_seconds  = 10
-# Escalating per-fault SAT timeout. Empty (default) keeps the single fixed
-# sat_timeout_seconds. A comma list smallest-first like "2,10,60" attempts each
-# fault at the short timeout first and only gives a fault more time once it has
-# timed out, so easy faults clear fast and long budgets go to the hard ones.
-sat_timeout_schedule =
+# Escalating per-fault SAT timeout (default: 2,10,60). Comma list smallest-first:
+# each fault is attempted at the shortest timeout first and only escalates when it
+# times out, so easy faults clear fast and long budgets go to the hard ones.
+# Set to empty to use the fixed sat_timeout_seconds for all faults.
+sat_timeout_schedule = 2,10,60
 # Test-set compaction after ATPG: reverse (reverse-order fault-sim static
 # compaction, coverage-preserving; default) or none.
 compaction           = reverse
-# Order faults by ascending structural cone size (smallest first) so the quickest
-# SAT calls run first and detect more faults incidentally early. Coverage is
-# identical either way; false (default) keeps enumeration order. Stuck-at only.
-order_by_cone_size   = false
-# Parallel SAT workers. 1 (default) = serial; N>1 = fork N worker processes that
-# each run one C++ solver call and return the result to the coordinator.  The
-# coordinator owns all DB writes (workers are pure compute).  Requires a fork-
-# capable OS (Linux/WSL); silently falls back to serial on Windows/spawn.
+# Order faults by ascending structural cone size so the quickest SAT calls run
+# first, detecting more faults incidentally early. Coverage-identical. Default on.
+# Set to false to keep enumeration order. Stuck-at only.
+order_by_cone_size   = true
+# Parallel SAT workers (default 1 = serial). N>1 forks N worker processes that
+# each run one C++ solver call; the coordinator owns all DB writes. Requires a
+# fork-capable OS (Linux/WSL); silently falls back to serial on Windows/spawn.
+# Also settable interactively in the shell: WORKERS 10
 workers              = 1
 
 [report]

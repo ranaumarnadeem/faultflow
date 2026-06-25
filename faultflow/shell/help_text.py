@@ -231,6 +231,19 @@ COMMAND_HELP = {
         "Export ATPG patterns",
         "Reserved for future scan-aware STIL/WGL export and currently unsupported.",
     ),
+    "WORKERS": CommandHelp(
+        "Options",
+        "WORKERS ?N?",
+        "Get or set the number of parallel SAT-ATPG worker processes",
+        "With N: set atpg.workers to N (positive integer) and update the "
+        "$WORKERS Tcl global. Without N: print the current value. The default "
+        "is 1 (serial). Set to the number of available CPU cores for maximum "
+        "throughput; each worker runs one C++ solver call, so wall-clock time "
+        "scales roughly as 1/N. Falls back to serial with a warning on "
+        "platforms that do not support fork (non-WSL Windows).",
+        "",
+        "WORKERS 10",
+    ),
     "set_option": CommandHelp(
         "Options",
         "set_option KEY VALUE",
@@ -239,7 +252,8 @@ COMMAND_HELP = {
         " atpg.sat_timeout_schedule, atpg.workers, report.threshold,"
         " simulation.unsupported_cells. atpg.sat_timeout_schedule is a"
         " comma list like 2,10,60 that escalates a fault's SAT timeout only"
-        " when it times out. atpg.workers sets parallel workers (1=serial).",
+        " when it times out. atpg.workers sets parallel workers (1=serial);"
+        " prefer the WORKERS shorthand.",
         "",
         "set_option atpg.sat_timeout_schedule 2,10,60",
     ),

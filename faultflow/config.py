@@ -132,7 +132,7 @@ class AtpgConfig:
     # "2,10,60" attempts each fault at the smallest timeout first and only
     # escalates a fault that times out, so easy faults clear fast and long
     # budgets are reserved for hard ones. Parsed by parse_timeout_schedule().
-    sat_timeout_schedule: str = ""
+    sat_timeout_schedule: str = "2,10,60"
     compaction: str = "reverse"
     # When true, an accepted+verified SAT pattern is fault-simulated against ALL
     # remaining undetected faults this round (dropping fortuitous detections),
@@ -148,7 +148,7 @@ class AtpgConfig:
     # Order faults by ascending cone size (smallest structural cone first) so the
     # quickest SAT calls happen first and detect more faults incidentally early.
     # False keeps the original database (enumeration) order. Coverage-identical.
-    order_by_cone_size: bool = False
+    order_by_cone_size: bool = True
     # Parallel fault-simulation workers (0 = auto-detect logical CPU count).
     # Each worker owns its own SimState over the shared immutable CompiledSimGraph.
     # The coordinator merges detected sets; the DB writer remains single-threaded.
@@ -415,7 +415,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         raise ConfigError("atpg.compaction must be 'none', 'reverse', or 'dynamic'")
 
     atpg_sat_timeout_schedule = parser.get(
-        "atpg", "sat_timeout_schedule", fallback=""
+        "atpg", "sat_timeout_schedule", fallback="2,10,60"
     ).strip()
     # Validate eagerly so a malformed schedule fails at config load, not mid-run.
     parse_timeout_schedule(
@@ -492,7 +492,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             fault_drop_sat=_bool(parser, "atpg", "fault_drop_sat", True),
             cone_restrict=_bool(parser, "atpg", "cone_restrict", True),
             pack_orders=_int(parser, "atpg", "pack_orders", 1),
-            order_by_cone_size=_bool(parser, "atpg", "order_by_cone_size", False),
+            order_by_cone_size=_bool(parser, "atpg", "order_by_cone_size", True),
             workers=_int(parser, "atpg", "workers", 1),
         ),
         report=ReportConfig(

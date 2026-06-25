@@ -46,6 +46,7 @@ class TclBridge:
             "add_tp": self._add_tp,
             "reject_tp": self._reject_tp,
             "wrap": self._wrap,
+            "WORKERS": self._workers,
             "set_testmode": self._set_testmode,
             "report_testmode": self._report_testmode,
             "check_cells": self._check_cells,
@@ -67,6 +68,8 @@ proc {name} {{args}} {{
     return [dict get $envelope result]
 }}
 """)
+        # Seed the $WORKERS Tcl global so scripts can read it with $WORKERS.
+        self.interp.setvar("WORKERS", "1")
 
     @property
     def command_names(self) -> tuple[str, ...]:
@@ -321,6 +324,24 @@ proc {name} {{args}} {{
         return self.session.write_netlist(
             scan=scan, techmap=techmap, verify=verify, output=output
         )
+
+    def _workers(self, args: list[str]) -> Any:
+        if not args:
+            current = self.session.options.get("atpg.workers", "1")
+            return f"WORKERS = {current}"
+        if len(args) != 1:
+            raise ShellError("usage: WORKERS ?N?", "CONFIG", "INVALID_OPTION")
+        n = args[0]
+        try:
+            if int(n) < 1:
+                raise ValueError
+        except ValueError:
+            raise ShellError(
+                "WORKERS must be a positive integer", "CONFIG", "INVALID_VALUE"
+            )
+        self.session.set_option("atpg.workers", n)
+        self.interp.setvar("WORKERS", n)
+        return f"WORKERS = {n}"
 
     def _set_option(self, args: list[str]) -> Any:
         if len(args) != 2:
