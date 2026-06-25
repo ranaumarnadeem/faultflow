@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,7 @@ from faultflow.db.candidates import (
     insert_pending_candidate,
     load_blocked_patterns,
 )
+from faultflow.runner.parallel_solve import solve_fault_worker
 from faultflow.runner.progressive_atpg import (
     ATPGRANDOM_SEED,
     AtpgStats,
@@ -942,6 +945,40 @@ def run_progressive_scan_atpg(
             "using enumeration order"
         )
 
+    # Parallel SAT solving: warm the process-local graph cache before forking so
+    # child processes inherit the compiled graph via copy-on-write (read-only pages
+    # are shared without re-loading). Workers==1 means serial; fork unavailable on
+    # Windows/spawn but we run in WSL where fork is always present.
+    _parallel = cfg.atpg.workers > 1
+    _executor: ProcessPoolExecutor | None = None
+    if _parallel:
+        log.info(
+            "atpg   warming graph cache before forking %d worker processes",
+            cfg.atpg.workers,
+        )
+        core.compute_fault_cone_sizes(
+            reduced_json_path, reduced_cell_map, [], [], unsupported
+        )
+        try:
+            _executor = ProcessPoolExecutor(
+                max_workers=cfg.atpg.workers,
+                mp_context=get_context("fork"),
+            )
+        except Exception as _fork_exc:
+            log.warning(
+                "atpg   fork-based worker pool unavailable (%s); serial fallback",
+                _fork_exc,
+            )
+            _parallel = False
+
+    # Determine the solve kind once — same for every fault in this campaign.
+    if los:
+        _solve_kind = "los_transition"
+    elif transition:
+        _solve_kind = "broadside_transition"
+    else:
+        _solve_kind = "scan_stuck_at"
+
     terminal = "MAX_ROUNDS"
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
@@ -1038,6 +1075,51 @@ def run_progressive_scan_atpg(
             )
 
         current_active_ids = {row.fault_id for row in active_rows}
+
+        # Parallel: pre-solve all active faults in the worker pool before the
+        # processing loop.  workers==1 leaves _parallel_results empty and the
+        # serial solve path below runs unchanged (A/B control).
+        _parallel_results: dict[int, tuple[str, dict]] = {}
+        if _parallel and _executor is not None and active_rows:
+            _wave_args: list[Any] = [
+                (
+                    _solve_kind,
+                    reduced_json_path,
+                    reduced_cell_map,
+                    effective_db_path,
+                    row.fault_id,
+                    sorted(
+                        db_blocked.get(row.fault_id, set())
+                        | rejected_patterns.get(row.fault_id, set())
+                    ),
+                    cfg.atpg.sat_conflict_limit,
+                    timeout_tiers[
+                        min(
+                            prior_timeout_count.get(row.fault_id, 0),
+                            len(timeout_tiers) - 1,
+                        )
+                    ],
+                    unsupported,
+                    cfg.atpg.cone_restrict,
+                    list(los_couple_ports) if los else [],
+                    list(los_head_ports) if los else [],
+                    [],  # bb_instances: not needed in scan fused-view path
+                    "",  # test_mode: baked into the fused-view netlist
+                )
+                for row in active_rows
+            ]
+            _wave_started = time.perf_counter()
+            try:
+                for _fid, _res, _slv in _executor.map(solve_fault_worker, _wave_args):
+                    _parallel_results[int(_fid)] = (_res, dict(_slv))
+            except Exception as _exc:
+                log.warning(
+                    "atpg   parallel wave error (%s); "
+                    "faults absent from results will be treated as UNKNOWN",
+                    _exc,
+                )
+            atpg_seconds += time.perf_counter() - _wave_started
+
         for row in active_rows:
             fault_id = row.fault_id
             if fault_id not in current_active_ids:
@@ -1048,52 +1130,60 @@ def run_progressive_scan_atpg(
             tier_timeout = timeout_tiers[
                 min(prior_timeout_count.get(fault_id, 0), len(timeout_tiers) - 1)
             ]
-            solve_started = time.perf_counter()
-            if los:
-                solved = dict(
-                    core.solve_scan_los_transition_fault_atpg(
-                        reduced_json_path,
-                        reduced_cell_map,
-                        effective_db_path,
-                        fault_id,
-                        los_couple_ports,
-                        los_head_ports,
-                        blocked,
-                        cfg.atpg.sat_conflict_limit,
-                        tier_timeout,
-                        unsupported,
-                        cone_restrict=cfg.atpg.cone_restrict,
-                    )
+            if _parallel_results:
+                # Parallel path: result already computed by a worker process.
+                _pre_res, _pre_slv = _parallel_results.get(
+                    fault_id, ("UNKNOWN", {"result": "UNKNOWN"})
                 )
-            elif transition:
-                solved = dict(
-                    core.solve_scan_transition_fault_atpg(
-                        reduced_json_path,
-                        reduced_cell_map,
-                        effective_db_path,
-                        fault_id,
-                        blocked,
-                        cfg.atpg.sat_conflict_limit,
-                        tier_timeout,
-                        unsupported,
-                        cone_restrict=cfg.atpg.cone_restrict,
-                    )
-                )
+                solved = dict(_pre_slv)
+                result = _pre_res
             else:
-                solved = dict(
-                    core.solve_fault_atpg(
-                        reduced_json_path,
-                        reduced_cell_map,
-                        effective_db_path,
-                        fault_id,
-                        blocked,
-                        cfg.atpg.sat_conflict_limit,
-                        tier_timeout,
-                        unsupported,
+                solve_started = time.perf_counter()
+                if los:
+                    solved = dict(
+                        core.solve_scan_los_transition_fault_atpg(
+                            reduced_json_path,
+                            reduced_cell_map,
+                            effective_db_path,
+                            fault_id,
+                            los_couple_ports,
+                            los_head_ports,
+                            blocked,
+                            cfg.atpg.sat_conflict_limit,
+                            tier_timeout,
+                            unsupported,
+                            cone_restrict=cfg.atpg.cone_restrict,
+                        )
                     )
-                )
-            atpg_seconds += time.perf_counter() - solve_started
-            result = str(solved["result"])
+                elif transition:
+                    solved = dict(
+                        core.solve_scan_transition_fault_atpg(
+                            reduced_json_path,
+                            reduced_cell_map,
+                            effective_db_path,
+                            fault_id,
+                            blocked,
+                            cfg.atpg.sat_conflict_limit,
+                            tier_timeout,
+                            unsupported,
+                            cone_restrict=cfg.atpg.cone_restrict,
+                        )
+                    )
+                else:
+                    solved = dict(
+                        core.solve_fault_atpg(
+                            reduced_json_path,
+                            reduced_cell_map,
+                            effective_db_path,
+                            fault_id,
+                            blocked,
+                            cfg.atpg.sat_conflict_limit,
+                            tier_timeout,
+                            unsupported,
+                        )
+                    )
+                atpg_seconds += time.perf_counter() - solve_started
+                result = str(solved["result"])
             if result == "SAT":
                 stats.sat += 1
                 # Transition SAT returns launch/capture; the launch (V1) is the
@@ -1229,6 +1319,9 @@ def run_progressive_scan_atpg(
                 _termination_sweep_q_stems(conn, campaign_id, scan_ctx.q_stem_site_keys)
             terminal = "STALLED"
             break
+
+    if _executor is not None:
+        _executor.shutdown(wait=False)
 
     log.info("atpg   terminated: %s", terminal)
 

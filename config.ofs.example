@@ -53,6 +53,11 @@ compaction           = reverse
 # SAT calls run first and detect more faults incidentally early. Coverage is
 # identical either way; false (default) keeps enumeration order. Stuck-at only.
 order_by_cone_size   = false
+# Parallel SAT workers. 1 (default) = serial; N>1 = fork N worker processes that
+# each run one C++ solver call and return the result to the coordinator.  The
+# coordinator owns all DB writes (workers are pure compute).  Requires a fork-
+# capable OS (Linux/WSL); silently falls back to serial on Windows/spawn.
+workers              = 1
 
 [report]
 output    = coverage.rpt

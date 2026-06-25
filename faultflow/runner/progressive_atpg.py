@@ -6,7 +6,9 @@ import sqlite3
 import tempfile
 import time
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,7 @@ from faultflow.db import (
     init_schema,
     summary,
 )
+from faultflow.runner.parallel_solve import solve_fault_worker
 from faultflow.runner.runner import RunnerError
 
 log = logging.getLogger(__name__)
@@ -317,8 +320,7 @@ def _escalation_headroom(
     """
     tier_count = len(timeout_tiers)
     return any(
-        0 < prior_timeout_count.get(fault_id, 0) < tier_count
-        for fault_id in active_ids
+        0 < prior_timeout_count.get(fault_id, 0) < tier_count for fault_id in active_ids
     )
 
 
@@ -497,6 +499,29 @@ def run_progressive_native_atpg(
     cone_sizes: dict[int, int] = {}
     order_faults = cfg.atpg.order_by_cone_size
 
+    # Parallel SAT solving — same fork+copy-on-write scheme as the scan pipeline.
+    _parallel = cfg.atpg.workers > 1
+    _executor: ProcessPoolExecutor | None = None
+    if _parallel:
+        log.info(
+            "atpg   warming graph cache before forking %d worker processes",
+            cfg.atpg.workers,
+        )
+        core.compute_fault_cone_sizes(
+            json_path, effective_cell_map, [], [], unsupported
+        )
+        try:
+            _executor = ProcessPoolExecutor(
+                max_workers=cfg.atpg.workers,
+                mp_context=get_context("fork"),
+            )
+        except Exception as _fork_exc:
+            log.warning(
+                "atpg   fork-based worker pool unavailable (%s); serial fallback",
+                _fork_exc,
+            )
+            _parallel = False
+
     terminal = "MAX_ROUNDS"
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
@@ -570,6 +595,44 @@ def run_progressive_native_atpg(
         # random branch (fault_ids=active_ids) and the scan path.
         drop_sat = cfg.atpg.fault_drop_sat
         remaining = set(active_ids)
+
+        # Parallel: pre-solve all active faults before the processing loop.
+        # workers==1 leaves _parallel_results empty; serial solve runs below.
+        _parallel_results: dict[int, tuple[str, dict]] = {}
+        if _parallel and _executor is not None and active_ids:
+            _wave_args: list[Any] = [
+                (
+                    "native_stuck_at",
+                    json_path,
+                    effective_cell_map,
+                    effective_db_path,
+                    fid,
+                    sorted(rejected_patterns.get(fid, set())),
+                    cfg.atpg.sat_conflict_limit,
+                    timeout_tiers[
+                        min(prior_timeout_count.get(fid, 0), len(timeout_tiers) - 1)
+                    ],
+                    unsupported,
+                    cfg.atpg.cone_restrict,
+                    [],  # los_couple_ports: native path is stuck-at only
+                    [],  # los_head_ports
+                    list(bb_instances),
+                    test_mode,
+                )
+                for fid in active_ids
+            ]
+            _wave_started = time.perf_counter()
+            try:
+                for _fid, _res, _slv in _executor.map(solve_fault_worker, _wave_args):
+                    _parallel_results[int(_fid)] = (_res, dict(_slv))
+            except Exception as _exc:
+                log.warning(
+                    "atpg   parallel wave error (%s); "
+                    "faults absent from results will be treated as UNKNOWN",
+                    _exc,
+                )
+            atpg_seconds += time.perf_counter() - _wave_started
+
         for fault_id in active_ids:
             if drop_sat and fault_id not in remaining:
                 continue
@@ -577,24 +640,31 @@ def run_progressive_native_atpg(
             tier_timeout = timeout_tiers[
                 min(prior_timeout_count.get(fault_id, 0), len(timeout_tiers) - 1)
             ]
-            atpg_started = time.perf_counter()
-            solved = dict(
-                core.solve_fault_atpg(
-                    json_path,
-                    effective_cell_map,
-                    effective_db_path,
-                    fault_id,
-                    blocked,
-                    cfg.atpg.sat_conflict_limit,
-                    tier_timeout,
-                    unsupported,
-                    bb_instances,
-                    test_mode,
-                    cfg.atpg.cone_restrict,
+            if _parallel_results:
+                _pre_res, _pre_slv = _parallel_results.get(
+                    fault_id, ("UNKNOWN", {"result": "UNKNOWN"})
                 )
-            )
-            atpg_seconds += time.perf_counter() - atpg_started
-            result = str(solved["result"])
+                solved = dict(_pre_slv)
+                result = _pre_res
+            else:
+                atpg_started = time.perf_counter()
+                solved = dict(
+                    core.solve_fault_atpg(
+                        json_path,
+                        effective_cell_map,
+                        effective_db_path,
+                        fault_id,
+                        blocked,
+                        cfg.atpg.sat_conflict_limit,
+                        tier_timeout,
+                        unsupported,
+                        bb_instances,
+                        test_mode,
+                        cfg.atpg.cone_restrict,
+                    )
+                )
+                atpg_seconds += time.perf_counter() - atpg_started
+                result = str(solved["result"])
             if result == "SAT":
                 stats.sat += 1
                 candidate = dict(solved["vector"])
@@ -709,6 +779,9 @@ def run_progressive_native_atpg(
                 _termination_sweep_q_stems(conn, campaign_id)
             terminal = "STALLED"
             break
+
+    if _executor is not None:
+        _executor.shutdown(wait=False)
 
     log.info("atpg   terminated: %s", terminal)
 
