@@ -157,6 +157,28 @@ def _parser() -> argparse.ArgumentParser:
         help="Target coverage percent per scope",
     )
 
+    retarget_p = sub.add_parser(
+        "retarget",
+        help="Retarget a block's exported scan patterns onto a SoC scan path",
+    )
+    retarget_p.add_argument(
+        "--patterns",
+        type=Path,
+        required=True,
+        help="Block scan pattern JSON (from run_atpg -export-patterns)",
+    )
+    retarget_p.add_argument(
+        "--soc-access",
+        dest="soc_access",
+        type=Path,
+        required=True,
+        help="SoC access manifest JSON (faultflow_soc_access_v1)",
+    )
+    retarget_p.add_argument("--block", required=True, help="Source block name")
+    retarget_p.add_argument(
+        "--out", type=Path, required=True, help="Output retargeted pattern file"
+    )
+
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
     status.add_argument(
@@ -282,6 +304,8 @@ def main(argv: list[str] | None = None) -> int:
                 .message
             )
             return 0
+        if args.command == "retarget":
+            return _handle_retarget(args)
         cfg = load_config(Path(args.config), args.top)
         service = FlowService(runner_factory=Runner)
         if args.command == "init":
@@ -388,6 +412,33 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"unknown command {args.command}")
     except (ConfigError, RunnerError) as exc:
         parser.exit(2, f"error: {exc}\n")
+    return 0
+
+
+def _handle_retarget(args: object) -> int:
+    import json
+
+    from faultflow.retarget.emit import pattern_to_dict, write_retargeted
+    from faultflow.retarget.soc_access import load_soc_access
+    from faultflow.retarget.transform import retarget_block_pattern
+    from faultflow.scan.pattern_export import scan_pattern_from_dict
+
+    patterns_path = Path(getattr(args, "patterns"))
+    block = str(getattr(args, "block"))
+    raw = json.loads(patterns_path.read_text(encoding="utf-8"))
+    block_patterns = [scan_pattern_from_dict(d) for d in raw]
+    access = load_soc_access(Path(getattr(args, "soc_access")))
+    retargeted = [retarget_block_pattern(p, access, block) for p in block_patterns]
+    payload = {
+        "schema": "faultflow_retargeted_v1",
+        "assembly_top": access.assembly_top,
+        "source_block": block,
+        "patterns": [
+            pattern_to_dict(p, assembly_top=access.assembly_top) for p in retargeted
+        ],
+    }
+    written = write_retargeted(Path(getattr(args, "out")), payload)
+    print(f"retargeted {len(retargeted)} pattern(s) from {block!r} -> {written}")
     return 0
 
 

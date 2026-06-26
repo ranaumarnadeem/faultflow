@@ -377,6 +377,7 @@ def run_progressive_native_atpg(
     campaign_type: str = CAMPAIGN_TYPE_COMB,
     on_vector_accepted: Callable[[dict[str, bool], int | None], None] | None = None,
     scan_ctx: Any | None = None,
+    scan_pattern_out: Path | None = None,
 ) -> tuple[VectorSet, AtpgStats, int, float, float]:
     from faultflow.runner.runner import _load_core, _port_names
 
@@ -398,6 +399,7 @@ def run_progressive_native_atpg(
             vector_source=vector_source,
             transition=cfg.fault_model.model == "transition",
             launch_mode=cfg.fault_model.launch,
+            scan_pattern_out=scan_pattern_out,
         )
 
     del scan_ctx

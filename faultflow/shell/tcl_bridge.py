@@ -46,6 +46,7 @@ class TclBridge:
             "add_tp": self._add_tp,
             "reject_tp": self._reject_tp,
             "wrap": self._wrap,
+            "retarget": self._retarget,
             "WORKERS": self._workers,
             "set_testmode": self._set_testmode,
             "report_testmode": self._report_testmode,
@@ -277,6 +278,11 @@ proc {name} {{args}} {{
                 target = "max_rounds" if key == "-max" else "target_coverage"
                 raw = args[index + 1]
                 options[target] = int(raw) if key == "-max" else float(raw)
+                index += 2
+            elif key == "-export-patterns" and index + 1 < len(args):
+                from pathlib import Path as _Path
+
+                options["export_patterns"] = _Path(args[index + 1])
                 index += 2
             else:
                 raise ShellError(
@@ -552,6 +558,41 @@ proc {name} {{args}} {{
                     f"wrap: unknown option {flag!r}", "CONFIG", "INVALID_OPTION"
                 )
         return self.session.wrap(**kwargs)  # type: ignore[arg-type]
+
+    def _retarget(self, args: list[str]) -> Any:
+        from pathlib import Path as _Path
+
+        kwargs: dict[str, object] = {}
+        flag_to_key = {
+            "-patterns": "patterns",
+            "-soc_access": "soc_access",
+            "-block": "block",
+            "-o": "out",
+        }
+        idx = 0
+        while idx < len(args):
+            flag = args[idx]
+            if flag in flag_to_key:
+                if idx + 1 >= len(args):
+                    raise ShellError(
+                        f"retarget: {flag} requires a value", "CONFIG", "MISSING_ARG"
+                    )
+                value = args[idx + 1]
+                key = flag_to_key[flag]
+                kwargs[key] = value if key == "block" else _Path(value)
+                idx += 2
+            else:
+                raise ShellError(
+                    f"retarget: unknown option {flag!r}", "CONFIG", "INVALID_OPTION"
+                )
+        for required in ("patterns", "soc_access", "block", "out"):
+            if required not in kwargs:
+                raise ShellError(
+                    f"retarget: -{required.replace('_', '_')} is required",
+                    "CONFIG",
+                    "MISSING_ARG",
+                )
+        return self.session.retarget(**kwargs)  # type: ignore[arg-type]
 
     def _set_testmode(self, args: list[str]) -> Any:
         if len(args) != 1:

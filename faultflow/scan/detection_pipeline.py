@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import sqlite3
@@ -476,8 +477,11 @@ def _process_scan_candidate(
     los_head_scan_in: dict[int, bool] | None = None,
     candidate_key: str | None = None,
     active_clock_ports: list[str] | None = None,
-) -> tuple[bool, bool]:
-    """Return (accepted, protocol_no_progress).
+) -> tuple[bool, bool, ScanPattern | None]:
+    """Return (accepted, protocol_no_progress, accepted_pattern).
+
+    `accepted_pattern` is the canonical block-level ScanPattern when the
+    candidate is accepted (for export/retarget), else None.
 
     `vector` is the launch state V1 (over reduced PIs). For transition the capture
     vector V2 is derived from V1: LOC couples capture PPI = launch PPO; LOS shifts,
@@ -663,7 +667,7 @@ def _process_scan_candidate(
                 candidate_id=candidate_id,
                 commit=commit,
             )
-            return False, True
+            return False, True, None
 
     # Build pre-loaded records from active_rows (already in memory — no DB round-trips).
     # Each tuple: (fault_id, compiled_net_index, type: 0=SA0/1=SA1).
@@ -728,7 +732,7 @@ def _process_scan_candidate(
             candidate_id=candidate_id,
             commit=commit,
         )
-        return False, source == "sat"
+        return False, source == "sat", None
 
     # Logic-cone faults are trusted directly from the cheap reduced grade.
     passed_fault_ids: list[int] = list(reduced_trusted)
@@ -832,7 +836,7 @@ def _process_scan_candidate(
             candidate_id=candidate_id,
             commit=commit,
         )
-        return False, source == "sat"
+        return False, source == "sat", None
 
     vector_id = append_vector_row(
         conn,
@@ -863,7 +867,7 @@ def _process_scan_candidate(
         (vector_index, run_id),
     )
     conn.commit()
-    return True, False
+    return True, False, scan_pattern
 
 
 def run_progressive_scan_atpg(
@@ -880,8 +884,13 @@ def run_progressive_scan_atpg(
     vector_source: str = "scan_native_sat_atpg",
     transition: bool = False,
     launch_mode: str = "loc",
+    scan_pattern_out: Path | None = None,
 ) -> tuple[VectorSet, AtpgStats, int, float, float]:
     from faultflow.runner.runner import _load_core, _port_names
+
+    # Accepted block-level scan patterns, collected for export when
+    # scan_pattern_out is set (used by SoC retargeting). One per accepted vector.
+    accepted_patterns: list[ScanPattern] = []
 
     # S4.8 — the 1-FF WBC is correct ONLY under single-capture INTEST.
     # LOC/LOS two-capture sequences clobber q before the second frame, so a
@@ -1170,38 +1179,42 @@ def run_progressive_scan_atpg(
             sim_started = time.perf_counter()
             with connect(effective_db_path) as conn:
                 init_schema(conn)
-                accepted, protocol_no_progress = _process_scan_candidate(
-                    core,
-                    conn,
-                    scan_ctx=scan_ctx,
-                    reduced_json_path=reduced_json_path,
-                    reduced_cell_map=reduced_cell_map,
-                    generic_cell_map=generic_cell_map,
-                    db_path=effective_db_path,
-                    campaign_id=campaign_id,
-                    run_id=run_id,
-                    candidate_id=candidate_counter,
-                    vector_index=vector_index,
-                    vector=vector,
-                    input_order=input_order,
-                    source="random",
-                    sat_target_fault_id=None,
-                    active_rows=active_rows,
-                    generic_site_index=generic_site_index,
-                    unsupported=unsupported,
-                    transition=transition,
-                    launch_mode=launch_mode,
-                    los_head_scan_in={} if los else None,
-                    candidate_key=(
-                        pattern_key(vector, input_order) + "0" * len(los_head_ports)
-                        if los
-                        else None
-                    ),
+                accepted, protocol_no_progress, accepted_pattern = (
+                    _process_scan_candidate(
+                        core,
+                        conn,
+                        scan_ctx=scan_ctx,
+                        reduced_json_path=reduced_json_path,
+                        reduced_cell_map=reduced_cell_map,
+                        generic_cell_map=generic_cell_map,
+                        db_path=effective_db_path,
+                        campaign_id=campaign_id,
+                        run_id=run_id,
+                        candidate_id=candidate_counter,
+                        vector_index=vector_index,
+                        vector=vector,
+                        input_order=input_order,
+                        source="random",
+                        sat_target_fault_id=None,
+                        active_rows=active_rows,
+                        generic_site_index=generic_site_index,
+                        unsupported=unsupported,
+                        transition=transition,
+                        launch_mode=launch_mode,
+                        los_head_scan_in={} if los else None,
+                        candidate_key=(
+                            pattern_key(vector, input_order) + "0" * len(los_head_ports)
+                            if los
+                            else None
+                        ),
+                    )
                 )
             fault_sim_seconds += time.perf_counter() - sim_started
             if accepted:
                 vectors.append(vector)
                 stats.accepted_vectors += 1
+                if accepted_pattern is not None:
+                    accepted_patterns.append(accepted_pattern)
             else:
                 stats.rejected_candidates += 1
                 if protocol_no_progress:
@@ -1393,29 +1406,31 @@ def run_progressive_scan_atpg(
                 sim_started = time.perf_counter()
                 with connect(effective_db_path) as conn:
                     init_schema(conn)
-                    accepted, protocol_no_progress = _process_scan_candidate(
-                        core,
-                        conn,
-                        scan_ctx=scan_ctx,
-                        reduced_json_path=reduced_json_path,
-                        reduced_cell_map=reduced_cell_map,
-                        generic_cell_map=generic_cell_map,
-                        db_path=effective_db_path,
-                        campaign_id=campaign_id,
-                        run_id=run_id,
-                        candidate_id=candidate_counter,
-                        vector_index=vector_index,
-                        vector=candidate,
-                        input_order=input_order,
-                        source="sat",
-                        sat_target_fault_id=fault_id,
-                        active_rows=active_rows,
-                        generic_site_index=generic_site_index,
-                        unsupported=unsupported,
-                        transition=transition,
-                        launch_mode=launch_mode,
-                        los_head_scan_in=los_head_scan_in_sat,
-                        candidate_key=key if los else None,
+                    accepted, protocol_no_progress, accepted_pattern = (
+                        _process_scan_candidate(
+                            core,
+                            conn,
+                            scan_ctx=scan_ctx,
+                            reduced_json_path=reduced_json_path,
+                            reduced_cell_map=reduced_cell_map,
+                            generic_cell_map=generic_cell_map,
+                            db_path=effective_db_path,
+                            campaign_id=campaign_id,
+                            run_id=run_id,
+                            candidate_id=candidate_counter,
+                            vector_index=vector_index,
+                            vector=candidate,
+                            input_order=input_order,
+                            source="sat",
+                            sat_target_fault_id=fault_id,
+                            active_rows=active_rows,
+                            generic_site_index=generic_site_index,
+                            unsupported=unsupported,
+                            transition=transition,
+                            launch_mode=launch_mode,
+                            los_head_scan_in=los_head_scan_in_sat,
+                            candidate_key=key if los else None,
+                        )
                     )
                 fault_sim_seconds += time.perf_counter() - sim_started
                 if accepted:
@@ -1423,6 +1438,8 @@ def run_progressive_scan_atpg(
                     vectors.append(candidate)
                     stats.accepted_vectors += 1
                     round_tracker.sat_outcomes.append("SAT")
+                    if accepted_pattern is not None:
+                        accepted_patterns.append(accepted_pattern)
                     with connect(effective_db_path) as conn:
                         init_schema(conn)
                         current_active_ids = {
@@ -1527,6 +1544,14 @@ def run_progressive_scan_atpg(
         )
 
     stats.terminal_reason = terminal
+    if scan_pattern_out is not None and accepted_patterns:
+        from faultflow.scan.pattern_export import scan_pattern_to_dict
+
+        scan_pattern_out.parent.mkdir(parents=True, exist_ok=True)
+        scan_pattern_out.write_text(
+            json.dumps([scan_pattern_to_dict(p) for p in accepted_patterns], indent=2),
+            encoding="utf-8",
+        )
     return (
         VectorSet(vector_source, input_order, vectors),
         stats,

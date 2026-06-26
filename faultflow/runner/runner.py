@@ -1476,6 +1476,7 @@ class Runner:
         max_rounds: int | None = None,
         target_coverage: float | None = None,
         scan: bool = False,
+        export_patterns: Path | None = None,
     ) -> str:
         if scan and ext is not None:
             raise RunnerError(
@@ -1499,6 +1500,7 @@ class Runner:
                 clean=clean,
                 max_rounds=max_rounds,
                 target_coverage=target_coverage,
+                export_patterns=export_patterns,
             )
 
         total_start = time.perf_counter()
@@ -1718,6 +1720,7 @@ class Runner:
         clean: bool = False,
         max_rounds: int | None = None,
         target_coverage: float | None = None,
+        export_patterns: Path | None = None,
     ) -> str:
         from faultflow.runner.progressive_atpg import (
             redundancy_model_id,
@@ -1812,6 +1815,7 @@ class Runner:
                 vector_source="scan_native_sat_atpg",
                 campaign_type=CAMPAIGN_TYPE_SCAN,
                 scan_ctx=scan_pipeline_ctx,
+                scan_pattern_out=export_patterns,
             )
         )
         if self.cfg.atpg.compaction != "none":

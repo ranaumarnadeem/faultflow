@@ -562,6 +562,48 @@ class ProjectSession:
             artifacts={"wrapped_netlist": output},
         )
 
+    def retarget(
+        self,
+        *,
+        patterns: Path,
+        soc_access: Path,
+        block: str,
+        out: Path,
+    ) -> OperationResult:
+        """Retarget a block's exported INTEST scan patterns onto a SoC scan path.
+
+        Reads block scan patterns (from ``run_atpg -export-patterns``), places each
+        at its segment offsets on the SoC chains described by the SoC-access
+        manifest, and writes the retargeted patterns to ``out`` — no re-ATPG at
+        the assembly level.
+        """
+        import json as _json
+
+        from faultflow.retarget.emit import pattern_to_dict, write_retargeted
+        from faultflow.retarget.soc_access import load_soc_access
+        from faultflow.retarget.transform import retarget_block_pattern
+        from faultflow.scan.pattern_export import scan_pattern_from_dict
+
+        raw = _json.loads(patterns.read_text(encoding="utf-8"))
+        block_patterns = [scan_pattern_from_dict(d) for d in raw]
+        access = load_soc_access(soc_access)
+        retargeted = [retarget_block_pattern(p, access, block) for p in block_patterns]
+        payload = {
+            "schema": "faultflow_retargeted_v1",
+            "assembly_top": access.assembly_top,
+            "source_block": block,
+            "patterns": [
+                pattern_to_dict(p, assembly_top=access.assembly_top) for p in retargeted
+            ],
+        }
+        written = write_retargeted(out, payload)
+        return OperationResult(
+            "retarget",
+            self.top or block,
+            f"retargeted {len(retargeted)} pattern(s) from {block!r} -> {written}",
+            artifacts={"retargeted": written},
+        )
+
     def add_scan(self, **options: object) -> OperationResult:
         if not self.synthesized:
             raise precondition("run synth first", "SYNTH_REQUIRED")
