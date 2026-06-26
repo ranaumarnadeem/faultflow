@@ -22,6 +22,9 @@ htmlcov/
 # VS Code / IDE
 .vscode/
 
+# Local doc-handoff scratch (not part of the repo)
+newchanges.md
+
 tests/benchmarks
 config.ofs.example
 misc/

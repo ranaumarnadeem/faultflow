@@ -81,6 +81,74 @@ The native ATPG can be compared against a reference flow:
   `[fault_model] model = stuck_at` and then `model = transition` gives a side-by-side
   coverage comparison for the two fault models.
 
+## PicoRV32a — Full-Chip Scan INTEST (Sky130 HD)
+
+PicoRV32a is an open-source RISC-V RV32IMC CPU. It is the largest design faultflow has been
+exercised on to date and the first full-chip scan INTEST result with IEEE-1500 WBR wrapping.
+
+### Design and scan infrastructure
+
+| Metric | Value |
+|---|---|
+| Technology | Sky130 HD (`sky130_fd_sc_hd`) |
+| Combinational gates | 10,989 |
+| Flip-flops | 1,613 (610 × dfxtp_1 + 1,003 × edfxtp_1) |
+| Total cells (pre-wrap) | 12,602 |
+| IEEE-1500 WBR cells added | 367 |
+| Scan chains | **4** |
+| Scan cells | **1,613** |
+| Average chain length | ~403 FFs |
+
+### Fault statistics
+
+Fault model: stuck-at SA0/SA1. Fault collapsing **disabled** (see
+[why](#why-fault-collapsing-was-not-used-on-picorv32a) below).
+
+| Category | Count |
+|---|---|
+| Total raw fault sites | 90,238 |
+| Denominator (active, in-scope) | **75,654** |
+| Excluded — scan shift-path internal | 6,198 |
+| Excluded — clock nets | 3,962 |
+| Excluded — scan chain infrastructure | 2,944 |
+| Excluded — WBR boundary (blackboxed) | 1,138 |
+| Excluded — reset nets | 342 |
+
+### ATPG results
+
+| Metric | Value |
+|---|---|
+| Detected | **73,712** |
+| Proven redundant (UNSAT) | 1,626 |
+| Unresolved at termination | 316 (0.42% of denominator) |
+| Denominator resolved | 99.58% |
+| **Formal fault coverage** | **97.44%** (73,712 / 75,654) |
+| Achievable coverage (excl. redundant) | **99.57%** (73,712 / 74,028) |
+| Test vectors | **1,296** (all SAT-generated, 0 random) |
+| ATPG engine | Native SAT (CaDiCaL), 4 parallel workers |
+| Timeout schedule | 2 s → 10 s → 60 s escalating |
+| Fault ordering | Cone-of-influence size (small first) |
+| Scan chain validation | 459.4 s |
+| ATPG wall clock | **~3 h** (killed before full convergence; DB on `/mnt/c` 9P) |
+
+### Why fault collapsing was not used on PicoRV32a
+
+Fault collapsing removes equivalent/dominated fault sites from the denominator, reducing
+vector count. faultflow's verified collapsing rules only cover INV, BUF, AND2/NAND2,
+OR2/NOR2. Sky130 synthesis produces many AOI/OAI compound cells
+(`o21ai`, `a21oi`, `o22ai`, `a22o`, …) where dominance across fanout-split branches has
+not been formally verified. Collapsing unverified compound cells can silently inflate
+coverage by removing detectable faults. The ATPG was therefore run against all 75,654
+individually-enumerated fault sites.
+
+With collapsing enabled (once AOI/OAI rules are verified), the denominator would shrink
+by ~30–40%, SAT call count would drop proportionally, and the formal coverage % would
+be approximately the same or slightly higher.
+
+For the complete raw data and timing breakdown, see `benchmark_picorv32a.md`.
+
+---
+
 ## Reference baseline: Fault v0.9.4
 
 [Fault](https://github.com/AUCOHL/Fault) is an open-source fault simulator for combinational
