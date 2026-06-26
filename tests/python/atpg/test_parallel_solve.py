@@ -71,7 +71,7 @@ def _fake_core(result: str = "SAT", **extras: Any) -> MagicMock:
 class TestWorkerRouting:
     def test_scan_stuck_at_calls_solve_fault_atpg(self):
         core = _fake_core(result="SAT", vector={"a": True})
-        with patch.dict("sys.modules", {"faultflow.core": core}):
+        with patch.dict("sys.modules", {"_faultflow_core": core}):
             fault_id, result, solved = solve_fault_worker(_args_tuple("scan_stuck_at"))
         assert fault_id == 42
         assert result == "SAT"
@@ -82,7 +82,7 @@ class TestWorkerRouting:
 
     def test_broadside_calls_scan_transition(self):
         core = _fake_core(result="SAT", launch={"a": True})
-        with patch.dict("sys.modules", {"faultflow.core": core}):
+        with patch.dict("sys.modules", {"_faultflow_core": core}):
             fault_id, result, solved = solve_fault_worker(
                 _args_tuple("broadside_transition")
             )
@@ -93,7 +93,7 @@ class TestWorkerRouting:
 
     def test_los_calls_scan_los_transition(self):
         core = _fake_core(result="SAT", launch={"a": True}, capture={"h": False})
-        with patch.dict("sys.modules", {"faultflow.core": core}):
+        with patch.dict("sys.modules", {"_faultflow_core": core}):
             fault_id, result, solved = solve_fault_worker(
                 _args_tuple(
                     "los_transition",
@@ -108,7 +108,7 @@ class TestWorkerRouting:
 
     def test_native_stuck_at_passes_bb_and_test_mode(self):
         core = _fake_core(result="UNSAT")
-        with patch.dict("sys.modules", {"faultflow.core": core}):
+        with patch.dict("sys.modules", {"_faultflow_core": core}):
             fault_id, result, solved = solve_fault_worker(
                 _args_tuple(
                     "native_stuck_at",
@@ -125,14 +125,14 @@ class TestWorkerRouting:
     def test_worker_exception_returns_unknown(self):
         core = MagicMock()
         core.solve_fault_atpg.side_effect = RuntimeError("C++ exploded")
-        with patch.dict("sys.modules", {"faultflow.core": core}):
+        with patch.dict("sys.modules", {"_faultflow_core": core}):
             fault_id, result, solved = solve_fault_worker(_args_tuple("scan_stuck_at"))
         assert result == "UNKNOWN"
         assert "_exc" in solved
 
     def test_timeout_result_passed_through(self):
         core = _fake_core(result="TIMEOUT")
-        with patch.dict("sys.modules", {"faultflow.core": core}):
+        with patch.dict("sys.modules", {"_faultflow_core": core}):
             fault_id, result, solved = solve_fault_worker(_args_tuple("scan_stuck_at"))
         assert result == "TIMEOUT"
 
@@ -146,7 +146,7 @@ C432_JSON = ROOT / "tests" / "benchmarks" / "iscas85" / "synth" / "c432.json"
 C432_CELL_MAP = ROOT / "cells" / "osu" / "osu035.json"
 
 try:
-    import faultflow.core as _core_mod  # noqa: F401
+    import _faultflow_core as _core_mod  # noqa: F401
 
     _CORE_AVAILABLE = True
 except ModuleNotFoundError:
