@@ -100,7 +100,9 @@ def main() -> None:
         print("| Circuit | Model | Stage |")
         print("|---------|-------|-------|")
         for e in errors:
-            print(f"| {e.get('circuit','?'):12s} | {e.get('model','?'):10s} | {e.get('stage','?')} |")
+            print(
+                f"| {e.get('circuit','?'):12s} | {e.get('model','?'):10s} | {e.get('stage','?')} |"
+            )
 
 
 if __name__ == "__main__":

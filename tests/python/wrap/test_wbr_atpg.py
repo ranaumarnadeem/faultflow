@@ -65,6 +65,7 @@ def _all32_unwrapped() -> list[dict[str, bool]]:
 # The wrapped design must produce bit-identical outputs to the unwrapped c17. #
 # --------------------------------------------------------------------------- #
 
+
 @pytest.mark.golden
 def test_functional_mode_matches_unwrapped(require_cpp_core: None) -> None:
     """FUNCTIONAL mode: c17_wrapped outputs must match unwrapped c17 on all patterns."""
@@ -97,6 +98,7 @@ def test_functional_mode_matches_unwrapped(require_cpp_core: None) -> None:
 # INTEST mode — test the core logic                                           #
 # stimulus = wbc_in.core_nets; observe = wbc_out.core_nets                   #
 # --------------------------------------------------------------------------- #
+
 
 @pytest.mark.golden
 def test_intest_detects_core_faults(tmp_path: Path, require_cpp_core: None) -> None:
@@ -186,15 +188,15 @@ def test_intest_observes_core_outputs_not_sys(
 
     # Core output nets have detectable faults.
     assert core_po_rows, "expected fault rows for n22_core/n23_core"
-    assert any(r["status"] == "detected" for r in core_po_rows), (
-        f"INTEST must detect >=1 fault on core PO nets; rows={core_po_rows}"
-    )
+    assert any(
+        r["status"] == "detected" for r in core_po_rows
+    ), f"INTEST must detect >=1 fault on core PO nets; rows={core_po_rows}"
 
     # System PO nets are safe-zero'd in INTEST — none should be detected.
     detected_sys = [r for r in sys_po_rows if r["status"] == "detected"]
-    assert not detected_sys, (
-        f"INTEST must NOT detect faults on TO_SYS (N22/N23); detected={detected_sys}"
-    )
+    assert (
+        not detected_sys
+    ), f"INTEST must NOT detect faults on TO_SYS (N22/N23); detected={detected_sys}"
 
 
 # --------------------------------------------------------------------------- #
@@ -202,10 +204,9 @@ def test_intest_observes_core_outputs_not_sys(
 # stimulus = wbc_out.sys + top PIs; observe = wbc_in.sys = FROM_SYS = PIs   #
 # --------------------------------------------------------------------------- #
 
+
 @pytest.mark.golden
-def test_extest_detects_boundary_faults(
-    tmp_path: Path, require_cpp_core: None
-) -> None:
+def test_extest_detects_boundary_faults(tmp_path: Path, require_cpp_core: None) -> None:
     """EXTEST: driving PI nets exposes SA faults on FROM_SYS nets (N1-N7)."""
     import _faultflow_core as core  # type: ignore[import-not-found]
 
@@ -298,14 +299,15 @@ def test_extest_does_not_detect_core_internal_faults(
     conn.close()
 
     detected_internal = [r for r in internal_rows if r["status"] == "detected"]
-    assert not detected_internal, (
-        f"EXTEST must NOT detect core internal faults; detected={detected_internal}"
-    )
+    assert (
+        not detected_internal
+    ), f"EXTEST must NOT detect core internal faults; detected={detected_internal}"
 
 
 # --------------------------------------------------------------------------- #
 # Mode distinction — INTEST and EXTEST detect disjoint fault sets             #
 # --------------------------------------------------------------------------- #
+
 
 @pytest.mark.golden
 def test_intest_extest_detect_different_faults(
@@ -326,8 +328,14 @@ def test_intest_extest_detect_different_faults(
     conn.close()
 
     core.simulate_to_db(
-        str(FIXTURE), str(CELL_MAP), db_in, cid_in,
-        _all32_core(), CORE_PI_NAMES, "intest", test_mode="intest",
+        str(FIXTURE),
+        str(CELL_MAP),
+        db_in,
+        cid_in,
+        _all32_core(),
+        CORE_PI_NAMES,
+        "intest",
+        test_mode="intest",
     )
 
     conn = connect(db_in)
@@ -351,8 +359,14 @@ def test_intest_extest_detect_different_faults(
     conn.close()
 
     core.simulate_to_db(
-        str(FIXTURE), str(CELL_MAP), db_ex, cid_ex,
-        _all32_sys(), SYS_PI_NAMES, "extest", test_mode="extest",
+        str(FIXTURE),
+        str(CELL_MAP),
+        db_ex,
+        cid_ex,
+        _all32_sys(),
+        SYS_PI_NAMES,
+        "extest",
+        test_mode="extest",
     )
 
     conn = connect(db_ex)
@@ -386,10 +400,9 @@ def test_intest_extest_detect_different_faults(
 # SAT ATPG — INTEST mode through native ATPG                                  #
 # --------------------------------------------------------------------------- #
 
+
 @pytest.mark.golden
-def test_intest_native_atpg_coverage(
-    tmp_path: Path, require_cpp_core: None
-) -> None:
+def test_intest_native_atpg_coverage(tmp_path: Path, require_cpp_core: None) -> None:
     """INTEST SAT ATPG via run_progressive_native_atpg achieves high coverage."""
     from dataclasses import replace
 
@@ -413,8 +426,7 @@ model = stuck_at
 
 [testmode]
 mode = intest
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
 

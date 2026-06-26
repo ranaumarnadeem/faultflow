@@ -30,6 +30,7 @@ TOP = "tiny_mx2x1"
 # helpers
 # --------------------------------------------------------------------------- #
 
+
 def _write_ot_ofs(
     tmp_path: Path,
     netlist: Path,
@@ -53,8 +54,7 @@ top_module = {top}
 dir = {tmp_path}
 
 {extra_sections}
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
     return ofs_path
@@ -81,6 +81,7 @@ def _write_manifest(
 # --------------------------------------------------------------------------- #
 # M1-U01 — translate_oracle_ofs maps OT sections to faultflow cfg
 # --------------------------------------------------------------------------- #
+
 
 def test_translate_oracle_ofs_netlist(tmp_path: Path) -> None:
     ofs = _write_ot_ofs(tmp_path, TINY_NETLIST, TOP)
@@ -117,6 +118,7 @@ def test_translate_oracle_ofs_output_root(tmp_path: Path) -> None:
 # M1-U02 — discover_manifest
 # --------------------------------------------------------------------------- #
 
+
 def test_discover_manifest_present(tmp_path: Path) -> None:
     ofs = _write_ot_ofs(tmp_path, TINY_NETLIST, TOP)
     response_path = tmp_path / "oracle_response.json"
@@ -137,6 +139,7 @@ def test_discover_manifest_absent(tmp_path: Path) -> None:
 # M1-U03 — map_terminal_reason
 # --------------------------------------------------------------------------- #
 
+
 @pytest.mark.parametrize(
     "faultflow_reason,expected",
     [
@@ -155,6 +158,7 @@ def test_map_terminal_reason(faultflow_reason: str, expected: str) -> None:
 # --------------------------------------------------------------------------- #
 # M1-U04 — build_oracle_response produces flat schema
 # --------------------------------------------------------------------------- #
+
 
 def _fake_report(
     fault_coverage: float = 75.0,
@@ -213,6 +217,7 @@ def test_build_oracle_response_target_reached() -> None:
 # M1-U05 — schema validation
 # --------------------------------------------------------------------------- #
 
+
 def test_oracle_response_schema_valid() -> None:
     jsonschema = pytest.importorskip("jsonschema")
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -232,6 +237,7 @@ def test_write_oracle_response_creates_file(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # M1-G01 — golden: run_oracle end-to-end writes valid oracle_response.json
 # --------------------------------------------------------------------------- #
+
 
 @pytest.mark.golden
 def test_run_oracle_exit_0(tmp_path: Path, require_cpp_core: None) -> None:

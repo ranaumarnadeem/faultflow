@@ -6,6 +6,7 @@ every input and output port of a synthesized Yosys JSON netlist.
 Usage:
     python3 scripts/wrap_ports.py input.json output.json [--top TOP_MODULE]
 """
+
 import argparse
 import copy
 import json
@@ -75,7 +76,11 @@ def wrap(src: dict, top: str | None) -> dict:
                     "connections": {"FROM_SYS": [sys_bit], "TO_CORE": [core_bit]},
                 }
                 nn_core = f"__core_{port_name}{suffix}"
-                netnames[nn_core] = {"hide_name": 0, "bits": [core_bit], "attributes": {}}
+                netnames[nn_core] = {
+                    "hide_name": 0,
+                    "bits": [core_bit],
+                    "attributes": {},
+                }
 
         elif direction == "output":
             # insert wbc_out: FROM_CORE = port bit (driven by core logic), TO_SYS = new sys net
@@ -115,7 +120,11 @@ def main() -> None:
     top = args.top
     if top is None:
         for name, mod in dst["modules"].items():
-            if mod.get("attributes", {}).get("top") in ("1", "00000000000000000000000000000001", 1):
+            if mod.get("attributes", {}).get("top") in (
+                "1",
+                "00000000000000000000000000000001",
+                1,
+            ):
                 top = name
                 break
     mod = dst["modules"][top]

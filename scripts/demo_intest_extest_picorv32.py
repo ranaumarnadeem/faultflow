@@ -14,6 +14,7 @@ that needs the scan-integrated fused view wired through the CLI. The point here
 is: the modes load + reconfigure control/observe + grade faults on the real
 shadow-cell-wrapped design, and INTEST vs EXTEST detect DIFFERENT fault sets.
 """
+
 from __future__ import annotations
 
 import json

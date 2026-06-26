@@ -16,16 +16,16 @@ version = ""
 # -- General configuration ---------------------------------------------------
 
 extensions = [
-    "myst_parser",          # author docs in Markdown
-    "sphinx_copybutton",    # copy button on code blocks
-    "sphinx_design",        # cards / grids / tabs
+    "myst_parser",  # author docs in Markdown
+    "sphinx_copybutton",  # copy button on code blocks
+    "sphinx_design",  # cards / grids / tabs
     "sphinx.ext.githubpages",  # emit .nojekyll for GitHub Pages
 ]
 
 # MyST Markdown extensions.
 myst_enable_extensions = [
-    "colon_fence",   # ::: fenced admonitions/directives
-    "deflist",       # definition lists
+    "colon_fence",  # ::: fenced admonitions/directives
+    "deflist",  # definition lists
     "fieldlist",
     "tasklist",
     "attrs_inline",
@@ -42,9 +42,9 @@ exclude_patterns = [
     "_build",
     "Thumbs.db",
     ".DS_Store",
-    "plans/**",         # planning baselines + docs/plans/papers/
-    "integration/**",   # internal OpenTestability integration notes
-    "superpowers/**",   # internal implementation plans
+    "plans/**",  # planning baselines + docs/plans/papers/
+    "integration/**",  # internal OpenTestability integration notes
+    "superpowers/**",  # internal implementation plans
 ]
 
 # -- HTML output -------------------------------------------------------------

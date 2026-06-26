@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Parse Liberty to extract pin functions for missing Sky130 cells."""
+
 import re
 
 LIB = "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib"
@@ -50,7 +51,7 @@ for name in targets:
     if name not in cell_pos:
         print(f"NOT FOUND: {name}")
         continue
-    chunk = lib[cell_pos[name]: cell_pos[name] + 4000]
+    chunk = lib[cell_pos[name] : cell_pos[name] + 4000]
     # Simple: find all pin(...) blocks
     inp, out = [], {}
     for pm in re.finditer(r"pin \((\w+)\) \{([^}]+)\}", chunk, re.DOTALL):

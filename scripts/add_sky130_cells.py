@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Add missing Sky130 cell entries to sky130_fd_sc_hd.json."""
+
 import json
 import sys
 

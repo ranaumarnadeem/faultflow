@@ -73,9 +73,7 @@ def test_mux2x1_still_resolves() -> None:
 
 
 def _exhaustive_vectors() -> list[dict[str, bool]]:
-    return [
-        {"A": bool(i & 1), "B": bool(i & 2), "S0": bool(i & 4)} for i in range(8)
-    ]
+    return [{"A": bool(i & 1), "B": bool(i & 2), "S0": bool(i & 4)} for i in range(8)]
 
 
 def _expected_y(a: bool, b: bool, s0: bool) -> bool:

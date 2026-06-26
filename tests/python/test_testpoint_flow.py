@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Version stack (versions.py)
 # ---------------------------------------------------------------------------
@@ -192,8 +191,7 @@ def test_build_comparison_no_tp_report_zeros(tmp_path: Path) -> None:
 
 def _seed_db(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(
-        """
+    conn.executescript("""
         CREATE TABLE faults (
             id INTEGER PRIMARY KEY,
             campaign_id INTEGER,
@@ -203,8 +201,7 @@ def _seed_db(conn: sqlite3.Connection) -> None:
             collapsed_into INTEGER,
             exclusion TEXT DEFAULT 'none'
         );
-        """
-    )
+        """)
     rows: list[tuple[Any, ...]] = [
         # campaign 1 (baseline): net_a undetected, net_b detected, tp_obs_0 undetected
         (1, 1, "net_a", "SA0", "undetected", None, "none"),

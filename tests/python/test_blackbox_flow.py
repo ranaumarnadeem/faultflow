@@ -161,17 +161,15 @@ def test_ensure_faults_enumerated_with_blackbox(
     net_names = {r["net_name"] for r in rows}
     # Boundary nets must have fault rows with the blackbox graph.
     assert "up" in net_names, f"TP net 'up' missing from faults; got {net_names}"
-    assert "bbout" in net_names, (
-        f"pseudo-PI 'bbout' missing from faults; got {net_names}"
-    )
+    assert (
+        "bbout" in net_names
+    ), f"pseudo-PI 'bbout' missing from faults; got {net_names}"
     # All rows start as undetected
     assert all(r["status"] == "undetected" for r in rows)
 
 
 @pytest.mark.golden
-def test_solve_fault_atpg_with_blackbox(
-    tmp_path: Path, require_cpp_core: None
-) -> None:
+def test_solve_fault_atpg_with_blackbox(tmp_path: Path, require_cpp_core: None) -> None:
     """solve_fault_atpg must use the blackbox graph so that boundary-net fault
     IDs (compiled_net_index) stay consistent between enumeration and solving."""
     import _faultflow_core as core  # type: ignore[import-not-found]
@@ -220,9 +218,9 @@ def test_solve_fault_atpg_with_blackbox(
         )
     )
     # bbout is a free PI in the blackbox graph — a SA fault on it must be SAT.
-    assert result["result"] == "SAT", (
-        f"expected SAT for bbout boundary fault, got {result['result']}"
-    )
+    assert (
+        result["result"] == "SAT"
+    ), f"expected SAT for bbout boundary fault, got {result['result']}"
 
 
 @pytest.mark.golden
@@ -346,9 +344,9 @@ def test_redundant_fault_consistent_with_blackbox(
     conn.close()
 
     assert status is not None
-    assert status["status"] == "redundant", (
-        "fault must stay redundant after invalidate_stale_redundant with same model_id"
-    )
+    assert (
+        status["status"] == "redundant"
+    ), "fault must stay redundant after invalidate_stale_redundant with same model_id"
 
 
 # --------------------------------------------------------------------------- #
@@ -460,9 +458,9 @@ def test_stale_redundant_invalidated_on_blackbox_change(
     conn.close()
 
     assert status is not None
-    assert status["status"] == "undetected", (
-        "fault must be re-activated (undetected) when the blackbox model changes"
-    )
+    assert (
+        status["status"] == "undetected"
+    ), "fault must be re-activated (undetected) when the blackbox model changes"
 
 
 # --------------------------------------------------------------------------- #
@@ -490,9 +488,7 @@ instances = u_bb
 
 
 @pytest.mark.golden
-def test_transition_atpg_with_blackbox(
-    tmp_path: Path, require_cpp_core: None
-) -> None:
+def test_transition_atpg_with_blackbox(tmp_path: Path, require_cpp_core: None) -> None:
     """run_progressive_transition_atpg on the blackbox fixture must produce
     coverage > 0 and carry policy.blackbox_instances in the report."""
     from dataclasses import replace
