@@ -73,6 +73,8 @@ GateType parse_gate_type(const std::string& s) {
       {"O2111AI", GateType::O2111AI}, {"O2BB2AI", GateType::O2BB2AI},
       {"O2BB2A", GateType::O2BB2A},  {"O41A", GateType::O41A},
       {"O41AI", GateType::O41AI},
+      {"OR2B", GateType::OR2B},      {"OR4BB", GateType::OR4BB},
+      {"AND4BB", GateType::AND4BB},  {"A2BB2O", GateType::A2BB2O},
   };
   auto it = kMap.find(s);
   if (it == kMap.end()) {

@@ -108,6 +108,10 @@ enum class GateType {
   O2BB2A,   // ~(in0&in1)&(in2|in3)  [in0=A1_N, in1=A2_N — bubbled]
   O41A,     // (in0|in1|in2|in3)&in4
   O41AI,    // ~((in0|in1|in2|in3)&in4)
+  OR2B,     // in0 | ~in1                [A, B_N]
+  OR4BB,    // in0 | in1 | ~in2 | ~in3   [A, B, C_N, D_N]
+  AND4BB,   // ~in0 & ~in1 & in2 & in3   [A_N, B_N, C, D — first two bubbled]
+  A2BB2O,   // (~in0 & ~in1) | (in2 & in3)  [A1_N, A2_N bubbled; B1, B2 normal]
   // IEEE 1500 wrapper boundary cells. WBR_IN sits on a core input (drives the
   // core-side net); WBR_OUT sits on a core output (drives the system-side net).
   // In FUNCTIONAL mode both are plain buffers; INTEST/EXTEST reconfigure them

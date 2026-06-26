@@ -88,4 +88,17 @@ TEST_CASE("Sky130 primitive truth tables are independently pinned",
   check_table(GateType::OR3B, 3, [](const auto& in) {
     return in[0] || in[1] || !in[2];
   });
+  // DSP/crypto cell additions.
+  check_table(GateType::OR2B, 2, [](const auto& in) {
+    return in[0] || !in[1];
+  });
+  check_table(GateType::OR4BB, 4, [](const auto& in) {
+    return in[0] || in[1] || !in[2] || !in[3];
+  });
+  check_table(GateType::AND4BB, 4, [](const auto& in) {
+    return !in[0] && !in[1] && in[2] && in[3];
+  });
+  check_table(GateType::A2BB2O, 4, [](const auto& in) {
+    return (!in[0] && !in[1]) || (in[2] && in[3]);
+  });
 }

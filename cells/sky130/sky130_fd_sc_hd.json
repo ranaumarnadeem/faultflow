@@ -1467,5 +1467,142 @@
       "output": "Q",
       "trigger": "POSEDGE"
     }
+  },
+  "sky130_fd_sc_hd__fa_*": {
+    "node_type": "GATE",
+    "gate_type": "ADDF",
+    "inputs": ["A", "B", "CIN"],
+    "outputs": {"S": "SUM", "CO": "COUT"}
+  },
+  "sky130_fd_sc_hd__ha_*": {
+    "node_type": "GATE",
+    "gate_type": "ADDH",
+    "inputs": ["A", "B"],
+    "outputs": {"S": "SUM", "CO": "COUT"}
+  },
+  "sky130_fd_sc_hd__and2b_*": {
+    "node_type": "GATE",
+    "gate_type": "AND2B",
+    "inputs": ["B", "A_N"],
+    "outputs": {"X": "X"},
+    "expression": "X = ~A_N & B"
+  },
+  "sky130_fd_sc_hd__or2b_*": {
+    "node_type": "GATE",
+    "gate_type": "OR2B",
+    "inputs": ["A", "B_N"],
+    "outputs": {"X": "X"},
+    "expression": "X = A | ~B_N"
+  },
+  "sky130_fd_sc_hd__or4bb_*": {
+    "node_type": "GATE",
+    "gate_type": "OR4BB",
+    "inputs": ["A", "B", "C_N", "D_N"],
+    "outputs": {"X": "X"},
+    "expression": "X = A | B | ~C_N | ~D_N"
+  },
+  "sky130_fd_sc_hd__and4bb_*": {
+    "node_type": "GATE",
+    "gate_type": "AND4BB",
+    "inputs": ["A_N", "B_N", "C", "D"],
+    "outputs": {"X": "X"},
+    "expression": "X = ~A_N & ~B_N & C & D"
+  },
+  "sky130_fd_sc_hd__a2bb2o_*": {
+    "node_type": "GATE",
+    "gate_type": "A2BB2O",
+    "inputs": ["A1_N", "A2_N", "B1", "B2"],
+    "outputs": {"X": "X"},
+    "expression": "X = (~A1_N & ~A2_N) | (B1 & B2)"
+  },
+  "sky130_fd_sc_hd__clkinvlp_*": {
+    "node_type": "GATE",
+    "gate_type": "INV",
+    "inputs": ["A"],
+    "outputs": {"Y": "Y"}
+  },
+  "sky130_fd_sc_hd__bufinv_*": {
+    "node_type": "GATE",
+    "gate_type": "INV",
+    "inputs": ["A"],
+    "outputs": {"Y": "Y"}
+  },
+  "sky130_fd_sc_hd__bufbuf_*": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"X": "X"}
+  },
+  "sky130_fd_sc_hd__dlygate4sd1_*": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"X": "X"}
+  },
+  "sky130_fd_sc_hd__dlygate4sd2_*": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"X": "X"}
+  },
+  "sky130_fd_sc_hd__dlygate4sd3_*": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"X": "X"}
+  },
+  "sky130_fd_sc_hd__dlymetal6s2s_*": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"X": "X"}
+  },
+  "sky130_fd_sc_hd__dlymetal6s4s_*": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"X": "X"}
+  },
+  "sky130_fd_sc_hd__dlymetal6s6s_*": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"X": "X"}
+  },
+  "sky130_fd_sc_hd__clkdlybuf4s15_*": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"X": "X"}
+  },
+  "sky130_fd_sc_hd__clkdlybuf4s18_*": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"X": "X"}
+  },
+  "sky130_fd_sc_hd__clkdlybuf4s25_*": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"X": "X"}
+  },
+  "sky130_fd_sc_hd__clkdlybuf4s50_*": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": ["A"],
+    "outputs": {"X": "X"}
+  },
+  "sky130_fd_sc_hd__dfstp_*": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D", "SET_B"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "preset": {"pin": "SET_B", "level": "LOW", "value": 1}
+    }
   }
 }

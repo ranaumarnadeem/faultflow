@@ -308,27 +308,61 @@ void split_fanout_branches(CompiledSimGraph& cg, const NormalizedGraph& ng,
     if (fanout_edges[stem].size() <= 1) {
       continue;
     }
+    // Group fanout edges by the physical consumer pin: (owner norm-node id,
+    // input pin). A multi-output cell (e.g. a full adder) is compiled into
+    // several SimNodes (ADDF_S, ADDF_CO) that each read the same external input
+    // on ONE physical pin. Those sub-node edges must collapse to a SINGLE branch
+    // so the pin stays one fault site; otherwise both branches carry the same
+    // (instance, pin) and their canonical site keys collide. Edges with no
+    // resolvable owner/pin keep one branch each (unchanged behaviour).
+    struct BranchGroup {
+      std::string instance;
+      std::string input_pin;
+      std::vector<FanoutEdge> edges;
+    };
+    std::vector<BranchGroup> groups;
+    std::map<std::pair<int, std::string>, size_t> group_index;
     for (const FanoutEdge& edge : fanout_edges[stem]) {
-      const int consumer_level = static_cast<int>(node_levels[edge.node_idx]);
+      int norm_id = -1;
+      std::string instance;
+      std::string input_pin;
+      if (edge.node_idx < sim_owner_norm_id.size()) {
+        norm_id = sim_owner_norm_id[edge.node_idx];
+        if (ng.nodes.count(norm_id)) {
+          const NormNode& norm = ng.nodes.at(norm_id);
+          input_pin = pin_for_compiled_input(norm, y2c, stem);
+          instance = norm.instance;
+        }
+      }
+      if (norm_id >= 0 && !input_pin.empty()) {
+        const auto key = std::make_pair(norm_id, input_pin);
+        auto it = group_index.find(key);
+        if (it == group_index.end()) {
+          group_index.emplace(key, groups.size());
+          groups.push_back({instance, input_pin, {edge}});
+        } else {
+          groups[it->second].edges.push_back(edge);
+        }
+      } else {
+        groups.push_back({std::string(), std::string(), {edge}});
+      }
+    }
+
+    for (const BranchGroup& group : groups) {
+      const int consumer_level =
+          static_cast<int>(node_levels[group.edges.front().node_idx]);
       const int source_yosys_id = c2y.at(stem);
       const uint32_t branch = append_branch_alias(c2y, source_yosys_id);
 
-      if (edge.node_idx < sim_owner_norm_id.size()) {
-        const int norm_id = sim_owner_norm_id[edge.node_idx];
-        if (ng.nodes.count(norm_id)) {
-          const NormNode& norm = ng.nodes.at(norm_id);
-          const std::string input_pin = pin_for_compiled_input(norm, y2c, stem);
-          if (!input_pin.empty()) {
-            if (branch >= cg.net_sites.size()) {
-              cg.net_sites.resize(branch + 1);
-            }
-            NetSiteInfo site;
-            site.kind = SiteKind::BRANCH;
-            site.consumer_instance = norm.instance;
-            site.input_pin = input_pin;
-            cg.net_sites[branch] = std::move(site);
-          }
+      if (!group.instance.empty() && !group.input_pin.empty()) {
+        if (branch >= cg.net_sites.size()) {
+          cg.net_sites.resize(branch + 1);
         }
+        NetSiteInfo site;
+        site.kind = SiteKind::BRANCH;
+        site.consumer_instance = group.instance;
+        site.input_pin = group.input_pin;
+        cg.net_sites[branch] = std::move(site);
       }
 
       SimNode buf;
@@ -338,9 +372,11 @@ void split_fanout_branches(CompiledSimGraph& cg, const NormalizedGraph& ng,
       node_levels.push_back(std::max(0, consumer_level - 1));
       cg.nodes.push_back(buf);
 
-      uint32_t* target = input_slot(cg.nodes[edge.node_idx], edge.slot);
-      if (target != nullptr) {
-        *target = branch;
+      for (const FanoutEdge& edge : group.edges) {
+        uint32_t* target = input_slot(cg.nodes[edge.node_idx], edge.slot);
+        if (target != nullptr) {
+          *target = branch;
+        }
       }
     }
   }

@@ -205,6 +205,14 @@ uint64_t eval_bitwise(GateType type, const std::vector<uint64_t>& inputs) {
       return (in0 | in1 | in2 | in3) & in4;
     case GateType::O41AI:
       return ~((in0 | in1 | in2 | in3) & in4);
+    case GateType::OR2B:
+      return in0 | ~in1;
+    case GateType::OR4BB:
+      return in0 | in1 | ~in2 | ~in3;
+    case GateType::AND4BB:
+      return ~in0 & ~in1 & in2 & in3;
+    case GateType::A2BB2O:
+      return (~in0 & ~in1) | (in2 & in3);
     default:
       throw ParseError("Unsupported gate type in eval_gate");
   }

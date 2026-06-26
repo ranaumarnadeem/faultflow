@@ -1,0 +1,35 @@
+{
+  "creator": "faultflow fixture (sky130 full-adder multi-output split test)",
+  "modules": {
+    "tiny_fa": {
+      "attributes": {"top": "00000000000000000000000000000001"},
+      "ports": {
+        "A":    {"direction": "input",  "bits": [2]},
+        "B":    {"direction": "input",  "bits": [3]},
+        "CIN":  {"direction": "input",  "bits": [4]},
+        "SUM":  {"direction": "output", "bits": [5]},
+        "COUT": {"direction": "output", "bits": [6]}
+      },
+      "cells": {
+        "u_fa": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__fa_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input", "B": "input", "CIN": "input",
+            "SUM": "output", "COUT": "output"
+          },
+          "connections": {"A": [2], "B": [3], "CIN": [4], "SUM": [5], "COUT": [6]}
+        }
+      },
+      "netnames": {
+        "A":    {"hide_name": 0, "bits": [2], "attributes": {}},
+        "B":    {"hide_name": 0, "bits": [3], "attributes": {}},
+        "CIN":  {"hide_name": 0, "bits": [4], "attributes": {}},
+        "SUM":  {"hide_name": 0, "bits": [5], "attributes": {}},
+        "COUT": {"hide_name": 0, "bits": [6], "attributes": {}}
+      }
+    }
+  }
+}
