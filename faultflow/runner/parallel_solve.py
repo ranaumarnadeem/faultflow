@@ -18,6 +18,8 @@ Solve kinds
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any
 
 
@@ -50,7 +52,22 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
         test_mode,
     ) = args
 
-    import faultflow.core as _core  # type: ignore[import-not-found]
+    # The C extension lives in build/src/core/, not on the default sys.path.
+    # Mirror the path search from runner._load_core() so forked workers can
+    # find _faultflow_core regardless of whether fork() inherited a warm cache.
+    _repo_root = Path(__file__).resolve().parents[2]
+    for _candidate in [
+        _repo_root / "build/src/core",
+        _repo_root / "build",
+        _repo_root,
+        Path("build/src/core"),
+        Path("build"),
+    ]:
+        if _candidate.exists():
+            _p = str(_candidate.resolve())
+            if _p not in sys.path:
+                sys.path.insert(0, _p)
+    import _faultflow_core as _core  # type: ignore[import-not-found]
 
     try:
         if solve_kind == "los_transition":
