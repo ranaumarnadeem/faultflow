@@ -428,6 +428,13 @@ class ProjectSession:
                     cfg,
                     atpg=replace(cfg.atpg, preflight=parse_bool_value(value, key)),
                 )
+            elif key == "fault_model.collapsing":
+                cfg = replace(
+                    cfg,
+                    fault_model=replace(
+                        cfg.fault_model, collapsing=parse_bool_value(value, key)
+                    ),
+                )
             elif key == "report.threshold":
                 cfg = replace(cfg, report=replace(cfg.report, threshold=float(value)))
             elif key == "simulation.unsupported_cells":
@@ -663,6 +670,7 @@ class ProjectSession:
             "atpg.sat_timeout_seconds",
             "atpg.sat_timeout_schedule",
             "atpg.workers",
+            "fault_model.collapsing",
             "report.threshold",
             "simulation.unsupported_cells",
         }
@@ -691,7 +699,7 @@ class ProjectSession:
                 parse_timeout_schedule(value, 1)
             except ConfigError as exc:
                 raise ShellError(str(exc), "CONFIG", "INVALID_VALUE")
-        if key == "atpg.preflight":
+        if key in {"atpg.preflight", "fault_model.collapsing"}:
             try:
                 parse_bool_value(value, key)
             except ConfigError as exc:

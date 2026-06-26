@@ -78,6 +78,11 @@ set_option atpg.sat_timeout_schedule 2,10,60
 # Maximum rounds before declaring STALLED.
 set_option atpg.max_rounds 20
 
+# Fault collapsing: equivalence-collapse primitive + AOI/OAI compound cells so the
+# denominator and vector count shrink while coverage is preserved (collapses are
+# detection-equivalent by construction). Sound for stuck-at scan INTEST.
+set_option fault_model.collapsing true
+
 # Coverage threshold used for the pass/fail gate in report.
 set_option report.threshold 90.0
 

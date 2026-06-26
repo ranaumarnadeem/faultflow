@@ -103,11 +103,13 @@ def test_set_option_materializes_into_config(tmp_path: Path) -> None:
     session.set_option("atpg.max_rounds", "37")
     session.set_option("report.threshold", "92.5")
     session.set_option("atpg.sat_timeout_schedule", "2,10,60")
+    session.set_option("fault_model.collapsing", "true")
 
     cfg = session.materialize_config()
     assert cfg.atpg.max_rounds == 37
     assert cfg.report.threshold == 92.5
     assert cfg.atpg.sat_timeout_schedule == "2,10,60"
+    assert cfg.fault_model.collapsing is True
 
 
 def test_set_option_rejects_bad_timeout_schedule(tmp_path: Path) -> None:
