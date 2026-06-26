@@ -64,6 +64,10 @@ class ScanPipelineContext:
     pseudo_port_map: dict[str, dict[str, Any]]
     functional_output_order: list[str]
     q_stem_site_keys: frozenset[str]
+    # Fast lookup: Q-stem fault site key → PPO port name in the reduced view.
+    # Used to determine Q-stem detection from the capture-frame D-input value,
+    # bypassing the full scan protocol simulation for stuck-at faults.
+    q_stem_to_ppo: dict[str, str] = field(default_factory=dict)
     # INTEST/EXTEST boundary name-mapping (empty for FUNCTIONAL).
     # Maps fused pseudo-port names back to their generic-netlist counterparts
     # so the golden gate can drive/observe the real (un-fused) netlist.
@@ -96,6 +100,11 @@ def build_scan_pipeline_context(
         for entry in pseudo_port_map.values()
         if isinstance(entry.get("boundary"), dict)
     }
+    q_stem_to_ppo = {
+        str(entry["boundary"]["q_stem_site_key"]): str(entry["ppo_port"])
+        for entry in pseudo_port_map.values()
+        if isinstance(entry.get("boundary"), dict) and entry.get("ppo_port") is not None
+    }
     return ScanPipelineContext(
         cfg=cfg,
         manifest=manifest,
@@ -103,6 +112,7 @@ def build_scan_pipeline_context(
         pseudo_port_map=pseudo_port_map,
         functional_output_order=functional_output_order,
         q_stem_site_keys=frozenset(q_stems),
+        q_stem_to_ppo=q_stem_to_ppo,
         wbr_stimulus_name_by_port=wbr_stimulus_name_by_port or {},
         wbr_observe_name_by_port=wbr_observe_name_by_port or {},
         wbr_decoupled_bits=(
@@ -725,52 +735,87 @@ def _process_scan_candidate(
     protocol_sim_rejections: list[CandidateRejection] = []
     blocked: list[tuple[int, str]] = []
 
-    # Q-stem faults confirmed through the full protocol sim -- skipped entirely
-    # when the candidate detects no scan-stem fault (the common case).
+    # Q-stem faults: their Q-net is a PPI in the reduced view, so the fault-free
+    # captured D-input value (PPO) directly determines detection.
+    # For stuck-at SA0: detected iff D_captured=1 (natural=1, stuck=0 → mismatch).
+    # For stuck-at SA1: detected iff D_captured=0 (natural=0, stuck=1 → mismatch).
+    # Every scan FF is in the shift-out chain, so activation equals observation.
+    # For transition faults the detection depends on the launch/capture transition
+    # rather than just the capture value, so those still use the full protocol sim.
     if protocol_sim_fault_ids:
-        row_by_id = {row.fault_id: row for row in active_rows}
-        simulated_fault_ids: list[int] = []
-        protocol_fault_specs: list[tuple[int, int]] = []
-        for fault_id in protocol_sim_fault_ids:
-            row = row_by_id.get(fault_id)
-            if row is None:
-                continue
-            generic_cidx = generic_site_index.get(row.fault_site_key)
-            if generic_cidx is None:
-                raise RunnerError(
-                    f"generic compiled index missing for site {row.fault_site_key}"
+        if not transition:
+            row_by_id = {row.fault_id: row for row in active_rows}
+            for fault_id in protocol_sim_fault_ids:
+                row = row_by_id.get(fault_id)
+                if row is None:
+                    continue
+                ppo_port = scan_ctx.q_stem_to_ppo.get(row.fault_site_key)
+                if ppo_port is None:
+                    continue
+                cap_val = bool(reduced_expectation.get(ppo_port, False))
+                if row.fault_type == "SA0":
+                    if cap_val:
+                        passed_fault_ids.append(fault_id)
+                    elif source == "sat" and fault_id == sat_target_fault_id:
+                        protocol_sim_rejections.append(
+                            CandidateRejection(fault_id, "q_stem_no_capture_effect")
+                        )
+                        blocked.append((fault_id, track_key))
+                else:
+                    if not cap_val:
+                        passed_fault_ids.append(fault_id)
+                    elif source == "sat" and fault_id == sat_target_fault_id:
+                        protocol_sim_rejections.append(
+                            CandidateRejection(fault_id, "q_stem_no_capture_effect")
+                        )
+                        blocked.append((fault_id, track_key))
+        else:
+            # Transition faults: full protocol sim required (two-frame detection).
+            row_by_id = {row.fault_id: row for row in active_rows}
+            simulated_fault_ids: list[int] = []
+            protocol_fault_specs: list[tuple[int, int]] = []
+            for fault_id in protocol_sim_fault_ids:
+                row = row_by_id.get(fault_id)
+                if row is None:
+                    continue
+                generic_cidx = generic_site_index.get(row.fault_site_key)
+                if generic_cidx is None:
+                    raise RunnerError(
+                        f"generic compiled index missing for site {row.fault_site_key}"
+                    )
+                simulated_fault_ids.append(fault_id)
+                protocol_fault_specs.append(
+                    (generic_cidx, fault_type_to_sa_code(row.fault_type))
                 )
-            simulated_fault_ids.append(fault_id)
-            protocol_fault_specs.append(
-                (generic_cidx, fault_type_to_sa_code(row.fault_type))
-            )
 
-        protocol_fault_sim_kwargs = _protocol_fault_sim_kwargs(scan_ctx, scan_pattern)
-        protocol_fault_sim_result = dict(
-            core.simulate_scan_protocol_faults(
-                str(scan_ctx.generic_json),
-                generic_cell_map,
-                faults=protocol_fault_specs,
-                unsupported_policy=unsupported,
-                loc_two_capture=is_loc,
-                los_two_capture=is_los,
-                los_launch_scan_in=head_bits,
-                active_clock_ports=active_clock_ports or [],
-                **protocol_fault_sim_kwargs,
+            protocol_fault_sim_kwargs = _protocol_fault_sim_kwargs(
+                scan_ctx, scan_pattern
             )
-        )
-        all_lanes: list[dict[str, object]] = []
-        for batch in protocol_fault_sim_result.get("batches", []):
-            for lane in batch.get("lanes", []):
-                all_lanes.append(dict(lane))
-        for fault_id, lane in zip(simulated_fault_ids, all_lanes):
-            if str(lane.get("outcome")) == "pass":
-                passed_fault_ids.append(fault_id)
-            else:
-                protocol_sim_rejections.append(
-                    CandidateRejection(fault_id, "no_capture_or_unload_effect")
+            protocol_fault_sim_result = dict(
+                core.simulate_scan_protocol_faults(
+                    str(scan_ctx.generic_json),
+                    generic_cell_map,
+                    faults=protocol_fault_specs,
+                    unsupported_policy=unsupported,
+                    loc_two_capture=is_loc,
+                    los_two_capture=is_los,
+                    los_launch_scan_in=head_bits,
+                    active_clock_ports=active_clock_ports or [],
+                    **protocol_fault_sim_kwargs,
                 )
-                blocked.append((fault_id, track_key))
+            )
+            all_lanes: list[dict[str, object]] = []
+            for batch in protocol_fault_sim_result.get("batches", []):
+                for lane in batch.get("lanes", []):
+                    all_lanes.append(dict(lane))
+            for fault_id, lane in zip(simulated_fault_ids, all_lanes):
+                if str(lane.get("outcome")) == "pass":
+                    passed_fault_ids.append(fault_id)
+                else:
+                    protocol_sim_rejections.append(
+                        CandidateRejection(fault_id, "no_capture_or_unload_effect")
+                    )
+                    blocked.append((fault_id, track_key))
 
     if not passed_fault_ids:
         commit = CandidateCommit(
