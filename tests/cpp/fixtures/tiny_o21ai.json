@@ -1,0 +1,26 @@
+{
+  "modules": {
+    "tiny_o21ai": {
+      "attributes": { "top": "00000000000000000000000000000001" },
+      "ports": {
+        "A1": { "direction": "input",  "bits": [2] },
+        "A2": { "direction": "input",  "bits": [3] },
+        "B1": { "direction": "input",  "bits": [4] },
+        "Y":  { "direction": "output", "bits": [5] }
+      },
+      "cells": {
+        "u0": {
+          "hide_name": 0, "type": "sky130_fd_sc_hd__o21ai_1", "parameters": {}, "attributes": {},
+          "port_directions": { "A1": "input", "A2": "input", "B1": "input", "Y": "output" },
+          "connections": { "A1": [2], "A2": [3], "B1": [4], "Y": [5] }
+        }
+      },
+      "netnames": {
+        "A1": { "hide_name": 0, "bits": [2], "attributes": {} },
+        "A2": { "hide_name": 0, "bits": [3], "attributes": {} },
+        "B1": { "hide_name": 0, "bits": [4], "attributes": {} },
+        "Y":  { "hide_name": 0, "bits": [5], "attributes": {} }
+      }
+    }
+  }
+}

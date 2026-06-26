@@ -1,0 +1,28 @@
+{
+  "modules": {
+    "tiny_a22oi": {
+      "attributes": { "top": "00000000000000000000000000000001" },
+      "ports": {
+        "A1": { "direction": "input",  "bits": [2] },
+        "A2": { "direction": "input",  "bits": [3] },
+        "B1": { "direction": "input",  "bits": [4] },
+        "B2": { "direction": "input",  "bits": [5] },
+        "Y":  { "direction": "output", "bits": [6] }
+      },
+      "cells": {
+        "u0": {
+          "hide_name": 0, "type": "sky130_fd_sc_hd__a22oi_1", "parameters": {}, "attributes": {},
+          "port_directions": { "A1": "input", "A2": "input", "B1": "input", "B2": "input", "Y": "output" },
+          "connections": { "A1": [2], "A2": [3], "B1": [4], "B2": [5], "Y": [6] }
+        }
+      },
+      "netnames": {
+        "A1": { "hide_name": 0, "bits": [2], "attributes": {} },
+        "A2": { "hide_name": 0, "bits": [3], "attributes": {} },
+        "B1": { "hide_name": 0, "bits": [4], "attributes": {} },
+        "B2": { "hide_name": 0, "bits": [5], "attributes": {} },
+        "Y":  { "hide_name": 0, "bits": [6], "attributes": {} }
+      }
+    }
+  }
+}

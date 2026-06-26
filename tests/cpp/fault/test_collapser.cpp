@@ -259,6 +259,134 @@ TEST_CASE("Multi-fanout stem not collapsed, fanout-free branches are",
 // Equivalence cross-check via GoldenRefSim
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Compound AOI/OAI cell collapsing (equivalence classes from
+// scripts/derive_collapsing_rules.py, documented in docs/collapsing_rules.md)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Number of faults marked collapsed in the whole vector.
+long collapsed_count(const std::vector<CompactFault>& faults) {
+  return std::count_if(
+      faults.begin(), faults.end(),
+      [](const CompactFault& f) { return f.collapsed_into != UINT32_MAX; });
+}
+
+}  // namespace
+
+TEST_CASE("AOI21 (a21oi): input-pair SA0 and single-input SA1 collapse",
+          "[collapser]") {
+  // Classes: {in0_SA0, in1_SA0} (A1,A2 symmetric in the AND);
+  //          {in2_SA1, out_SA0} (B1 single input ≡ inverting output).
+  const NormalizedGraph ng = test::load_normalized("tiny_a21oi.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_a21oi.json");
+  const auto faults = collapse_primitive_faults(ng, cg, enumerate_faults(ng, cg));
+
+  const uint32_t ci_A1 = ci(cg, 2), ci_A2 = ci(cg, 3);
+  const uint32_t ci_B1 = ci(cg, 4), ci_Y = ci(cg, 5);
+  const uint32_t iY_sa0 = fault_idx(faults, ci_Y, FaultType::SA0);
+
+  // Exactly one of {A1_SA0, A2_SA0} collapses into the other.
+  REQUIRE((is_collapsed(faults, ci_A1, FaultType::SA0) ^
+           is_collapsed(faults, ci_A2, FaultType::SA0)));
+  // B1_SA1 collapses into the output SA0 representative.
+  REQUIRE(faults[fault_idx(faults, ci_B1, FaultType::SA1)].collapsed_into ==
+          iY_sa0);
+  REQUIRE(faults[iY_sa0].collapsed_into == UINT32_MAX);
+  // Exactly two faults dropped per the derivation.
+  REQUIRE(collapsed_count(faults) == 2);
+}
+
+TEST_CASE("OAI21 (o21ai): input-pair SA1 and single-input SA0 collapse",
+          "[collapser]") {
+  // Classes: {in0_SA1, in1_SA1}; {in2_SA0, out_SA1}.
+  const NormalizedGraph ng = test::load_normalized("tiny_o21ai.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_o21ai.json");
+  const auto faults = collapse_primitive_faults(ng, cg, enumerate_faults(ng, cg));
+
+  const uint32_t ci_A1 = ci(cg, 2), ci_A2 = ci(cg, 3);
+  const uint32_t ci_B1 = ci(cg, 4), ci_Y = ci(cg, 5);
+  const uint32_t iY_sa1 = fault_idx(faults, ci_Y, FaultType::SA1);
+
+  REQUIRE((is_collapsed(faults, ci_A1, FaultType::SA1) ^
+           is_collapsed(faults, ci_A2, FaultType::SA1)));
+  REQUIRE(faults[fault_idx(faults, ci_B1, FaultType::SA0)].collapsed_into ==
+          iY_sa1);
+  REQUIRE(faults[iY_sa1].collapsed_into == UINT32_MAX);
+  REQUIRE(collapsed_count(faults) == 2);
+}
+
+TEST_CASE("AOI22/OAI22 collapse two input pairs (no output equivalence)",
+          "[collapser]") {
+  for (const char* fx : {"tiny_a22oi.json", "tiny_o22ai.json"}) {
+    const NormalizedGraph ng = test::load_normalized(fx);
+    const CompiledSimGraph cg = test::load_compiled(fx);
+    const auto faults =
+        collapse_primitive_faults(ng, cg, enumerate_faults(ng, cg));
+    // Two input-pair classes -> exactly two faults dropped; output stays free.
+    REQUIRE(collapsed_count(faults) == 2);
+    REQUIRE(is_collapsed(faults, ci(cg, 6), FaultType::SA0) == false);
+    REQUIRE(is_collapsed(faults, ci(cg, 6), FaultType::SA1) == false);
+  }
+}
+
+TEST_CASE("Non-inverting A21O/O21A collapse with output-polarity flip",
+          "[collapser]") {
+  // A21O: {in2_SA1, out_SA1}; O21A: {in2_SA0, out_SA0}.
+  for (const char* fx : {"tiny_a21o.json", "tiny_o21a.json"}) {
+    const NormalizedGraph ng = test::load_normalized(fx);
+    const CompiledSimGraph cg = test::load_compiled(fx);
+    const auto faults =
+        collapse_primitive_faults(ng, cg, enumerate_faults(ng, cg));
+    REQUIRE(collapsed_count(faults) == 2);
+  }
+}
+
+TEST_CASE("XOR2 and XNOR2 are never collapsed", "[collapser]") {
+  // No two of their six faults share a detecting-vector set, so collapsing any
+  // would drop a detectable fault. Locks in the derivation finding.
+  for (const char* fx : {"tiny_xor2.json", "tiny_xnor2.json"}) {
+    const NormalizedGraph ng = test::load_normalized(fx);
+    const CompiledSimGraph cg = test::load_compiled(fx);
+    const auto faults =
+        collapse_primitive_faults(ng, cg, enumerate_faults(ng, cg));
+    REQUIRE(collapsed_count(faults) == 0);
+  }
+}
+
+TEST_CASE("Compound-cell collapses are detection-equivalent (GoldenRefSim)",
+          "[collapser]") {
+  // The soundness gate: for every collapse a -> b on each compound cell, the
+  // two faults must be detected identically on EVERY input vector. Any wrong
+  // equivalence class fails here.
+  for (const char* fx : {"tiny_a21oi.json", "tiny_o21ai.json", "tiny_a22oi.json",
+                         "tiny_o22ai.json", "tiny_a21o.json", "tiny_o21a.json"}) {
+    const NormalizedGraph ng = test::load_normalized(fx);
+    const CompiledSimGraph cg = test::load_compiled(fx);
+    const auto faults =
+        collapse_primitive_faults(ng, cg, enumerate_faults(ng, cg));
+
+    std::vector<int> pi_yosys_ids;
+    for (int cidx : cg.pi_nets) {
+      pi_yosys_ids.push_back(cg.compiled_to_yosys[static_cast<size_t>(cidx)]);
+    }
+    const auto vs = test::generate_complete_input_space(pi_yosys_ids);
+
+    GoldenRefSim golden;
+    for (const auto& fault : faults) {
+      if (fault.collapsed_into == UINT32_MAX) continue;
+      const CompactFault& rep = faults[fault.collapsed_into];
+      for (const auto& vec : vs.vectors) {
+        const auto ff = golden.simulate_fault_free(cg, vec);
+        const auto fa = golden.simulate_with_fault(cg, vec, fault);
+        const auto fr = golden.simulate_with_fault(cg, vec, rep);
+        REQUIRE(golden.is_detected(cg, ff, fa) == golden.is_detected(cg, ff, fr));
+      }
+    }
+  }
+}
+
 TEST_CASE("Collapsed pairs are detection-equivalent on exhaustive input space",
           "[collapser]") {
   // For every collapse a -> b, verify is_detected(a) == is_detected(b) under
