@@ -93,6 +93,9 @@ add_scan -chains 4
 check_scan
 status -scan
 
+# Clear any stale campaign from a previous run so ATPG starts fresh.
+clean
+
 # -----------------------------------------------------------------------
 # 5. INTEST: scan ATPG on core logic + WBR boundary register.
 # -----------------------------------------------------------------------
