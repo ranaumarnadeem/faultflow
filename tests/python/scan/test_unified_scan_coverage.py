@@ -378,7 +378,7 @@ def test_reconverge_fanout_branches_enumerate_distinct_site_keys(
 
 
 def _tiny_dff_scan_workspace(
-    tmp_path: Path,
+    tmp_path: Path, *, wbr_model: str = "scan"
 ) -> tuple[Any, Path, Path, ScanPipelineContext, dict[str, object]]:
     from faultflow.config import load_config
     from faultflow.scan import stitch_scan_json
@@ -437,6 +437,8 @@ unsupported_cells = fail
 mode = comb
 random_vectors = 0
 max_rounds = 3
+[wrap]
+wbr_model = {wbr_model}
 """.strip() + "\n",
         encoding="utf-8",
     )
@@ -500,7 +502,11 @@ def test_scan_stalled_when_protocol_sim_never_passes(
     import faultflow.runner.runner as runner_mod
 
     monkeypatch.chdir(tmp_path)
-    cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(tmp_path)
+    # wbr_model="buffer": transition (LOC) ATPG is rejected for wbr_model="scan"
+    # (the 1-FF WBC delivers stimulus for a single capture only).
+    cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(
+        tmp_path, wbr_model="buffer"
+    )
     core = runner_mod._load_core()
     assert core is not None
 
@@ -511,8 +517,9 @@ def test_scan_stalled_when_protocol_sim_never_passes(
     def _sat_vector() -> dict[str, bool]:
         return {name: False for name in input_order}
 
-    def fake_solve(*_args: object, **_kwargs: object) -> dict[str, object]:
-        return {"result": "SAT", "vector": _sat_vector()}
+    def fake_transition_solve(*_args: object, **_kwargs: object) -> dict[str, object]:
+        # Transition SAT returns the launch frame (V1); capture is re-derived.
+        return {"result": "SAT", "launch": _sat_vector()}
 
     def empty_tentative(*_args: object, **_kwargs: object) -> list[int]:
         return []
@@ -523,11 +530,21 @@ def test_scan_stalled_when_protocol_sim_never_passes(
         lanes = [{"outcome": "no_capture_or_unload_effect"} for _ in faults]
         return {"batches": [{"lanes": lanes}]}
 
+    # The protocol-no-progress STALL lives on the TRANSITION path. In stuck-at
+    # mode a scan-FF Q-stem fault is graded by the reduced sim plus the
+    # capture-value chain-integrity credit, so it only rarely reaches the
+    # protocol-sim fallback -- and a single-FF SA design can never fully stall
+    # (SA0/SA1 are complementary under the capture value, so one polarity always
+    # passes). Transition Q-stem detection always routes through
+    # simulate_scan_protocol_faults, so a sim that never confirms detection
+    # produces a genuine STALL with rejected candidates.
     monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
-    monkeypatch.setattr(core, "solve_fault_atpg", fake_solve)
-    monkeypatch.setattr(core, "simulate_tentative_preloaded", empty_tentative)
+    monkeypatch.setattr(core, "solve_scan_transition_fault_atpg", fake_transition_solve)
+    monkeypatch.setattr(
+        core, "simulate_transition_tentative_preloaded", empty_tentative
+    )
     monkeypatch.setattr(core, "simulate_scan_protocol_faults", failing_protocol_sim)
-    monkeypatch.setattr(core, "verify_fault_candidate", lambda *_a, **_k: True)
+    monkeypatch.setattr(core, "verify_transition_candidate", lambda *_a, **_k: True)
     monkeypatch.setattr(
         "faultflow.scan.detection_pipeline.reduced_protocol_matches",
         lambda *_a, **_k: True,
@@ -548,6 +565,8 @@ def test_scan_stalled_when_protocol_sim_never_passes(
         scan_ctx=scan_ctx,
         max_rounds=2,
         target_coverage=100.0,
+        transition=True,
+        launch_mode="loc",
     )
 
     assert stats.terminal_reason == "STALLED"
@@ -856,3 +875,93 @@ def test_q_stem_unsat_sets_protocol_unresolved_not_redundant(
     assert row["status"] == "undetected"
     assert int(row["protocol_unresolved"]) == 1
     assert row["redundancy_model_id"] in ("", None)
+
+
+@pytest.mark.unit
+@pytest.mark.golden
+def test_q_stem_sa_credited_from_reduced_functional_grade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    # Regression for the Q-stem PPO-bypass bug (dc559ca): a scan-FF Q-stem
+    # stuck-at fault is observed in the reduced view because its Q net maps to a
+    # PPI that fans out to the PPOs/POs. That functional detection must be
+    # trusted directly -- it must NOT be discarded and re-graded by the
+    # capture-value-only shortcut. The old code did `reduced_trusted = tentative
+    # - qstem`, so a Q-stem fault whose own captured D equals the stuck value
+    # (here all inputs are 0, so captured D=0) was missed for SA0. With the fix
+    # both polarities are credited from the reduced grade, and the protocol sim
+    # is never invoked for them.
+    import faultflow.runner.runner as runner_mod
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(tmp_path)
+    core = runner_mod._load_core()
+    assert core is not None
+
+    from faultflow.runner.runner import _port_names
+
+    input_order = _port_names(atpg_view, cfg.top, "input")
+    candidate = {name: False for name in input_order}
+    q_stem = next(iter(scan_ctx.q_stem_site_keys))
+
+    def detect_every_active(*_args: object, **_kwargs: object) -> list[int]:
+        preloaded = _args[2]
+        assert isinstance(preloaded, list)
+        return [int(t[0]) for t in preloaded]
+
+    protocol_calls: list[object] = []
+
+    def protocol_spy(*_args: object, **kwargs: object) -> dict[str, object]:
+        protocol_calls.append(kwargs.get("faults"))
+        faults = kwargs.get("faults", [])
+        assert isinstance(faults, list)
+        return {"batches": [{"lanes": [{"outcome": "fail"} for _ in faults]}]}
+
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        core,
+        "solve_fault_atpg",
+        lambda *_a, **_k: {"result": "SAT", "vector": candidate},
+    )
+    monkeypatch.setattr(core, "verify_fault_candidate", lambda *_a, **_k: True)
+    monkeypatch.setattr(core, "simulate_tentative_preloaded", detect_every_active)
+    monkeypatch.setattr(core, "simulate_scan_protocol_faults", protocol_spy)
+    monkeypatch.setattr(
+        "faultflow.scan.detection_pipeline.reduced_protocol_matches",
+        lambda *_a, **_k: True,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        redundancy_model_id(fp),
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=1,
+        target_coverage=100.0,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT fault_type, status
+            FROM faults
+            WHERE campaign_id = ? AND fault_site_key = ?
+            """,
+            (campaign_id, q_stem),
+        ).fetchall()
+
+    statuses = {str(row["fault_type"]).lower(): str(row["status"]) for row in rows}
+    # Both polarities of the Q-stem detected via the reduced functional grade
+    # (under the old self-capture-only bypass, sa0 would be missed here)...
+    assert statuses.get("sa0") == "detected"
+    assert statuses.get("sa1") == "detected"
+    # ...and the per-fault protocol sim was never needed to confirm them.
+    assert protocol_calls == []

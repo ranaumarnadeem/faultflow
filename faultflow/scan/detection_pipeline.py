@@ -700,18 +700,29 @@ def _process_scan_candidate(
                 unsupported,
             )
         )
-    # PERF (CVA6-scale lever): the reduced pseudo-PI/PO view grades any logic-cone
-    # fault exactly as the full load+capture+unload scan protocol would. The shift
-    # is a fault-INDEPENDENT permutation, and the per-candidate golden gate above
+    # The reduced pseudo-PI/PO view grades a fault exactly as the full
+    # load+capture+unload scan protocol would: the shift is a fault-INDEPENDENT
+    # permutation, and the per-candidate golden gate above
     # (reduced_protocol_matches) proves fault-free reduced==protocol on every
-    # unload bit + functional PO. So a logic-cone fault observed at an active PPO
-    # in the reduced view is necessarily captured and shifted out by the real
-    # protocol -- no need to re-simulate the thousand-cycle protocol for it. Only
-    # FF Q-stem faults (whose net is abstracted into a pseudo-port and is thus
-    # invisible to the reduced view) require the full protocol sim to confirm.
+    # unload bit + functional PO. This holds for FF Q-stem faults too -- each FF's
+    # Q net is rewired to a PPI whose stuck-at site maps to that PPI's compiled
+    # index (scan.site_resolution), so a Q-stem fault propagates through Q's
+    # fanout to the PPOs/POs and is observed by the reduced sim like any logic-
+    # cone fault. Stuck-at therefore TRUSTS those reduced detections directly.
+    # Transition Q-stem detection depends on the two-frame launch/capture
+    # transition rather than a single captured value, so for transition the
+    # reduced tentative is NOT authoritative and every active Q-stem fault is
+    # graded by the two-frame protocol sim below.
     qstem_active = set(_active_q_stem_fault_ids(active_rows, scan_ctx.q_stem_site_keys))
-    reduced_trusted = sorted(set(tentative) - qstem_active)
-    protocol_sim_fault_ids = sorted(qstem_active)
+    if transition:
+        reduced_trusted = sorted(set(tentative) - qstem_active)
+        protocol_sim_fault_ids = sorted(qstem_active)
+    else:
+        reduced_trusted = sorted(set(tentative))
+        # Residual = Q-stem faults the reduced sim did not functionally observe;
+        # graded below by the capture-value chain-integrity credit, then a
+        # protocol-sim fallback for the SAT target only.
+        protocol_sim_fault_ids = sorted(qstem_active - set(tentative))
 
     if not reduced_trusted and not protocol_sim_fault_ids:
         if source == "sat" and sat_target_fault_id is not None:
@@ -734,21 +745,20 @@ def _process_scan_candidate(
         )
         return False, source == "sat", None
 
-    # Logic-cone faults are trusted directly from the cheap reduced grade.
+    # Faults observed in the reduced view are trusted directly from the cheap grade.
     passed_fault_ids: list[int] = list(reduced_trusted)
     protocol_sim_rejections: list[CandidateRejection] = []
     blocked: list[tuple[int, str]] = []
 
-    # Q-stem faults: their Q-net is a PPI in the reduced view, so the fault-free
-    # captured D-input value (PPO) directly determines detection.
-    # For stuck-at SA0: detected iff D_captured=1 (natural=1, stuck=0 → mismatch).
-    # For stuck-at SA1: detected iff D_captured=0 (natural=0, stuck=1 → mismatch).
-    # Every scan FF is in the shift-out chain, so activation equals observation.
-    # For transition faults the detection depends on the launch/capture transition
-    # rather than just the capture value, so those still use the full protocol sim.
+    # Q-stem faults the reduced sim did not catch. Stuck-at: credit the scan-unload
+    # chain-integrity case from the capture value (a stuck Q corrupts its own
+    # unloaded bit, so SA0 is detected iff captured D=1 and SA1 iff captured D=0),
+    # then fall back to the full protocol sim for the SAT target only when it is
+    # still unresolved. Transition: full two-frame protocol sim for all.
     if protocol_sim_fault_ids:
         if not transition:
             row_by_id = {row.fault_id: row for row in active_rows}
+            fallback_target_id: int | None = None
             for fault_id in protocol_sim_fault_ids:
                 row = row_by_id.get(fault_id)
                 if row is None:
@@ -757,22 +767,49 @@ def _process_scan_candidate(
                 if ppo_port is None:
                     continue
                 cap_val = bool(reduced_expectation.get(ppo_port, False))
-                if row.fault_type == "SA0":
-                    if cap_val:
-                        passed_fault_ids.append(fault_id)
-                    elif source == "sat" and fault_id == sat_target_fault_id:
-                        protocol_sim_rejections.append(
-                            CandidateRejection(fault_id, "q_stem_no_capture_effect")
-                        )
-                        blocked.append((fault_id, track_key))
+                detected = cap_val if row.fault_type == "SA0" else not cap_val
+                if detected:
+                    passed_fault_ids.append(fault_id)
+                elif source == "sat" and fault_id == sat_target_fault_id:
+                    fallback_target_id = fault_id
+            if fallback_target_id is not None:
+                row = row_by_id[fallback_target_id]
+                generic_cidx = generic_site_index.get(row.fault_site_key)
+                if generic_cidx is None:
+                    raise RunnerError(
+                        f"generic compiled index missing for site {row.fault_site_key}"
+                    )
+                protocol_fault_sim_kwargs = _protocol_fault_sim_kwargs(
+                    scan_ctx, scan_pattern
+                )
+                protocol_fault_sim_result = dict(
+                    core.simulate_scan_protocol_faults(
+                        str(scan_ctx.generic_json),
+                        generic_cell_map,
+                        faults=[(generic_cidx, fault_type_to_sa_code(row.fault_type))],
+                        unsupported_policy=unsupported,
+                        loc_two_capture=is_loc,
+                        los_two_capture=is_los,
+                        los_launch_scan_in=head_bits,
+                        active_clock_ports=active_clock_ports or [],
+                        **protocol_fault_sim_kwargs,
+                    )
+                )
+                outcome = "fail"
+                for batch in protocol_fault_sim_result.get("batches", []):
+                    lanes = batch.get("lanes", [])
+                    if lanes:
+                        outcome = str(dict(lanes[0]).get("outcome"))
+                        break
+                if outcome == "pass":
+                    passed_fault_ids.append(fallback_target_id)
                 else:
-                    if not cap_val:
-                        passed_fault_ids.append(fault_id)
-                    elif source == "sat" and fault_id == sat_target_fault_id:
-                        protocol_sim_rejections.append(
-                            CandidateRejection(fault_id, "q_stem_no_capture_effect")
+                    protocol_sim_rejections.append(
+                        CandidateRejection(
+                            fallback_target_id, "no_capture_or_unload_effect"
                         )
-                        blocked.append((fault_id, track_key))
+                    )
+                    blocked.append((fallback_target_id, track_key))
         else:
             # Transition faults: full protocol sim required (two-frame detection).
             row_by_id = {row.fault_id: row for row in active_rows}
