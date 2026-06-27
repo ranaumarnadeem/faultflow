@@ -151,16 +151,59 @@ def _json_top_module(path: Path, top: str) -> tuple[str, dict[str, Any]]:
     raise RunnerError(f"Cannot find top module {top} in {path}")
 
 
-def _port_names(path: Path, top: str, direction: str) -> list[str]:
+def _expand_bus_bits(
+    port_name: str, bits: list[int], netnames: dict[str, Any]
+) -> list[str]:
+    """Expand a multi-bit port to individual bit-indexed names via netnames.
+
+    Tries portname[N] entries in netnames, matching each bit by net ID.
+    Falls back to [port_name] (first-bit only) if any bit can't be resolved.
+    """
+    prefix = port_name + "["
+    bit_id_to_indexed: dict[int, str] = {}
+    for nn_name, nn_val in netnames.items():
+        if not nn_name.startswith(prefix) or not nn_name.endswith("]"):
+            continue
+        if not isinstance(nn_val, dict):
+            continue
+        nn_bits = nn_val.get("bits", [])
+        if (
+            isinstance(nn_bits, list)
+            and len(nn_bits) == 1
+            and isinstance(nn_bits[0], int)
+        ):
+            bit_id_to_indexed[nn_bits[0]] = nn_name
+    result = []
+    for bit_id in bits:
+        if bit_id not in bit_id_to_indexed:
+            return [port_name]
+        result.append(bit_id_to_indexed[bit_id])
+    return result if result else [port_name]
+
+
+def _port_names(
+    path: Path, top: str, direction: str, expand_buses: bool = False
+) -> list[str]:
     _, module = _json_top_module(path, top)
     ports = module.get("ports")
     if not isinstance(ports, dict):
         raise RunnerError(f"module {top} ports must be an object")
+    raw_netnames = module.get("netnames", {}) if expand_buses else {}
+    netnames: dict[str, Any] = (
+        raw_netnames if isinstance(raw_netnames, dict) else {}
+    )
     out: list[str] = []
     for name, port in ports.items():
         if isinstance(port, dict) and port.get("direction") == direction:
             bits = port.get("bits")
-            if isinstance(bits, list) and len(bits) == 1 and isinstance(bits[0], int):
+            if not isinstance(bits, list) or not any(
+                isinstance(b, int) for b in bits
+            ):
+                continue
+            if expand_buses and len(bits) > 1:
+                int_bits = [b for b in bits if isinstance(b, int)]
+                out.extend(_expand_bus_bits(str(name), int_bits, netnames))
+            else:
                 out.append(str(name))
     return sorted(out)
 
@@ -738,7 +781,9 @@ class Runner:
         vectors_path: Path | None,
     ) -> tuple[VectorSet, VectorSet, list[str], list[str], dict[str, bool], str]:
         source_json = Path(str(manifest["source_json"]))
-        output_order = _port_names(source_json, str(manifest["top"]), "output")
+        output_order = _port_names(
+            source_json, str(manifest["top"]), "output", expand_buses=True
+        )
         if not output_order:
             raise RunnerError("normal-mode scan check requires at least one PO")
         # Support both v2 (clock_nets: list) and v1 (clock_net: int) manifests.
@@ -1777,7 +1822,7 @@ class Runner:
         netlist = atpg_view_path
         functional_output_order = [
             port
-            for port in _port_names(netlist, self.cfg.top, "output")
+            for port in _port_names(netlist, self.cfg.top, "output", expand_buses=True)
             if not port.startswith("__ppo_")
         ]
         scan_pipeline_ctx = build_scan_pipeline_context(
