@@ -1,13 +1,13 @@
-"""CLI logging: --verbose must actually enable DEBUG, and the intra-round grading
-heartbeat must throttle so long rounds don't spam."""
+"""CLI logging: --verbose stays wired (DEBUG is intentionally empty for now), and
+the always-on intra-round grading heartbeat reports the live detected count so a
+long ATPG round shows real progress instead of dead air."""
 
 from __future__ import annotations
 
 import logging
-import time
 
 import faultflow.shell.repl as repl
-from faultflow.runner.progressive_atpg import log_grade_progress
+from faultflow.runner.progressive_atpg import GradeHeartbeat
 
 
 def test_configure_logging_verbose_toggles_level() -> None:
@@ -24,22 +24,30 @@ def test_configure_logging_verbose_toggles_level() -> None:
         root.setLevel(saved_level)
 
 
-def test_log_grade_progress_throttles(caplog) -> None:
+def test_grade_heartbeat_reports_live_detected_delta(caplog) -> None:
     logger = logging.getLogger("test.grade")
-    now = time.perf_counter()
-
-    # A recent tick: within the interval -> no log, last-tick unchanged.
+    counts = iter([100, 175])
+    # interval=0 forces every tick to emit so the delta is observable.
+    hb = GradeHeartbeat(logger, 2, 10, lambda: next(counts), interval=0.0)
     with caplog.at_level(logging.INFO, logger="test.grade"):
-        unchanged = log_grade_progress(
-            logger, now, now - 1.0, 1, 5, 10, 3, interval=15.0
-        )
-    assert unchanged == now
-    assert "grading vector" not in caplog.text
+        hb.tick(5)
+        hb.tick(10)
+    assert "round  2  graded 5/10 vectors  detected=100 (+0)" in caplog.text
+    assert "graded 10/10 vectors  detected=175 (+75)" in caplog.text
 
-    # A stale tick: interval elapsed -> logs once, returns a fresh tick.
-    with caplog.at_level(logging.INFO, logger="test.grade"):
-        fresh = log_grade_progress(
-            logger, now - 100.0, now - 100.0, 2, 5, 10, 3, interval=15.0
-        )
-    assert fresh > now - 100.0
-    assert "round  2  grading vector 5/10  accepted=3" in caplog.text
+
+def test_grade_heartbeat_throttles_and_skips_db_query(caplog) -> None:
+    calls = {"n": 0}
+
+    def _detected() -> int:
+        calls["n"] += 1
+        return 5
+
+    logger = logging.getLogger("test.grade2")
+    hb = GradeHeartbeat(logger, 1, 10, _detected, interval=1000.0)
+    with caplog.at_level(logging.INFO, logger="test.grade2"):
+        hb.tick(1)
+    # Within the interval: no heartbeat, and the (DB-touching) detected_fn is not
+    # even called.
+    assert caplog.text == ""
+    assert calls["n"] == 0

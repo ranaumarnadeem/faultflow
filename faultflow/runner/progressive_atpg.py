@@ -34,37 +34,63 @@ from faultflow.testpoint.preflight import PreflightData, run_preflight
 log = logging.getLogger(__name__)
 
 # Heartbeat interval (seconds) for intra-round grading progress. A round can grade
-# hundreds of vectors over many minutes; without this the run looks frozen.
+# hundreds of vectors over many minutes; without this the run looks frozen and you
+# can only guess from CPU/RAM whether it is still working.
 GRADE_PROGRESS_INTERVAL = 15.0
 
 
-def log_grade_progress(
-    logger: logging.Logger,
-    last_tick: float,
-    start: float,
-    round_idx: int,
-    done: int,
-    total: int,
-    accepted: int,
-    interval: float = GRADE_PROGRESS_INTERVAL,
-) -> float:
-    """Emit a throttled INFO heartbeat during a round's vector-grading phase.
+def _live_detected(db_path: str, campaign_id: int) -> int:
+    """Current detected-fault count for the campaign (for the live heartbeat)."""
+    with connect(db_path) as conn:
+        init_schema(conn)
+        detected, _ = _fault_counts(conn, campaign_id)
+    return detected
 
-    Returns the (possibly updated) last-tick timestamp; logs at most once per
-    `interval` seconds so long rounds show steady progress without spamming.
+
+class GradeHeartbeat:
+    """Throttled INFO heartbeat for a round's vector-grading phase.
+
+    Emits at most one line per `interval` seconds showing how many vectors have
+    been graded and the LIVE detected-fault count with its delta since the last
+    tick — so a long ATPG round visibly makes progress (or visibly stalls) rather
+    than running silent until the round-end summary. On by default (INFO).
     """
-    now = time.perf_counter()
-    if now - last_tick < interval:
-        return last_tick
-    logger.info(
-        "atpg   round %2d  grading vector %d/%d  accepted=%d  elapsed=%.0fs",
-        round_idx,
-        done,
-        total,
-        accepted,
-        now - start,
-    )
-    return now
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+        round_idx: int,
+        total: int,
+        detected_fn: Callable[[], int],
+        interval: float = GRADE_PROGRESS_INTERVAL,
+    ) -> None:
+        self._logger = logger
+        self._round = round_idx
+        self._total = total
+        self._detected_fn = detected_fn
+        self._interval = interval
+        now = time.perf_counter()
+        self._start = now
+        self._last = now
+        self._prev: int | None = None
+
+    def tick(self, done: int) -> None:
+        now = time.perf_counter()
+        if now - self._last < self._interval:
+            return
+        self._last = now
+        detected = self._detected_fn()
+        delta = 0 if self._prev is None else detected - self._prev
+        self._prev = detected
+        self._logger.info(
+            "atpg   round %2d  graded %d/%d vectors  detected=%d (+%d)  elapsed=%.0fs",
+            self._round,
+            done,
+            self._total,
+            detected,
+            delta,
+            now - self._start,
+        )
 
 
 DEFAULT_MAX_ATPG_ROUNDS = 20
@@ -669,18 +695,14 @@ def run_progressive_native_atpg(
             stats.generated_vectors += len(new_random)
             stats.accepted_vectors += len(new_random)
             base_index = len(vectors) - len(new_random) + 1
-            grade_start = time.perf_counter()
-            grade_tick = grade_start
+            heartbeat = GradeHeartbeat(
+                log,
+                round_idx,
+                len(new_random),
+                lambda: _live_detected(effective_db_path, campaign_id),
+            )
             for offset, vector in enumerate(new_random):
                 vector_index = base_index + offset
-                log.debug(
-                    "atpg   round %d  random vector %d/%d (index=%d) vs %d faults",
-                    round_idx,
-                    offset + 1,
-                    len(new_random),
-                    vector_index,
-                    len(active_ids),
-                )
                 sim_started = time.perf_counter()
                 _accept_and_simulate(
                     core,
@@ -701,15 +723,7 @@ def run_progressive_native_atpg(
                     on_vector_accepted=on_vector_accepted,
                 )
                 fault_sim_seconds += time.perf_counter() - sim_started
-                grade_tick = log_grade_progress(
-                    log,
-                    grade_tick,
-                    grade_start,
-                    round_idx,
-                    offset + 1,
-                    len(new_random),
-                    stats.accepted_vectors,
-                )
+                heartbeat.tick(offset + 1)
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
@@ -1139,18 +1153,14 @@ def run_progressive_transition_atpg(
             stats.generated_vectors += len(new_random)
             stats.accepted_vectors += len(new_random)
             base_index = len(pairs) - len(new_random) + 1
-            grade_start = time.perf_counter()
-            grade_tick = grade_start
+            heartbeat = GradeHeartbeat(
+                log,
+                round_idx,
+                len(new_random),
+                lambda: _live_detected(effective_db_path, campaign_id),
+            )
             for offset, (launch, capture) in enumerate(new_random):
                 vector_index = base_index + offset
-                log.debug(
-                    "atpg   round %d  random pair %d/%d (index=%d) vs %d faults",
-                    round_idx,
-                    offset + 1,
-                    len(new_random),
-                    vector_index,
-                    len(active_ids),
-                )
                 sim_started = time.perf_counter()
                 _accept_and_simulate_transition(
                     core,
@@ -1170,15 +1180,7 @@ def run_progressive_transition_atpg(
                     sim_threads=sim_threads,
                 )
                 fault_sim_seconds += time.perf_counter() - sim_started
-                grade_tick = log_grade_progress(
-                    log,
-                    grade_tick,
-                    grade_start,
-                    round_idx,
-                    offset + 1,
-                    len(new_random),
-                    stats.accepted_vectors,
-                )
+                heartbeat.tick(offset + 1)
 
         with connect(effective_db_path) as conn:
             init_schema(conn)

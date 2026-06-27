@@ -31,11 +31,12 @@ from faultflow.runner.parallel_solve import solve_fault_worker
 from faultflow.runner.progressive_atpg import (
     ATPGRANDOM_SEED,
     AtpgStats,
+    GradeHeartbeat,
     _RoundTracker,
     _escalation_headroom,
     _fault_counts,
+    _live_detected,
     _should_stall,
-    log_grade_progress,
     pattern_key,
 )
 from faultflow.runner.runner import RunnerError
@@ -1217,20 +1218,16 @@ def run_progressive_scan_atpg(
                 continue
             seen_patterns.add(key)
             new_random.append(vector)
-        grade_start = time.perf_counter()
-        grade_tick = grade_start
+        heartbeat = GradeHeartbeat(
+            log,
+            round_idx,
+            len(new_random),
+            lambda: _live_detected(effective_db_path, campaign_id),
+        )
         for offset, vector in enumerate(new_random):
             stats.generated_vectors += 1
             candidate_counter += 1
             vector_index = len(vectors) + 1
-            log.debug(
-                "atpg   round %d  scan random vector %d/%d (index=%d) vs %d faults",
-                round_idx,
-                offset + 1,
-                len(new_random),
-                vector_index,
-                len(active_ids),
-            )
             sim_started = time.perf_counter()
             with connect(effective_db_path) as conn:
                 init_schema(conn)
@@ -1275,15 +1272,7 @@ def run_progressive_scan_atpg(
                 if protocol_no_progress:
                     round_tracker.sat_outcomes.append("protocol_no_progress")
                     stats.protocol_no_progress_rounds += 1
-            grade_tick = log_grade_progress(
-                log,
-                grade_tick,
-                grade_start,
-                round_idx,
-                offset + 1,
-                len(new_random),
-                stats.accepted_vectors,
-            )
+            heartbeat.tick(offset + 1)
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
