@@ -33,6 +33,40 @@ from faultflow.testpoint.preflight import PreflightData, run_preflight
 
 log = logging.getLogger(__name__)
 
+# Heartbeat interval (seconds) for intra-round grading progress. A round can grade
+# hundreds of vectors over many minutes; without this the run looks frozen.
+GRADE_PROGRESS_INTERVAL = 15.0
+
+
+def log_grade_progress(
+    logger: logging.Logger,
+    last_tick: float,
+    start: float,
+    round_idx: int,
+    done: int,
+    total: int,
+    accepted: int,
+    interval: float = GRADE_PROGRESS_INTERVAL,
+) -> float:
+    """Emit a throttled INFO heartbeat during a round's vector-grading phase.
+
+    Returns the (possibly updated) last-tick timestamp; logs at most once per
+    `interval` seconds so long rounds show steady progress without spamming.
+    """
+    now = time.perf_counter()
+    if now - last_tick < interval:
+        return last_tick
+    logger.info(
+        "atpg   round %2d  grading vector %d/%d  accepted=%d  elapsed=%.0fs",
+        round_idx,
+        done,
+        total,
+        accepted,
+        now - start,
+    )
+    return now
+
+
 DEFAULT_MAX_ATPG_ROUNDS = 20
 ATPGRANDOM_SEED = 0x5EED5EED
 
@@ -635,8 +669,18 @@ def run_progressive_native_atpg(
             stats.generated_vectors += len(new_random)
             stats.accepted_vectors += len(new_random)
             base_index = len(vectors) - len(new_random) + 1
+            grade_start = time.perf_counter()
+            grade_tick = grade_start
             for offset, vector in enumerate(new_random):
                 vector_index = base_index + offset
+                log.debug(
+                    "atpg   round %d  random vector %d/%d (index=%d) vs %d faults",
+                    round_idx,
+                    offset + 1,
+                    len(new_random),
+                    vector_index,
+                    len(active_ids),
+                )
                 sim_started = time.perf_counter()
                 _accept_and_simulate(
                     core,
@@ -657,6 +701,15 @@ def run_progressive_native_atpg(
                     on_vector_accepted=on_vector_accepted,
                 )
                 fault_sim_seconds += time.perf_counter() - sim_started
+                grade_tick = log_grade_progress(
+                    log,
+                    grade_tick,
+                    grade_start,
+                    round_idx,
+                    offset + 1,
+                    len(new_random),
+                    stats.accepted_vectors,
+                )
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
@@ -1086,8 +1139,18 @@ def run_progressive_transition_atpg(
             stats.generated_vectors += len(new_random)
             stats.accepted_vectors += len(new_random)
             base_index = len(pairs) - len(new_random) + 1
+            grade_start = time.perf_counter()
+            grade_tick = grade_start
             for offset, (launch, capture) in enumerate(new_random):
                 vector_index = base_index + offset
+                log.debug(
+                    "atpg   round %d  random pair %d/%d (index=%d) vs %d faults",
+                    round_idx,
+                    offset + 1,
+                    len(new_random),
+                    vector_index,
+                    len(active_ids),
+                )
                 sim_started = time.perf_counter()
                 _accept_and_simulate_transition(
                     core,
@@ -1107,6 +1170,15 @@ def run_progressive_transition_atpg(
                     sim_threads=sim_threads,
                 )
                 fault_sim_seconds += time.perf_counter() - sim_started
+                grade_tick = log_grade_progress(
+                    log,
+                    grade_tick,
+                    grade_start,
+                    round_idx,
+                    offset + 1,
+                    len(new_random),
+                    stats.accepted_vectors,
+                )
 
         with connect(effective_db_path) as conn:
             init_schema(conn)

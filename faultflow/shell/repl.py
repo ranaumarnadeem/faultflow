@@ -15,6 +15,32 @@ from faultflow.shell.session import ProjectSession
 from faultflow.shell.tcl_bridge import TclBridge
 
 
+def configure_logging(verbose: bool) -> None:
+    """Configure root logging for the shell.
+
+    Default (INFO): bare ``%(message)s`` so the interactive Tcl shell stays clean.
+    ``--verbose`` (DEBUG): prepend a clock + level + logger so the extra per-stage
+    detail is legible and timestamped. ``force=True`` so a later call (or a second
+    shell invocation in-process) re-applies the chosen level instead of being a
+    no-op once handlers exist.
+    """
+    if verbose:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s %(levelname)-5s %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+            stream=sys.stdout,
+            force=True,
+        )
+    else:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(message)s",
+            stream=sys.stdout,
+            force=True,
+        )
+
+
 def _session_from_config(config_path: Path | None, output_root: Path) -> ProjectSession:
     if config_path is None:
         return ProjectSession(output_root=output_root)
@@ -58,7 +84,7 @@ def run_shell(
     output_root: Path = Path("output"),
     verbose: bool = False,
 ) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+    configure_logging(verbose)
     session = _session_from_config(config, output_root)
     bridge = TclBridge(session)
     if script is not None:
