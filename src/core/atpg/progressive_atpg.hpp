@@ -12,6 +12,12 @@ namespace faultflow::atpg {
 struct ProgressiveDetection {
   int64_t fault_id = 0;
   int64_t vector_index = 0;
+
+  // Value equality so tests can assert the parallel grading result is
+  // bit-identical to the serial one (same detections in the same order).
+  bool operator==(const ProgressiveDetection& other) const {
+    return fault_id == other.fault_id && vector_index == other.vector_index;
+  }
 };
 
 struct SolveFaultResult {
@@ -68,6 +74,9 @@ bool verify_fault_vector(
     const std::vector<std::string>& blackbox_instances = {},
     const std::string& test_mode = "");
 
+// `sim_threads` parallelizes fault grading: <= 0 means auto (hardware
+// concurrency), 1 is serial, N uses N threads. The result is bit-identical for
+// any thread count (DB writes + merge happen serially after join).
 std::vector<ProgressiveDetection> simulate_incremental(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t campaign_id, int64_t run_id,
@@ -76,7 +85,7 @@ std::vector<ProgressiveDetection> simulate_incremental(
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {},
-    const std::string& test_mode = "");
+    const std::string& test_mode = "", int sim_threads = 1);
 
 std::vector<int64_t> simulate_tentative_detections(
     const std::string& json_path, const std::string& cell_map_path,

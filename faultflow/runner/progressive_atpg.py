@@ -18,6 +18,7 @@ from faultflow.config import (
     FaultflowConfig,
     interleave_easy_hard,
     parse_timeout_schedule,
+    resolve_sim_threads,
 )
 from faultflow.db import (
     CAMPAIGN_TYPE_COMB,
@@ -176,6 +177,7 @@ def _accept_and_simulate(
     unsupported: str,
     blackbox_instances: list[str],
     test_mode: str = "",
+    sim_threads: int = 1,
     on_vector_accepted: Callable[[dict[str, bool], int | None], None] | None,
 ) -> None:
     fault_id = fault_ids[0] if len(fault_ids) == 1 else None
@@ -198,6 +200,7 @@ def _accept_and_simulate(
         unsupported,
         blackbox_instances,
         test_mode,
+        sim_threads,
     )
     core.update_run_vector_count(db_path, run_id, vector_index)
 
@@ -441,6 +444,9 @@ def run_progressive_native_atpg(
 
     bb_instances = list(cfg.blackbox_instances)
     test_mode = cfg.test_mode
+    sim_threads = resolve_sim_threads(cfg.simulation.sim_threads)
+    if sim_threads > 1:
+        log.info("parallel fault grading across %d threads", sim_threads)
     core.ensure_faults_enumerated(
         json_path,
         effective_cell_map,
@@ -645,6 +651,7 @@ def run_progressive_native_atpg(
                     unsupported=unsupported,
                     blackbox_instances=bb_instances,
                     test_mode=test_mode,
+                    sim_threads=sim_threads,
                     on_vector_accepted=on_vector_accepted,
                 )
                 fault_sim_seconds += time.perf_counter() - sim_started
@@ -808,6 +815,7 @@ def run_progressive_native_atpg(
                         unsupported=unsupported,
                         blackbox_instances=bb_instances,
                         test_mode=test_mode,
+                        sim_threads=sim_threads,
                         on_vector_accepted=on_vector_accepted,
                     )
                     fault_sim_seconds += time.perf_counter() - sim_started

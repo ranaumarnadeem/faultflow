@@ -414,6 +414,11 @@ class ProjectSession:
                 )
             elif key == "atpg.workers":
                 cfg = replace(cfg, atpg=replace(cfg.atpg, workers=int(value)))
+            elif key == "simulation.sim_threads":
+                cfg = replace(
+                    cfg,
+                    simulation=replace(cfg.simulation, sim_threads=int(value)),
+                )
             elif key == "atpg.easy_fault_reserve":
                 cfg = replace(
                     cfg, atpg=replace(cfg.atpg, easy_fault_reserve=int(value))
@@ -714,10 +719,21 @@ class ProjectSession:
             "atpg.workers",
             "fault_model.collapsing",
             "report.threshold",
+            "simulation.sim_threads",
             "simulation.unsupported_cells",
         }
         if key not in allowed:
             raise ShellError(f"unsupported option: {key}", "CONFIG", "INVALID_OPTION")
+        if key == "simulation.sim_threads":
+            try:
+                if int(value) < 0:
+                    raise ValueError
+            except ValueError:
+                raise ShellError(
+                    "simulation.sim_threads must be a non-negative integer (0 = auto)",
+                    "CONFIG",
+                    "INVALID_VALUE",
+                )
         if key in {"atpg.max_rounds", "atpg.sat_timeout_seconds", "atpg.workers"}:
             try:
                 if int(value) < 1:

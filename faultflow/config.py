@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
@@ -157,6 +158,23 @@ class SimulationConfig:
     # Tie Yosys "x"/"z" constant bits to 0 before simulation.
     # Required for netlists with unconnected/don't-care inputs (e.g. unused scan pins).
     tie_xz: bool = False
+    # Threads used to parallelize fault GRADING (the dominant ATPG cost). 1 keeps
+    # the original serial behaviour; 0 = auto (cpu_count - 2, min 1); N uses N
+    # threads. Each thread owns its SimState over the shared immutable graph; the
+    # detected-set merge and the single SQLite writer stay on the calling thread,
+    # so coverage is bit-identical for any value. See resolve_sim_threads().
+    sim_threads: int = 1
+
+
+def resolve_sim_threads(sim_threads: int) -> int:
+    """Resolve a configured sim_threads value to a concrete worker count.
+
+    1 (or any positive N) is taken literally; 0 means auto-detect, leaving two
+    logical CPUs as headroom for the main loop / SAT waves. Always >= 1.
+    """
+    if sim_threads > 0:
+        return sim_threads
+    return max(1, (os.cpu_count() or 1) - 2)
 
 
 @dataclass(frozen=True)
@@ -459,6 +477,13 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     if verify_tool != "iverilog":
         raise ConfigError("verify_tool must be 'iverilog'")
 
+    try:
+        sim_threads = parser.getint("simulation", "sim_threads", fallback=1)
+    except ValueError:
+        raise ConfigError("sim_threads must be an integer")
+    if sim_threads < 0:
+        raise ConfigError("sim_threads must be >= 0 (0 = auto)")
+
     atpg_tool = parser.get("atpg", "tool", fallback="native")
     if atpg_tool not in {"native", "sat_atpg", "quaigh"}:
         raise ConfigError("atpg.tool must be native, sat_atpg, or quaigh")
@@ -535,6 +560,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             verify=_bool(parser, "simulation", "verify", False),
             verify_tool=verify_tool,
             tie_xz=_bool(parser, "simulation", "tie_xz", False),
+            sim_threads=sim_threads,
         ),
         atpg=AtpgConfig(
             tool=atpg_tool,

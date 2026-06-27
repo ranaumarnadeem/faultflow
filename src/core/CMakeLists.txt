@@ -41,6 +41,7 @@ endif()
 
 target_link_libraries(
   faultflow_core PUBLIC nlohmann_json::nlohmann_json SQLiteCpp ${CADICAL_LIBRARY}
+                        Threads::Threads
 )
 target_include_directories(faultflow_core PUBLIC ${CADICAL_INCLUDE_DIR})
 

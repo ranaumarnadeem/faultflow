@@ -32,6 +32,10 @@ verify            = false
 verify_tool       = iverilog
 verilog_models    = cells/sky130/sky130_fd_sc_hd.v
 tp_file           =
+# Threads for parallel fault grading (the dominant ATPG cost).
+#   1 = serial (default)   0 = auto (logical CPUs - 2, min 1)   N = N threads
+# Coverage is bit-identical for any value; only wall-clock changes.
+sim_threads       = 1
 
 [atpg]
 tool               = native

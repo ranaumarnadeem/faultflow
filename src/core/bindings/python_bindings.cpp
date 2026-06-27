@@ -341,12 +341,18 @@ py::list simulate_incremental_py(
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode = "") {
-  const std::vector<atpg::ProgressiveDetection> detections =
-      atpg::simulate_incremental(json_path, cell_map_path, db_path, campaign_id,
-                                 run_id, new_vectors, input_order, fault_ids,
-                                 vector_start_index, unsupported_policy,
-                                 blackbox_instances, test_mode);
+    const std::string& test_mode = "", int sim_threads = 1) {
+  // Release the GIL only around the pure-C++ grading (which fans out across
+  // sim_threads native threads, none of which touch Python); reacquire it before
+  // building the Python result list below.
+  std::vector<atpg::ProgressiveDetection> detections;
+  {
+    py::gil_scoped_release release;
+    detections = atpg::simulate_incremental(
+        json_path, cell_map_path, db_path, campaign_id, run_id, new_vectors,
+        input_order, fault_ids, vector_start_index, unsupported_policy,
+        blackbox_instances, test_mode, sim_threads);
+  }
   py::list out;
   for (const auto& det : detections) {
     py::dict row;
@@ -867,7 +873,7 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("input_order"), py::arg("fault_ids"),
         py::arg("vector_start_index"), py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("test_mode") = "");
+        py::arg("test_mode") = "", py::arg("sim_threads") = 1);
   m.def("simulate_tentative", &faultflow::simulate_tentative_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("vector"), py::arg("input_order"), py::arg("fault_ids"),

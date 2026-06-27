@@ -1,8 +1,10 @@
 #include "atpg/progressive_atpg.hpp"
 
 #include <algorithm>
+#include <exception>
 #include <random>
 #include <stdexcept>
+#include <thread>
 #include <tuple>
 #include <utility>
 
@@ -164,6 +166,124 @@ FaultBatch make_batch(const std::vector<ActiveFaultRecord>& active, size_t begin
     batch.mask |= lane.sa_mask;
   }
   return batch;
+}
+
+// ---- Parallel fault grading -------------------------------------------------
+// Grading the active fault list against one vector is embarrassingly parallel:
+// the CompiledSimGraph is immutable and shared read-only, BitParallelSim is
+// stateless (every simulate_batch allocates its own stack-local SimState), and a
+// fault's detected/not-detected verdict is a pure function of (graph, vector,
+// batch). So we slice the active list on 63-fault batch boundaries, grade each
+// slice (optionally on its own thread), and merge per-slice results back in
+// slice order. DB writes and the instrumentation-counter merge stay on the
+// CALLING thread AFTER join, so the result is bit-identical to serial for any
+// thread count and there is never more than one SQLite writer (never-happen #18).
+
+struct GradeRangeResult {
+  std::vector<size_t> detected_indices;         // indices into `active`, ascending
+  std::vector<ActiveFaultRecord> still_active;  // carry-forward, ascending
+  int64_t batch_fault_calls = 0;                // thread-local instrumentation tally
+};
+
+// Resolve the requested thread count. <= 0 means "auto" (hardware concurrency);
+// the Python layer normally resolves this already, so this is just a safe floor.
+int effective_sim_threads(int sim_threads) {
+  if (sim_threads > 0) {
+    return sim_threads;
+  }
+  const unsigned hw = std::thread::hardware_concurrency();
+  return hw == 0 ? 1 : static_cast<int>(hw);
+}
+
+// Grade active[range_begin, range_end) — a whole number of 63-fault batches (the
+// final partial batch lands in the last non-empty slice) — by calling
+// grade(batch) for each batch. Pure compute: no DB, no globals, no Python.
+template <typename GradeFn>
+GradeRangeResult grade_batch_range(const std::vector<ActiveFaultRecord>& active,
+                                   size_t range_begin, size_t range_end,
+                                   const GradeFn& grade) {
+  GradeRangeResult r;
+  r.detected_indices.reserve(range_end - range_begin);
+  r.still_active.reserve(range_end - range_begin);
+  for (size_t begin = range_begin; begin < range_end;
+       begin += kFaultLanesPerWord) {
+    const size_t end = std::min(begin + kFaultLanesPerWord, range_end);
+    const FaultBatch batch = make_batch(active, begin, end);
+    ++r.batch_fault_calls;
+    const uint64_t detected_mask = grade(batch);
+    for (size_t i = begin; i < end; ++i) {
+      const CompactFault& lane = batch.faults[i - begin];
+      if ((detected_mask & lane.sa_mask) != 0) {
+        r.detected_indices.push_back(i);
+      } else {
+        r.still_active.push_back(active[i]);
+      }
+    }
+  }
+  return r;
+}
+
+// Partition `active` into up to `sim_threads` slices on 63-fault batch
+// boundaries, grade each slice (spawning sim_threads-1 workers and running one
+// slice on the caller), and return per-slice results in slice order (== ascending
+// fault-index order, so the merge reproduces serial output exactly). `grade` MUST
+// be safe to call concurrently — BitParallelSim is stateless, so one shared
+// instance qualifies. A slice that throws is captured; after every thread is
+// joined the lowest-index failure is rethrown, so the surfaced exception is
+// deterministic regardless of scheduling.
+template <typename GradeFn>
+std::vector<GradeRangeResult> grade_active_parallel(
+    const std::vector<ActiveFaultRecord>& active, int sim_threads,
+    const GradeFn& grade) {
+  const size_t n = active.size();
+  const size_t num_batches = (n + kFaultLanesPerWord - 1) / kFaultLanesPerWord;
+  const size_t threads =
+      num_batches == 0
+          ? 1
+          : std::min(static_cast<size_t>(effective_sim_threads(sim_threads)),
+                     num_batches);
+
+  std::vector<GradeRangeResult> results(threads);
+  if (threads <= 1) {
+    results[0] = grade_batch_range(active, 0, n, grade);
+    return results;
+  }
+
+  const size_t base = num_batches / threads;
+  const size_t rem = num_batches % threads;
+  const auto bounds = [&](size_t t) {
+    const size_t lo_batch = t * base + std::min(t, rem);
+    const size_t hi_batch = lo_batch + base + (t < rem ? 1 : 0);
+    return std::pair<size_t, size_t>{
+        lo_batch * kFaultLanesPerWord,
+        std::min(hi_batch * kFaultLanesPerWord, n)};
+  };
+
+  std::vector<std::thread> pool;
+  pool.reserve(threads - 1);
+  std::vector<std::exception_ptr> errors(threads);
+  const auto run_slice = [&](size_t t) {
+    try {
+      const std::pair<size_t, size_t> range = bounds(t);
+      results[t] = grade_batch_range(active, range.first, range.second, grade);
+    } catch (...) {
+      errors[t] = std::current_exception();
+    }
+  };
+
+  for (size_t t = 1; t < threads; ++t) {
+    pool.emplace_back(run_slice, t);
+  }
+  run_slice(0);
+  for (std::thread& th : pool) {
+    th.join();
+  }
+  for (size_t t = 0; t < threads; ++t) {
+    if (errors[t]) {
+      std::rethrow_exception(errors[t]);
+    }
+  }
+  return results;
 }
 
 TestVector vector_from_map(const ParsedGraph& parsed,
@@ -328,7 +448,7 @@ std::vector<ProgressiveDetection> simulate_incremental(
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode) {
+    const std::string& test_mode, int sim_threads) {
   if (new_vectors.empty() || fault_ids.empty()) {
     return {};
   }
@@ -344,33 +464,35 @@ std::vector<ProgressiveDetection> simulate_incremental(
   const bool use_mode = (mode != TestMode::FUNCTIONAL) && !ctx.cg.wrapper_cells.empty();
   const ModeConfig mc = use_mode ? build_mode_config(ctx.cg, mode) : ModeConfig{};
 
-  BitParallelSim sim;
+  BitParallelSim sim;  // stateless; shared by every slice/thread for a vector
   std::vector<ProgressiveDetection> detections;
   std::vector<ActiveFaultRecord> active =
       load_active_fault_records(db_path, fault_ids, false);
   for (size_t vi = 0; vi < vectors.size() && !active.empty(); ++vi) {
+    const TestVector& vec = vectors[vi];
+    const auto grade = [&](const FaultBatch& batch) -> uint64_t {
+      return use_mode ? sim.simulate_batch(ctx.cg, vec, batch, mc)
+                      : sim.simulate_batch(ctx.cg, vec, batch);
+    };
+    const std::vector<GradeRangeResult> slices =
+        grade_active_parallel(active, sim_threads, grade);
+
+    // Merge on the calling thread in slice order (== ascending fault index):
+    // this reproduces the serial detections/still_active order exactly, keeps
+    // the single SQLite writer, and folds the per-thread instrumentation tally.
     std::vector<ActiveFaultRecord> still_active;
     still_active.reserve(active.size());
-    for (size_t begin = 0; begin < active.size(); begin += kFaultLanesPerWord) {
-      const size_t end =
-          std::min(begin + kFaultLanesPerWord, active.size());
-      const FaultBatch batch = make_batch(active, begin, end);
-      ++g_simulation_instrumentation.batch_fault_calls;
-      const uint64_t detected_mask = use_mode
-          ? sim.simulate_batch(ctx.cg, vectors[vi], batch, mc)
-          : sim.simulate_batch(ctx.cg, vectors[vi], batch);
-      for (size_t i = begin; i < end; ++i) {
-        const CompactFault& lane = batch.faults[i - begin];
-        if ((detected_mask & lane.sa_mask) != 0) {
-          const int64_t vector_index =
-              vector_start_index + static_cast<int64_t>(vi);
-          db::mark_fault_detected(db_path, campaign_id, run_id,
-                                  active[i].fault_id, vector_index);
-          detections.push_back({active[i].fault_id, vector_index});
-        } else {
-          still_active.push_back(active[i]);
-        }
+    const int64_t vector_index = vector_start_index + static_cast<int64_t>(vi);
+    for (const GradeRangeResult& sr : slices) {
+      for (const size_t idx : sr.detected_indices) {
+        db::mark_fault_detected(db_path, campaign_id, run_id,
+                                active[idx].fault_id, vector_index);
+        detections.push_back({active[idx].fault_id, vector_index});
       }
+      for (const ActiveFaultRecord& rec : sr.still_active) {
+        still_active.push_back(rec);
+      }
+      g_simulation_instrumentation.batch_fault_calls += sr.batch_fault_calls;
     }
     active = std::move(still_active);
   }
