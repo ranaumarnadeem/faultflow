@@ -6,7 +6,7 @@ from typing import Any
 
 from faultflow.scan.errors import ScanError
 from faultflow.scan.reports import hash_file
-from faultflow.scan.stitch import YOSYS_SCAN_CELL_TYPE, _load_json, _top_module
+from faultflow.scan.stitch import SCAN_CELL_TYPES, _load_json, _top_module
 
 
 @dataclass(frozen=True)
@@ -70,7 +70,7 @@ def check_scan_structure(
         scan_cells: dict[str, dict[str, Any]] = {
             str(name): cell
             for name, cell in cells_obj.items()
-            if isinstance(cell, dict) and cell.get("type") == YOSYS_SCAN_CELL_TYPE
+            if isinstance(cell, dict) and cell.get("type") in SCAN_CELL_TYPES
         }
         node_by_sdi: dict[int, str] = {}
         q_by_node: dict[str, int] = {}

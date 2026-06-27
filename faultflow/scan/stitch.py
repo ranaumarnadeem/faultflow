@@ -13,6 +13,26 @@ from faultflow.scan.errors import ScanError
 SCAN_CELL_TYPE = "$scanff_faultflow"
 YOSYS_SCAN_CELL_TYPE = "\\$scanff_faultflow"
 SCAN_CELL_PINS = ("CLK", "D", "SDI", "SE", "Q")
+# Scan cells that preserve a single async control, for stitching async-reset/set
+# FFs. Techmapped to sky130 sdfrtp_1 / sdfstp_1 (see faultflow/scan/techmap.py).
+SCAN_RESET_CELL_TYPE = "$scanff_r_faultflow"
+YOSYS_SCAN_RESET_CELL_TYPE = "\\$scanff_r_faultflow"
+SCAN_SET_CELL_TYPE = "$scanff_s_faultflow"
+YOSYS_SCAN_SET_CELL_TYPE = "\\$scanff_s_faultflow"
+
+# Every faultflow generic scan-cell type (plain + async reset/set), in both the
+# bare and Yosys-escaped spellings. Use this wherever scan cells are identified
+# so the async-reset/set variants are recognized alongside the plain cell.
+SCAN_CELL_TYPES = frozenset(
+    {
+        SCAN_CELL_TYPE,
+        YOSYS_SCAN_CELL_TYPE,
+        SCAN_RESET_CELL_TYPE,
+        YOSYS_SCAN_RESET_CELL_TYPE,
+        SCAN_SET_CELL_TYPE,
+        YOSYS_SCAN_SET_CELL_TYPE,
+    }
+)
 DEFAULT_SCAN_IN = "scan_in"
 DEFAULT_SCAN_OUT = "scan_out"
 DEFAULT_SCAN_ENABLE = "scan_en"
@@ -103,6 +123,12 @@ class _EligibleFF:
     clock_net: int
     data_net: int
     q_net: int
+    # Single async control to preserve through scan stitching: "none" | "reset" |
+    # "set". async_net is the control net (-1 if none); async_pin is the cell pin
+    # (RESET_B / SET_B) the scan-cell variant wires it to.
+    async_kind: str = "none"
+    async_net: int = -1
+    async_pin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -201,6 +227,28 @@ def _ff_pin(ff_meta: dict[str, Any], key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _async_control(ff_meta: dict[str, Any]) -> tuple[str, str | None]:
+    """The single async control of an FF as (kind, pin): ("reset", "RESET_B"),
+    ("set", "SET_B"), or ("none", None). Reads the cell-map `ff:` clear/preset
+    metadata (a {"pin": ...} dict, or a bare pin string)."""
+    for key, kind in (
+        ("clear", "reset"),
+        ("reset", "reset"),
+        ("preset", "set"),
+        ("set", "set"),
+    ):
+        spec = ff_meta.get(key)
+        if spec is None:
+            continue
+        if isinstance(spec, dict):
+            pin = spec.get("pin")
+            return kind, pin if isinstance(pin, str) and pin else None
+        if isinstance(spec, str) and spec:
+            return kind, spec
+        return kind, None
+    return "none", None
+
+
 def _all_int_bits(value: object) -> list[int]:
     if not isinstance(value, list):
         return []
@@ -272,12 +320,16 @@ def _reason_for_ff(
         return "existing_scan_cell"
     has_clear = "clear" in ff_meta or "reset" in ff_meta
     has_preset = "preset" in ff_meta or "set" in ff_meta
+    # A single async reset OR set is now scannable: stitching maps it to a scan
+    # cell that keeps the control net (sdfrtp/sdfstp) and the sim gates the
+    # control off during shift. Reset AND set together (dfbb*) has no sky130 scan
+    # cell, so it stays ineligible; the control pin must be a single net.
     if has_clear and has_preset:
         return "has_async_reset_set"
-    if has_clear:
-        return "has_async_reset"
-    if has_preset:
-        return "has_async_set"
+    if has_clear or has_preset:
+        _, pin = _async_control(ff_meta)
+        if pin is None or _maybe_one_bit(conns.get(pin)) is None:
+            return "unsupported_ff_shape"
     if ff_meta.get("trigger") == "NEGEDGE":
         return "negedge_clock"
     if ff_meta.get("trigger") != "POSEDGE":
@@ -307,7 +359,7 @@ def _collect_ffs(
         if not isinstance(cell, dict):
             raise ScanError(f"{instance}: cell entry is malformed")
         cell_type = str(cell.get("type", ""))
-        if cell_type in {SCAN_CELL_TYPE, YOSYS_SCAN_CELL_TYPE}:
+        if cell_type in SCAN_CELL_TYPES:
             ineligible.append(
                 IneligibleFF(str(instance), cell_type, "existing_scan_cell")
             )
@@ -344,6 +396,12 @@ def _collect_ffs(
         q_pin = _ff_pin(ff_meta, "output")
         if clk_pin is None or d_pin is None or q_pin is None:
             raise ScanError(f"{instance}: internal FF metadata validation failed")
+        async_kind, async_pin = _async_control(ff_meta)
+        async_net = (
+            _one_bit(conns.get(async_pin), f"{instance}.{async_pin}")
+            if async_kind != "none" and async_pin is not None
+            else -1
+        )
         eligible.append(
             _EligibleFF(
                 instance=str(instance),
@@ -353,6 +411,9 @@ def _collect_ffs(
                 clock_net=_one_bit(conns.get(clk_pin), f"{instance}.{clk_pin}"),
                 data_net=_one_bit(conns.get(d_pin), f"{instance}.{d_pin}"),
                 q_net=_one_bit(conns.get(q_pin), f"{instance}.{q_pin}"),
+                async_kind=async_kind,
+                async_net=async_net,
+                async_pin=async_pin,
             )
         )
     return eligible, ineligible
@@ -717,25 +778,39 @@ def stitch_scan_json(
                 "faultflow_scan_index": str(record.chain_position),
             }
         )
+        port_directions = {
+            "CLK": "input",
+            "D": "input",
+            "SDI": "input",
+            "SE": "input",
+            "Q": "output",
+        }
+        connections = {
+            "CLK": [record.clock_net],
+            "D": [record.data_net],
+            "SDI": [record.scan_in_net],
+            "SE": [record.scan_enable_net],
+            "Q": [record.q_net],
+        }
+        # Preserve a single async control by emitting the matching scan-cell
+        # variant and wiring its RESET_B / SET_B to the original control net.
+        if ff.async_kind == "reset":
+            cell_type = YOSYS_SCAN_RESET_CELL_TYPE
+            port_directions["RESET_B"] = "input"
+            connections["RESET_B"] = [ff.async_net]
+        elif ff.async_kind == "set":
+            cell_type = YOSYS_SCAN_SET_CELL_TYPE
+            port_directions["SET_B"] = "input"
+            connections["SET_B"] = [ff.async_net]
+        else:
+            cell_type = YOSYS_SCAN_CELL_TYPE
         cells[record.instance] = {
             "hide_name": ff.cell.get("hide_name", 0),
-            "type": YOSYS_SCAN_CELL_TYPE,
+            "type": cell_type,
             "parameters": dict(ff.cell.get("parameters", {})),
             "attributes": attrs,
-            "port_directions": {
-                "CLK": "input",
-                "D": "input",
-                "SDI": "input",
-                "SE": "input",
-                "Q": "output",
-            },
-            "connections": {
-                "CLK": [record.clock_net],
-                "D": [record.data_net],
-                "SDI": [record.scan_in_net],
-                "SE": [record.scan_enable_net],
-                "Q": [record.q_net],
-            },
+            "port_directions": port_directions,
+            "connections": connections,
         }
 
     for chain in plan.chains:

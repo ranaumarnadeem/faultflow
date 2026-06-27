@@ -240,11 +240,19 @@ void update_ff_states(const CompiledSimGraph& cg,
   for (size_t idx = 0; idx < cg.ff_nodes.size(); ++idx) {
     const SimNode& sn = cg.nodes.at(cg.ff_nodes[idx]);
     const CompiledFFConfig& cfg = cg.ff_configs.at(sn.ff_cfg);
+    // Scan shift gates async set/reset off: while scan-enable is asserted a
+    // scannable async-reset/set FF (sdfrtp/sdfstp) acts as a pure shift element
+    // (set/reset ignored), so the chain is not wiped by an active reset during
+    // shift; set/reset apply normally at capture (SE inactive). No-op for
+    // plain-scan or non-scan FFs.
+    const bool scan_active =
+        cfg.has_scan && sn.in4 != UNUSED_INPUT && sn.in5 != UNUSED_INPUT &&
+        control_active(values[sn.in5], cfg.scan_enable_polarity);
     const bool clear_active =
-        cfg.has_clear && sn.in2 != UNUSED_INPUT &&
+        !scan_active && cfg.has_clear && sn.in2 != UNUSED_INPUT &&
         control_active(values[sn.in2], cfg.clear_polarity);
     const bool preset_active =
-        cfg.has_preset && sn.in3 != UNUSED_INPUT &&
+        !scan_active && cfg.has_preset && sn.in3 != UNUSED_INPUT &&
         control_active(values[sn.in3], cfg.preset_polarity);
     if (clear_active && preset_active) {
       next[idx] = cfg.clear_preset_conflict_value != 0;
@@ -260,8 +268,7 @@ void update_ff_states(const CompiledSimGraph& cg,
     }
     if (edge_active(prev_values[sn.in1], values[sn.in1], cfg.trigger)) {
       bool capture = values[sn.in0];
-      if (cfg.has_scan && sn.in4 != UNUSED_INPUT && sn.in5 != UNUSED_INPUT &&
-          control_active(values[sn.in5], cfg.scan_enable_polarity)) {
+      if (scan_active) {
         capture = values[sn.in4];
       }
       next[idx] = capture;

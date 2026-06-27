@@ -5,7 +5,14 @@ from pathlib import Path
 
 from faultflow.config import FaultflowConfig
 
-SCANFF_KEYS = ("$scanff_faultflow", "\\$scanff_faultflow")
+SCANFF_KEYS = (
+    "$scanff_faultflow",
+    "\\$scanff_faultflow",
+    "$scanff_r_faultflow",
+    "\\$scanff_r_faultflow",
+    "$scanff_s_faultflow",
+    "\\$scanff_s_faultflow",
+)
 INTERNAL_ATPG_VIEW_KEYS = (
     "$faultflow_observe_buf",
     "\\$faultflow_observe_buf",

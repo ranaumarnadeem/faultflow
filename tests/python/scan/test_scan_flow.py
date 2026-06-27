@@ -152,6 +152,7 @@ def test_stitch_scan_json_builds_balanced_multi_chains(tmp_path: Path) -> None:
 
 
 def test_stitch_scan_json_rejects_reset_ff(tmp_path: Path) -> None:
+    # dffsr = async reset AND set (dfbbp): no sky130 scan cell exists, still rejected.
     source = ROOT / "tests/cpp/fixtures/tiny_dffsr.json"
 
     with pytest.raises(ScanError, match="has_async_reset_set"):
@@ -161,6 +162,109 @@ def test_stitch_scan_json_rejects_reset_ff(tmp_path: Path) -> None:
             "tiny_dffsr",
             tmp_path / "tiny_dffsr_scan_generic.json",
         )
+
+
+def _tiny_dfrtp_json() -> dict[str, object]:
+    return {
+        "modules": {
+            "tiny_dfrtp": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "CLK": {"direction": "input", "bits": [2]},
+                    "D": {"direction": "input", "bits": [3]},
+                    "RESET_B": {"direction": "input", "bits": [4]},
+                    "Q": {"direction": "output", "bits": [5]},
+                },
+                "cells": {
+                    "u0": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__dfrtp_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {
+                            "CLK": "input",
+                            "D": "input",
+                            "RESET_B": "input",
+                            "Q": "output",
+                        },
+                        "connections": {"CLK": [2], "D": [3], "RESET_B": [4], "Q": [5]},
+                    }
+                },
+                "netnames": {
+                    "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+                    "D": {"hide_name": 0, "bits": [3], "attributes": {}},
+                    "RESET_B": {"hide_name": 0, "bits": [4], "attributes": {}},
+                    "Q": {"hide_name": 0, "bits": [5], "attributes": {}},
+                },
+            }
+        }
+    }
+
+
+def test_stitch_scan_json_keeps_async_reset(tmp_path: Path) -> None:
+    # Single async-reset FF (dfrtp) is now scannable: stitched to the reset-
+    # preserving scan cell, with RESET_B wired to the original reset net.
+    from faultflow.scan.stitch import YOSYS_SCAN_RESET_CELL_TYPE
+
+    source = _write_json(tmp_path / "tiny_dfrtp.json", _tiny_dfrtp_json())
+    output = tmp_path / "tiny_dfrtp_scan_generic.json"
+
+    result = stitch_scan_json(source, CELL_MAP, "tiny_dfrtp", output)
+
+    assert result.cell_count == 1
+    assert result.ineligible_ffs == []
+    data = json.loads(output.read_text(encoding="utf-8"))
+    cell = data["modules"]["tiny_dfrtp"]["cells"]["u0"]
+    assert cell["type"] == YOSYS_SCAN_RESET_CELL_TYPE
+    assert cell["connections"]["RESET_B"] == [4]
+    assert cell["connections"]["SDI"] == module_scan_in_bits(data, "tiny_dfrtp")
+
+
+def module_scan_in_bits(data: dict[str, Any], top: str) -> list[int]:
+    return data["modules"][top]["ports"]["scan_in"]["bits"]
+
+
+def test_async_reset_scan_atpg_end_to_end(tmp_path: Path) -> None:
+    # The autoMBIST scenario: an async-reset controller (always_ff @(posedge clk
+    # or negedge rst_n)) must scan-insert and grade. The reset is held inactive
+    # during the scan test so the reduced view stays consistent with the protocol.
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+    rtl = tmp_path / "arst_seq.v"
+    rtl.write_text(
+        "module arst_seq (input clk, input rst_n, input a, input b,\n"
+        "                 output reg dout);\n"
+        "  reg q0;\n"
+        "  always @(posedge clk or negedge rst_n)\n"
+        "    if (!rst_n) q0 <= 1'b0; else q0 <= a & b;\n"
+        "  always @(posedge clk or negedge rst_n)\n"
+        "    if (!rst_n) dout <= 1'b0; else dout <= ~q0;\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+    from faultflow.shell.session import ProjectSession
+    from faultflow.shell.tcl_bridge import TclBridge
+
+    session = ProjectSession(output_root=tmp_path / "out")
+    bridge = TclBridge(session)
+    bridge.call("read_netlist", str(rtl), "-top", "arst_seq")
+    bridge.call("use_lib_cells", "sky130")
+    bridge.call("add_clock", "clk")
+    bridge.call("synth")
+    # Both async-reset (dfrtp) FFs must be eligible and stitched.
+    assert "cells=2" in str(bridge.call("add_scan", "-chains", "1"))
+    bridge.call("check_scan")  # must not raise
+    bridge.call("run_atpg", "-scan", "-target", "100.0")
+
+    report = json.loads(
+        (
+            tmp_path / "out/arst_seq/.faultflow/intermediate/coverage_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    summary = report["summary"]
+    assert summary["detected"] > 0
+    # The combinational logic of the controller is fully gradeable.
+    assert summary["undetected"] == 0
 
 
 def test_render_scan_techmap_targets_sky130_scan_cell() -> None:

@@ -10,7 +10,7 @@ from faultflow.coverage.site_key import (
     stem_site_key,
 )
 from faultflow.scan.errors import ScanError
-from faultflow.scan.stitch import YOSYS_SCAN_CELL_TYPE, _load_json, _top_module
+from faultflow.scan.stitch import SCAN_CELL_TYPES, _load_json, _top_module
 
 PPI_PREFIX = "__ppi_"
 PPO_PREFIX = "__ppo_"
@@ -336,7 +336,7 @@ def build_scan_atpg_view(
         cell = cells.get(instance)
         if not isinstance(cell, dict):
             raise ScanError(f"scan cell missing from generic JSON: {instance}")
-        if cell.get("type") not in {YOSYS_SCAN_CELL_TYPE, "$scanff_faultflow"}:
+        if cell.get("type") not in SCAN_CELL_TYPES:
             raise ScanError(f"{instance}: expected scan FF cell type")
 
         q_net = int(record["q_net"])

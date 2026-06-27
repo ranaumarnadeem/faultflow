@@ -1604,5 +1604,71 @@
       "trigger": "POSEDGE",
       "preset": {"pin": "SET_B", "level": "LOW", "value": 1}
     }
+  },
+  "sky130_fd_sc_hd__sdfrtp_*": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D", "SCD", "SCE", "RESET_B"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "clear": {"pin": "RESET_B", "level": "LOW", "value": 0},
+      "scan": {"in": "SCD", "enable": "SCE", "enable_polarity": "HIGH"}
+    }
+  },
+  "sky130_fd_sc_hd__sdfstp_*": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D", "SCD", "SCE", "SET_B"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "preset": {"pin": "SET_B", "level": "LOW", "value": 1},
+      "scan": {"in": "SCD", "enable": "SCE", "enable_polarity": "HIGH"}
+    }
+  },
+  "$scanff_r_faultflow": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D", "SDI", "SE", "RESET_B"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK", "data": "D", "output": "Q", "trigger": "POSEDGE",
+      "clear": {"pin": "RESET_B", "level": "LOW", "value": 0},
+      "scan": {"in": "SDI", "enable": "SE", "enable_polarity": "HIGH"}
+    }
+  },
+  "\\$scanff_r_faultflow": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D", "SDI", "SE", "RESET_B"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK", "data": "D", "output": "Q", "trigger": "POSEDGE",
+      "clear": {"pin": "RESET_B", "level": "LOW", "value": 0},
+      "scan": {"in": "SDI", "enable": "SE", "enable_polarity": "HIGH"}
+    }
+  },
+  "$scanff_s_faultflow": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D", "SDI", "SE", "SET_B"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK", "data": "D", "output": "Q", "trigger": "POSEDGE",
+      "preset": {"pin": "SET_B", "level": "LOW", "value": 1},
+      "scan": {"in": "SDI", "enable": "SE", "enable_polarity": "HIGH"}
+    }
+  },
+  "\\$scanff_s_faultflow": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D", "SDI", "SE", "SET_B"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK", "data": "D", "output": "Q", "trigger": "POSEDGE",
+      "preset": {"pin": "SET_B", "level": "LOW", "value": 1},
+      "scan": {"in": "SDI", "enable": "SE", "enable_polarity": "HIGH"}
+    }
   }
 }

@@ -42,6 +42,7 @@ from faultflow.runner.progressive_atpg import (
 from faultflow.runner.runner import RunnerError
 from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX
 from faultflow.scan.cell_map import resolve_scan_cell_map
+from faultflow.scan.stitch import SCAN_CELL_TYPES
 from faultflow.scan.protocol import ScanPattern, serialize_vector
 from faultflow.scan.domain_reach import (
     compute_cross_domain_net_ids,
@@ -78,6 +79,12 @@ class ScanPipelineContext:
     wbr_stimulus_name_by_port: dict[str, str] = field(default_factory=dict)
     wbr_observe_name_by_port: dict[str, str] = field(default_factory=dict)
     wbr_decoupled_bits: frozenset[int] = frozenset()
+    # Async set/reset primary inputs held at their INACTIVE level for the whole
+    # scan test (standard scan DFT). Maps PI name -> inactive value. Keeps the
+    # reduced view (which ignores the FF's async control) consistent with the full
+    # scan protocol (which applies it at capture). Empty unless the design has
+    # scannable async-reset/set FFs whose control pin is a primary input.
+    reset_pi_holds: dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass
@@ -87,6 +94,48 @@ class _FaultRow:
     fault_type: str
     net_index: int = -1
     net_id: int = -1
+
+
+def _scan_reset_pi_holds(
+    generic_json: Path, top: str, cell_map: dict[str, Any]
+) -> dict[str, bool]:
+    """Primary inputs that drive a scannable async-reset/set FF's control pin,
+    mapped to the INACTIVE value to hold them at during the scan test.
+
+    Only direct PI controls are returned (the common rst_n case); a control net
+    driven by logic cannot be held via a PI value and is skipped.
+    """
+    try:
+        data = json.loads(Path(generic_json).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    module = data.get("modules", {}).get(top)
+    if not isinstance(module, dict):
+        return {}
+    bit_to_input: dict[int, str] = {}
+    for name, port in module.get("ports", {}).items():
+        if isinstance(port, dict) and port.get("direction") == "input":
+            bits = port.get("bits", [])
+            if isinstance(bits, list) and len(bits) == 1 and isinstance(bits[0], int):
+                bit_to_input[bits[0]] = str(name)
+    holds: dict[str, bool] = {}
+    for cell in module.get("cells", {}).values():
+        if not isinstance(cell, dict) or cell.get("type") not in SCAN_CELL_TYPES:
+            continue
+        ctype = str(cell.get("type"))
+        entry = cell_map.get(ctype) or cell_map.get(ctype.lstrip("\\"))
+        ff = entry.get("ff", {}) if isinstance(entry, dict) else {}
+        for ctrl_key in ("clear", "preset"):
+            spec = ff.get(ctrl_key) if isinstance(ff, dict) else None
+            if not isinstance(spec, dict):
+                continue
+            conn = cell.get("connections", {}).get(spec.get("pin"))
+            if isinstance(conn, list) and len(conn) == 1 and isinstance(conn[0], int):
+                pi = bit_to_input.get(conn[0])
+                if pi is not None:
+                    # Active-low control (level LOW) is inactive when driven high.
+                    holds[pi] = spec.get("level") == "LOW"
+    return holds
 
 
 def build_scan_pipeline_context(
@@ -109,6 +158,13 @@ def build_scan_pipeline_context(
         for entry in pseudo_port_map.values()
         if isinstance(entry.get("boundary"), dict) and entry.get("ppo_port") is not None
     }
+    try:
+        cell_map = json.loads(cfg.cell_lib.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        cell_map = {}
+    reset_pi_holds = _scan_reset_pi_holds(
+        generic_json, str(manifest.get("top", cfg.top)), cell_map
+    )
     return ScanPipelineContext(
         cfg=cfg,
         manifest=manifest,
@@ -122,6 +178,7 @@ def build_scan_pipeline_context(
         wbr_decoupled_bits=(
             wbr_decoupled_bits if wbr_decoupled_bits is not None else frozenset()
         ),
+        reset_pi_holds=reset_pi_holds,
     )
 
 
@@ -492,6 +549,15 @@ def _process_scan_candidate(
     (`los_head_scan_in`). The reduced-view expectation, scan-pattern unload, and
     golden gate use the frame-1 (V2) materialization, and grading runs two captures.
     """
+    # Hold async set/reset PIs at their inactive level for the whole scan test, so
+    # the reduced view (which ignores the FF's async control) stays consistent with
+    # the full scan protocol (which applies it at capture). No-op for designs
+    # without scannable async-reset/set FFs.
+    if scan_ctx.reset_pi_holds:
+        vector = {
+            **vector,
+            **{k: v for k, v in scan_ctx.reset_pi_holds.items() if k in vector},
+        }
     is_los = transition and launch_mode == "los"
     is_loc = transition and launch_mode == "loc"
     head_bits = los_head_scan_in or {}

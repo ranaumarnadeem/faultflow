@@ -161,6 +161,63 @@ TEST_CASE("Clock net faults remain excluded by default for FF metadata",
   REQUIRE(excluded == 2);
 }
 
+TEST_CASE("Scannable async-reset FF gates reset during shift, applies at capture",
+          "[sequential][scan]") {
+  // sdfrtp = scan FF with async reset. nets: CLK=2 D=3 SCD=4 SCE=5 RESET_B=6 Q=7.
+  const CompiledSimGraph cg = test::load_compiled("tiny_sdfrtp.json");
+  GoldenRefSim golden;
+  BitParallelSim parallel;
+
+  // (1) Shift: SCE=1, RESET_B=0 (asserted). The reset must be GATED OFF during
+  //     shift, so the FF captures the scan-in SCD=1 instead of resetting.
+  {
+    TestVector vec;
+    vec.cycles = {
+        cycle({{2, false}, {3, false}, {4, true}, {5, true}, {6, false}}, false),
+        cycle({{2, true}, {3, false}, {4, true}, {5, true}, {6, false}}, true),
+    };
+    REQUIRE(sampled_q(golden.simulate_sequence_fault_free(cg, vec), 7));
+  }
+
+  // (2) Capture: SCE=0, RESET_B=0 (asserted) → async reset forces Q=0 even though
+  //     the FF started at 1.
+  {
+    TestVector vec;
+    vec.initial_ff_state = {true};
+    vec.cycles = {
+        cycle({{2, false}, {3, true}, {4, false}, {5, false}, {6, false}}, true),
+    };
+    REQUIRE_FALSE(sampled_q(golden.simulate_sequence_fault_free(cg, vec), 7));
+  }
+
+  // (3) Capture: SCE=0, RESET_B=1 (inactive), D=1 → functional capture Q=1.
+  {
+    TestVector vec;
+    vec.cycles = {
+        cycle({{2, false}, {3, true}, {4, false}, {5, false}, {6, true}}, false),
+        cycle({{2, true}, {3, true}, {4, false}, {5, false}, {6, true}}, true),
+    };
+    REQUIRE(sampled_q(golden.simulate_sequence_fault_free(cg, vec), 7));
+  }
+
+  // (4) Golden == bit-parallel: a scan-in SA0 corrupts the shifted bit (Q=0 not
+  //     1); both engines must agree it is detected.
+  {
+    TestVector vec;
+    vec.cycles = {
+        cycle({{2, false}, {3, false}, {4, true}, {5, true}, {6, false}}, false),
+        cycle({{2, true}, {3, false}, {4, true}, {5, true}, {6, false}}, true),
+    };
+    CompactFault scd_sa0;
+    scd_sa0.net_index = cg.yosys_to_compiled.at(4);
+    scd_sa0.type = FaultType::SA0;
+    const auto ff = golden.simulate_sequence_fault_free(cg, vec);
+    const auto faulty = golden.simulate_sequence_with_fault(cg, vec, scd_sa0);
+    REQUIRE(golden.is_sequence_detected(cg, ff, faulty));
+    REQUIRE(parallel.simulate_single_fault(cg, vec, scd_sa0));
+  }
+}
+
 TEST_CASE("Sync reset fixture resets through D-cone logic", "[sequential]") {
   const CompiledSimGraph cg = test::load_compiled("tiny_sync_reset.json");
   GoldenRefSim sim;

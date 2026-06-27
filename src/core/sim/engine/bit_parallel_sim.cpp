@@ -244,13 +244,22 @@ void BitParallelSim::update_ff_states(SimState& state,
   for (size_t idx = 0; idx < cg.ff_nodes.size(); ++idx) {
     const SimNode& sn = cg.nodes.at(cg.ff_nodes[idx]);
     const CompiledFFConfig& cfg = cg.ff_configs.at(sn.ff_cfg);
+    // Scan shift gates async set/reset off: a scannable async-reset/set FF
+    // (sdfrtp/sdfstp) behaves as a pure shift element while scan-enable is
+    // asserted, so the chain is not wiped by an active reset during shift. The
+    // set/reset apply normally at capture (SE inactive). No-op for plain-scan or
+    // non-scan FFs (scan_active == 0).
+    const uint64_t scan_active =
+        (cfg.has_scan && sn.in4 != UNUSED_INPUT && sn.in5 != UNUSED_INPUT)
+            ? active_mask(nv[sn.in5], cfg.scan_enable_polarity)
+            : 0ULL;
     const uint64_t clear =
         (cfg.has_clear && sn.in2 != UNUSED_INPUT)
-            ? active_mask(nv[sn.in2], cfg.clear_polarity)
+            ? active_mask(nv[sn.in2], cfg.clear_polarity) & ~scan_active
             : 0ULL;
     const uint64_t preset =
         (cfg.has_preset && sn.in3 != UNUSED_INPUT)
-            ? active_mask(nv[sn.in3], cfg.preset_polarity)
+            ? active_mask(nv[sn.in3], cfg.preset_polarity) & ~scan_active
             : 0ULL;
     const uint64_t conflict = clear & preset;
     const uint64_t clear_only = clear & ~preset;
@@ -260,8 +269,6 @@ void BitParallelSim::update_ff_states(SimState& state,
         ~(clear | preset);
     uint64_t capture = nv[sn.in0];
     if (cfg.has_scan && sn.in4 != UNUSED_INPUT && sn.in5 != UNUSED_INPUT) {
-      const uint64_t scan_active =
-          active_mask(nv[sn.in5], cfg.scan_enable_polarity);
       capture = (capture & ~scan_active) | (nv[sn.in4] & scan_active);
     }
 
