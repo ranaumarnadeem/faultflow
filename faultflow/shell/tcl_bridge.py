@@ -258,6 +258,7 @@ proc {name} {{args}} {{
 
     def _run_atpg(self, args: list[str]) -> Any:
         scan = False
+        transition_model: str | None = None
         options: dict[str, object] = {}
         index = 0
         while index < len(args):
@@ -271,9 +272,21 @@ proc {name} {{args}} {{
             elif key == "-sa":
                 index += 1
             elif key == "-tf":
-                raise unsupported(
-                    "transition-fault ATPG is not supported", "TRANSITION_FAULT"
-                )
+                if index + 1 >= len(args):
+                    raise ShellError(
+                        "run_atpg -tf requires a launch style: broadside|los",
+                        "CONFIG",
+                        "INVALID_OPTION",
+                    )
+                mode = str(args[index + 1]).lower()
+                if mode not in {"broadside", "los"}:
+                    raise ShellError(
+                        f"invalid transition launch: {mode} (expected broadside|los)",
+                        "CONFIG",
+                        "INVALID_VALUE",
+                    )
+                transition_model = mode
+                index += 2
             elif key in {"-max", "-target"} and index + 1 < len(args):
                 target = "max_rounds" if key == "-max" else "target_coverage"
                 raw = args[index + 1]
@@ -290,7 +303,9 @@ proc {name} {{args}} {{
                     "CONFIG",
                     "INVALID_OPTION",
                 )
-        return self.session.run_atpg(scan=scan, **options)
+        return self.session.run_atpg(
+            scan=scan, transition_model=transition_model, **options
+        )
 
     def _check_scan(self, args: list[str]) -> Any:
         if args:

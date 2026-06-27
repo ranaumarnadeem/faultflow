@@ -637,7 +637,13 @@ class ProjectSession:
         self._refresh_report()
         return result
 
-    def run_atpg(self, *, scan: bool = False, **options: object) -> OperationResult:
+    def run_atpg(
+        self,
+        *,
+        scan: bool = False,
+        transition_model: str | None = None,
+        **options: object,
+    ) -> OperationResult:
         if self.top is None:
             raise precondition("run read_netlist first", "NO_DESIGN")
         if not self.synthesized:
@@ -659,9 +665,24 @@ class ProjectSession:
                 "scan check does not match the current scanned netlist",
                 "SCAN_CHECK_STALE",
             )
+        cfg = self.materialize_config()
+        if transition_model is not None:
+            if cfg.fault_model.collapsing:
+                raise unsupported(
+                    "fault collapsing is not supported for transition ATPG; "
+                    "set fault_model.collapsing false",
+                    "TRANSITION_COLLAPSING",
+                )
+            # broadside == launch-on-capture (combinational two-pattern); los ==
+            # launch-on-shift (scan-only, enforced by the runner).
+            launch = "los" if transition_model == "los" else "loc"
+            cfg = replace(
+                cfg,
+                fault_model=replace(cfg.fault_model, model="transition", launch=launch),
+            )
         if bool(options.pop("serial_ref", False)):
-            return self.service.serial_reference(self.materialize_config(), scan=scan)
-        result = self.service.run_atpg(self.materialize_config(), scan=scan, **options)
+            return self.service.serial_reference(cfg, scan=scan)
+        result = self.service.run_atpg(cfg, scan=scan, **options)
         self._refresh_report()
         return result
 
