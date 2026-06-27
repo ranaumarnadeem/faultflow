@@ -834,7 +834,7 @@ std::vector<int64_t> simulate_tentative_from_preloaded(
     const std::vector<std::string>& input_order,
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode) {
+    const std::string& test_mode, int sim_threads) {
   if (preloaded.empty()) {
     return {};
   }
@@ -844,7 +844,7 @@ std::vector<int64_t> simulate_tentative_from_preloaded(
   const TestMode mode = parse_test_mode(test_mode);
   const bool use_mode = (mode != TestMode::FUNCTIONAL) && !ctx.cg.wrapper_cells.empty();
   const ModeConfig mc = use_mode ? build_mode_config(ctx.cg, mode) : ModeConfig{};
-  BitParallelSim sim;
+  BitParallelSim sim;  // stateless; shared by every slice/thread
 
   std::vector<ActiveFaultRecord> active;
   active.reserve(preloaded.size());
@@ -855,20 +855,20 @@ std::vector<int64_t> simulate_tentative_from_preloaded(
     active.push_back({fault_id, cf});
   }
 
+  const auto grade = [&](const FaultBatch& batch) -> uint64_t {
+    return use_mode ? sim.simulate_batch(ctx.cg, tv, batch, mc)
+                    : sim.simulate_batch(ctx.cg, tv, batch);
+  };
+  const std::vector<GradeRangeResult> slices =
+      grade_active_parallel(active, sim_threads, grade);
+
+  // Detected ids in ascending fault-index (slice) order — identical to serial.
   std::vector<int64_t> detected;
-  for (size_t begin = 0; begin < active.size(); begin += kFaultLanesPerWord) {
-    const size_t end = std::min(begin + kFaultLanesPerWord, active.size());
-    const FaultBatch batch = make_batch(active, begin, end);
-    ++g_simulation_instrumentation.batch_fault_calls;
-    const uint64_t detected_mask = use_mode
-        ? sim.simulate_batch(ctx.cg, tv, batch, mc)
-        : sim.simulate_batch(ctx.cg, tv, batch);
-    for (size_t i = begin; i < end; ++i) {
-      const CompactFault& lane = batch.faults[i - begin];
-      if ((detected_mask & lane.sa_mask) != 0) {
-        detected.push_back(active[i].fault_id);
-      }
+  for (const GradeRangeResult& sr : slices) {
+    for (const size_t idx : sr.detected_indices) {
+      detected.push_back(active[idx].fault_id);
     }
+    g_simulation_instrumentation.batch_fault_calls += sr.batch_fault_calls;
   }
   return detected;
 }
@@ -880,7 +880,7 @@ std::vector<int64_t> simulate_transition_tentative_from_preloaded(
     const std::map<std::string, bool>& capture,
     const std::vector<std::string>& input_order,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances, int sim_threads) {
   if (preloaded.empty()) {
     return {};
   }
@@ -888,7 +888,7 @@ std::vector<int64_t> simulate_transition_tentative_from_preloaded(
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const TestVector v1 = vector_from_map(ctx.parsed, launch, input_order);
   const TestVector v2 = vector_from_map(ctx.parsed, capture, input_order);
-  BitParallelSim sim;
+  BitParallelSim sim;  // stateless; shared by every slice/thread
 
   std::vector<ActiveFaultRecord> active;
   active.reserve(preloaded.size());
@@ -899,19 +899,18 @@ std::vector<int64_t> simulate_transition_tentative_from_preloaded(
     active.push_back({fault_id, cf});
   }
 
+  const auto grade = [&](const FaultBatch& batch) -> uint64_t {
+    return sim.simulate_transition_batch(ctx.cg, v1, v2, batch);
+  };
+  const std::vector<GradeRangeResult> slices =
+      grade_active_parallel(active, sim_threads, grade);
+
   std::vector<int64_t> detected;
-  for (size_t begin = 0; begin < active.size(); begin += kFaultLanesPerWord) {
-    const size_t end = std::min(begin + kFaultLanesPerWord, active.size());
-    const FaultBatch batch = make_batch(active, begin, end);
-    ++g_simulation_instrumentation.batch_fault_calls;
-    const uint64_t detected_mask =
-        sim.simulate_transition_batch(ctx.cg, v1, v2, batch);
-    for (size_t i = begin; i < end; ++i) {
-      const CompactFault& lane = batch.faults[i - begin];
-      if ((detected_mask & lane.sa_mask) != 0) {
-        detected.push_back(active[i].fault_id);
-      }
+  for (const GradeRangeResult& sr : slices) {
+    for (const size_t idx : sr.detected_indices) {
+      detected.push_back(active[idx].fault_id);
     }
+    g_simulation_instrumentation.batch_fault_calls += sr.batch_fault_calls;
   }
   return detected;
 }

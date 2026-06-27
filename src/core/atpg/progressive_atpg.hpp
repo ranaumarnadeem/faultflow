@@ -147,7 +147,7 @@ std::vector<int64_t> simulate_tentative_from_preloaded(
     const std::vector<std::string>& input_order,
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {},
-    const std::string& test_mode = "");
+    const std::string& test_mode = "", int sim_threads = 1);
 
 std::vector<int64_t> simulate_transition_tentative_from_preloaded(
     const std::string& json_path, const std::string& cell_map_path,
@@ -156,7 +156,8 @@ std::vector<int64_t> simulate_transition_tentative_from_preloaded(
     const std::map<std::string, bool>& capture,
     const std::vector<std::string>& input_order,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances = {});
+    const std::vector<std::string>& blackbox_instances = {},
+    int sim_threads = 1);
 
 // ---- Transition model (scan launch-on-capture) -----------------------------
 // SAT on the reduced scan ATPG view: the LOC couples (capture PPI == launch PPO)

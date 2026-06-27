@@ -496,7 +496,7 @@ py::list simulate_tentative_preloaded_py(
     const std::vector<std::string>& input_order,
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode) {
+    const std::string& test_mode, int sim_threads = 1) {
   std::vector<std::tuple<int64_t, uint32_t, uint8_t>> records;
   records.reserve(static_cast<size_t>(py::len(preloaded)));
   for (auto item : preloaded) {
@@ -506,9 +506,13 @@ py::list simulate_tentative_preloaded_py(
         static_cast<uint32_t>(py::cast<int>(t[1])),
         static_cast<uint8_t>(py::cast<int>(t[2])));
   }
-  const std::vector<int64_t> detected = atpg::simulate_tentative_from_preloaded(
-      json_path, cell_map_path, records, vector, input_order,
-      unsupported_policy, blackbox_instances, test_mode);
+  std::vector<int64_t> detected;
+  {
+    py::gil_scoped_release release;
+    detected = atpg::simulate_tentative_from_preloaded(
+        json_path, cell_map_path, records, vector, input_order,
+        unsupported_policy, blackbox_instances, test_mode, sim_threads);
+  }
   py::list out;
   for (int64_t id : detected) out.append(id);
   return out;
@@ -521,7 +525,7 @@ py::list simulate_transition_tentative_preloaded_py(
     const std::map<std::string, bool>& capture,
     const std::vector<std::string>& input_order,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances, int sim_threads = 1) {
   std::vector<std::tuple<int64_t, uint32_t, uint8_t>> records;
   records.reserve(static_cast<size_t>(py::len(preloaded)));
   for (auto item : preloaded) {
@@ -531,10 +535,13 @@ py::list simulate_transition_tentative_preloaded_py(
         static_cast<uint32_t>(py::cast<int>(t[1])),
         static_cast<uint8_t>(py::cast<int>(t[2])));
   }
-  const std::vector<int64_t> detected =
-      atpg::simulate_transition_tentative_from_preloaded(
-          json_path, cell_map_path, records, launch, capture, input_order,
-          unsupported_policy, blackbox_instances);
+  std::vector<int64_t> detected;
+  {
+    py::gil_scoped_release release;
+    detected = atpg::simulate_transition_tentative_from_preloaded(
+        json_path, cell_map_path, records, launch, capture, input_order,
+        unsupported_policy, blackbox_instances, sim_threads);
+  }
   py::list out;
   for (int64_t id : detected) out.append(id);
   return out;
@@ -895,13 +902,14 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("vector"), py::arg("input_order"),
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("test_mode") = "");
+        py::arg("test_mode") = "", py::arg("sim_threads") = 1);
   m.def("simulate_transition_tentative_preloaded",
         &faultflow::simulate_transition_tentative_preloaded_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("preloaded"),
         py::arg("launch"), py::arg("capture"), py::arg("input_order"),
         py::arg("unsupported_policy") = "fail",
-        py::arg("blackbox_instances") = std::vector<std::string>{});
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("sim_threads") = 1);
   // Transition model (combinational broadside two-pattern) entry points.
   m.def("atpg_random_vector_pairs", &faultflow::atpg_random_vector_pairs,
         py::arg("input_order"), py::arg("count"), py::arg("seed"));

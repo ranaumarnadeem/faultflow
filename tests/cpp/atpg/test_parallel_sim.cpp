@@ -11,9 +11,11 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "atpg/progressive_atpg.hpp"
@@ -191,6 +193,39 @@ TEST_CASE("parallel simulate_incremental clamps threads above batch count",
   REQUIRE(par.detections == serial.detections);
   REQUIRE(par.detected_rows == serial.detected_rows);
   REQUIRE(par.batch_fault_calls == serial.batch_fault_calls);
+}
+
+TEST_CASE(
+    "parallel simulate_tentative_from_preloaded is bit-identical to serial",
+    "[atpg][pfs][parallel]") {
+  // The no-DB preloaded grading primitive — the dominant scan stuck-at path.
+  // Build 511 faults on tiny_inv's Y (mixed sa0/sa1) directly as preloaded
+  // tuples (no DB), grade with A=0 (Y=1, so sa0 detected / sa1 not), and require
+  // the detected-id list to be identical for any thread count.
+  const int count = 8 * 63 + 7;
+  const ParsedGraph pg = test::load_parsed("tiny_inv.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_inv.json");
+  const auto y =
+      static_cast<uint32_t>(cg.yosys_to_compiled.at(pg.net_id_by_name("Y")));
+  std::vector<std::tuple<int64_t, uint32_t, uint8_t>> preloaded;
+  preloaded.reserve(static_cast<size_t>(count));
+  for (int i = 0; i < count; ++i) {
+    preloaded.emplace_back(static_cast<int64_t>(i + 1), y,
+                           static_cast<uint8_t>(i % 3 == 0 ? 1 : 0));
+  }
+  const std::map<std::string, bool> vec = {{"A", false}};
+
+  const auto run = [&](int threads) {
+    return simulate_tentative_from_preloaded(
+        test::fixture_path("tiny_inv.json"), test::cell_map_path(), preloaded,
+        vec, {"A"}, "fail", {}, "", threads);
+  };
+
+  const std::vector<int64_t> serial = run(1);
+  REQUIRE(!serial.empty());
+  for (const int threads : {2, 4, 8}) {
+    REQUIRE(run(threads) == serial);
+  }
 }
 
 TEST_CASE("parallel simulate_transition_incremental is bit-identical to serial",

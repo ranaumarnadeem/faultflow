@@ -678,6 +678,7 @@ def _process_scan_candidate(
         (row.fault_id, row.net_index, 1 if row.fault_type == "SA1" else 0)
         for row in active_rows
     ]
+    sim_threads = resolve_sim_threads(scan_ctx.cfg.simulation.sim_threads)
     if transition:
         tentative = list(
             core.simulate_transition_tentative_preloaded(
@@ -688,6 +689,7 @@ def _process_scan_candidate(
                 capture_vector,
                 input_order,
                 unsupported,
+                sim_threads=sim_threads,
             )
         )
     else:
@@ -699,6 +701,7 @@ def _process_scan_candidate(
                 vector,
                 input_order,
                 unsupported,
+                sim_threads=sim_threads,
             )
         )
     # The reduced pseudo-PI/PO view grades a fault exactly as the full
