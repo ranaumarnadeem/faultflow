@@ -160,7 +160,13 @@ def _port_names(path: Path, top: str, direction: str) -> list[str]:
     for name, port in ports.items():
         if isinstance(port, dict) and port.get("direction") == direction:
             bits = port.get("bits")
-            if isinstance(bits, list) and len(bits) == 1 and isinstance(bits[0], int):
+            if not isinstance(bits, list):
+                continue
+            # Include any port that has at least one real (integer) bit.
+            # net_id_by_name resolves by port name and returns bits.front(), so
+            # multi-bit buses are observed at their first bit — sufficient for PO
+            # presence checks and scan smoke verification.
+            if any(isinstance(b, int) for b in bits):
                 out.append(str(name))
     return sorted(out)
 

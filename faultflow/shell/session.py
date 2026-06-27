@@ -453,6 +453,8 @@ class ProjectSession:
                     cfg,
                     simulation=replace(cfg.simulation, unsupported_cells=value),
                 )
+            elif key == "wrap.wbr_model":
+                cfg = replace(cfg, wbr_model=value)
         return cfg
 
     def synthesize(self) -> OperationResult:
@@ -742,6 +744,7 @@ class ProjectSession:
             "report.threshold",
             "simulation.sim_threads",
             "simulation.unsupported_cells",
+            "wrap.wbr_model",
         }
         if key not in allowed:
             raise ShellError(f"unsupported option: {key}", "CONFIG", "INVALID_OPTION")
@@ -783,6 +786,13 @@ class ProjectSession:
                 parse_bool_value(value, key)
             except ConfigError as exc:
                 raise ShellError(str(exc), "CONFIG", "INVALID_VALUE")
+        if key == "wrap.wbr_model":
+            if value not in {"buffer", "scan"}:
+                raise ShellError(
+                    "wrap.wbr_model must be 'buffer' or 'scan'",
+                    "CONFIG",
+                    "INVALID_VALUE",
+                )
         self.options[key] = value
         if self.top is not None:
             self.checkpoint()
