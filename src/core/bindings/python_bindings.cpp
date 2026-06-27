@@ -701,7 +701,7 @@ py::dict simulate_scan_protocol_faults_py(
     const std::string& unsupported_policy, bool loc_two_capture,
     bool los_two_capture, const std::map<int, bool>& los_launch_scan_in,
     const std::vector<std::string>& active_clock_ports,
-    const std::string& test_mode = "") {
+    const std::string& test_mode = "", int sim_threads = 1) {
   scan::ScanProtocolFaultRequest request;
   request.pattern.clock_ports = clock_ports;
   request.pattern.clock_off_states = clock_off_states;
@@ -724,9 +724,14 @@ py::dict simulate_scan_protocol_faults_py(
     spec.fault_type = fault_type;
     request.faults.push_back(spec);
   }
-  const scan::ScanProtocolFaultSimResult result =
-      scan::simulate_scan_protocol_faults(
-      json_path, cell_map_path, request, unsupported_policy);
+  // Release the GIL only around the pure-C++ grading; reacquire before building
+  // the Python result below.
+  scan::ScanProtocolFaultSimResult result;
+  {
+    py::gil_scoped_release release;
+    result = scan::simulate_scan_protocol_faults(
+        json_path, cell_map_path, request, unsupported_policy, sim_threads);
+  }
   py::dict out;
   out["golden_real_po_values"] = result.golden.real_po_values;
   py::dict golden_unload;
@@ -998,7 +1003,7 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
         py::arg("los_launch_scan_in") = std::map<int, bool>{},
         py::arg("active_clock_ports") = std::vector<std::string>{},
-        py::arg("test_mode") = "");
+        py::arg("test_mode") = "", py::arg("sim_threads") = 1);
   m.def("list_site_keys", &faultflow::list_site_keys_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail");
   m.def("compute_fault_cone_sizes", &faultflow::compute_fault_cone_sizes,

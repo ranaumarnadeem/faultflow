@@ -16,6 +16,7 @@ from faultflow.config import (
     FaultflowConfig,
     interleave_easy_hard,
     parse_timeout_schedule,
+    resolve_sim_threads,
 )
 from faultflow.db import connect, init_schema, summary
 from faultflow.db.candidates import (
@@ -842,6 +843,9 @@ def _process_scan_candidate(
                     los_two_capture=is_los,
                     los_launch_scan_in=head_bits,
                     active_clock_ports=active_clock_ports or [],
+                    sim_threads=resolve_sim_threads(
+                        scan_ctx.cfg.simulation.sim_threads
+                    ),
                     **protocol_fault_sim_kwargs,
                 )
             )
@@ -1682,6 +1686,7 @@ def _grade_launch_candidate(
             loc_two_capture=is_loc,
             los_two_capture=is_los,
             los_launch_scan_in=head_bits,
+            sim_threads=resolve_sim_threads(scan_ctx.cfg.simulation.sim_threads),
             **kwargs,
         )
     )

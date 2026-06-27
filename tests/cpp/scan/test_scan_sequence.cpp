@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <stdexcept>
+#include <utility>
 
 #include "helpers/test_helpers.hpp"
 #include "ir/compiled_graph/compiled_graph.hpp"
@@ -153,6 +155,49 @@ TEST_CASE("simulate_scan_protocol_faults detects capture fault on active D",
   REQUIRE(result.batches.front().lanes.size() == 1);
   REQUIRE(result.batches.front().lanes.front().outcome ==
           ScanProtocolFaultOutcome::PASS);
+}
+
+TEST_CASE(
+    "parallel simulate_scan_protocol_faults is bit-identical to serial",
+    "[scan][parallel]") {
+  // Span several independent batch_idx blocks (130 faults -> 3 batches) by
+  // cycling two real D-input nets with both stuck-at polarities, so parallelizing
+  // across batches genuinely splits work. The per-batch lane outcomes must be
+  // identical regardless of thread count.
+  ScanProtocolFaultRequest request;
+  request.pattern = tiny_scan_chain_request();
+  const uint32_t d0 = compiled_index_for_yosys_net("tiny_scan_chain.json", 5);
+  const uint32_t d1 = compiled_index_for_yosys_net("tiny_scan_chain.json", 6);
+  const std::array<std::pair<uint32_t, uint8_t>, 4> sites = {
+      {{d0, 0}, {d0, 1}, {d1, 0}, {d1, 1}}};
+  for (int i = 0; i < 130; ++i) {
+    request.faults.push_back({sites[i % sites.size()].first,
+                              sites[i % sites.size()].second});
+  }
+
+  const auto run = [&](int sim_threads) {
+    return simulate_scan_protocol_faults(
+        test::fixture_path("tiny_scan_chain.json"), test::cell_map_path(),
+        request, "fail", sim_threads);
+  };
+
+  const ScanProtocolFaultSimResult serial = run(1);
+  REQUIRE(serial.batches.size() == 3);  // ceil(130 / 63)
+
+  for (const int threads : {2, 4, 8}) {
+    const ScanProtocolFaultSimResult par = run(threads);
+    REQUIRE(par.batches.size() == serial.batches.size());
+    for (size_t b = 0; b < serial.batches.size(); ++b) {
+      REQUIRE(par.batches[b].batch_index == serial.batches[b].batch_index);
+      REQUIRE(par.batches[b].lanes.size() == serial.batches[b].lanes.size());
+      for (size_t l = 0; l < serial.batches[b].lanes.size(); ++l) {
+        REQUIRE(par.batches[b].lanes[l].fault_index ==
+                serial.batches[b].lanes[l].fault_index);
+        REQUIRE(par.batches[b].lanes[l].outcome ==
+                serial.batches[b].lanes[l].outcome);
+      }
+    }
+  }
 }
 
 TEST_CASE(

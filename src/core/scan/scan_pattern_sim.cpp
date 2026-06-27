@@ -1,7 +1,11 @@
 #include "scan/scan_pattern_sim.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <exception>
 #include <stdexcept>
+#include <thread>
+#include <vector>
 
 #include "fault/effect/compact_fault.hpp"
 #include "ir/compiled_graph/compiled_graph.hpp"
@@ -15,6 +19,17 @@
 
 namespace faultflow::scan {
 namespace {
+
+// Resolve a requested grading thread count. <= 0 means auto (hardware
+// concurrency); the Python layer normally resolves this already, so this is a
+// safe floor.
+int effective_sim_threads(int sim_threads) {
+  if (sim_threads > 0) {
+    return sim_threads;
+  }
+  const unsigned hw = std::thread::hardware_concurrency();
+  return hw == 0 ? 1 : static_cast<int>(hw);
+}
 
 static bool clock_off(const ScanPatternRequest& req, size_t i) {
   return i < req.clock_off_states.size() ? req.clock_off_states[i] : false;
@@ -343,7 +358,7 @@ ScanPatternResult simulate_scan_pattern(
 ScanProtocolFaultSimResult simulate_scan_protocol_faults(
     const std::string& json_path, const std::string& cell_map_path,
     const ScanProtocolFaultRequest& request,
-    const std::string& unsupported_policy) {
+    const std::string& unsupported_policy, int sim_threads) {
   const CachedGraph& graph =
       load_cached_graph(json_path, cell_map_path, unsupported_policy);
   const ParsedGraph& parsed = graph.parsed;
@@ -365,9 +380,15 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
   const int batch_count = static_cast<int>(std::ceil(
       static_cast<double>(request.faults.size()) /
       static_cast<double>(kScanProtocolFaultBatchSize)));
-  result.batches.reserve(static_cast<size_t>(batch_count));
+  // resize (not reserve) so each batch writes its own pre-assigned slot — this
+  // is what makes the batches safe to grade concurrently and keeps batch order
+  // deterministic regardless of thread count.
+  result.batches.resize(static_cast<size_t>(batch_count));
 
-  for (int batch_idx = 0; batch_idx < batch_count; ++batch_idx) {
+  // Grade one independent batch_idx block into result.batches[batch_idx]. Pure
+  // compute over the immutable graph + read-only golden; no DB, no shared
+  // writes (distinct slots), so it is safe to run concurrently across batches.
+  const auto process_batch = [&](int batch_idx) {
     ScanProtocolFaultBatchResult batch;
     batch.batch_index = batch_idx;
     const size_t begin =
@@ -426,9 +447,50 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
                               : ScanProtocolFaultOutcome::NO_CAPTURE_OR_UNLOAD_EFFECT;
       batch.lanes.push_back(lane);
     }
-    result.batches.push_back(std::move(batch));
+    result.batches[static_cast<size_t>(batch_idx)] = std::move(batch);
+  };
+
+  const int threads =
+      std::min(effective_sim_threads(sim_threads), batch_count);
+  if (threads <= 1) {
+    for (int batch_idx = 0; batch_idx < batch_count; ++batch_idx) {
+      process_batch(batch_idx);
+    }
+    return result;
   }
 
+  // Partition [0, batch_count) into contiguous batch-index ranges, one per
+  // thread (threads-1 workers + the caller). A range that throws is captured and
+  // the lowest-index failure is rethrown after every thread is joined.
+  const int base = batch_count / threads;
+  const int rem = batch_count % threads;
+  std::vector<std::thread> pool;
+  pool.reserve(static_cast<size_t>(threads - 1));
+  std::vector<std::exception_ptr> errors(static_cast<size_t>(threads));
+  const auto run_range = [&](int t) {
+    try {
+      const int lo = t * base + std::min(t, rem);
+      const int hi = lo + base + (t < rem ? 1 : 0);
+      for (int batch_idx = lo; batch_idx < hi; ++batch_idx) {
+        process_batch(batch_idx);
+      }
+    } catch (...) {
+      errors[static_cast<size_t>(t)] = std::current_exception();
+    }
+  };
+
+  for (int t = 1; t < threads; ++t) {
+    pool.emplace_back(run_range, t);
+  }
+  run_range(0);
+  for (std::thread& th : pool) {
+    th.join();
+  }
+  for (int t = 0; t < threads; ++t) {
+    if (errors[static_cast<size_t>(t)]) {
+      std::rethrow_exception(errors[static_cast<size_t>(t)]);
+    }
+  }
   return result;
 }
 

@@ -58,3 +58,39 @@ def test_simulate_scan_protocol_faults_detects_active_capture_fault(
         faults=[(d0, 0)],
     )
     assert result["batches"][0]["lanes"][0]["outcome"] == "pass"
+
+
+@pytest.mark.golden
+def test_simulate_scan_protocol_faults_sim_threads_is_deterministic(
+    require_cpp_core: None,
+) -> None:
+    """Grading across the independent fault batches must be bit-identical through
+    the binding (GIL released around the C++ grade) for any thread count."""
+    import _faultflow_core as core  # type: ignore[import-not-found]
+
+    site_rows = core.list_site_keys(str(FIXTURE), str(CELL_MAP), "fail")
+    nets = [row["compiled_net_index"] for row in site_rows]
+    assert nets
+    # 130 faults -> 3 batches, so multiple batches grade concurrently.
+    faults = [(nets[i % len(nets)], i % 2) for i in range(130)]
+
+    def run(sim_threads: int) -> dict:
+        return core.simulate_scan_protocol_faults(
+            str(FIXTURE),
+            str(CELL_MAP),
+            clock_ports=["CLK"],
+            scan_enable_port="scan_en",
+            scan_input_ports=["scan_in"],
+            scan_output_ports=["scan_out_0"],
+            functional_output_ports=["Q0", "Q1"],
+            max_chain_length=3,
+            load_seqs={0: [True, False, True]},
+            capture_pi_values={"D0": True, "D1": False, "D2": True},
+            faults=faults,
+            sim_threads=sim_threads,
+        )
+
+    serial = run(1)
+    assert len(serial["batches"]) == 3
+    for threads in (2, 4, 8):
+        assert run(threads) == serial

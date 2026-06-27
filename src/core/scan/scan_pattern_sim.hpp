@@ -95,10 +95,13 @@ ScanPatternResult simulate_scan_pattern(
     const std::string& json_path, const std::string& cell_map_path,
     const ScanPatternRequest& request, const std::string& unsupported_policy);
 
+// `sim_threads` parallelizes grading across the independent fault batches:
+// <= 0 auto, 1 serial, N threads. Batches are written to pre-assigned slots, so
+// the result is bit-identical for any thread count.
 ScanProtocolFaultSimResult simulate_scan_protocol_faults(
     const std::string& json_path, const std::string& cell_map_path,
     const ScanProtocolFaultRequest& request,
-    const std::string& unsupported_policy);
+    const std::string& unsupported_policy, int sim_threads = 1);
 
 bool scan_observations_equal(const ScanPatternResult& lhs,
                              const ScanPatternResult& rhs);
