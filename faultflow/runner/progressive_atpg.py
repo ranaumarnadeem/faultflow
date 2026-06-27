@@ -245,6 +245,7 @@ def _accept_and_simulate_transition(
     vector_index: int,
     unsupported: str,
     blackbox_instances: list[str],
+    sim_threads: int = 1,
 ) -> None:
     launch_key = pattern_key(launch, input_order)
     capture_key = pattern_key(capture, input_order)
@@ -270,6 +271,7 @@ def _accept_and_simulate_transition(
         vector_index,
         unsupported,
         blackbox_instances,
+        sim_threads,
     )
     core.update_run_vector_count(db_path, run_id, vector_index)
 
@@ -983,6 +985,9 @@ def run_progressive_transition_atpg(
     unsupported = cfg.simulation.unsupported_cells
 
     bb_instances = list(cfg.blackbox_instances)
+    sim_threads = resolve_sim_threads(cfg.simulation.sim_threads)
+    if sim_threads > 1:
+        log.info("parallel fault grading across %d threads", sim_threads)
     # Shared enumeration: STR/STF reuse the SA0/SA1 fault rows.
     core.ensure_faults_enumerated(
         json_path,
@@ -1099,6 +1104,7 @@ def run_progressive_transition_atpg(
                     vector_index=vector_index,
                     unsupported=unsupported,
                     blackbox_instances=bb_instances,
+                    sim_threads=sim_threads,
                 )
                 fault_sim_seconds += time.perf_counter() - sim_started
 
@@ -1179,6 +1185,7 @@ def run_progressive_transition_atpg(
                         vector_index=vector_index,
                         unsupported=unsupported,
                         blackbox_instances=bb_instances,
+                        sim_threads=sim_threads,
                     )
                     fault_sim_seconds += time.perf_counter() - sim_started
                     if drop_sat:

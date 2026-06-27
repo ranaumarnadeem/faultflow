@@ -128,6 +128,35 @@ RunOutcome run_with_threads(const std::string& name, int count, int sim_threads)
   return out;
 }
 
+// Transition twin: two launch/capture pairs over tiny_inv's Y. Pair 0 (A:1->0)
+// makes Y rise 0->1 and detects the slow-to-rise (sa0) faults; pair 1 (A:0->1)
+// makes Y fall 1->0 and detects the slow-to-fall (sa1) faults. So the mixed
+// sa0/sa1 fault list is fully detected, split across both pairs.
+RunOutcome run_transition_with_threads(const std::string& name, int count,
+                                       int sim_threads) {
+  const Setup s = make_setup(name, count);
+  const std::vector<
+      std::pair<std::map<std::string, bool>, std::map<std::string, bool>>>
+      pairs = {
+          {{{"A", true}}, {{"A", false}}},
+          {{{"A", false}}, {{"A", true}}},
+      };
+  reset_simulation_instrumentation();
+  RunOutcome out;
+  out.detections = simulate_transition_incremental(
+      test::fixture_path("tiny_inv.json"), test::cell_map_path(), s.path.string(),
+      s.campaign_id, s.run_id, pairs, {"A"}, s.fault_ids, 10, "fail", {},
+      sim_threads);
+  out.batch_fault_calls = simulation_instrumentation().batch_fault_calls;
+  SQLite::Database db(s.path.string(), SQLite::OPEN_READONLY);
+  SQLite::Statement q(
+      db, "SELECT COUNT(*) FROM faults WHERE status = 'detected'");
+  REQUIRE(q.executeStep());
+  out.detected_rows = q.getColumn(0).getInt64();
+  std::filesystem::remove(s.path);
+  return out;
+}
+
 }  // namespace
 
 TEST_CASE("parallel simulate_incremental is bit-identical to serial",
@@ -162,4 +191,23 @@ TEST_CASE("parallel simulate_incremental clamps threads above batch count",
   REQUIRE(par.detections == serial.detections);
   REQUIRE(par.detected_rows == serial.detected_rows);
   REQUIRE(par.batch_fault_calls == serial.batch_fault_calls);
+}
+
+TEST_CASE("parallel simulate_transition_incremental is bit-identical to serial",
+          "[atpg][pfs][parallel]") {
+  const int count = 8 * 63 + 7;
+  const RunOutcome serial =
+      run_transition_with_threads("ff_parallel_tr_serial.sqlite", count, 1);
+
+  // Both transition pairs together detect every fault exactly once.
+  REQUIRE(serial.detections.size() == static_cast<size_t>(count));
+  REQUIRE(serial.detected_rows == count);
+
+  for (const int threads : {2, 4, 8}) {
+    const RunOutcome par =
+        run_transition_with_threads("ff_parallel_tr_threads.sqlite", count, threads);
+    REQUIRE(par.detections == serial.detections);
+    REQUIRE(par.detected_rows == serial.detected_rows);
+    REQUIRE(par.batch_fault_calls == serial.batch_fault_calls);
+  }
 }

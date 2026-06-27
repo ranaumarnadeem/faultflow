@@ -124,7 +124,8 @@ std::vector<ProgressiveDetection> simulate_transition_incremental(
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances = {});
+    const std::vector<std::string>& blackbox_instances = {},
+    int sim_threads = 1);
 
 std::vector<int64_t> simulate_transition_tentative_detections(
     const std::string& json_path, const std::string& cell_map_path,

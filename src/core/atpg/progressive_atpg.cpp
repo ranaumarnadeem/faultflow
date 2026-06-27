@@ -747,7 +747,7 @@ std::vector<ProgressiveDetection> simulate_transition_incremental(
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances, int sim_threads) {
   if (new_pairs.empty() || fault_ids.empty()) {
     return {};
   }
@@ -760,31 +760,32 @@ std::vector<ProgressiveDetection> simulate_transition_incremental(
                        vector_from_map(ctx.parsed, capture, input_order));
   }
 
-  BitParallelSim sim;
+  BitParallelSim sim;  // stateless; shared by every slice/thread for a pair
   std::vector<ProgressiveDetection> detections;
   std::vector<ActiveFaultRecord> active =
       load_active_fault_records(db_path, fault_ids, false);
   for (size_t vi = 0; vi < pairs.size() && !active.empty(); ++vi) {
+    const TestVector& launch = pairs[vi].first;
+    const TestVector& capture = pairs[vi].second;
+    const auto grade = [&](const FaultBatch& batch) -> uint64_t {
+      return sim.simulate_transition_batch(ctx.cg, launch, capture, batch);
+    };
+    const std::vector<GradeRangeResult> slices =
+        grade_active_parallel(active, sim_threads, grade);
+
     std::vector<ActiveFaultRecord> still_active;
     still_active.reserve(active.size());
-    for (size_t begin = 0; begin < active.size(); begin += kFaultLanesPerWord) {
-      const size_t end = std::min(begin + kFaultLanesPerWord, active.size());
-      const FaultBatch batch = make_batch(active, begin, end);
-      ++g_simulation_instrumentation.batch_fault_calls;
-      const uint64_t detected_mask = sim.simulate_transition_batch(
-          ctx.cg, pairs[vi].first, pairs[vi].second, batch);
-      for (size_t i = begin; i < end; ++i) {
-        const CompactFault& lane = batch.faults[i - begin];
-        if ((detected_mask & lane.sa_mask) != 0) {
-          const int64_t vector_index =
-              vector_start_index + static_cast<int64_t>(vi);
-          db::mark_fault_detected(db_path, campaign_id, run_id,
-                                  active[i].fault_id, vector_index);
-          detections.push_back({active[i].fault_id, vector_index});
-        } else {
-          still_active.push_back(active[i]);
-        }
+    const int64_t vector_index = vector_start_index + static_cast<int64_t>(vi);
+    for (const GradeRangeResult& sr : slices) {
+      for (const size_t idx : sr.detected_indices) {
+        db::mark_fault_detected(db_path, campaign_id, run_id,
+                                active[idx].fault_id, vector_index);
+        detections.push_back({active[idx].fault_id, vector_index});
       }
+      for (const ActiveFaultRecord& rec : sr.still_active) {
+        still_active.push_back(rec);
+      }
+      g_simulation_instrumentation.batch_fault_calls += sr.batch_fault_calls;
     }
     active = std::move(still_active);
   }
