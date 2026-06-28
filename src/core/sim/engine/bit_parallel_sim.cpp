@@ -390,14 +390,63 @@ uint64_t BitParallelSim::simulate_batch(const CompiledSimGraph& cg,
 uint64_t BitParallelSim::simulate_batch(const CompiledSimGraph& cg,
                                         const TestVector& vec,
                                         const FaultBatch& batch) const {
-  const auto samples = simulate_batch_samples(cg, vec, batch);
-  uint64_t detected = 0ULL;
-  for (const auto& values : samples) {
-    for (int obs : cg.observable) {
-      const uint64_t word = values.at(obs);
-      const uint64_t golden = (word & 1ULL) ? ~0ULL : 0ULL;
-      detected |= word ^ golden;
+  // Inline grade: mirror simulate_batch_samples exactly (same use_mode dispatch,
+  // same broadcast/inject/seed/eval order) but fold detection over cg.observable
+  // as each sample cycle completes, instead of copying the full ~net_count net
+  // vector into a samples buffer per cycle only to read the observable subset.
+  // Bit-identical to the prior simulate_batch_samples path; saves the per-cycle
+  // net-vector allocation+copy on the hot FUNCTIONAL grade loop.
+  SimState state;
+  state.init(cg.net_count, 1, static_cast<int>(cg.ff_configs.size()));
+  for (const auto& [idx, value] : vec.initial_ff_state) {
+    if (idx < state.initial_ff_state.size()) {
+      state.initial_ff_state[idx] = value ? ~0ULL : 0ULL;
     }
+  }
+  state.reset_ff_states();
+
+  // Mode-faithful scan-protocol replay for native shiftable WBR cells (see
+  // simulate_batch_samples); FUNCTIONAL keeps the plain hot path.
+  const bool use_mode =
+      vec.test_mode != TestMode::FUNCTIONAL && !cg.wrapper_cells.empty();
+  const ModeConfig mode_cfg =
+      use_mode ? build_mode_config(cg, vec.test_mode) : ModeConfig{};
+  const auto eval = [&](const FaultBatch& b) {
+    if (use_mode) {
+      evaluate_combinational_mode(state, cg, b, mode_cfg);
+    } else {
+      evaluate_combinational(state, cg, b);
+    }
+  };
+
+  uint64_t detected = 0ULL;
+  std::vector<TestCycle> cyc_scratch;
+  for (const TestCycle& cycle : cycles_for(vec, cyc_scratch)) {
+    FaultBatch inactive_batch;
+    const FaultBatch& active_batch = cycle.fault_active ? batch : inactive_batch;
+    broadcast_cycle_inputs(state, cg, cycle);
+    for (int i = 0; i < active_batch.size; ++i) {
+      inject_faults(state.current_values(), active_batch,
+                    active_batch.faults[i].net_index);
+    }
+    seed_ff_outputs(state, cg, active_batch);
+    eval(active_batch);
+    update_ff_states(state, cg);
+    seed_ff_outputs(state, cg, active_batch);
+    eval(active_batch);
+    for (int i = 0; i < cycle.settle_cycles; ++i) {
+      seed_ff_outputs(state, cg, active_batch);
+      eval(active_batch);
+    }
+    if (cycle.sample_outputs) {
+      const auto& nv = state.current_values();
+      for (int obs : cg.observable) {
+        const uint64_t word = nv[obs];
+        const uint64_t golden = (word & 1ULL) ? ~0ULL : 0ULL;
+        detected |= word ^ golden;
+      }
+    }
+    state.prev_values = state.current_values();
   }
   return detected & batch.mask;
 }
