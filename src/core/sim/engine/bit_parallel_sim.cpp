@@ -87,6 +87,13 @@ void BitParallelSim::evaluate_combinational(SimState& state,
   // 6-element vector per gate (the dominant cost at CVA6 scale).
   std::vector<uint64_t> ins(6);
 
+  // Mark the <=63 fault nets so non-fault nodes skip the per-node inject_faults
+  // batch scan; cleared at the end so fault_present stays all-zero between calls.
+  auto& fp = state.fault_present;
+  for (int i = 0; i < batch.size; ++i) {
+    fp[batch.faults[i].net_index] = 1;
+  }
+
   const auto eval_level = [&](int start, int end) {
     for (int i = start; i < end; ++i) {
       const SimNode& sn = cg.nodes[i];
@@ -95,12 +102,12 @@ void BitParallelSim::evaluate_combinational(SimState& state,
       }
       if (sn.type == GateType::CONST0) {
         nv[sn.out] = 0ULL;
-        inject_faults(nv, batch, sn.out);
+        if (fp[sn.out]) inject_faults(nv, batch, sn.out);
         continue;
       }
       if (sn.type == GateType::CONST1) {
         nv[sn.out] = ~0ULL;
-        inject_faults(nv, batch, sn.out);
+        if (fp[sn.out]) inject_faults(nv, batch, sn.out);
         continue;
       }
       ins[0] = gather_input(nv, sn.in0);
@@ -110,7 +117,7 @@ void BitParallelSim::evaluate_combinational(SimState& state,
       ins[4] = gather_input(nv, sn.in4);
       ins[5] = gather_input(nv, sn.in5);
       nv[sn.out] = eval_gate(sn.type, ins);
-      inject_faults(nv, batch, sn.out);
+      if (fp[sn.out]) inject_faults(nv, batch, sn.out);
     }
   };
 
@@ -118,10 +125,13 @@ void BitParallelSim::evaluate_combinational(SimState& state,
     for (size_t lvl = 0; lvl + 1 < cg.level_starts.size(); ++lvl) {
       eval_level(cg.level_starts[lvl], cg.level_starts[lvl + 1]);
     }
-    return;
+  } else {
+    eval_level(0, static_cast<int>(cg.nodes.size()));
   }
 
-  eval_level(0, static_cast<int>(cg.nodes.size()));
+  for (int i = 0; i < batch.size; ++i) {
+    fp[batch.faults[i].net_index] = 0;
+  }
 }
 
 void BitParallelSim::evaluate_combinational_mode(SimState& state,
@@ -131,6 +141,11 @@ void BitParallelSim::evaluate_combinational_mode(SimState& state,
   auto& nv = state.current_values();
   std::vector<uint64_t> ins(6);  // reused per node (see evaluate_combinational)
 
+  auto& fp = state.fault_present;  // gate per-node injection (see evaluate_combinational)
+  for (int i = 0; i < batch.size; ++i) {
+    fp[batch.faults[i].net_index] = 1;
+  }
+
   const auto eval_level = [&](int start, int end) {
     for (int i = start; i < end; ++i) {
       const SimNode& sn = cg.nodes[i];
@@ -139,12 +154,12 @@ void BitParallelSim::evaluate_combinational_mode(SimState& state,
       }
       if (sn.type == GateType::CONST0) {
         nv[sn.out] = 0ULL;
-        inject_faults(nv, batch, sn.out);
+        if (fp[sn.out]) inject_faults(nv, batch, sn.out);
         continue;
       }
       if (sn.type == GateType::CONST1) {
         nv[sn.out] = ~0ULL;
-        inject_faults(nv, batch, sn.out);
+        if (fp[sn.out]) inject_faults(nv, batch, sn.out);
         continue;
       }
       if (sn.type == GateType::WBR_IN || sn.type == GateType::WBR_OUT) {
@@ -158,7 +173,7 @@ void BitParallelSim::evaluate_combinational_mode(SimState& state,
         } else {
           nv[sn.out] = gather_input(nv, sn.in0);  // PASS: FUNCTIONAL buffer (CFI)
         }
-        inject_faults(nv, batch, sn.out);
+        if (fp[sn.out]) inject_faults(nv, batch, sn.out);
         continue;
       }
       ins[0] = gather_input(nv, sn.in0);
@@ -168,7 +183,7 @@ void BitParallelSim::evaluate_combinational_mode(SimState& state,
       ins[4] = gather_input(nv, sn.in4);
       ins[5] = gather_input(nv, sn.in5);
       nv[sn.out] = eval_gate(sn.type, ins);
-      inject_faults(nv, batch, sn.out);
+      if (fp[sn.out]) inject_faults(nv, batch, sn.out);
     }
   };
 
@@ -176,9 +191,13 @@ void BitParallelSim::evaluate_combinational_mode(SimState& state,
     for (size_t lvl = 0; lvl + 1 < cg.level_starts.size(); ++lvl) {
       eval_level(cg.level_starts[lvl], cg.level_starts[lvl + 1]);
     }
-    return;
+  } else {
+    eval_level(0, static_cast<int>(cg.nodes.size()));
   }
-  eval_level(0, static_cast<int>(cg.nodes.size()));
+
+  for (int i = 0; i < batch.size; ++i) {
+    fp[batch.faults[i].net_index] = 0;
+  }
 }
 
 bool BitParallelSim::simulate_single_fault(const CompiledSimGraph& cg,

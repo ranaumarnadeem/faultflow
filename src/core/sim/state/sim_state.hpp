@@ -13,6 +13,11 @@ struct SimState {
   std::vector<uint64_t> ff_states;
   std::vector<uint64_t> initial_ff_state;
   std::vector<uint64_t> prev_values;
+  // Per-net "this net carries >=1 fault in the active batch" flag, kept all-zero
+  // between eval calls. Lets the combinational eval skip the per-fault batch scan
+  // on the >99.9% of nodes with no fault, instead of calling inject_faults (which
+  // linearly scans all <=63 faults) on every node. One per SimState => per-thread.
+  std::vector<char> fault_present;
   // IEEE 1500 test mode for this run. FUNCTIONAL by default; the engine applies
   // the per-mode wrapper control/observe reconfiguration via a ModeConfig.
   TestMode test_mode = TestMode::FUNCTIONAL;
@@ -23,6 +28,7 @@ struct SimState {
     ff_states.assign(ff_count, 0ULL);
     initial_ff_state.assign(ff_count, 0ULL);
     prev_values.assign(net_count, 0ULL);
+    fault_present.assign(net_count, 0);
   }
 
   void reset_ff_states() { ff_states = initial_ff_state; }
