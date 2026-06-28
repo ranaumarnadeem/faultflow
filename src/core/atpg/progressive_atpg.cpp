@@ -371,7 +371,7 @@ SolveFaultResult solve_fault_for_db(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode, bool cone_restrict) {
+    const std::string& test_mode, bool cone_restrict, bool incremental) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -393,9 +393,15 @@ SolveFaultResult solve_fault_for_db(
   // (INTEST/EXTEST) stuck-at paths; the mode-aware path keeps the safe-zero WBR
   // forcing inside the cone.
   options.cone_restrict = cone_restrict;
+  options.incremental = incremental;
   SatSolveResult result;
   if (mode == TestMode::FUNCTIONAL) {
-    result = solve_stuck_at_fault(ctx.cg, pis, fault, options, vector);
+    // IFC is a FUNCTIONAL-only fast path; the mode-aware (INTEST/EXTEST) miter
+    // keeps the single-shot solver until it gains an incremental variant.
+    result = options.incremental
+                 ? solve_stuck_at_fault_incremental(ctx.cg, pis, fault, options,
+                                                    vector)
+                 : solve_stuck_at_fault(ctx.cg, pis, fault, options, vector);
   } else {
     const ModeConfig mc = build_mode_config(ctx.cg, mode);
     result = solve_stuck_at_fault(ctx.cg, pis, fault, options, vector, mc);

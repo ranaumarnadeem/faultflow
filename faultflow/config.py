@@ -201,6 +201,12 @@ class AtpgConfig:
     # cone of influence (provably verdict-equivalent; cuts SAT time). Applies to
     # the FUNCTIONAL stuck-at path only for now.
     cone_restrict: bool = True
+    # When true, use the incremental fan-in cones (IFC) stuck-at solver: encode one
+    # reached observable's cone at a time instead of the whole cone up front
+    # (verdict-equivalent; cuts CNF-generation time on large designs). FUNCTIONAL
+    # stuck-at path only. Verdict-identical like cone_restrict, so it has no resume
+    # fingerprint column.
+    incremental_sat: bool = False
     # Dynamic compaction (compaction=dynamic): number of secondary-fault packing
     # orders to try, keeping the fewest-vector result (PO-DTC). 1 = single order.
     pack_orders: int = 1
@@ -574,6 +580,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             compaction=atpg_compaction,
             fault_drop_sat=_bool(parser, "atpg", "fault_drop_sat", True),
             cone_restrict=_bool(parser, "atpg", "cone_restrict", True),
+            incremental_sat=_bool(parser, "atpg", "incremental_sat", False),
             pack_orders=_int(parser, "atpg", "pack_orders", 1),
             order_by_cone_size=_bool(parser, "atpg", "order_by_cone_size", True),
             workers=_int(parser, "atpg", "workers", 1),

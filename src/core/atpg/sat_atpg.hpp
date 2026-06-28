@@ -23,6 +23,10 @@ struct SatSolveOptions {
   // verdict-equivalent to the whole-circuit miter). Default false keeps the
   // whole-circuit path as the A/B control and the equivalence oracle.
   bool cone_restrict = false;
+  // Use the incremental fan-in cones (IFC) solver: encode one reached
+  // observable's cone at a time instead of the whole cone up front. Verdict-
+  // equivalent to the single-shot solver (proven by the equivalence test).
+  bool incremental = false;
 };
 
 // CaDiCaL mapping: 10=SAT, 20=UNSAT, 0=UNKNOWN. Interrupt from conflict/time

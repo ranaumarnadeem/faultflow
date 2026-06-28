@@ -158,6 +158,57 @@ def test_runner_resume_increases_or_preserves_coverage(
 
 
 @pytest.mark.integration
+def test_incremental_sat_matches_baseline_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    # I4: the incremental (IFC) solver must produce the SAME end-to-end fault
+    # classification as the baseline — identical detected, redundant, denominator
+    # and coverage. Only the per-fault test vectors may differ.
+    if not C432_JSON.exists():
+        pytest.skip("c432 netlist missing")
+
+    def _run(sub: str, incremental: str) -> tuple[dict, int]:
+        wd = tmp_path / sub
+        wd.mkdir()
+        schema_dir = wd / "schemas"
+        schema_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(
+            ROOT / "schemas/coverage.schema.json",
+            schema_dir / "coverage.schema.json",
+        )
+        monkeypatch.chdir(wd)
+        cfg_path = _write_cfg(
+            tmp_path=wd,
+            top="c432",
+            netlist=C432_JSON,
+            atpg_overrides={"incremental_sat": incremental},
+        )
+        runner = Runner(load_config(cfg_path, "c432"))
+        runner.init()
+        runner.sim(clean=True, max_rounds=20, target_coverage=100.0)
+        with connect(runner.cfg.db_path) as conn:
+            init_schema(conn)
+            s = summary(conn)
+            redundant = conn.execute(
+                "SELECT COUNT(*) FROM faults WHERE status='redundant'"
+            ).fetchone()[0]
+        return s, int(redundant)
+
+    base, base_red = _run("base", "false")
+    inc, inc_red = _run("inc", "true")
+
+    assert base["detected"] > 0
+    assert inc["detected"] == base["detected"]
+    assert inc_red == base_red
+    assert inc["denominator"] == base["denominator"]
+    assert float(inc["coverage_percent"] or 0.0) == float(
+        base["coverage_percent"] or 0.0
+    )
+
+
+@pytest.mark.integration
 def test_runner_fingerprint_mismatch_blocks_resume(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

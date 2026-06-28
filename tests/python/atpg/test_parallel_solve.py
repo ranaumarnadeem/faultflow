@@ -35,6 +35,7 @@ _BASE_ARGS = dict(
     los_head_ports=[],
     bb_instances=[],
     test_mode="",
+    incremental=False,
 )
 
 
@@ -55,6 +56,7 @@ def _args_tuple(solve_kind: str, **overrides) -> tuple:
         d["los_head_ports"],
         d["bb_instances"],
         d["test_mode"],
+        d["incremental"],
     )
 
 

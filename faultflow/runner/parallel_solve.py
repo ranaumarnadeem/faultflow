@@ -26,7 +26,7 @@ from typing import Any
 def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
     """Solve one fault; return (fault_id, result_str, solved_dict).
 
-    ``args`` is a 14-element tuple so multiprocessing can pickle it without
+    ``args`` is a 15-element tuple so multiprocessing can pickle it without
     any process-local state.  All values must be plain Python scalars or
     lists — no Path objects, no dataclasses.
 
@@ -50,6 +50,7 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
         los_head_ports,
         bb_instances,
         test_mode,
+        incremental,
     ) = args
 
     # The C extension lives in build/src/core/, not on the default sys.path.
@@ -114,9 +115,10 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
                     bb_instances,
                     test_mode,
                     cone_restrict,
+                    incremental,
                 )
             )
-        else:  # "scan_stuck_at"
+        else:  # "scan_stuck_at" (fused view; stays on the baseline solver for now)
             solved = dict(
                 _core.solve_fault_atpg(
                     json_path,

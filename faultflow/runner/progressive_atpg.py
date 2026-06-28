@@ -824,6 +824,7 @@ def run_progressive_native_atpg(
                             [],  # los_head_ports
                             list(bb_instances),
                             test_mode,
+                            cfg.atpg.incremental_sat,
                         )
                         for fid in _dispatch_ids
                     ]
@@ -865,6 +866,7 @@ def run_progressive_native_atpg(
                         bb_instances,
                         test_mode,
                         cfg.atpg.cone_restrict,
+                        cfg.atpg.incremental_sat,
                     )
                 )
                 atpg_seconds += time.perf_counter() - atpg_started

@@ -1412,6 +1412,7 @@ def run_progressive_scan_atpg(
                     list(los_head_ports) if los else [],
                     [],  # bb_instances: not needed in scan fused-view path
                     "",  # test_mode: baked into the fused-view netlist
+                    cfg.atpg.incremental_sat,  # scan_stuck_at ignores it for now
                 )
                 for row in _dispatch_rows
             ]

@@ -433,6 +433,13 @@ class ProjectSession:
                     cfg,
                     atpg=replace(cfg.atpg, preflight=parse_bool_value(value, key)),
                 )
+            elif key == "atpg.incremental_sat":
+                cfg = replace(
+                    cfg,
+                    atpg=replace(
+                        cfg.atpg, incremental_sat=parse_bool_value(value, key)
+                    ),
+                )
             elif key == "fault_model.collapsing":
                 cfg = replace(
                     cfg,
@@ -751,6 +758,7 @@ class ProjectSession:
     def set_option(self, key: str, value: str) -> OperationResult:
         allowed = {
             "atpg.easy_fault_reserve",
+            "atpg.incremental_sat",
             "atpg.max_rounds",
             "atpg.preflight",
             "atpg.sat_timeout_seconds",
@@ -800,6 +808,7 @@ class ProjectSession:
             except ConfigError as exc:
                 raise ShellError(str(exc), "CONFIG", "INVALID_VALUE")
         if key in {
+            "atpg.incremental_sat",
             "atpg.preflight",
             "fault_model.collapsing",
             "fault_model.include_reset_faults",
