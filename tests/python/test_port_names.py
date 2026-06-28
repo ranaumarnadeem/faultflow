@@ -1,10 +1,9 @@
 """Unit tests for _port_names and _expand_bus_bits helpers."""
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
-
-import pytest
 
 from faultflow.runner.runner import _expand_bus_bits, _port_names
 
