@@ -147,11 +147,14 @@ ROOT = Path(__file__).resolve().parents[3]
 C432_JSON = ROOT / "tests" / "benchmarks" / "iscas85" / "synth" / "c432.json"
 C432_CELL_MAP = ROOT / "cells" / "osu" / "osu035.json"
 
+# Use the runner's path-aware loader (it adds build/src/core to sys.path) rather
+# than a bare ``import _faultflow_core``, which fails at collection time because the
+# compiled extension is not on the default path — that silently skipped this test.
 try:
-    import _faultflow_core as _core_mod  # noqa: F401
+    import faultflow.runner.runner as _runner_mod
 
-    _CORE_AVAILABLE = True
-except ModuleNotFoundError:
+    _CORE_AVAILABLE = _runner_mod._load_core() is not None
+except Exception:
     _CORE_AVAILABLE = False
 
 
@@ -161,7 +164,13 @@ except ModuleNotFoundError:
 )
 @pytest.mark.integration
 def test_parallel_workers_preserve_coverage(tmp_path, monkeypatch):
-    """workers=2 gives identical detected/denominator as workers=1 on c432."""
+    """workers=1 vs workers=2 give identical detected/denominator on c432, for
+    BOTH the baseline and the incremental (IFC) solver.
+
+    This guards the multicore SAT-worker architecture (fork ProcessPoolExecutor):
+    it must stay deterministic across worker counts, and enabling incremental_sat
+    must not change coverage on either the serial or the parallel path.
+    """
     from campaign_fixtures import campaign_id_for_cfg  # type: ignore[import]
 
     from faultflow.config import load_config
@@ -170,11 +179,12 @@ def test_parallel_workers_preserve_coverage(tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
 
-    def _run(workers: int) -> dict:
-        cfg_path = tmp_path / f"c432_w{workers}.ofs"
+    def _run(workers: int, incremental: bool) -> dict:
+        cfg_path = tmp_path / f"c432_w{workers}_i{int(incremental)}.ofs"
         cfg_path.write_text(
             f"[design]\nnetlist = {C432_JSON}\ncell_lib = {C432_CELL_MAP}\n"
-            f"[atpg]\nmax_rounds = 2\nworkers = {workers}\n",
+            f"[atpg]\nmax_rounds = 2\nworkers = {workers}\n"
+            f"incremental_sat = {'true' if incremental else 'false'}\n",
             encoding="utf-8",
         )
         cfg = load_config(cfg_path, top="c432")
@@ -185,10 +195,24 @@ def test_parallel_workers_preserve_coverage(tmp_path, monkeypatch):
             init_schema(conn)
             return summary(conn, campaign_id=campaign_id)
 
-    serial = _run(1)
-    parallel = _run(2)
+    base_serial = _run(1, False)
+    base_parallel = _run(2, False)
+    inc_serial = _run(1, True)
+    inc_parallel = _run(2, True)
 
-    assert (
-        serial["detected"] == parallel["detected"]
-    ), f"detected mismatch: serial={serial['detected']} parallel={parallel['detected']}"
-    assert serial["denominator"] == parallel["denominator"], "denominator mismatch"
+    # Multicore determinism: workers=1 == workers=2 on each solver.
+    assert base_serial["detected"] == base_parallel["detected"], (
+        f"baseline detected mismatch: w1={base_serial['detected']} "
+        f"w2={base_parallel['detected']}"
+    )
+    assert inc_serial["detected"] == inc_parallel["detected"], (
+        f"incremental detected mismatch: w1={inc_serial['detected']} "
+        f"w2={inc_parallel['detected']}"
+    )
+    # IFC is coverage-identical to baseline on the multicore (parallel) path.
+    assert inc_parallel["detected"] == base_parallel["detected"], (
+        f"IFC vs baseline detected mismatch on workers=2: "
+        f"ifc={inc_parallel['detected']} base={base_parallel['detected']}"
+    )
+    assert inc_parallel["denominator"] == base_parallel["denominator"]
+    assert base_serial["denominator"] == base_parallel["denominator"]
