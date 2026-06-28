@@ -21,7 +21,7 @@ namespace {
 // TIMEOUT nondeterminism. When both say SAT, the IFC vector must actually detect
 // the fault in the golden simulator (I2) — a SAT result that does not detect
 // would be a soundness bug in the incremental miter.
-void check_ifc_equivalence(const std::string& rel) {
+void check_ifc_equivalence(const std::string& rel, int fup_region_budget) {
   const ParsedGraph pg = test::load_parsed_benchmark(rel);
   const NormalizedGraph ng = test::load_normalized_benchmark(rel);
   const CompiledSimGraph cg = test::load_compiled_benchmark(rel);
@@ -32,6 +32,9 @@ void check_ifc_equivalence(const std::string& rel) {
   base.conflict_limit = -1;
   base.sat_timeout_seconds = 0;
   base.cone_restrict = true;  // the production baseline path
+  // Drives the IFC FUP region size: a small budget forces FUP to fire on nearly
+  // every fault, stress-testing its redundancy proof; 0 disables FUP.
+  base.fup_region_budget = fup_region_budget;
 
   const GoldenRefSim ref;
   size_t checked = 0;
@@ -69,13 +72,33 @@ void check_ifc_equivalence(const std::string& rel) {
 }  // namespace
 
 TEST_CASE("IFC SAT verdict == baseline on c17", "[atpg][ifc][equivalence]") {
-  check_ifc_equivalence("iscas85/synth_sky130/c17.json");
+  check_ifc_equivalence("iscas85/synth_sky130/c17.json", 32);
 }
 
 TEST_CASE("IFC SAT verdict == baseline on c432", "[atpg][ifc][equivalence]") {
-  check_ifc_equivalence("iscas85/synth_sky130/c432.json");
+  check_ifc_equivalence("iscas85/synth_sky130/c432.json", 32);
 }
 
 TEST_CASE("IFC SAT verdict == baseline on c499", "[atpg][ifc][equivalence]") {
-  check_ifc_equivalence("iscas85/synth_sky130/c499.json");
+  check_ifc_equivalence("iscas85/synth_sky130/c499.json", 32);
+}
+
+// A tiny FUP region budget forces the fast-untestability-proof path on nearly
+// every multi-gate fault cone, so its bounded redundancy proof is stress-tested
+// against the baseline verdict (a false-redundant FUP would diverge here).
+TEST_CASE("IFC+aggressive-FUP verdict == baseline on c432",
+          "[atpg][ifc][fup][equivalence]") {
+  check_ifc_equivalence("iscas85/synth_sky130/c432.json", 4);
+}
+
+TEST_CASE("IFC+aggressive-FUP verdict == baseline on c499",
+          "[atpg][ifc][fup][equivalence]") {
+  check_ifc_equivalence("iscas85/synth_sky130/c499.json", 4);
+}
+
+// FUP disabled (budget 0) must still be verdict-identical: the IFC sweep alone
+// classifies every fault.
+TEST_CASE("IFC without FUP verdict == baseline on c432",
+          "[atpg][ifc][equivalence]") {
+  check_ifc_equivalence("iscas85/synth_sky130/c432.json", 0);
 }

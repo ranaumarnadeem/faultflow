@@ -380,6 +380,63 @@ SatSolveResult solve_stuck_at_fault_incremental(
     }
   };
 
+  // FUP (fast untestability proof, Tille et al.): before the full IFC sweep, try
+  // to disprove testability on a small forward-bounded neighbourhood of the fault.
+  // The cut = the boundary of a depth-bounded region (region nets whose fanout
+  // leaves the region, plus any in-region observable). It separates the fault from
+  // every PO (a fault->PO path either leaves the region through a cut net or ends
+  // at an in-region observable), and the region is self-contained for the faulty
+  // machine (an out-cone input of a region gate sits at a smaller forward distance,
+  // hence in-region), so if the fault cannot differ at ANY cut net it is redundant
+  // — provable on a far smaller CNF than the full cone. Only worthwhile when the
+  // region is a strict subset of the out-cone; the cut miter is a temporary
+  // constrain, so it never leaks into the IFC solves below.
+  const size_t fup_budget =
+      options.fup_region_budget > 0
+          ? static_cast<size_t>(options.fup_region_budget)
+          : 0;
+  if (fup_budget > 0 && bfs.size() > fup_budget) {
+    std::vector<char> in_region(n, 0);
+    for (size_t i = 0; i < fup_budget; ++i) {
+      in_region[bfs[i]] = 1;
+    }
+    std::vector<int> cut_diffs;
+    for (size_t i = 0; i < fup_budget; ++i) {
+      const uint32_t r = bfs[i];
+      bool is_cut = is_obs[r] != 0;
+      if (!is_cut) {
+        for (uint32_t f = cg.fanout_offsets[r]; f < cg.fanout_offsets[r + 1];
+             ++f) {
+          if (!in_region[cg.fanout_targets[f]]) {
+            is_cut = true;
+            break;
+          }
+        }
+      }
+      if (is_cut) {
+        encode_cone(r);
+        const int d = vars.next++;
+        add_xor_def(solver, vars.free_vars.at(r), vars.faulty_vars.at(r), d);
+        cut_diffs.push_back(d);
+      }
+    }
+    if (!cut_diffs.empty()) {
+      for (int dv : cut_diffs) {
+        solver.constrain(dv);
+      }
+      solver.constrain(0);
+      const int result = solver.solve();
+      if (result == 20) {
+        return SatSolveResult::UNSAT;  // redundant on the bounded cut
+      }
+      if (result == 0) {
+        return map_cadical_result(result, had_solver_limits(options));
+      }
+      // result == 10 (SAT): the fault reaches the cut; fall through to full IFC,
+      // reusing every gate already encoded above.
+    }
+  }
+
   for (size_t k = 0; k < reached_obs.size(); ++k) {
     const uint32_t obs = reached_obs[k];
     encode_cone(obs);

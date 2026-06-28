@@ -27,6 +27,10 @@ struct SatSolveOptions {
   // observable's cone at a time instead of the whole cone up front. Verdict-
   // equivalent to the single-shot solver (proven by the equivalence test).
   bool incremental = false;
+  // IFC fast untestability proof (FUP): node budget of the forward-bounded
+  // region whose boundary cut is solved first to prove redundancy on a small
+  // CNF. 0 disables FUP; only applied when the IFC solver is selected.
+  int fup_region_budget = 32;
 };
 
 // CaDiCaL mapping: 10=SAT, 20=UNSAT, 0=UNKNOWN. Interrupt from conflict/time
