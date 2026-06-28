@@ -308,9 +308,16 @@ proc {name} {{args}} {{
         )
 
     def _check_scan(self, args: list[str]) -> Any:
-        if args:
-            raise ShellError("usage: check_scan", "CONFIG", "INVALID_OPTION")
-        return self.session.check_scan()
+        structural_only = False
+        remaining = list(args)
+        if "-structural" in remaining:
+            structural_only = True
+            remaining.remove("-structural")
+        if remaining:
+            raise ShellError(
+                "usage: check_scan [-structural]", "CONFIG", "INVALID_OPTION"
+            )
+        return self.session.check_scan(structural_only=structural_only)
 
     def _status(self, args: list[str]) -> Any:
         if args not in ([], ["-scan"]):

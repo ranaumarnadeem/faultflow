@@ -10,13 +10,22 @@ from faultflow.coverage.site_key import (
     stem_site_key,
 )
 from faultflow.scan.errors import ScanError
+from faultflow.scan.manifest import manifest_clock_net_ids
 from faultflow.scan.stitch import SCAN_CELL_TYPES, _load_json, _top_module
 
 PPI_PREFIX = "__ppi_"
 PPO_PREFIX = "__ppo_"
 OBSERVE_BUF_CELL = "$faultflow_observe_buf"
 D_BRANCH_BUF_CELL = "$faultflow_d_branch_buf"
+CAPTURE_AND_CELL = "$faultflow_capture_and"
+CAPTURE_OR_CELL = "$faultflow_capture_or"
+CAPTURE_INV_CELL = "$faultflow_capture_inv"
 DATA_PIN = "D"
+# Generic scan-cell types carry their async control on these pins (active-low):
+#   reset variant ($scanff_r): RESET_B, captured value 0 when active.
+#   set   variant ($scanff_s): SET_B,   captured value 1 when active.
+SCAN_RESET_TYPES = frozenset({"$scanff_r_faultflow", "\\$scanff_r_faultflow"})
+SCAN_SET_TYPES = frozenset({"$scanff_s_faultflow", "\\$scanff_s_faultflow"})
 ATPG_VIEW_SCHEMA_VER = "scan-atpg-view-observe-buf-1"
 
 
@@ -261,6 +270,134 @@ def _add_internal_buf_cell(
     }
 
 
+def _add_internal_gate2_cell(
+    cells: dict[str, Any],
+    instance: str,
+    cell_type: str,
+    a_bit: int,
+    b_bit: int,
+    out_bit: int,
+) -> None:
+    cells[instance] = {
+        "hide_name": 0,
+        "type": cell_type,
+        "parameters": {},
+        "attributes": {"faultflow_internal": "1"},
+        "port_directions": {"A": "input", "B": "input", "Y": "output"},
+        "connections": {"A": [a_bit], "B": [b_bit], "Y": [out_bit]},
+    }
+
+
+def _async_capture_control(cell: dict[str, Any]) -> tuple[str, str, int] | None:
+    """The scan FF's async control as (kind, pin, control_net), or None.
+
+    kind is "reset" (RESET_B, active-low, captured value 0) or "set"
+    (SET_B, active-low, captured value 1).  The control net is read from the
+    live cell connection so a prior FF's Q->PPI rewrite does not affect it.
+    """
+    cell_type = cell.get("type")
+    conns = cell.get("connections", {})
+    if not isinstance(conns, dict):
+        return None
+    if cell_type in SCAN_RESET_TYPES:
+        bits = _all_int_bits(conns.get("RESET_B"))
+        return ("reset", "RESET_B", bits[0]) if bits else None
+    if cell_type in SCAN_SET_TYPES:
+        bits = _all_int_bits(conns.get("SET_B"))
+        return ("set", "SET_B", bits[0]) if bits else None
+    return None
+
+
+def _add_ctrl_branch(
+    cells: dict[str, Any],
+    *,
+    instance: str,
+    control: tuple[str, str, int],
+    next_id: int,
+) -> tuple[int, str, int]:
+    """Fan the FF's async control through a dedicated branch buffer.
+
+    Returns (control_branch_net, control_boundary_site_key, next_id).  Both the
+    output mux (FF Q) and the capture mux (FF D) read this one branch net, so a
+    fault on it models the generic netlist's control-pin branch fault (consumer
+    = the scan FF, pin RESET_B/SET_B; the FF cell is removed from the reduced
+    view).  Mirrors the D-observe boundary's dedicated-net mechanism.
+    """
+    _kind, pin, control_net = control
+    control_branch_net = next_id
+    next_id += 1
+    _add_internal_buf_cell(
+        cells,
+        f"$ffctrlbranch_{instance}",
+        D_BRANCH_BUF_CELL,
+        control_net,
+        control_branch_net,
+    )
+    control_site_key = canonical_site_key(
+        SiteProvenance(
+            yosys_net_id=control_net,
+            kind="branch",
+            consumer_instance=instance,
+            input_pin=pin,
+        )
+    )
+    return control_branch_net, control_site_key, next_id
+
+
+def _ctrl_mux(
+    cells: dict[str, Any],
+    *,
+    instance: str,
+    suffix: str,
+    data_in: int,
+    kind: str,
+    control_branch_net: int,
+    next_id: int,
+) -> tuple[int, int]:
+    """Model ``control_active ? control_value : data_in`` (active-low control).
+
+    Returns (mux_out_net, next_id).  Used on both the FF output path
+    (data_in = PPI) and the FF capture path (data_in = D observe), so the
+    async control sits in the combinational cone of a scan-observable point and
+    a control-line fault is detectable by implication.  ``suffix`` keeps the
+    inserted cell names unique between the two paths.
+    """
+    if kind == "reset":
+        # out = data_in AND RESET_B  (RESET_B=0 forces 0, else passes data_in).
+        mux_out = next_id
+        next_id += 1
+        _add_internal_gate2_cell(
+            cells,
+            f"$ff{suffix}rstmux_{instance}",
+            CAPTURE_AND_CELL,
+            data_in,
+            control_branch_net,
+            mux_out,
+        )
+        return mux_out, next_id
+    # out = data_in OR NOT(SET_B)  (SET_B=0 forces 1, else passes data_in).
+    inv_out = next_id
+    next_id += 1
+    _add_internal_buf_cell(
+        cells,
+        f"$ff{suffix}setinv_{instance}",
+        CAPTURE_INV_CELL,
+        control_branch_net,
+        inv_out,
+    )
+    mux_out = next_id
+    next_id += 1
+    _add_internal_gate2_cell(
+        cells,
+        f"$ff{suffix}setmux_{instance}",
+        CAPTURE_OR_CELL,
+        data_in,
+        inv_out,
+        mux_out,
+    )
+    return mux_out, next_id
+
+
 def _resolve_d_observe_boundary(
     cells: dict[str, Any],
     *,
@@ -344,15 +481,37 @@ def build_scan_atpg_view(
         # Q->PPI rewrite may have already rewired this D pin (FF-to-FF stage).
         d_net = _current_data_net(cell, int(record["data_net"]))
         record_clock_net = int(record.get("clock_net", -1))
+        # An async control forces the FF asynchronously, so it overrides BOTH the
+        # FF output (current state, drives logic + POs) and the captured value.
+        # Model it on both paths so the reduced view matches the full protocol.
+        control = _async_capture_control(cell)
+        control_branch_net: int | None = None
+        control_site_key: str | None = None
+        if control is not None:
+            control_branch_net, control_site_key, next_id = _add_ctrl_branch(
+                cells, instance=instance, control=control, next_id=next_id
+            )
         ppi_port = _ppi_name(instance)
         ppi_bit = next_id
         next_id += 1
 
         _add_port(module, ppi_port, "input", ppi_bit)
+        # FF output seen by downstream logic = control_active ? value : PPI.
+        q_drive = ppi_bit
+        if control is not None and control_branch_net is not None:
+            q_drive, next_id = _ctrl_mux(
+                cells,
+                instance=instance,
+                suffix="q",
+                data_in=ppi_bit,
+                kind=control[0],
+                control_branch_net=control_branch_net,
+                next_id=next_id,
+            )
         _rewire_net_in_module(
             module,
             q_net,
-            ppi_bit,
+            q_drive,
             excluded_ports=scan_port_names,
         )
 
@@ -375,6 +534,20 @@ def build_scan_atpg_view(
                     next_id=next_id,
                 )
             )
+            # Model the async control on the capture path too, so the PPO (the
+            # unloaded captured value) reflects `control_active ? value : D`.
+            # Reuses the FF's one control branch net, so a control-line fault
+            # propagates to a scan-observable PPO (implication-based detection).
+            if control is not None and control_branch_net is not None:
+                observe_input, next_id = _ctrl_mux(
+                    cells,
+                    instance=instance,
+                    suffix="d",
+                    data_in=observe_input,
+                    kind=control[0],
+                    control_branch_net=control_branch_net,
+                    next_id=next_id,
+                )
             _add_internal_buf_cell(
                 cells,
                 f"$ffobserve_{instance}",
@@ -395,6 +568,12 @@ def build_scan_atpg_view(
             ppo_port = None
             ppo_bit = None
             boundary = {}
+        # The control branch fault maps to its dedicated branch net whether or
+        # not this FF has a PPO: the output mux always feeds downstream logic
+        # (which may reach an active observable), so record it on either path.
+        if control_site_key is not None and control_branch_net is not None:
+            boundary["control_boundary_site_key"] = control_site_key
+            boundary["control_observe_net_id"] = control_branch_net
 
         cells.pop(instance, None)
         pseudo_port_map[instance] = {
@@ -410,15 +589,7 @@ def build_scan_atpg_view(
             "boundary": boundary,
         }
 
-    # Support both v2 (clock_nets: list) and v1 (clock_net: int) manifests.
-    clock_nets_raw = manifest.get("clock_nets")
-    if isinstance(clock_nets_raw, list) and clock_nets_raw:
-        clock_nets_list = [int(n) for n in clock_nets_raw]
-    else:
-        clk = manifest.get("clock_net")
-        if not isinstance(clk, int):
-            raise ScanError("manifest must have clock_nets (list) or clock_net (int)")
-        clock_nets_list = [clk]
+    clock_nets_list = manifest_clock_net_ids(manifest)
     _drop_dangling_scan_ports(module, manifest, clock_nets_list)
 
     attrs = module.setdefault("attributes", {})

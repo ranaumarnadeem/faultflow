@@ -5,6 +5,7 @@ from typing import Any
 
 from faultflow.config import FaultflowConfig
 from faultflow.scan.cell_map import resolve_scan_cell_map
+from faultflow.scan.manifest import manifest_clock_net_ids
 from faultflow.scan.protocol import ScanPattern
 
 
@@ -62,17 +63,7 @@ def verify_golden_scan_protocol(
             "Run: cmake --build build -- -j2"
         )
 
-    # Support both v2 (clock_nets: list) and v1 (clock_net: int) manifests.
-    clock_nets_raw = manifest.get("clock_nets")
-    if isinstance(clock_nets_raw, list) and clock_nets_raw:
-        clock_net_ids = [int(n) for n in clock_nets_raw]
-    else:
-        clk = manifest.get("clock_net")
-        if not isinstance(clk, int):
-            raise RunnerError(
-                "scan manifest must have clock_nets (list) or clock_net (int)"
-            )
-        clock_net_ids = [clk]
+    clock_net_ids = manifest_clock_net_ids(manifest, error_cls=RunnerError)
     clock_ports: list[str] = []
     for clk_net in clock_net_ids:
         port = _port_name_for_net(generic_json, str(manifest["top"]), clk_net, "input")

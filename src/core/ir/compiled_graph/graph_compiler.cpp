@@ -220,10 +220,10 @@ void wire_inputs(SimNode& sn, GateType gt,
       wire("D_N", sn.in3);
       break;
     case GateType::NAND4BB:
-      wire("A1_N", sn.in0);
-      wire("A2_N", sn.in1);
-      wire("B1", sn.in2);
-      wire("B2", sn.in3);
+      wire("A_N", sn.in0);
+      wire("B_N", sn.in1);
+      wire("C", sn.in2);
+      wire("D", sn.in3);
       break;
     case GateType::O2111A:
     case GateType::O2111AI:

@@ -483,10 +483,13 @@ std::vector<ProgressiveDetection> simulate_incremental(
     std::vector<ActiveFaultRecord> still_active;
     still_active.reserve(active.size());
     const int64_t vector_index = vector_start_index + static_cast<int64_t>(vi);
+    // Collect all faults this vector detects, then write them in ONE DB
+    // transaction (slice order == ascending fault index, so the detections
+    // order is identical to the per-fault path).
+    std::vector<int64_t> detected_this_vector;
     for (const GradeRangeResult& sr : slices) {
       for (const size_t idx : sr.detected_indices) {
-        db::mark_fault_detected(db_path, campaign_id, run_id,
-                                active[idx].fault_id, vector_index);
+        detected_this_vector.push_back(active[idx].fault_id);
         detections.push_back({active[idx].fault_id, vector_index});
       }
       for (const ActiveFaultRecord& rec : sr.still_active) {
@@ -494,6 +497,8 @@ std::vector<ProgressiveDetection> simulate_incremental(
       }
       g_simulation_instrumentation.batch_fault_calls += sr.batch_fault_calls;
     }
+    db::mark_faults_detected(db_path, campaign_id, run_id, vector_index,
+                             detected_this_vector);
     active = std::move(still_active);
   }
   return detections;
@@ -776,10 +781,11 @@ std::vector<ProgressiveDetection> simulate_transition_incremental(
     std::vector<ActiveFaultRecord> still_active;
     still_active.reserve(active.size());
     const int64_t vector_index = vector_start_index + static_cast<int64_t>(vi);
+    // One DB transaction per vector (see the stuck-at path above).
+    std::vector<int64_t> detected_this_vector;
     for (const GradeRangeResult& sr : slices) {
       for (const size_t idx : sr.detected_indices) {
-        db::mark_fault_detected(db_path, campaign_id, run_id,
-                                active[idx].fault_id, vector_index);
+        detected_this_vector.push_back(active[idx].fault_id);
         detections.push_back({active[idx].fault_id, vector_index});
       }
       for (const ActiveFaultRecord& rec : sr.still_active) {
@@ -787,6 +793,8 @@ std::vector<ProgressiveDetection> simulate_transition_incremental(
       }
       g_simulation_instrumentation.batch_fault_calls += sr.batch_fault_calls;
     }
+    db::mark_faults_detected(db_path, campaign_id, run_id, vector_index,
+                             detected_this_vector);
     active = std::move(still_active);
   }
   return detections;

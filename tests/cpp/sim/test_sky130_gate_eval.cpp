@@ -1,9 +1,13 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <functional>
+#include <map>
 #include <vector>
 
+#include "helpers/test_helpers.hpp"
 #include "sim/gate_eval.hpp"
+#include "sim/golden_ref/golden_ref_sim.hpp"
+#include "sim/state/test_vector.hpp"
 
 using namespace faultflow;
 
@@ -101,4 +105,30 @@ TEST_CASE("Sky130 primitive truth tables are independently pinned",
   check_table(GateType::A2BB2O, 4, [](const auto& in) {
     return (!in[0] && !in[1]) || (in[2] && in[3]);
   });
+  // nand4bb: Y = A_N | B_N | !C | !D (first two inputs pre-inverted/bubbled).
+  check_table(GateType::NAND4BB, 4, [](const auto& in) {
+    return in[0] || in[1] || !in[2] || !in[3];
+  });
+}
+
+// Regression for the NAND4BB pin-name bug: the cell map + graph compiler once
+// wired the nonexistent pins A1_N/A2_N/B1/B2, so all four inputs silently
+// became UNUSED and the gate evaluated as a constant 1 regardless of inputs.
+// This exercises the full parse->normalize->compile->simulate path against the
+// independent truth table, so it fails on the broken wiring and passes on the
+// real ports A_N/B_N/C/D.
+TEST_CASE("nand4bb wires its real ports (A_N/B_N/C/D), not a constant",
+          "[sky130][nand4bb][compiled]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_nand4bb.json");
+  const GoldenRefSim ref;
+  for (int mask = 0; mask < 16; ++mask) {
+    const bool a_n = (mask & 1) != 0;
+    const bool b_n = (mask & 2) != 0;
+    const bool c = (mask & 4) != 0;
+    const bool d = (mask & 8) != 0;
+    TestVector vec;
+    vec.inputs = {{2, a_n}, {3, b_n}, {4, c}, {5, d}};  // A_N,B_N,C,D net ids
+    const std::map<int, bool> vals = ref.simulate_fault_free(cg, vec);
+    REQUIRE(vals.at(6) == (a_n || b_n || !c || !d));  // Y net id 6
+  }
 }

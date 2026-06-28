@@ -53,6 +53,7 @@ from faultflow.rule_check.model import RuleCheckReport
 from faultflow.scan.checks import check_scan_structure
 from faultflow.scan.atpg_view import build_scan_atpg_view
 from faultflow.scan.cell_map import resolve_scan_cell_map
+from faultflow.scan.manifest import manifest_clock_net_ids
 from faultflow.scan.reports import (
     format_dry_run,
     hash_file,
@@ -189,16 +190,12 @@ def _port_names(
     if not isinstance(ports, dict):
         raise RunnerError(f"module {top} ports must be an object")
     raw_netnames = module.get("netnames", {}) if expand_buses else {}
-    netnames: dict[str, Any] = (
-        raw_netnames if isinstance(raw_netnames, dict) else {}
-    )
+    netnames: dict[str, Any] = raw_netnames if isinstance(raw_netnames, dict) else {}
     out: list[str] = []
     for name, port in ports.items():
         if isinstance(port, dict) and port.get("direction") == direction:
             bits = port.get("bits")
-            if not isinstance(bits, list) or not any(
-                isinstance(b, int) for b in bits
-            ):
+            if not isinstance(bits, list) or not any(isinstance(b, int) for b in bits):
                 continue
             if expand_buses and len(bits) > 1:
                 int_bits = [b for b in bits if isinstance(b, int)]
@@ -693,7 +690,9 @@ class Runner:
             )
             return vectors, str(generated)
         except (PatternError, RunnerError):
-            cycle_count = max(10, int(self._current_scan_cell_count()) + 2)
+            # Need at least max_chain_length + 2 cycles to shift through every
+            # cell in the longest chain. Using total cell count was 4-8x too many.
+            cycle_count = max(10, self._max_scan_chain_length() + 2)
             smoke_vectors: list[dict[str, bool]] = []
             for cycle_index in range(cycle_count):
                 smoke_vectors.append(
@@ -735,6 +734,21 @@ class Runner:
         manifest = load_manifest(manifest_path)
         value = manifest.get("cell_count", 0)
         return int(value) if isinstance(value, int) else 0
+
+    def _max_scan_chain_length(self) -> int:
+        """Return the length of the longest scan chain (not the total cell count).
+        Used to compute the minimum number of smoke-test cycles needed to shift
+        through every cell in the longest chain exactly once."""
+        manifest_path = self._scan_manifest_path()
+        if not manifest_path.exists():
+            return self._current_scan_cell_count()
+        manifest = load_manifest(manifest_path)
+        chains = manifest.get("chains")
+        if not isinstance(chains, list) or not chains:
+            return self._current_scan_cell_count()
+        return max(
+            len(c.get("cell_records", [])) for c in chains if isinstance(c, dict)
+        )
 
     def _sequence_outputs(
         self,
@@ -786,17 +800,7 @@ class Runner:
         )
         if not output_order:
             raise RunnerError("normal-mode scan check requires at least one PO")
-        # Support both v2 (clock_nets: list) and v1 (clock_net: int) manifests.
-        clock_nets_raw = manifest.get("clock_nets")
-        if isinstance(clock_nets_raw, list) and clock_nets_raw:
-            clock_net_ids = [int(n) for n in clock_nets_raw]
-        else:
-            clk = manifest.get("clock_net")
-            if not isinstance(clk, int):
-                raise RunnerError(
-                    "scan manifest must have clock_nets (list) or clock_net (int)"
-                )
-            clock_net_ids = [clk]
+        clock_net_ids = manifest_clock_net_ids(manifest, error_cls=RunnerError)
         clock_names: list[str] = []
         for clk_net in clock_net_ids:
             port = _port_name_for_net(
@@ -931,6 +935,7 @@ class Runner:
         self,
         vectors_path: Path | None = None,
         require_techmap: bool = False,
+        structural_only: bool = False,
     ) -> str:
         t0 = time.perf_counter()
         log.info("check  validating scan chains (top=%s) ...", self.cfg.top)
@@ -943,7 +948,7 @@ class Runner:
         warnings = list(structural.warnings)
         normal_mode: dict[str, object] | None = None
         techmap_equivalence: dict[str, object] | None = None
-        if not errors:
+        if not errors and not structural_only:
             try:
                 extra_warnings, normal_mode = self._run_scan_normal_mode_check(
                     manifest, vectors_path

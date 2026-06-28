@@ -508,3 +508,45 @@ def test_coverage_report_rejects_denominator_invariant(
             write_reports(conn, cfg, campaign_id=campaign_id)
     finally:
         conn.close()
+
+
+def test_coverage_report_rejects_zero_denominator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Policy 3: a campaign whose entire fault population is excluded (or
+    # collapsed) has a zero denominator and MUST raise rather than emit a
+    # NaN / None coverage number.
+    monkeypatch.chdir(tmp_path)
+    cfg_path = tmp_path / "config.ofs"
+    _config(cfg_path)
+    cfg = load_config(cfg_path, "demo")
+    conn = connect(cfg.db_path)
+    try:
+        init_schema(conn)
+        campaign_id = insert_campaign(conn)
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=1,
+            net_name="clk",
+            compiled_net_index=1,
+            fault_type="sa0",
+            status="excluded",
+            exclusion="clock",
+        )
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=2,
+            net_name="bb",
+            compiled_net_index=2,
+            fault_type="sa0",
+            status="excluded",
+            exclusion="blackbox",
+        )
+        conn.commit()
+
+        with pytest.raises(CoverageError, match="denominator is zero"):
+            write_reports(conn, cfg, campaign_id=campaign_id)
+    finally:
+        conn.close()

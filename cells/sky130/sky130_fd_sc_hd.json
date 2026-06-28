@@ -188,10 +188,10 @@
     "node_type": "GATE",
     "gate_type": "NAND4BB",
     "inputs": [
-      "A1_N",
-      "A2_N",
-      "B1",
-      "B2"
+      "A_N",
+      "B_N",
+      "C",
+      "D"
     ],
     "outputs": {
       "Y": "Y"
@@ -935,6 +935,30 @@
     "outputs": {
       "Y": "Y"
     }
+  },
+  "$faultflow_capture_and": {
+    "node_type": "GATE", "gate_type": "AND2",
+    "inputs": ["A", "B"], "outputs": {"Y": "Y"}
+  },
+  "\\$faultflow_capture_and": {
+    "node_type": "GATE", "gate_type": "AND2",
+    "inputs": ["A", "B"], "outputs": {"Y": "Y"}
+  },
+  "$faultflow_capture_or": {
+    "node_type": "GATE", "gate_type": "OR2",
+    "inputs": ["A", "B"], "outputs": {"Y": "Y"}
+  },
+  "\\$faultflow_capture_or": {
+    "node_type": "GATE", "gate_type": "OR2",
+    "inputs": ["A", "B"], "outputs": {"Y": "Y"}
+  },
+  "$faultflow_capture_inv": {
+    "node_type": "GATE", "gate_type": "INV",
+    "inputs": ["A"], "outputs": {"Y": "Y"}
+  },
+  "\\$faultflow_capture_inv": {
+    "node_type": "GATE", "gate_type": "INV",
+    "inputs": ["A"], "outputs": {"Y": "Y"}
   },
   "$wbc_in_faultflow": {
     "node_type": "GATE",

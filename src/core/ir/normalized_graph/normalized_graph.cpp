@@ -272,6 +272,16 @@ NormalizedGraph NormalizedGraph::from_parsed(
       auto it = cell.conns.find(in_pin);
       if (it != cell.conns.end() && !it->second.empty()) {
         node.input_pins[in_pin] = it->second.front();
+      } else if (entry->node_type == NodeType::GATE && !entry->wbr.present) {
+        // A declared input pin of a supported combinational gate that does not
+        // resolve to a connection is a cell-map/compiler pin-name mismatch: the
+        // input would silently become UNUSED and degrade the gate to a constant.
+        // Fail loudly rather than produce wrong coverage. (FFs validate their
+        // pins via build_ff_config; WBR cells via the core/sys checks below.)
+        throw ParseError("cell " + inst + " (type '" + cell.type +
+                         "'): declared input pin '" + in_pin +
+                         "' has no connection — cell-map/compiler pin-name "
+                         "mismatch for this gate type");
       }
     }
     for (const auto& [logical, lib_pin] : entry->outputs) {

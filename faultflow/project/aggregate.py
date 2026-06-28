@@ -44,11 +44,14 @@ from typing import Any
 from faultflow.db import connect, latest_campaign_id, summary
 from faultflow.project.orchestrator import ScopeRun
 
-# WBC cell types + the (pin -> side) classification, shared with the fusion layer.
-_WBR_IN_TYPES = {"$wbc_in_faultflow", "\\$wbc_in_faultflow"}
-_WBR_OUT_TYPES = {"$wbc_out_faultflow", "\\$wbc_out_faultflow"}
-_WBR_SCAN_IN_TYPES = {"$wbc_in_scan_faultflow", "\\$wbc_in_scan_faultflow"}
-_WBR_SCAN_OUT_TYPES = {"$wbc_out_scan_faultflow", "\\$wbc_out_scan_faultflow"}
+# WBC cell types: the single source of truth lives in the fusion layer; import
+# them so a new wrapper-cell variant is recognized as a boundary in both places.
+from faultflow.scan.wbr_view import (
+    _WBR_IN_TYPES,
+    _WBR_OUT_TYPES,
+    _WBR_SCAN_IN_TYPES,
+    _WBR_SCAN_OUT_TYPES,
+)
 
 # Exclusion tags that hand a fault to the OTHER scope (cross-scope ownership).
 _CROSS_SCOPE_EXCLUSIONS = {

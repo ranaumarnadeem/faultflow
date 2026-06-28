@@ -58,6 +58,11 @@ def build_scan_execution_map(
 
     q_boundaries: dict[int, dict[str, Any]] = {}
     d_boundaries: dict[str, int] = {}
+    # Async control (RESET_B/SET_B) branch site -> reduced-view observe net.
+    # The scan FF cell is removed from the reduced view (replaced by the capture
+    # mux), so its control-pin branch fault has no direct reduced consumer; it is
+    # graded at the dedicated control branch-buffer net the mux reads.
+    control_boundaries: dict[str, int] = {}
     scan_instances: set[str] = set()
     for instance, entry in pseudo_port_map.items():
         scan_instances.add(instance)
@@ -67,6 +72,10 @@ def build_scan_execution_map(
         d_boundaries[str(boundary["d_boundary_site_key"])] = int(
             boundary["d_observe_net_id"]
         )
+        if boundary.get("control_boundary_site_key") is not None:
+            control_boundaries[str(boundary["control_boundary_site_key"])] = int(
+                boundary["control_observe_net_id"]
+            )
 
     generic_data: dict[str, Any] = json.loads(
         Path(generic_json_path).read_text(encoding="utf-8")
@@ -169,6 +178,10 @@ def build_scan_execution_map(
         d_observe_yid = d_boundaries.get(key)
         if d_observe_yid is not None and d_observe_yid in reduced_stems:
             execution[key] = reduced_stems[d_observe_yid]
+            continue
+        control_observe_yid = control_boundaries.get(key)
+        if control_observe_yid is not None and control_observe_yid in reduced_stems:
+            execution[key] = reduced_stems[control_observe_yid]
 
     return execution, exclusions
 

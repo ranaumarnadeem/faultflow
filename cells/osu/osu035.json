@@ -185,6 +185,46 @@
       "scan": {"in": "SDI", "enable": "SE", "enable_polarity": "HIGH"}
     }
   },
+  "$scanff_r_faultflow": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D", "SDI", "SE", "RESET_B"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK", "data": "D", "output": "Q", "trigger": "POSEDGE",
+      "clear": {"pin": "RESET_B", "level": "LOW", "value": 0},
+      "scan": {"in": "SDI", "enable": "SE", "enable_polarity": "HIGH"}
+    }
+  },
+  "\\$scanff_r_faultflow": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D", "SDI", "SE", "RESET_B"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK", "data": "D", "output": "Q", "trigger": "POSEDGE",
+      "clear": {"pin": "RESET_B", "level": "LOW", "value": 0},
+      "scan": {"in": "SDI", "enable": "SE", "enable_polarity": "HIGH"}
+    }
+  },
+  "$scanff_s_faultflow": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D", "SDI", "SE", "SET_B"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK", "data": "D", "output": "Q", "trigger": "POSEDGE",
+      "preset": {"pin": "SET_B", "level": "LOW", "value": 1},
+      "scan": {"in": "SDI", "enable": "SE", "enable_polarity": "HIGH"}
+    }
+  },
+  "\\$scanff_s_faultflow": {
+    "node_type": "FF",
+    "inputs": ["CLK", "D", "SDI", "SE", "SET_B"],
+    "outputs": {"Q": "Q"},
+    "ff": {
+      "clock": "CLK", "data": "D", "output": "Q", "trigger": "POSEDGE",
+      "preset": {"pin": "SET_B", "level": "LOW", "value": 1},
+      "scan": {"in": "SDI", "enable": "SE", "enable_polarity": "HIGH"}
+    }
+  },
   "$faultflow_observe_buf": {
     "node_type": "GATE",
     "gate_type": "BUF",
@@ -208,6 +248,24 @@
     "gate_type": "BUF",
     "inputs": ["A"],
     "outputs": {"Y": "Y"}
+  },
+  "$faultflow_capture_and": {
+    "node_type": "GATE", "gate_type": "AND2", "inputs": ["A", "B"], "outputs": {"Y": "Y"}
+  },
+  "\\$faultflow_capture_and": {
+    "node_type": "GATE", "gate_type": "AND2", "inputs": ["A", "B"], "outputs": {"Y": "Y"}
+  },
+  "$faultflow_capture_or": {
+    "node_type": "GATE", "gate_type": "OR2", "inputs": ["A", "B"], "outputs": {"Y": "Y"}
+  },
+  "\\$faultflow_capture_or": {
+    "node_type": "GATE", "gate_type": "OR2", "inputs": ["A", "B"], "outputs": {"Y": "Y"}
+  },
+  "$faultflow_capture_inv": {
+    "node_type": "GATE", "gate_type": "INV", "inputs": ["A"], "outputs": {"Y": "Y"}
+  },
+  "\\$faultflow_capture_inv": {
+    "node_type": "GATE", "gate_type": "INV", "inputs": ["A"], "outputs": {"Y": "Y"}
   },
   "$wbc_in_faultflow": {
     "node_type": "GATE",

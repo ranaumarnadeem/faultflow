@@ -180,9 +180,7 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         raise CoverageError("coverage report node/fault sections must be arrays")
 
 
-def _translate_scan_net_name(
-    net_name: str, pseudo_port_map: dict[str, dict[str, Any]]
-) -> str:
+def _translate_scan_net_name(net_name: str) -> str:
     if net_name.startswith("__ppi_"):
         instance = net_name.removeprefix("__ppi_")
         return f"{instance}.Q"
@@ -238,16 +236,11 @@ def write_reports(
             ft = str(fault["fault_type"]).lower()
             fault["fault_type"] = _str_stf.get(ft, ft)
     if scan_context is not None:
-        pseudo_port_map = scan_context.get("pseudo_port_map", {})
-        if isinstance(pseudo_port_map, dict):
-            for node in per_node:
-                node["net_name"] = _translate_scan_net_name(
-                    str(node["net_name"]), pseudo_port_map
-                )
-            for fault in undetected:
-                fault["net_name"] = _translate_scan_net_name(
-                    str(fault["net_name"]), pseudo_port_map
-                )
+        # Relabel reduced-view pseudo-ports (__ppi_/__ppo_) back to FF.Q / FF.D.
+        for node in per_node:
+            node["net_name"] = _translate_scan_net_name(str(node["net_name"]))
+        for fault in undetected:
+            fault["net_name"] = _translate_scan_net_name(str(fault["net_name"]))
 
     report = {
         "metadata": {

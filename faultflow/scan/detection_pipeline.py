@@ -42,6 +42,7 @@ from faultflow.runner.progressive_atpg import (
 from faultflow.runner.runner import RunnerError
 from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX
 from faultflow.scan.cell_map import resolve_scan_cell_map
+from faultflow.scan.manifest import manifest_clock_net_ids
 from faultflow.scan.stitch import SCAN_CELL_TYPES
 from faultflow.scan.protocol import ScanPattern, serialize_vector
 from faultflow.scan.domain_reach import (
@@ -335,17 +336,7 @@ def _protocol_fault_sim_kwargs(
 ) -> dict[str, object]:
     from faultflow.runner.runner import _port_name_for_net
 
-    # Support both v2 (clock_nets: list) and v1 (clock_net: int) manifests.
-    clock_nets_raw = ctx.manifest.get("clock_nets")
-    if isinstance(clock_nets_raw, list) and clock_nets_raw:
-        clock_net_ids = [int(n) for n in clock_nets_raw]
-    else:
-        clk = ctx.manifest.get("clock_net")
-        if not isinstance(clk, int):
-            raise RunnerError(
-                "scan manifest must have clock_nets (list) or clock_net (int)"
-            )
-        clock_net_ids = [clk]
+    clock_net_ids = manifest_clock_net_ids(ctx.manifest, error_cls=RunnerError)
     clock_ports: list[str] = []
     for clk_net in clock_net_ids:
         port = _port_name_for_net(
@@ -549,11 +540,16 @@ def _process_scan_candidate(
     (`los_head_scan_in`). The reduced-view expectation, scan-pattern unload, and
     golden gate use the frame-1 (V2) materialization, and grading runs two captures.
     """
-    # Hold async set/reset PIs at their inactive level for the whole scan test, so
-    # the reduced view (which ignores the FF's async control) stays consistent with
-    # the full scan protocol (which applies it at capture). No-op for designs
-    # without scannable async-reset/set FFs.
-    if scan_ctx.reset_pi_holds:
+    # Hold async set/reset PIs at their inactive level for the whole scan test.
+    # The reduced view now MODELS the async control at capture (atpg_view inserts
+    # `control_active ? control_value : D` before each async FF's PPO), so the hold
+    # is no longer required for golden-gate consistency. We keep it as the default
+    # (conventional scan: control-tree faults excluded, never activated), and drop
+    # it only when the user opts into grading reset/set faults — then the SAT is
+    # free to activate the control and the modeled mux makes the control-line fault
+    # observable at a PPO (implication-based detection). No-op for designs without
+    # scannable async-reset/set FFs.
+    if scan_ctx.reset_pi_holds and not scan_ctx.cfg.fault_model.include_reset_faults:
         vector = {
             **vector,
             **{k: v for k, v in scan_ctx.reset_pi_holds.items() if k in vector},

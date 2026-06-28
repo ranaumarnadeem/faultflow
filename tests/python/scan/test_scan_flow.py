@@ -267,6 +267,103 @@ def test_async_reset_scan_atpg_end_to_end(tmp_path: Path) -> None:
     assert summary["undetected"] == 0
 
 
+def test_async_reset_tree_faults_detected_via_implication(tmp_path: Path) -> None:
+    # With include_reset_faults, the reduced ATPG view models the async control
+    # (PPO = reset_active ? 0 : D), so the SAT can justify+propagate reset-tree
+    # faults to a scan-observable PPO (implication-based detection, like Tessent).
+    # The hold-reset-inactive shortcut is dropped in this mode.
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+    rtl = tmp_path / "arst_seq.v"
+    rtl.write_text(
+        "module arst_seq (input clk, input rst_n, input a, input b,\n"
+        "                 output reg dout);\n"
+        "  reg q0;\n"
+        "  always @(posedge clk or negedge rst_n)\n"
+        "    if (!rst_n) q0 <= 1'b0; else q0 <= a & b;\n"
+        "  always @(posedge clk or negedge rst_n)\n"
+        "    if (!rst_n) dout <= 1'b0; else dout <= ~q0;\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+    from faultflow.shell.session import ProjectSession
+    from faultflow.shell.tcl_bridge import TclBridge
+
+    session = ProjectSession(output_root=tmp_path / "out")
+    bridge = TclBridge(session)
+    bridge.call("read_netlist", str(rtl), "-top", "arst_seq")
+    bridge.call("use_lib_cells", "sky130")
+    bridge.call("add_clock", "clk")
+    # Opt into grading the reset tree before fault enumeration.
+    bridge.call("set_option", "fault_model.include_reset_faults", "true")
+    bridge.call("synth")
+    assert "cells=2" in str(bridge.call("add_scan", "-chains", "1"))
+    bridge.call("check_scan")
+    bridge.call("run_atpg", "-scan", "-target", "100.0")
+
+    report = json.loads(
+        (
+            tmp_path / "out/arst_seq/.faultflow/intermediate/coverage_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    summary = report["summary"]
+    # Reset-tree faults are now in the denominator (not excluded)...
+    assert summary["excluded_reset"] == 0
+    # ...and every fault, including the reset tree, is detected.
+    assert summary["undetected"] == 0
+    assert summary["detected"] > 0
+
+
+@pytest.mark.parametrize("launch", ["broadside", "los"])
+def test_async_reset_transition_atpg_with_reset_faults(
+    tmp_path: Path, launch: str
+) -> None:
+    # Two-frame (transition) counterpart of the implication test: with the reset
+    # modeled on BOTH FF paths and across BOTH frames, the LOC/LOS golden gate
+    # must still hold (run_atpg must not raise golden_sequence_failed) while the
+    # reset tree is graded rather than excluded.
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+    rtl = tmp_path / "arst_seq.v"
+    rtl.write_text(
+        "module arst_seq (input clk, input rst_n, input a, input b,\n"
+        "                 output reg dout);\n"
+        "  reg q0;\n"
+        "  always @(posedge clk or negedge rst_n)\n"
+        "    if (!rst_n) q0 <= 1'b0; else q0 <= a & b;\n"
+        "  always @(posedge clk or negedge rst_n)\n"
+        "    if (!rst_n) dout <= 1'b0; else dout <= ~q0;\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+    from faultflow.shell.session import ProjectSession
+    from faultflow.shell.tcl_bridge import TclBridge
+
+    session = ProjectSession(output_root=tmp_path / "out")
+    bridge = TclBridge(session)
+    bridge.call("read_netlist", str(rtl), "-top", "arst_seq")
+    bridge.call("use_lib_cells", "sky130")
+    bridge.call("add_clock", "clk")
+    bridge.call("set_option", "fault_model.include_reset_faults", "true")
+    # buffer WBC: transition (LOC/LOS) ATPG is unsupported with the 1-FF scan WBC.
+    bridge.call("set_option", "wrap.wbr_model", "buffer")
+    bridge.call("synth")
+    assert "cells=2" in str(bridge.call("add_scan", "-chains", "1"))
+    bridge.call("check_scan")
+    # Must not raise: validates the two-frame golden gate with reset modeled.
+    bridge.call("run_atpg", "-scan", "-tf", launch, "-target", "100.0")
+
+    report = json.loads(
+        (
+            tmp_path / "out/arst_seq/.faultflow/intermediate/coverage_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    summary = report["summary"]
+    # Reset-tree transition faults are graded (in the denominator), not excluded.
+    assert summary["excluded_reset"] == 0
+    assert summary["detected"] > 0
+
+
 def test_render_scan_techmap_targets_sky130_scan_cell() -> None:
     text = render_scan_techmap()
     celltype = YOSYS_SCAN_CELL_TYPE.replace("\\", "\\\\")

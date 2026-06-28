@@ -264,23 +264,31 @@ std::vector<std::map<std::string, bool>> fault_free_sequence_outputs(
   const std::vector<TestVector> vectors =
       convert_sequence_vectors_strict(parsed, raw_sequences, input_order);
 
+  // Resolve output names to Yosys net IDs once, then use snapshot_sampled so
+  // each simulation cycle only snapshots the needed nets (not all ~300K nets).
+  std::vector<int> sample_yids;
+  sample_yids.reserve(output_order.size());
+  for (const auto& output : output_order) {
+    sample_yids.push_back(parsed.net_id_by_name(output));
+  }
+
   GoldenRefSim ref;
   std::vector<std::map<std::string, bool>> out;
   out.reserve(vectors.size());
   for (const TestVector& vector : vectors) {
-    const auto samples = ref.simulate_sequence_fault_free(cg, vector);
+    const auto samples =
+        ref.simulate_sequence_fault_free(cg, vector, sample_yids);
     if (samples.empty()) {
       throw std::runtime_error("sequence produced no sampled outputs");
     }
     const std::map<int, bool>& values = samples.back();
     std::map<std::string, bool> sample;
-    for (const auto& output : output_order) {
-      const int yid = parsed.net_id_by_name(output);
-      const auto it = values.find(yid);
+    for (size_t i = 0; i < output_order.size(); ++i) {
+      const auto it = values.find(sample_yids[i]);
       if (it == values.end()) {
-        throw std::runtime_error("output not simulated: " + output);
+        throw std::runtime_error("output not simulated: " + output_order[i]);
       }
-      sample[output] = it->second;
+      sample[output_order[i]] = it->second;
     }
     out.push_back(std::move(sample));
   }

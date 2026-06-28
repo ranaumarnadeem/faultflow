@@ -183,7 +183,7 @@ TEST_CASE("Scannable async-reset FF gates reset during shift, applies at capture
   //     the FF started at 1.
   {
     TestVector vec;
-    vec.initial_ff_state = {true};
+    vec.initial_ff_state = {{0u, true}};  // single FF (compiled index 0) starts at Q=1
     vec.cycles = {
         cycle({{2, false}, {3, true}, {4, false}, {5, false}, {6, false}}, true),
     };

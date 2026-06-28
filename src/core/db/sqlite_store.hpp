@@ -97,6 +97,14 @@ void mark_fault_detected(const std::string& db_path, int64_t campaign_id,
                          int64_t run_id, int64_t fault_id,
                          int64_t vector_index);
 
+// Batched form of mark_fault_detected: opens the DB and verifies the schema
+// once, then marks every fault in one transaction (reusing two prepared
+// statements). Row-for-row identical to calling mark_fault_detected per id,
+// but avoids a DB open + commit per fault when one vector detects many faults.
+void mark_faults_detected(const std::string& db_path, int64_t campaign_id,
+                          int64_t run_id, int64_t vector_index,
+                          const std::vector<int64_t>& fault_ids);
+
 void mark_fault_redundant(const std::string& db_path, int64_t fault_id,
                           const std::string& redundancy_model_id);
 

@@ -565,6 +565,37 @@ void mark_fault_detected(const std::string& db_path, int64_t campaign_id,
   txn.commit();
 }
 
+void mark_faults_detected(const std::string& db_path, int64_t campaign_id,
+                          int64_t run_id, int64_t vector_index,
+                          const std::vector<int64_t>& fault_ids) {
+  if (fault_ids.empty()) {
+    return;
+  }
+  SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
+  SQLite::Transaction txn(db);
+  SQLite::Statement q(db,
+                      "UPDATE faults SET status='detected', detected_by_vector=?, "
+                      "protocol_unresolved=0 WHERE id=? AND status='undetected'");
+  SQLite::Statement det(
+      db,
+      "INSERT OR IGNORE INTO fault_detections(fault_id, campaign_id, run_id, "
+      "vector_index, obs_net) VALUES (?, ?, ?, ?, NULL)");
+  for (const int64_t fault_id : fault_ids) {
+    q.reset();
+    q.bind(1, vector_index);
+    q.bind(2, fault_id);
+    q.exec();
+    det.reset();
+    det.bind(1, fault_id);
+    det.bind(2, campaign_id);
+    det.bind(3, run_id);
+    det.bind(4, vector_index);
+    det.exec();
+  }
+  txn.commit();
+}
+
 void mark_fault_redundant(const std::string& db_path, int64_t fault_id,
                           const std::string& redundancy_model_id) {
   SQLite::Database db = open_db(db_path);
