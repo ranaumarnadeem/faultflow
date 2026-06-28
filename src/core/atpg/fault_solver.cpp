@@ -437,12 +437,29 @@ SatSolveResult solve_stuck_at_fault_incremental(
     }
   }
 
-  for (size_t k = 0; k < reached_obs.size(); ++k) {
-    const uint32_t obs = reached_obs[k];
-    encode_cone(obs);
-    const int d = vars.next++;
-    add_xor_def(solver, vars.free_vars.at(obs), vars.faulty_vars.at(obs), d);
-    diff_vars.push_back(d);
+  // Add the reached observables' cones in PROGRESSIVE GROUPS (1, 2, 4, 8, then all
+  // remaining in one final group => at most ~5 solves) rather than one at a time.
+  // Each incremental solve carries the assumption overhead of the temporary cut
+  // miter, so grouping bounds that overhead on faults with many reached observables
+  // (the paper's "five steps" tradeoff) while staying verdict-identical: the final
+  // group is always the whole observable set, so UNSAT there still means redundant.
+  constexpr int kMaxGroups = 5;
+  size_t k = 0;
+  size_t group_size = 1;
+  int groups_done = 0;
+  while (k < reached_obs.size()) {
+    const size_t group_end = (groups_done >= kMaxGroups - 1)
+                                 ? reached_obs.size()  // final group: the rest
+                                 : std::min(k + group_size, reached_obs.size());
+    for (; k < group_end; ++k) {
+      const uint32_t obs = reached_obs[k];
+      encode_cone(obs);
+      const int d = vars.next++;
+      add_xor_def(solver, vars.free_vars.at(obs), vars.faulty_vars.at(obs), d);
+      diff_vars.push_back(d);
+    }
+    ++groups_done;
+    group_size *= 2;
 
     // "differ at >= 1 observable added so far" as a per-solve temporary clause.
     for (int dv : diff_vars) {
@@ -461,7 +478,7 @@ SatSolveResult solve_stuck_at_fault_incremental(
       return map_cadical_result(result, had_solver_limits(options));
     }
     // result == 20 (UNSAT here): cannot observe at the observables added so far;
-    // add the next observable's cone and retry, keeping learned clauses.
+    // add the next group's cones and retry, keeping learned clauses.
   }
   return SatSolveResult::UNSAT;  // all reached observables added, full instance UNSAT
 }
