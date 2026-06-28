@@ -59,6 +59,10 @@ struct CompiledSimGraph {
   std::map<int, int> yosys_to_compiled;
   std::vector<int> compiled_to_yosys;
   std::vector<NetSiteInfo> net_sites;
+  // driver_index[net] = index of the node whose `out` == net, else -1. A pure
+  // function of the (immutable) topology, so it is computed once at compile and
+  // reused by the ATPG cone extraction instead of being rebuilt per fault.
+  std::vector<int> driver_index;
   // IEEE 1500 wrapper boundary cells, in serial-WBR order. Mode-agnostic — the
   // topology (each WBR node drives a stable net) is unchanged across modes.
   std::vector<CompiledWrapperCell> wrapper_cells;

@@ -80,8 +80,15 @@ ConeMasks build_cone_masks(const CompiledSimGraph& cg, uint32_t fault_net,
         flag[obs] = 1;
       }
     }
-    const std::vector<int> driver = build_driver_index(cg);
-    FaultCone cone = extract_fault_cone(cg, fault_net, driver, flag);
+    // Reuse the graph's precomputed driver index (topology-invariant); fall back
+    // to building it only for a graph that predates the cached field.
+    std::vector<int> fallback;
+    const std::vector<int>* driver = &cg.driver_index;
+    if (cg.driver_index.empty()) {
+      fallback = build_driver_index(cg);
+      driver = &fallback;
+    }
+    FaultCone cone = extract_fault_cone(cg, fault_net, *driver, flag);
     m.in_outcone = std::move(cone.in_outcone);
     m.in_support = std::move(cone.in_support);
     m.observed = std::move(cone.reached_observables);

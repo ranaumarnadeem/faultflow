@@ -616,6 +616,17 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
   }
 
   rebuild_fanout_csr(cg);
+
+  // driver_index: net -> node index that drives it (or -1). Topology-invariant,
+  // so build it once here and reuse it in the ATPG cone extraction instead of
+  // rebuilding it per fault.
+  cg.driver_index.assign(static_cast<size_t>(cg.net_count), -1);
+  for (size_t i = 0; i < cg.nodes.size(); ++i) {
+    const uint32_t out = cg.nodes[i].out;
+    if (out < static_cast<uint32_t>(cg.net_count)) {
+      cg.driver_index[out] = static_cast<int>(i);
+    }
+  }
   return cg;
 }
 

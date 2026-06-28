@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "atpg/cone.hpp"
 #include "helpers/test_helpers.hpp"
 #include "ir/normalized_graph/cell_map.hpp"
 #include "ir/normalized_graph/normalized_graph.hpp"
@@ -42,6 +43,23 @@ TEST_CASE("Phase9 blackbox boundary observable + pi_nets",
   REQUIRE(std::count(cg.observable.begin(), cg.observable.end(), y_c) == 1);
   // 9-C02: pi_nets includes the controllable pseudo-PI (blackbox output net).
   REQUIRE(std::count(cg.pi_nets.begin(), cg.pi_nets.end(), bbout_c) == 1);
+}
+
+TEST_CASE("CompiledSimGraph caches driver_index", "[compiled_graph][driver_index]") {
+  for (const char* fixture : {"iscas85/synth_sky130/c17.json",
+                              "iscas89/synth_sky130/s1238_bench.json"}) {
+    const CompiledSimGraph cg = test::load_compiled_benchmark(fixture);
+    // Sized to net_count and identical to a fresh structural rebuild.
+    REQUIRE(cg.driver_index.size() == static_cast<size_t>(cg.net_count));
+    REQUIRE(cg.driver_index == atpg::build_driver_index(cg));
+    // Every entry points back to a node that actually drives that net.
+    for (size_t net = 0; net < cg.driver_index.size(); ++net) {
+      const int node = cg.driver_index[net];
+      if (node >= 0) {
+        REQUIRE(cg.nodes[static_cast<size_t>(node)].out == net);
+      }
+    }
+  }
 }
 
 TEST_CASE("CompiledSimGraph constant drivers", "[compiled_graph]") {

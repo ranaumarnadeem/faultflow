@@ -95,6 +95,11 @@ class GradeHeartbeat:
 
 DEFAULT_MAX_ATPG_ROUNDS = 20
 ATPGRANDOM_SEED = 0x5EED5EED
+# Parallel SAT is dispatched in waves of (workers * this) survivors instead of
+# pre-solving every active fault up front: a pattern accepted in an earlier wave
+# fault-drops later faults, so they never reach the solver (saves SAT work on
+# wide circuits). Larger = better worker utilization but less drop benefit.
+SAT_WAVE_FACTOR = 8
 
 
 @dataclass
@@ -763,56 +768,78 @@ def run_progressive_native_atpg(
         drop_sat = cfg.atpg.fault_drop_sat
         remaining = set(active_ids)
 
-        # Parallel: pre-solve all active faults before the processing loop.
-        # workers==1 leaves _parallel_results empty; serial solve runs below.
+        # Parallel SAT is dispatched lazily in WAVES of survivors rather than
+        # pre-solving every active fault up front. As the processing loop advances
+        # in active_ids order (easy→hard, the deterministic accept order), the next
+        # wave of up-to wave_size still-undetected faults is solved in parallel just
+        # before it is needed. A pattern accepted earlier fault-drops later faults,
+        # which are then excluded from their wave and never reach the solver.
+        # workers==1 leaves _parallel_results empty and each survivor is solved
+        # serially in the body below (already optimal).
         _parallel_results: dict[int, tuple[str, dict]] = {}
-        if _parallel and _executor is not None and active_ids:
-            # Interleave easy/hard when easy_fault_reserve > 0 and workers >= 4.
-            # active_ids is sorted easy→hard; interleaving takes easy_reserve
-            # from the front and workers-easy_reserve from the back per chunk.
-            # The processing loop reads results by fault_id so order doesn't
-            # affect correctness — only submission order to the executor changes.
-            _dispatch_ids = (
-                interleave_easy_hard(active_ids, cfg.atpg.workers, _easy_reserve)
-                if _easy_reserve > 0 and cfg.atpg.workers >= 4
-                else active_ids
-            )
-            _wave_args: list[Any] = [
-                (
-                    "native_stuck_at",
-                    json_path,
-                    effective_cell_map,
-                    effective_db_path,
-                    fid,
-                    sorted(rejected_patterns.get(fid, set())),
-                    cfg.atpg.sat_conflict_limit,
-                    timeout_tiers[
-                        min(prior_timeout_count.get(fid, 0), len(timeout_tiers) - 1)
-                    ],
-                    unsupported,
-                    cfg.atpg.cone_restrict,
-                    [],  # los_couple_ports: native path is stuck-at only
-                    [],  # los_head_ports
-                    list(bb_instances),
-                    test_mode,
-                )
-                for fid in _dispatch_ids
-            ]
-            _wave_started = time.perf_counter()
-            try:
-                for _fid, _res, _slv in _executor.map(solve_fault_worker, _wave_args):
-                    _parallel_results[int(_fid)] = (_res, dict(_slv))
-            except Exception as _exc:
-                log.warning(
-                    "atpg   parallel wave error (%s); "
-                    "faults absent from results will be treated as UNKNOWN",
-                    _exc,
-                )
-            atpg_seconds += time.perf_counter() - _wave_started
+        wave_size = max(cfg.atpg.workers, 1) * SAT_WAVE_FACTOR
+        _wave_pos = 0  # next index into active_ids not yet dispatched to a wave
 
         for fault_id in active_ids:
             if drop_sat and fault_id not in remaining:
                 continue
+            if (
+                _parallel
+                and _executor is not None
+                and fault_id not in _parallel_results
+            ):
+                # Build the next wave from survivors only, in active_ids order.
+                # Interleave easy/hard within the wave for executor balance
+                # (results are keyed by fault_id, so dispatch order is immaterial).
+                _wave_ids: list[int] = []
+                while _wave_pos < len(active_ids) and len(_wave_ids) < wave_size:
+                    _wfid = active_ids[_wave_pos]
+                    _wave_pos += 1
+                    if (not drop_sat) or (_wfid in remaining):
+                        _wave_ids.append(_wfid)
+                if _wave_ids:
+                    _dispatch_ids = (
+                        interleave_easy_hard(_wave_ids, cfg.atpg.workers, _easy_reserve)
+                        if _easy_reserve > 0 and cfg.atpg.workers >= 4
+                        else _wave_ids
+                    )
+                    _wave_args: list[Any] = [
+                        (
+                            "native_stuck_at",
+                            json_path,
+                            effective_cell_map,
+                            effective_db_path,
+                            fid,
+                            sorted(rejected_patterns.get(fid, set())),
+                            cfg.atpg.sat_conflict_limit,
+                            timeout_tiers[
+                                min(
+                                    prior_timeout_count.get(fid, 0),
+                                    len(timeout_tiers) - 1,
+                                )
+                            ],
+                            unsupported,
+                            cfg.atpg.cone_restrict,
+                            [],  # los_couple_ports: native path is stuck-at only
+                            [],  # los_head_ports
+                            list(bb_instances),
+                            test_mode,
+                        )
+                        for fid in _dispatch_ids
+                    ]
+                    _wave_started = time.perf_counter()
+                    try:
+                        for _fid, _res, _slv in _executor.map(
+                            solve_fault_worker, _wave_args
+                        ):
+                            _parallel_results[int(_fid)] = (_res, dict(_slv))
+                    except Exception as _exc:
+                        log.warning(
+                            "atpg   parallel wave error (%s); faults absent from "
+                            "results will be treated as UNKNOWN",
+                            _exc,
+                        )
+                    atpg_seconds += time.perf_counter() - _wave_started
             blocked = sorted(rejected_patterns.get(fault_id, set()))
             tier_timeout = timeout_tiers[
                 min(prior_timeout_count.get(fault_id, 0), len(timeout_tiers) - 1)
