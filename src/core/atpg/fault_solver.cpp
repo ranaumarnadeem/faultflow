@@ -249,6 +249,166 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
   return SatSolveResult::SAT;
 }
 
+// Incremental Fan-in Cones (IFC) stuck-at solver (Tille/Eggersgluess/Drechsler,
+// TCAD 2010). Instead of encoding the whole fault cone + a miter over ALL reached
+// observables up front, encode one reached observable's fan-in cone at a time and
+// re-solve under a per-solve "differ at >= 1 observed-so-far" constraint. Most
+// testable faults are classified after only a few observables, so far less CNF is
+// built; learned conflict clauses carry across the (monotonic) augmentation steps.
+// UNSAT only after every reached observable has been added => redundant. Verdict-
+// identical to solve_stuck_at_fault when no solver limit is hit.
+SatSolveResult solve_stuck_at_fault_incremental(
+    const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
+    const CompactFault& fault, const SatSolveOptions& options,
+    std::map<std::string, bool>& out) {
+  const size_t n = static_cast<size_t>(cg.net_count);
+  const uint32_t fault_net = fault.net_index;
+
+  std::vector<char> is_obs(n, 0);
+  for (int obs : cg.observable) {
+    if (obs >= 0 && static_cast<size_t>(obs) < n) {
+      is_obs[static_cast<size_t>(obs)] = 1;
+    }
+  }
+
+  // Forward out-cone BFS (queue => reached observables in non-decreasing distance,
+  // i.e. shortest-propagation-path order).
+  std::vector<char> in_outcone(n, 0);
+  std::vector<uint32_t> reached_obs;
+  std::vector<uint32_t> bfs;
+  size_t head = 0;
+  in_outcone[fault_net] = 1;
+  bfs.push_back(fault_net);
+  if (is_obs[fault_net]) {
+    reached_obs.push_back(fault_net);
+  }
+  while (head < bfs.size()) {
+    const uint32_t net = bfs[head++];
+    for (uint32_t i = cg.fanout_offsets[net]; i < cg.fanout_offsets[net + 1]; ++i) {
+      const uint32_t t = cg.fanout_targets[i];
+      if (!in_outcone[t]) {
+        in_outcone[t] = 1;
+        bfs.push_back(t);
+        if (is_obs[t]) {
+          reached_obs.push_back(t);
+        }
+      }
+    }
+  }
+  if (reached_obs.empty()) {
+    return SatSolveResult::UNSAT;  // reaches no observable => structurally redundant
+  }
+
+  CnfVarMap vars(cg.net_count);
+  CaDiCaL::Solver solver;
+  apply_solver_limits(solver, options);
+
+  // Fault injection at the faulty site (permanent).
+  add_unit(solver, (fault.type == FaultType::SA1)
+                       ? vars.faulty_vars.at(fault_net)
+                       : -vars.faulty_vars.at(fault_net));
+
+  // Blocked patterns over PI good vars (permanent; identical to the baseline).
+  if (!options.blocked_patterns.empty()) {
+    std::vector<int> pi_literals;
+    pi_literals.reserve(pis.size());
+    for (const AtpgPiInfo& pi : pis) {
+      pi_literals.push_back(vars.free_vars.at(pi.compiled));
+    }
+    for (const std::string& blocked : options.blocked_patterns) {
+      if (blocked.size() != pis.size()) {
+        throw std::runtime_error("blocked pattern length mismatch");
+      }
+      add_blocking_clause(solver, pi_literals, assignment_from_pattern(blocked));
+    }
+  }
+
+  // enc[net] = the net's driver gate CNF has been added (good, plus faulty when the
+  // net is in the out-cone). Doubles as the backward-walk visited marker.
+  std::vector<char> enc(n, 0);
+  std::vector<uint32_t> back;
+  std::vector<int> diff_vars;
+
+  const auto faulty_lit = [&](uint32_t net) -> int {
+    return in_outcone[net] ? vars.faulty_vars.at(net) : vars.free_vars.at(net);
+  };
+
+  // Backward-encode the full fan-in cone of one observable: good gates for every
+  // upstream net, faulty gates for the in-out-cone part (faulty inputs alias the
+  // good var outside the out-cone), PI good==faulty for out-cone primary inputs.
+  const auto encode_cone = [&](uint32_t root) {
+    back.clear();
+    back.push_back(root);
+    while (!back.empty()) {
+      const uint32_t net = back.back();
+      back.pop_back();
+      if (enc[net]) {
+        continue;
+      }
+      enc[net] = 1;
+      const int d = (net < cg.driver_index.size()) ? cg.driver_index[net] : -1;
+      if (d < 0) {
+        continue;  // net with no driver (should not occur post-compile)
+      }
+      const SimNode& node = cg.nodes[static_cast<size_t>(d)];
+      if (node.type == GateType::INPUT) {
+        if (in_outcone[net] && net != fault_net) {
+          add_equiv(solver, vars.free_vars.at(net), vars.faulty_vars.at(net));
+        }
+        continue;  // PI/source: good var is the input, nothing upstream
+      }
+      const std::vector<uint32_t> input_nets = inputs_of(node);
+      std::vector<int> good_inputs;
+      good_inputs.reserve(input_nets.size());
+      for (uint32_t in : input_nets) {
+        good_inputs.push_back(vars.free_vars.at(in));
+      }
+      add_gate_cnf(solver, node.type, good_inputs, vars.free_vars.at(net));
+      if (in_outcone[net] && net != fault_net) {
+        std::vector<int> faulty_inputs;
+        faulty_inputs.reserve(input_nets.size());
+        for (uint32_t in : input_nets) {
+          faulty_inputs.push_back(faulty_lit(in));
+        }
+        add_gate_cnf(solver, node.type, faulty_inputs, vars.faulty_vars.at(net));
+      }
+      for (uint32_t in : input_nets) {
+        if (!enc[in]) {
+          back.push_back(in);
+        }
+      }
+    }
+  };
+
+  for (size_t k = 0; k < reached_obs.size(); ++k) {
+    const uint32_t obs = reached_obs[k];
+    encode_cone(obs);
+    const int d = vars.next++;
+    add_xor_def(solver, vars.free_vars.at(obs), vars.faulty_vars.at(obs), d);
+    diff_vars.push_back(d);
+
+    // "differ at >= 1 observable added so far" as a per-solve temporary clause.
+    for (int dv : diff_vars) {
+      solver.constrain(dv);
+    }
+    solver.constrain(0);
+    const int result = solver.solve();
+    if (result == 10) {  // SAT => testable
+      out.clear();
+      for (const AtpgPiInfo& pi : pis) {
+        out[pi.name] = solver.val(vars.free_vars.at(pi.compiled)) > 0;
+      }
+      return SatSolveResult::SAT;
+    }
+    if (result == 0) {  // limit reached: unresolved (never redundant)
+      return map_cadical_result(result, had_solver_limits(options));
+    }
+    // result == 20 (UNSAT here): cannot observe at the observables added so far;
+    // add the next observable's cone and retry, keeping learned clauses.
+  }
+  return SatSolveResult::UNSAT;  // all reached observables added, full instance UNSAT
+}
+
 SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
                                     const std::vector<AtpgPiInfo>& pis,
                                     const CompactFault& fault,

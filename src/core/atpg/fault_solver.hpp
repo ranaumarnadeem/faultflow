@@ -36,6 +36,16 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
                                     const SatSolveOptions& options,
                                     std::map<std::string, bool>& out);
 
+// Incremental Fan-in Cones (IFC) variant of solve_stuck_at_fault: encodes one
+// reached observable's fan-in cone at a time and re-solves under a per-solve
+// "differ at >= 1 observed-so-far" constraint, so most testable faults build only
+// a fraction of the cone CNF. Verdict-identical to solve_stuck_at_fault when no
+// solver limit is hit (under a limit it may return UNKNOWN earlier — conservative).
+SatSolveResult solve_stuck_at_fault_incremental(
+    const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
+    const CompactFault& fault, const SatSolveOptions& options,
+    std::map<std::string, bool>& out);
+
 // IEEE 1500 mode-aware variant. Uses mc.observable_nets for the detection
 // clause instead of cg.observable. For EXTEST mode, decouples WBR_IN from its
 // passthrough source (forces TO_CORE = 0 via unit clauses so the core input
