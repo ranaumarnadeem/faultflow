@@ -148,6 +148,55 @@ def test_input_only_candidate_materializes_real_po_and_ppo_values(
 
 
 @pytest.mark.golden
+def test_candidate_missing_dont_care_pi_is_filled_to_zero(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """Regression: scan ATPG leaves don't-care PIs unassigned (e.g. picorv32a's
+    32-bit irq bus that no scan-tested fault observes). _materialize_reduced_outputs
+    must X->0 fill such PIs, not raise the strict 'vector N: missing PI <name>' that
+    aborted every real-core campaign. Dropping a PI whose value is already 0 means
+    the fill reproduces the full candidate's exact assignment, so the golden outputs
+    must match -- proving the fill is correct, not merely crash-free.
+    """
+    import _faultflow_core as core  # type: ignore[import-not-found]
+
+    generic = _load(GENERIC)
+    manifest = _load(MANIFEST)
+    reduced, port_map = build_scan_atpg_view(generic, manifest)
+    reduced_path = tmp_path / "reduced.json"
+    reduced_path.write_text(json.dumps(reduced, indent=2) + "\n", encoding="utf-8")
+
+    case = _case()
+    full_vector = dict(case["reduced_vector"])
+    input_order = [
+        name
+        for name, port in reduced["modules"]["scan_protocol_single"]["ports"].items()
+        if port["direction"] == "input"
+    ]
+    dropped = next(name for name in input_order if not bool(full_vector[name]))
+    partial = {name: bool(full_vector[name]) for name in input_order if name != dropped}
+    assert dropped not in partial
+
+    materialized = _materialize_reduced_outputs(
+        core,
+        str(reduced_path),
+        str(CELL_MAP),
+        partial,
+        input_order,
+        ["Y"],
+        port_map,
+        "fail",
+    )
+
+    # The omitted don't-care PI is present and pinned to 0 ...
+    assert materialized[dropped] is False
+    # ... and the golden outputs equal the fully-specified candidate's.
+    assert materialized["Y"] is True
+    assert materialized["__ppo_ff0"] is False
+    assert materialized["__ppo_ff1"] is True
+
+
+@pytest.mark.golden
 def test_physical_protocol_observes_pre_capture_outputs(
     require_cpp_core: None,
 ) -> None:

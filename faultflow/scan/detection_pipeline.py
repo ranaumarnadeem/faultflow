@@ -393,11 +393,21 @@ def _materialize_reduced_outputs(
         if entry.get("ppo_port") is not None
     ]
     output_order = [*functional_output_order, *ppo_order]
+    # X->0 don't-care fill: scan ATPG leaves PIs that are don't-cares for this
+    # candidate unassigned (e.g. a core's wide irq bus that no scan-tested fault
+    # observes), but the golden gate -- and every downstream consumer (compaction,
+    # iverilog verify, the applied test) -- requires every PI driven every cycle.
+    # Pin unassigned reduced-view PIs to 0 here so the golden outputs are computed
+    # under the same assignment the applied vector uses, and so the materialized
+    # vector carried downstream is fully specified.
+    filled = dict(vector)
+    for name in input_order:
+        filled.setdefault(name, False)
     samples = list(
         core.fault_free_outputs(
             reduced_json_path,
             reduced_cell_map,
-            [vector],
+            [filled],
             input_order,
             output_order,
             unsupported,
@@ -408,7 +418,7 @@ def _materialize_reduced_outputs(
             "simulator_error: reduced fault-free simulation returned "
             f"{len(samples)} samples for one candidate"
         )
-    materialized = dict(vector)
+    materialized = dict(filled)
     materialized.update(
         {str(name): bool(value) for name, value in dict(samples[0]).items()}
     )
@@ -554,6 +564,15 @@ def _process_scan_candidate(
             **vector,
             **{k: v for k, v in scan_ctx.reset_pi_holds.items() if k in vector},
         }
+    # X->0 fill don't-care PIs once, at the candidate's entry. Scan ATPG leaves PIs
+    # that the target fault neither controls nor observes unassigned (e.g. a core's
+    # wide irq bus), but every downstream consumer -- the reduced golden gate, the
+    # candidate verify, the tentative grade, dynamic compaction, and the serialized
+    # stored pattern -- requires a fully specified vector. Pinning unassigned reduced
+    # PIs to 0 here (rather than per-consumer) is the applied test's actual value and
+    # keeps all consumers consistent. Without it, the strict C++ converters abort the
+    # whole campaign with "missing PI in vector" on any real core.
+    vector = {pi: bool(vector.get(pi, False)) for pi in input_order}
     is_los = transition and launch_mode == "los"
     is_loc = transition and launch_mode == "loc"
     head_bits = los_head_scan_in or {}
