@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -104,12 +105,47 @@ def test_set_option_materializes_into_config(tmp_path: Path) -> None:
     session.set_option("report.threshold", "92.5")
     session.set_option("atpg.sat_timeout_schedule", "2,10,60")
     session.set_option("fault_model.collapsing", "true")
+    session.set_option("atpg.incremental_sat", "true")
 
     cfg = session.materialize_config()
     assert cfg.atpg.max_rounds == 37
     assert cfg.report.threshold == 92.5
     assert cfg.atpg.sat_timeout_schedule == "2,10,60"
     assert cfg.fault_model.collapsing is True
+    assert cfg.atpg.incremental_sat is True
+
+
+def test_shell_native_atpg_with_incremental_sat_reaches_full_coverage(
+    tmp_path: Path,
+) -> None:
+    # End-to-end: the Tcl shell drives native (non-scan) ATPG with the IFC solver
+    # enabled via set_option, reaching full coverage on a small combinational design.
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+    rtl = tmp_path / "comb.v"
+    rtl.write_text(
+        "module comb(input a, input b, input c, input dd, output y, output z);\n"
+        "  assign y = (a & b) | c;\n"
+        "  assign z = (a | dd) & ~(b & c);\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+    session = ProjectSession(output_root=tmp_path / "out")
+    bridge = TclBridge(session)
+    bridge.call("read_netlist", str(rtl), "-top", "comb")
+    bridge.call("use_lib_cells", "sky130")
+    bridge.call("set_option", "atpg.incremental_sat", "true")
+    bridge.call("synth")
+    bridge.call("run_atpg", "-target", "100.0")
+
+    report = json.loads(
+        (tmp_path / "out/comb/.faultflow/intermediate/coverage_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    summary = report["summary"]
+    assert summary["detected"] > 0
+    assert summary["undetected"] == 0
 
 
 def test_set_option_rejects_bad_timeout_schedule(tmp_path: Path) -> None:
