@@ -32,6 +32,7 @@ from faultflow.runner.progressive_atpg import (
     ATPGRANDOM_SEED,
     AtpgStats,
     GradeHeartbeat,
+    SolveHeartbeat,
     _RoundTracker,
     _escalation_headroom,
     _fault_counts,
@@ -1396,6 +1397,15 @@ def run_progressive_scan_atpg(
         # processing loop.  workers==1 leaves _parallel_results empty and the
         # serial solve path below runs unchanged (A/B control).
         _parallel_results: dict[int, tuple[str, dict]] = {}
+        # Heartbeat for the silent scan SAT-solve phase (parallel wave + serial
+        # fallback) so a long round visibly progresses instead of looking hung.
+        _solve_hb = SolveHeartbeat(
+            log,
+            round_idx,
+            len(active_rows),
+            lambda: _live_detected(effective_db_path, campaign_id),
+        )
+        _solved_count = 0
         if _parallel and _executor is not None and active_rows:
             # Build the submission order: when easy_fault_reserve > 0 and
             # workers >= 4, interleave easy faults (front of sorted list)
@@ -1439,6 +1449,8 @@ def run_progressive_scan_atpg(
             try:
                 for _fid, _res, _slv in _executor.map(solve_fault_worker, _wave_args):
                     _parallel_results[int(_fid)] = (_res, dict(_slv))
+                    _solved_count += 1
+                    _solve_hb.tick(_solved_count)
             except Exception as _exc:
                 log.warning(
                     "atpg   parallel wave error (%s); "
@@ -1511,6 +1523,8 @@ def run_progressive_scan_atpg(
                     )
                 atpg_seconds += time.perf_counter() - solve_started
                 result = str(solved["result"])
+                _solved_count += 1
+                _solve_hb.tick(_solved_count)
             if result == "SAT":
                 stats.sat += 1
                 # Transition SAT returns launch/capture; the launch (V1) is the

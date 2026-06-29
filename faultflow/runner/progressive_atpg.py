@@ -93,6 +93,57 @@ class GradeHeartbeat:
         )
 
 
+class SolveHeartbeat:
+    """Throttled INFO heartbeat for a round's SAT-solve phase.
+
+    The parallel wave (``executor.map``) blocks while CaDiCaL solves up to a few
+    hundred faults — silent for many minutes, indistinguishable from a hang.
+    Emits at most one line per `interval` seconds with faults solved so far, the
+    LIVE detected count and its delta, and a rough ETA (linear extrapolation from
+    the current solve rate). Mirrors GradeHeartbeat; on by default (INFO).
+    """
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+        round_idx: int,
+        total: int,
+        detected_fn: Callable[[], int],
+        interval: float = GRADE_PROGRESS_INTERVAL,
+    ) -> None:
+        self._logger = logger
+        self._round = round_idx
+        self._total = total
+        self._detected_fn = detected_fn
+        self._interval = interval
+        now = time.perf_counter()
+        self._start = now
+        self._last = now
+        self._prev: int | None = None
+
+    def tick(self, done: int) -> None:
+        now = time.perf_counter()
+        if now - self._last < self._interval:
+            return
+        self._last = now
+        detected = self._detected_fn()
+        delta = 0 if self._prev is None else detected - self._prev
+        self._prev = detected
+        elapsed = now - self._start
+        eta = (elapsed / done) * (self._total - done) if done > 0 else 0.0
+        self._logger.info(
+            "atpg   round %2d  solved %d/%d faults  detected=%d (+%d)  "
+            "elapsed=%.0fs  ~ETA=%.0fs",
+            self._round,
+            done,
+            self._total,
+            detected,
+            delta,
+            elapsed,
+            eta,
+        )
+
+
 DEFAULT_MAX_ATPG_ROUNDS = 20
 ATPGRANDOM_SEED = 0x5EED5EED
 # Parallel SAT is dispatched in waves of (workers * this) survivors instead of
@@ -779,6 +830,15 @@ def run_progressive_native_atpg(
         _parallel_results: dict[int, tuple[str, dict]] = {}
         wave_size = max(cfg.atpg.workers, 1) * SAT_WAVE_FACTOR
         _wave_pos = 0  # next index into active_ids not yet dispatched to a wave
+        # Heartbeat for the otherwise-silent SAT-solve phase (parallel wave +
+        # serial fallback). Counts faults whose verdict has come back this round.
+        _solve_hb = SolveHeartbeat(
+            log,
+            round_idx,
+            len(active_ids),
+            lambda: _live_detected(effective_db_path, campaign_id),
+        )
+        _solved_count = 0
 
         for fault_id in active_ids:
             if drop_sat and fault_id not in remaining:
@@ -834,6 +894,8 @@ def run_progressive_native_atpg(
                             solve_fault_worker, _wave_args
                         ):
                             _parallel_results[int(_fid)] = (_res, dict(_slv))
+                            _solved_count += 1
+                            _solve_hb.tick(_solved_count)
                     except Exception as _exc:
                         log.warning(
                             "atpg   parallel wave error (%s); faults absent from "
@@ -871,6 +933,8 @@ def run_progressive_native_atpg(
                 )
                 atpg_seconds += time.perf_counter() - atpg_started
                 result = str(solved["result"])
+                _solved_count += 1
+                _solve_hb.tick(_solved_count)
             if result == "SAT":
                 stats.sat += 1
                 candidate = dict(solved["vector"])
@@ -1221,6 +1285,14 @@ def run_progressive_transition_atpg(
         # faults instead of re-solving them. Mirrors the random branch.
         drop_sat = cfg.atpg.fault_drop_sat
         remaining = set(active_ids)
+        # Heartbeat for the silent serial transition-solve phase (no parallel wave).
+        _solve_hb = SolveHeartbeat(
+            log,
+            round_idx,
+            len(active_ids),
+            lambda: _live_detected(effective_db_path, campaign_id),
+        )
+        _solved_count = 0
         for fault_id in active_ids:
             if drop_sat and fault_id not in remaining:
                 continue
@@ -1245,6 +1317,8 @@ def run_progressive_transition_atpg(
             )
             atpg_seconds += time.perf_counter() - atpg_started
             result = str(solved["result"])
+            _solved_count += 1
+            _solve_hb.tick(_solved_count)
             if result == "SAT":
                 stats.sat += 1
                 launch = dict(solved["launch"])
