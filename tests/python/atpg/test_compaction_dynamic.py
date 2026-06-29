@@ -103,3 +103,27 @@ max_rounds = 20
             )
         )
     assert detected.issubset(covered)
+
+    # Regression: a vector that OMITS a PI (a don't-care the ATPG never assigned,
+    # e.g. a real core's irq bus) must not abort compaction with the strict
+    # "missing PI in vector: <name>" from compaction.cpp build_vector -- the bug
+    # that aborted every picorv32a campaign after THRESHOLD_MET. The X->0 fill in
+    # compact_run_dynamic must handle it. c432 has no genuine don't-cares, so we
+    # synthesize one by dropping a PI key from every vector; the fix fills it to 0.
+    drop = vectors.input_order[0]
+    variant = dataclasses.replace(
+        vectors,
+        vectors=[
+            {k: v for k, v in vec.items() if k != drop} for vec in vectors.vectors
+        ],
+    )
+    variant_common = {**common, "vectors": variant}
+    # Before the build_vector X->0 fill this raised
+    # RuntimeError("missing PI in vector: N1") and aborted the campaign. We only
+    # assert it COMPLETES: forcing the dropped PI to its don't-care 0 changes the
+    # effective test set, so the resulting vector count is not comparable to the
+    # original reverse result -- the regression is that compaction no longer crashes.
+    variant_vs, _vr, _vraw = compact_run_dynamic(  # type: ignore[arg-type]
+        pack_orders=3, **variant_common
+    )
+    assert variant_vs.count >= 1

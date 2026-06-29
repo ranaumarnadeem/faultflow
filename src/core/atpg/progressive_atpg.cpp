@@ -292,10 +292,11 @@ TestVector vector_from_map(const ParsedGraph& parsed,
   TestVector vec;
   for (const auto& input : input_order) {
     const auto it = values.find(input);
-    if (it == values.end()) {
-      throw std::runtime_error("missing PI in vector: " + input);
-    }
-    vec.inputs[parsed.net_id_by_name(input)] = it->second;
+    // Unassigned PI = don't-care = 0 (the applied test value). SAT vectors leave
+    // PIs outside the target fault's cone unassigned; treat missing as 0 rather
+    // than aborting the campaign (see build_vector in compaction.cpp).
+    vec.inputs[parsed.net_id_by_name(input)] =
+        (it != values.end()) ? it->second : false;
   }
   return vec;
 }

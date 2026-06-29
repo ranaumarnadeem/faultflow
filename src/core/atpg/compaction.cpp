@@ -26,10 +26,13 @@ TestVector build_vector(const ParsedGraph& parsed,
   TestVector vec;
   for (const auto& name : input_order) {
     const auto it = values.find(name);
-    if (it == values.end()) {
-      throw std::runtime_error("missing PI in vector: " + name);
-    }
-    vec.inputs[parsed.net_id_by_name(name)] = it->second;
+    // Unassigned PI = don't-care = 0, the value the applied test actually drives.
+    // ATPG leaves PIs unobserved by the target fault unassigned (e.g. a core's irq
+    // bus), and the compaction X-extraction probes by dropping PIs; both rely on
+    // missing == 0 (matching the dense-cube fill and the stored pattern), so treat
+    // it as 0 rather than aborting the whole campaign with "missing PI in vector".
+    vec.inputs[parsed.net_id_by_name(name)] =
+        (it != values.end()) ? it->second : false;
   }
   return vec;
 }
