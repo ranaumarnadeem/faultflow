@@ -148,6 +148,62 @@ def _undetected_faults(
     return faults
 
 
+def _annotate_structural_reasons(
+    conn: sqlite3.Connection,
+    cfg: FaultflowConfig,
+    campaign_id: int,
+    undetected: list[dict[str, Any]],
+    unsupported_policy: str,
+) -> None:
+    """Best-effort: reclassify undetected faults the solver never resolved as
+    ``structurally_uncontrollable`` when no PI/pseudo-PI structurally reaches the
+    site (the solver can never justify it), and tag the site as its own bottleneck.
+    Uses the native C++ cone reachability over the original netlist, so it is
+    COMBINATIONAL-only (the scan reduced view needs different net indices). Wrapped
+    so any failure -- no core extension, unreadable netlist -- silently leaves the
+    Tier-A/B reasons intact; the report is never blocked."""
+    candidates = [
+        f for f in undetected if f["reason"] in ("never_attempted", "sat_hard")
+    ]
+    if not candidates:
+        return
+    try:
+        from faultflow.runner.runner import _load_core
+
+        core = _load_core()
+        if core is None:
+            return
+        ids = [int(f["id"]) for f in candidates]
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            "SELECT id, COALESCE(atpg_compiled_net_index, compiled_net_index) AS idx "
+            f"FROM faults WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        net_by_id = {int(r["id"]): int(r["idx"]) for r in rows}
+        fault_ids = [fid for fid in ids if fid in net_by_id]
+        if not fault_ids:
+            return
+        net_indices = [net_by_id[fid] for fid in fault_ids]
+        reasons = core.compute_fault_structural_reasons(
+            str(cfg.netlist),
+            str(cfg.cell_lib),
+            fault_ids,
+            net_indices,
+            unsupported_policy,
+            list(cfg.blackbox_instances),
+        )
+        by_id = {f["id"]: f for f in candidates}
+        for fid in fault_ids:
+            info = reasons.get(fid)
+            if info is not None and not info.get("reachable_from_pi", True):
+                fault = by_id[fid]
+                fault["reason"] = "structurally_uncontrollable"
+                fault["bottleneck_net"] = fault["net_name"]
+    except Exception:
+        return
+
+
 def _reason_summary(
     data: dict[str, Any], undetected: list[dict[str, Any]]
 ) -> dict[str, int]:
@@ -316,6 +372,12 @@ def write_reports(
             node["net_name"] = _translate_scan_net_name(str(node["net_name"]))
         for fault in undetected:
             fault["net_name"] = _translate_scan_net_name(str(fault["net_name"]))
+    else:
+        # Combinational only: refine never-resolved faults into
+        # structurally_uncontrollable via native cone reachability (best-effort).
+        _annotate_structural_reasons(
+            conn, cfg, campaign_id, undetected, str(fp.get("unsupported_cells", "fail"))
+        )
 
     report = {
         "metadata": {

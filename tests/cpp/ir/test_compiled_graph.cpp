@@ -80,3 +80,54 @@ TEST_CASE("CompiledSimGraph constant drivers", "[compiled_graph]") {
   REQUIRE(cg.yosys_to_compiled.count(CONST0_NET_ID) == 1);
   REQUIRE(cg.yosys_to_compiled.count(CONST1_NET_ID) == 1);
 }
+
+namespace {
+std::vector<char> flag_set(int net_count, const std::vector<int>& nets) {
+  std::vector<char> v(static_cast<size_t>(net_count), 0);
+  for (int n : nets) {
+    if (n >= 0 && n < net_count) v[static_cast<size_t>(n)] = 1;
+  }
+  return v;
+}
+}  // namespace
+
+TEST_CASE("structural_reason: c17 nets are controllable + observable",
+          "[compiled_graph][cone]") {
+  const CompiledSimGraph cg =
+      test::load_compiled_benchmark("iscas85/synth_sky130/c17.json");
+  const std::vector<int> driver = atpg::build_driver_index(cg);
+  const std::vector<char> observable = flag_set(cg.net_count, cg.observable);
+  std::vector<int> controllable_nets = cg.pi_nets;
+  controllable_nets.insert(controllable_nets.end(), cg.pseudo_pi_nets.begin(),
+                           cg.pseudo_pi_nets.end());
+  const std::vector<char> controllable = flag_set(cg.net_count, controllable_nets);
+
+  for (int pi : cg.pi_nets) {
+    const atpg::FaultStructuralReason r = atpg::structural_reason(
+        cg, static_cast<uint32_t>(pi), driver, observable, controllable);
+    // A PI is controllable (it is itself a controllable point).
+    REQUIRE(r.reachable_from_pi);
+    // reaches_observable must agree with the cone's reached_observables.
+    const atpg::FaultCone cone = atpg::extract_fault_cone(
+        cg, static_cast<uint32_t>(pi), driver, observable);
+    REQUIRE(r.reaches_observable == !cone.reached_observables.empty());
+  }
+}
+
+TEST_CASE("structural_reason: constant net is structurally uncontrollable",
+          "[compiled_graph][cone]") {
+  // A net driven only by a CONST cell has no PI in its backward cone, so the
+  // solver can never justify a fault there -> structurally uncontrollable.
+  const CompiledSimGraph cg = test::load_compiled("tiny_const.json");
+  const std::vector<int> driver = atpg::build_driver_index(cg);
+  const std::vector<char> observable = flag_set(cg.net_count, cg.observable);
+  std::vector<int> controllable_nets = cg.pi_nets;
+  controllable_nets.insert(controllable_nets.end(), cg.pseudo_pi_nets.begin(),
+                           cg.pseudo_pi_nets.end());
+  const std::vector<char> controllable = flag_set(cg.net_count, controllable_nets);
+
+  const int c0 = cg.yosys_to_compiled.at(CONST0_NET_ID);
+  const atpg::FaultStructuralReason r = atpg::structural_reason(
+      cg, static_cast<uint32_t>(c0), driver, observable, controllable);
+  REQUIRE_FALSE(r.reachable_from_pi);  // CONST net: no PI in its backward cone
+}

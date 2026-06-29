@@ -41,4 +41,25 @@ FaultCone extract_fault_cone(const CompiledSimGraph& cg, uint32_t fault_net,
                              const std::vector<int>& driver,
                              const std::vector<char>& observable);
 
+// Structural classification of a stuck-at site for the undetected-fault reason
+// report (NOT used by the solver). Two cheap reachability checks with early-out:
+//   reaches_observable : a path exists from the site to some observable (PO/TP).
+//   reachable_from_pi  : a path exists from some controllable point
+//                        (PI/pseudo-PI) BACK to the site.
+// A site that is !reachable_from_pi is structurally UNCONTROLLABLE (the solver
+// can never justify it); !reaches_observable is structurally unobservable (those
+// are already classified redundant before reaching the undetected list).
+// `observable` / `controllable` are per-net flags (size >= net_count); `driver`
+// is from build_driver_index(cg). O(cone) per fault.
+struct FaultStructuralReason {
+  bool reaches_observable = false;
+  bool reachable_from_pi = false;
+};
+
+FaultStructuralReason structural_reason(const CompiledSimGraph& cg,
+                                        uint32_t fault_net,
+                                        const std::vector<int>& driver,
+                                        const std::vector<char>& observable,
+                                        const std::vector<char>& controllable);
+
 }  // namespace faultflow::atpg

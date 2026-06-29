@@ -853,6 +853,60 @@ py::dict compute_fault_cone_sizes(
   return out;
 }
 
+// Per-fault structural classification for the undetected-fault reason report:
+//   {fault_id: {"reaches_observable": bool, "reachable_from_pi": bool}}.
+// A fault that is not reachable_from_pi is structurally UNCONTROLLABLE. Mirrors
+// compute_fault_cone_sizes' graph loading; net_indices[i] is fault_ids[i]'s
+// CompiledNetIndex. Controllable points are real PIs + pseudo-PIs (blackbox /
+// scan pseudo-inputs); observables are cg.observable (POs + TPs).
+py::dict compute_fault_structural_reasons(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::vector<int64_t>& fault_ids,
+    const std::vector<int64_t>& net_indices,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  if (fault_ids.size() != net_indices.size()) {
+    throw std::invalid_argument(
+        "compute_fault_structural_reasons: fault_ids and net_indices length "
+        "mismatch");
+  }
+  const CachedGraph& graph = load_cached_graph(
+      json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  const CompiledSimGraph& cg = graph.cg;
+  const std::vector<int> driver = atpg::build_driver_index(cg);
+
+  const size_t n = static_cast<size_t>(cg.net_count);
+  std::vector<char> observable(n, 0);
+  for (int o : cg.observable) {
+    if (o >= 0 && o < cg.net_count) observable[static_cast<size_t>(o)] = 1;
+  }
+  std::vector<char> controllable(n, 0);
+  for (int p : cg.pi_nets) {
+    if (p >= 0 && p < cg.net_count) controllable[static_cast<size_t>(p)] = 1;
+  }
+  for (int p : cg.pseudo_pi_nets) {
+    if (p >= 0 && p < cg.net_count) controllable[static_cast<size_t>(p)] = 1;
+  }
+
+  py::dict out;
+  for (size_t i = 0; i < fault_ids.size(); ++i) {
+    const int64_t net = net_indices[i];
+    py::dict d;
+    if (net >= 0 && net < cg.net_count) {
+      const atpg::FaultStructuralReason r = atpg::structural_reason(
+          cg, static_cast<uint32_t>(net), driver, observable, controllable);
+      d["reaches_observable"] = r.reaches_observable;
+      d["reachable_from_pi"] = r.reachable_from_pi;
+    } else {
+      // Unknown net index: don't assert any structural reason.
+      d["reaches_observable"] = true;
+      d["reachable_from_pi"] = true;
+    }
+    out[py::int_(fault_ids[i])] = d;
+  }
+  return out;
+}
+
 }  // namespace faultflow
 
 PYBIND11_MODULE(_faultflow_core, m) {
@@ -1027,5 +1081,10 @@ PYBIND11_MODULE(_faultflow_core, m) {
   m.def("compute_fault_cone_sizes", &faultflow::compute_fault_cone_sizes,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("fault_ids"),
         py::arg("net_indices"), py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
+  m.def("compute_fault_structural_reasons",
+        &faultflow::compute_fault_structural_reasons, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("fault_ids"), py::arg("net_indices"),
+        py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{});
 }

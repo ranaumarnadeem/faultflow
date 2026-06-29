@@ -77,4 +77,69 @@ FaultCone extract_fault_cone(const CompiledSimGraph& cg, uint32_t fault_net,
   return cone;
 }
 
+FaultStructuralReason structural_reason(const CompiledSimGraph& cg,
+                                        uint32_t fault_net,
+                                        const std::vector<int>& driver,
+                                        const std::vector<char>& observable,
+                                        const std::vector<char>& controllable) {
+  const size_t n = static_cast<size_t>(cg.net_count);
+  FaultStructuralReason r;
+
+  // Forward: does the site reach any observable? Early-out on the first hit.
+  std::vector<char> seen_f(n, 0);
+  std::vector<uint32_t> work;
+  seen_f[fault_net] = 1;
+  work.push_back(fault_net);
+  if (fault_net < observable.size() && observable[fault_net]) {
+    r.reaches_observable = true;
+  }
+  while (!work.empty() && !r.reaches_observable) {
+    const uint32_t net = work.back();
+    work.pop_back();
+    for (uint32_t i = cg.fanout_offsets[net]; i < cg.fanout_offsets[net + 1];
+         ++i) {
+      const uint32_t t = cg.fanout_targets[i];
+      if (!seen_f[t]) {
+        seen_f[t] = 1;
+        if (t < observable.size() && observable[t]) {
+          r.reaches_observable = true;
+          break;
+        }
+        work.push_back(t);
+      }
+    }
+  }
+
+  // Backward: is the site reachable from any controllable point (PI/pseudo-PI)?
+  std::vector<char> seen_b(n, 0);
+  std::vector<uint32_t> back;
+  seen_b[fault_net] = 1;
+  back.push_back(fault_net);
+  if (fault_net < controllable.size() && controllable[fault_net]) {
+    r.reachable_from_pi = true;
+  }
+  while (!back.empty() && !r.reachable_from_pi) {
+    const uint32_t net = back.back();
+    back.pop_back();
+    const int d = driver[net];
+    if (d < 0) {
+      continue;  // source net with no driving node
+    }
+    const SimNode& node = cg.nodes[static_cast<size_t>(d)];
+    const uint32_t ins[] = {node.in0, node.in1, node.in2,
+                            node.in3, node.in4, node.in5};
+    for (uint32_t in : ins) {
+      if (in != UNUSED_INPUT && !seen_b[in]) {
+        seen_b[in] = 1;
+        if (in < controllable.size() && controllable[in]) {
+          r.reachable_from_pi = true;
+          break;
+        }
+        back.push_back(in);
+      }
+    }
+  }
+  return r;
+}
+
 }  // namespace faultflow::atpg

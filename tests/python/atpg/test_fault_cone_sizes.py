@@ -72,3 +72,47 @@ def test_length_mismatch_raises() -> None:
     core = _core()
     with pytest.raises(Exception):
         core.compute_fault_cone_sizes(str(C17), str(SKY130), [1, 2], [0], "fail", [])
+
+
+@pytest.mark.unit
+def test_structural_reasons_c17_all_controllable_observable() -> None:
+    if not C17.exists():
+        pytest.skip("c17 netlist missing")
+    core = _core()
+    idx = _all_net_indices(core, C17, SKY130)
+    fault_ids = list(range(2000, 2000 + len(idx)))
+
+    reasons = core.compute_fault_structural_reasons(
+        str(C17), str(SKY130), fault_ids, idx, "fail", []
+    )
+
+    assert len(reasons) == len(fault_ids)
+    # c17 has no constants: every real net is reachable from a PI and reaches an
+    # observable, so nothing is structurally uncontrollable/unobservable.
+    for v in reasons.values():
+        assert v["reaches_observable"] is True
+        assert v["reachable_from_pi"] is True
+
+
+@pytest.mark.unit
+def test_structural_reasons_out_of_range_index_defaults_true() -> None:
+    if not C17.exists():
+        pytest.skip("c17 netlist missing")
+    core = _core()
+    # Unknown net index must not crash and must assert no structural reason.
+    reasons = core.compute_fault_structural_reasons(
+        str(C17), str(SKY130), [1, 2], [-1, 1_000_000], "fail", []
+    )
+    assert reasons[1]["reachable_from_pi"] is True
+    assert reasons[2]["reaches_observable"] is True
+
+
+@pytest.mark.unit
+def test_structural_reasons_length_mismatch_raises() -> None:
+    if not C17.exists():
+        pytest.skip("c17 netlist missing")
+    core = _core()
+    with pytest.raises(Exception):
+        core.compute_fault_structural_reasons(
+            str(C17), str(SKY130), [1, 2], [0], "fail", []
+        )
