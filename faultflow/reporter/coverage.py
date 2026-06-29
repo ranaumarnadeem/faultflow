@@ -101,9 +101,51 @@ def _undetected_faults(
             "fault_type": row["fault_type"],
             "fault_site_key": row["fault_site_key"],
             "protocol_unresolved": bool(row["protocol_unresolved"]),
+            # Tier-A reason from data already in the DB: a fault the simulator
+            # itself could not resolve (protocol_unresolved) is structural; the
+            # rest are "SAT-hard" (refined into sat_timeout/solver_unknown/
+            # never_attempted/structurally_uncontrollable by later tiers).
+            "reason": (
+                "structurally_unresolved"
+                if bool(row["protocol_unresolved"])
+                else "sat_hard"
+            ),
         }
         for row in rows
     ]
+
+
+def _reason_summary(
+    data: dict[str, Any], undetected: list[dict[str, Any]]
+) -> dict[str, int]:
+    """Breakdown of the coverage gap by reason — answers 'of what isn't detected,
+    how much is provably redundant vs SAT-hard vs structural'. Redundant/collapsed/
+    excluded come from the summary counts; the undetected split comes from the
+    per-fault `reason`."""
+    by_reason: dict[str, int] = {}
+    for fault in undetected:
+        key = str(fault.get("reason", "sat_hard"))
+        by_reason[key] = by_reason.get(key, 0) + 1
+    excluded = sum(
+        int(data.get(k, 0))
+        for k in (
+            "excluded_blackbox",
+            "excluded_clock",
+            "excluded_reset",
+            "excluded_scan",
+            "excluded_scan_internal",
+            "excluded_scan_chain",
+            "excluded_cross_domain",
+            "excluded_wbr_decoupled",
+        )
+    )
+    summary = {
+        "proven_redundant": int(data.get("redundant", 0)),
+        "collapsed": int(data.get("collapsed", 0)),
+        "excluded": excluded,
+    }
+    summary.update(by_reason)
+    return summary
 
 
 def _latest_run(conn: sqlite3.Connection, campaign_id: int) -> dict[str, Any]:
@@ -257,6 +299,7 @@ def write_reports(
         "summary": data,
         "run": _latest_run(conn, campaign_id),
         "per_node": per_node,
+        "reason_summary": _reason_summary(data, undetected),
         "undetected_faults": undetected,
     }
     if scan_context is not None:
@@ -326,15 +369,19 @@ def write_reports(
             f"include_reset_faults:{_policy_text(report, 'include_reset_faults')}",
             f"collapsing:          {_policy_text(report, 'collapsing')}",
             "",
-            "undetected faults:",
+            "coverage gap by reason:",
         ]
     )
+    for _rk, _rv in sorted(cast(dict[str, int], report["reason_summary"]).items()):
+        txt.append(f"  {_rk}: {_rv}")
+    txt.append("")
+    txt.append("undetected faults:")
     for fault in cast(list[dict[str, Any]], report["undetected_faults"]):
-        proto = " protocol_unresolved" if fault.get("protocol_unresolved") else ""
         txt.append(
             f"- id={fault['id']} net={fault['net_id']} "
             f"name={fault['net_name']} type={fault['fault_type']}"
-            f" site={fault.get('fault_site_key', '')}{proto}"
+            f" site={fault.get('fault_site_key', '')}"
+            f" reason={fault.get('reason', '')}"
         )
     txt.append("")
     txt_path.write_text("\n".join(txt), encoding="utf-8")

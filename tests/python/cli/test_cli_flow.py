@@ -422,7 +422,12 @@ def test_coverage_report_text_includes_protocol_fields(
         assert "protocol_unresolved: 1" in text
         assert "fault_coverage_%:" in text
         assert "test_coverage_%:" in text
-        assert "protocol_unresolved" in text.split("undetected faults:")[-1]
+        # The per-fault undetected line now surfaces protocol-unresolved as its
+        # reason; the structured report carries the reason + a gap breakdown.
+        undetected_section = text.split("undetected faults:")[-1]
+        assert "reason=structurally_unresolved" in undetected_section
+        assert report["undetected_faults"][0]["reason"] == "structurally_unresolved"
+        assert report["reason_summary"]["structurally_unresolved"] == 1
     finally:
         conn.close()
 

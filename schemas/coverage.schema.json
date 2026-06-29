@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "faultflow coverage report",
   "type": "object",
-  "required": ["metadata", "policy", "summary", "run", "per_node", "undetected_faults"],
+  "required": ["metadata", "policy", "summary", "run", "per_node", "reason_summary", "undetected_faults"],
   "additionalProperties": false,
   "properties": {
     "metadata": {
@@ -157,11 +157,15 @@
         }
       }
     },
+    "reason_summary": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
     "undetected_faults": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "net_id", "net_name", "fault_type", "fault_site_key", "protocol_unresolved"],
+        "required": ["id", "net_id", "net_name", "fault_type", "fault_site_key", "protocol_unresolved", "reason"],
         "additionalProperties": false,
         "properties": {
           "id": { "type": "integer", "minimum": 1 },
@@ -169,7 +173,19 @@
           "net_name": { "type": "string" },
           "fault_type": { "enum": ["sa0", "sa1", "str", "stf"] },
           "fault_site_key": { "type": "string" },
-          "protocol_unresolved": { "type": "boolean" }
+          "protocol_unresolved": { "type": "boolean" },
+          "reason": {
+            "enum": [
+              "structurally_unresolved",
+              "structurally_uncontrollable",
+              "sat_hard",
+              "sat_timeout",
+              "solver_unknown",
+              "never_attempted"
+            ]
+          },
+          "sat_outcome": { "enum": ["timeout", "unknown"] },
+          "bottleneck_net": { "type": "string" }
         }
       }
     }
