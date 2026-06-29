@@ -8,7 +8,12 @@ from faultflow.db.campaign import (
     latest_campaign_id,
     require_v3_schema,
 )
-from faultflow.db.sqlite import connect, init_schema, summary
+from faultflow.db.sqlite import (
+    connect,
+    init_schema,
+    record_sat_outcomes,
+    summary,
+)
 
 __all__ = [
     "CAMPAIGN_TYPE_COMB",
@@ -20,6 +25,7 @@ __all__ = [
     "ensure_campaign",
     "init_schema",
     "latest_campaign_id",
+    "record_sat_outcomes",
     "require_v3_schema",
     "summary",
 ]

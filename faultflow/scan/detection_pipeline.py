@@ -18,7 +18,7 @@ from faultflow.config import (
     parse_timeout_schedule,
     resolve_sim_threads,
 )
-from faultflow.db import connect, init_schema, summary
+from faultflow.db import connect, init_schema, record_sat_outcomes, summary
 from faultflow.db.candidates import (
     CandidateCommit,
     CandidateRejection,
@@ -1406,6 +1406,8 @@ def run_progressive_scan_atpg(
             lambda: _live_detected(effective_db_path, campaign_id),
         )
         _solved_count = 0
+        # Per-fault SAT outcome (timeout/unknown) for this round's reason report.
+        _sat_outcomes: dict[int, str] = {}
         if _parallel and _executor is not None and active_rows:
             # Build the submission order: when easy_fault_reserve > 0 and
             # workers >= 4, interleave easy faults (front of sorted list)
@@ -1615,13 +1617,17 @@ def run_progressive_scan_atpg(
                 stats.timeout += 1
                 round_tracker.sat_outcomes.append("TIMEOUT")
                 prior_timeout_count[fault_id] = prior_timeout_count.get(fault_id, 0) + 1
+                _sat_outcomes[fault_id] = "timeout"
             else:
                 stats.unknown += 1
                 round_tracker.sat_outcomes.append("UNKNOWN")
                 prior_timeout_count[fault_id] = prior_timeout_count.get(fault_id, 0) + 1
+                _sat_outcomes[fault_id] = "unknown"
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
+            record_sat_outcomes(conn, campaign_id, _sat_outcomes, round_idx)
+            conn.commit()
             data = summary(conn, campaign_id=campaign_id)
             detected, redundant = _fault_counts(conn, campaign_id)
             active_rows_end = _active_fault_rows(conn, campaign_id)

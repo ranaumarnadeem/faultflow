@@ -25,6 +25,7 @@ from faultflow.db import (
     CAMPAIGN_TYPE_SCAN,
     connect,
     init_schema,
+    record_sat_outcomes,
     summary,
 )
 from faultflow.runner.parallel_solve import solve_fault_worker
@@ -839,6 +840,9 @@ def run_progressive_native_atpg(
             lambda: _live_detected(effective_db_path, campaign_id),
         )
         _solved_count = 0
+        # Per-fault SAT outcome (timeout/unknown) for this round's reason report,
+        # batch-written at round end (one txn) rather than per fault.
+        _sat_outcomes: dict[int, str] = {}
 
         for fault_id in active_ids:
             if drop_sat and fault_id not in remaining:
@@ -1001,13 +1005,17 @@ def run_progressive_native_atpg(
                 stats.timeout += 1
                 round_tracker.sat_outcomes.append("TIMEOUT")
                 prior_timeout_count[fault_id] = prior_timeout_count.get(fault_id, 0) + 1
+                _sat_outcomes[fault_id] = "timeout"
             else:
                 stats.unknown += 1
                 round_tracker.sat_outcomes.append("UNKNOWN")
                 prior_timeout_count[fault_id] = prior_timeout_count.get(fault_id, 0) + 1
+                _sat_outcomes[fault_id] = "unknown"
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
+            record_sat_outcomes(conn, campaign_id, _sat_outcomes, round_idx)
+            conn.commit()
             data = summary(conn, campaign_id=campaign_id)
             detected, redundant = _fault_counts(conn, campaign_id)
             active_rows_end = _active_fault_rows(conn, campaign_id)
@@ -1293,6 +1301,8 @@ def run_progressive_transition_atpg(
             lambda: _live_detected(effective_db_path, campaign_id),
         )
         _solved_count = 0
+        # Per-fault SAT outcome (timeout/unknown) for this round's reason report.
+        _sat_outcomes: dict[int, str] = {}
         for fault_id in active_ids:
             if drop_sat and fault_id not in remaining:
                 continue
@@ -1385,13 +1395,17 @@ def run_progressive_transition_atpg(
                 stats.timeout += 1
                 round_tracker.sat_outcomes.append("TIMEOUT")
                 prior_timeout_count[fault_id] = prior_timeout_count.get(fault_id, 0) + 1
+                _sat_outcomes[fault_id] = "timeout"
             else:
                 stats.unknown += 1
                 round_tracker.sat_outcomes.append("UNKNOWN")
                 prior_timeout_count[fault_id] = prior_timeout_count.get(fault_id, 0) + 1
+                _sat_outcomes[fault_id] = "unknown"
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
+            record_sat_outcomes(conn, campaign_id, _sat_outcomes, round_idx)
+            conn.commit()
             data = summary(conn, campaign_id=campaign_id)
             detected, redundant = _fault_counts(conn, campaign_id)
             active_rows_end = _active_fault_rows(conn, campaign_id)

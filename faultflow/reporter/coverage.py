@@ -78,6 +78,41 @@ def _policy(
     }
 
 
+def _sat_outcomes(conn: sqlite3.Connection, campaign_id: int) -> dict[int, str]:
+    """Per-fault SAT outcome (timeout/unknown) recorded during ATPG, if the
+    side table exists (it may not on a pre-feature database)."""
+    exists = (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='fault_sat_outcome'"
+        ).fetchone()
+        is not None
+    )
+    if not exists:
+        return {}
+    return {
+        int(row["fault_id"]): str(row["outcome"])
+        for row in conn.execute(
+            "SELECT fault_id, outcome FROM fault_sat_outcome WHERE campaign_id = ?",
+            (campaign_id,),
+        )
+    }
+
+
+def _undetected_reason(protocol_unresolved: bool, sat_outcome: str | None) -> str:
+    """Classify an undetected fault. protocol_unresolved (the simulator could not
+    resolve it) is structural; a recorded SAT verdict gives timeout/unknown; no
+    record at all means it was never SAT-attempted (or its pattern was rejected
+    without a verdict). Tier C refines the residue into structurally_uncontrollable."""
+    if protocol_unresolved:
+        return "structurally_unresolved"
+    if sat_outcome == "timeout":
+        return "sat_timeout"
+    if sat_outcome == "unknown":
+        return "solver_unknown"
+    return "never_attempted"
+
+
 def _undetected_faults(
     conn: sqlite3.Connection, campaign_id: int
 ) -> list[dict[str, Any]]:
@@ -93,26 +128,24 @@ def _undetected_faults(
         """,
         (campaign_id,),
     ).fetchall()
-    return [
-        {
+    outcomes = _sat_outcomes(conn, campaign_id)
+    faults: list[dict[str, Any]] = []
+    for row in rows:
+        po = bool(row["protocol_unresolved"])
+        sat_outcome = outcomes.get(int(row["id"]))
+        fault: dict[str, Any] = {
             "id": int(row["id"]),
             "net_id": int(row["net_id"]),
             "net_name": row["net_name"],
             "fault_type": row["fault_type"],
             "fault_site_key": row["fault_site_key"],
-            "protocol_unresolved": bool(row["protocol_unresolved"]),
-            # Tier-A reason from data already in the DB: a fault the simulator
-            # itself could not resolve (protocol_unresolved) is structural; the
-            # rest are "SAT-hard" (refined into sat_timeout/solver_unknown/
-            # never_attempted/structurally_uncontrollable by later tiers).
-            "reason": (
-                "structurally_unresolved"
-                if bool(row["protocol_unresolved"])
-                else "sat_hard"
-            ),
+            "protocol_unresolved": po,
+            "reason": _undetected_reason(po, sat_outcome),
         }
-        for row in rows
-    ]
+        if sat_outcome in ("timeout", "unknown"):
+            fault["sat_outcome"] = sat_outcome
+        faults.append(fault)
+    return faults
 
 
 def _reason_summary(

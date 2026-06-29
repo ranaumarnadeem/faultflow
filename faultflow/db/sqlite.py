@@ -156,6 +156,23 @@ CREATE TABLE IF NOT EXISTS blocked_patterns (
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id),
     FOREIGN KEY (fault_id) REFERENCES faults(id)
 );
+
+-- Per-fault SAT outcome for faults the solver could not detect this run
+-- (TIMEOUT / UNKNOWN). The faults table only records detected/redundant/
+-- undetected; the run-level atpg_timeout/atpg_unknown counts don't say WHICH
+-- faults. This Python-managed side table fills that gap for the reason report
+-- without a faults-table column (which would force a user_version bump across
+-- the Python + C++ schemas). An undetected fault with no row was never
+-- SAT-attempted. Idempotent CREATE; invisible to require_v3_schema.
+CREATE TABLE IF NOT EXISTS fault_sat_outcome (
+    campaign_id INTEGER NOT NULL,
+    fault_id INTEGER NOT NULL,
+    outcome TEXT NOT NULL,
+    round INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (campaign_id, fault_id),
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id),
+    FOREIGN KEY (fault_id) REFERENCES faults(id)
+);
 """
 
 
@@ -261,6 +278,27 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_campaigns_constraint(conn)
     conn.execute(f"PRAGMA user_version = {EXPECTED_USER_VERSION}")
     conn.commit()
+
+
+def record_sat_outcomes(
+    conn: sqlite3.Connection,
+    campaign_id: int,
+    outcomes: dict[int, str],
+    round_idx: int,
+) -> None:
+    """UPSERT per-fault SAT outcomes (``"timeout"`` / ``"unknown"``) for the
+    reason report. Caller owns the transaction (commits). No-op when empty.
+    A later detection leaves the stale row in place; the report only reads
+    outcomes for faults that are still ``status='undetected'``."""
+    if not outcomes:
+        return
+    conn.executemany(
+        "INSERT INTO fault_sat_outcome (campaign_id, fault_id, outcome, round) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(campaign_id, fault_id) DO UPDATE SET "
+        "outcome = excluded.outcome, round = excluded.round",
+        [(campaign_id, fid, oc, round_idx) for fid, oc in outcomes.items()],
+    )
 
 
 def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[str, Any]:

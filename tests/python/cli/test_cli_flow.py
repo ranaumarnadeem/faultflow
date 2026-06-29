@@ -7,7 +7,7 @@ import pytest
 from faultflow.atpg import VectorSet
 from faultflow.cli import main
 from faultflow.config import load_config
-from faultflow.db import connect, init_schema
+from faultflow.db import connect, init_schema, record_sat_outcomes
 from db_v3_helpers import insert_campaign, insert_fault_row, insert_run
 from faultflow.reporter import CoverageError, write_reports
 from faultflow.runner import Runner, RunnerError
@@ -428,6 +428,50 @@ def test_coverage_report_text_includes_protocol_fields(
         assert "reason=structurally_unresolved" in undetected_section
         assert report["undetected_faults"][0]["reason"] == "structurally_unresolved"
         assert report["reason_summary"]["structurally_unresolved"] == 1
+    finally:
+        conn.close()
+
+
+def test_coverage_report_classifies_sat_timeout_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    schema_dir = tmp_path / "schemas"
+    schema_dir.mkdir(parents=True)
+    shutil.copy(
+        Path(__file__).resolve().parents[3] / "schemas/coverage.schema.json",
+        schema_dir / "coverage.schema.json",
+    )
+    cfg_path = tmp_path / "config.ofs"
+    _config(cfg_path)
+    cfg = load_config(cfg_path, "scan_top")
+    conn = connect(cfg.db_path)
+    try:
+        init_schema(conn)
+        campaign_id = insert_campaign(conn, campaign_type="scan", top="scan_top")
+        insert_run(conn, campaign_id)
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=9,
+            net_name="__ppo_u0",
+            compiled_net_index=9,
+            fault_type="sa0",
+            status="undetected",
+            fault_site_key="net:9:stem",
+        )
+        fault_id = int(conn.execute("SELECT id FROM faults").fetchone()[0])
+        # What the ATPG loop does at round end for a fault the solver timed out on.
+        record_sat_outcomes(conn, campaign_id, {fault_id: "timeout"}, round_idx=1)
+        conn.commit()
+
+        _, txt_path, report = write_reports(conn, cfg, campaign_id=campaign_id)
+        text = txt_path.read_text(encoding="utf-8")
+        fault = report["undetected_faults"][0]
+        assert fault["reason"] == "sat_timeout"
+        assert fault["sat_outcome"] == "timeout"
+        assert report["reason_summary"]["sat_timeout"] == 1
+        assert "reason=sat_timeout" in text.split("undetected faults:")[-1]
     finally:
         conn.close()
 
