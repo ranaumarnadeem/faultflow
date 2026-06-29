@@ -414,6 +414,10 @@ class ProjectSession:
                 )
             elif key == "atpg.workers":
                 cfg = replace(cfg, atpg=replace(cfg.atpg, workers=int(value)))
+            elif key == "atpg.sat_conflict_limit":
+                cfg = replace(
+                    cfg, atpg=replace(cfg.atpg, sat_conflict_limit=int(value))
+                )
             elif key == "simulation.sim_threads":
                 cfg = replace(
                     cfg,
@@ -761,6 +765,7 @@ class ProjectSession:
             "atpg.incremental_sat",
             "atpg.max_rounds",
             "atpg.preflight",
+            "atpg.sat_conflict_limit",
             "atpg.sat_timeout_seconds",
             "atpg.sat_timeout_schedule",
             "atpg.workers",
@@ -784,7 +789,12 @@ class ProjectSession:
                     "CONFIG",
                     "INVALID_VALUE",
                 )
-        if key in {"atpg.max_rounds", "atpg.sat_timeout_seconds", "atpg.workers"}:
+        if key in {
+            "atpg.max_rounds",
+            "atpg.sat_conflict_limit",
+            "atpg.sat_timeout_seconds",
+            "atpg.workers",
+        }:
             try:
                 if int(value) < 1:
                     raise ValueError

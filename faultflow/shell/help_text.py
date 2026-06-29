@@ -249,7 +249,7 @@ COMMAND_HELP = {
         "set_option KEY VALUE",
         "Set a persistent flow option",
         "Keys: atpg.easy_fault_reserve, atpg.incremental_sat, atpg.max_rounds,"
-        " atpg.preflight,"
+        " atpg.preflight, atpg.sat_conflict_limit,"
         " atpg.sat_timeout_seconds, atpg.sat_timeout_schedule, atpg.workers,"
         " fault_model.collapsing, fault_model.include_reset_faults,"
         " fault_model.include_clock_faults, report.threshold,"

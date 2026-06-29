@@ -104,6 +104,7 @@ def test_set_option_materializes_into_config(tmp_path: Path) -> None:
     session.set_option("atpg.max_rounds", "37")
     session.set_option("report.threshold", "92.5")
     session.set_option("atpg.sat_timeout_schedule", "2,10,60")
+    session.set_option("atpg.sat_conflict_limit", "2000000")
     session.set_option("fault_model.collapsing", "true")
     session.set_option("atpg.incremental_sat", "true")
 
@@ -111,6 +112,7 @@ def test_set_option_materializes_into_config(tmp_path: Path) -> None:
     assert cfg.atpg.max_rounds == 37
     assert cfg.report.threshold == 92.5
     assert cfg.atpg.sat_timeout_schedule == "2,10,60"
+    assert cfg.atpg.sat_conflict_limit == 2000000
     assert cfg.fault_model.collapsing is True
     assert cfg.atpg.incremental_sat is True
 
