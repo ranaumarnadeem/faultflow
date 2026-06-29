@@ -116,3 +116,40 @@ def test_structural_reasons_length_mismatch_raises() -> None:
         core.compute_fault_structural_reasons(
             str(C17), str(SKY130), [1, 2], [0], "fail", []
         )
+
+
+@pytest.mark.unit
+def test_structural_reasons_bottleneck_from_reconvergent_stem() -> None:
+    if not C17.exists():
+        pytest.skip("c17 netlist missing")
+    core = _core()
+    sites = core.list_site_keys(str(C17), str(SKY130), "fail")
+    site = next(s for s in sites if int(s["yosys_net_id"]) >= 0)
+    net_idx = int(site["compiled_net_index"])
+    yid = int(site["yosys_net_id"])
+
+    # The fault's own net is the reconvergent stem -> nearest stem is itself.
+    reasons = core.compute_fault_structural_reasons(
+        str(C17), str(SKY130), [7], [net_idx], "fail", [], [yid]
+    )
+    assert reasons[7]["bottleneck_yosys_id"] == yid
+
+    # Without the reconvergent arg, no bottleneck field is added.
+    reasons2 = core.compute_fault_structural_reasons(
+        str(C17), str(SKY130), [7], [net_idx], "fail", []
+    )
+    assert "bottleneck_yosys_id" not in reasons2[7]
+
+
+@pytest.mark.unit
+def test_structural_reasons_no_reconvergent_stem_in_cone_is_minus_one() -> None:
+    if not C17.exists():
+        pytest.skip("c17 netlist missing")
+    core = _core()
+    sites = core.list_site_keys(str(C17), str(SKY130), "fail")
+    net_idx = int(sites[0]["compiled_net_index"])
+    # A reconvergent id that maps to no net in the graph -> no stem in the cone.
+    reasons = core.compute_fault_structural_reasons(
+        str(C17), str(SKY130), [7], [net_idx], "fail", [], [999_999]
+    )
+    assert reasons[7]["bottleneck_yosys_id"] == -1

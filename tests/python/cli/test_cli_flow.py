@@ -7,7 +7,12 @@ import pytest
 from faultflow.atpg import VectorSet
 from faultflow.cli import main
 from faultflow.config import load_config
-from faultflow.db import connect, init_schema, record_sat_outcomes
+from faultflow.db import (
+    connect,
+    init_schema,
+    record_reconvergent_stems,
+    record_sat_outcomes,
+)
 from db_v3_helpers import insert_campaign, insert_fault_row, insert_run
 from faultflow.reporter import CoverageError, write_reports
 from faultflow.runner import Runner, RunnerError
@@ -472,6 +477,71 @@ def test_coverage_report_classifies_sat_timeout_reason(
         assert fault["sat_outcome"] == "timeout"
         assert report["reason_summary"]["sat_timeout"] == 1
         assert "reason=sat_timeout" in text.split("undetected faults:")[-1]
+    finally:
+        conn.close()
+
+
+def test_coverage_report_names_reconvergent_bottleneck(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: a SAT-hard (timed-out) undetected fault whose cone contains a
+    persisted reconvergent stem gets that stem named as its bottleneck_net."""
+    monkeypatch.chdir(tmp_path)
+    core = runner_mod._load_core()
+    if core is None:
+        pytest.skip("C++ extension required")
+    root = Path(__file__).resolve().parents[3]
+    c17 = root / "tests/benchmarks/iscas85/synth_sky130/c17.json"
+    sky = root / "cells/sky130/sky130_fd_sc_hd.json"
+    if not c17.exists():
+        pytest.skip("c17 netlist missing")
+    schema_dir = tmp_path / "schemas"
+    schema_dir.mkdir(parents=True)
+    shutil.copy(
+        root / "schemas/coverage.schema.json", schema_dir / "coverage.schema.json"
+    )
+
+    site = next(
+        s
+        for s in core.list_site_keys(str(c17), str(sky), "fail")
+        if int(s["yosys_net_id"]) >= 0
+    )
+    net_id = int(site["yosys_net_id"])
+    cidx = int(site["compiled_net_index"])
+
+    cfg_path = tmp_path / "c17.ofs"
+    cfg_path.write_text(
+        f"[design]\nnetlist = {c17}\ncell_lib = {sky}\n"
+        "[simulation]\nunsupported_cells = fail\n"
+        "[atpg]\nmode = comb\n[report]\nthreshold = 95.0\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_path, "c17")
+    conn = connect(cfg.db_path)
+    try:
+        init_schema(conn)
+        campaign_id = insert_campaign(conn, campaign_type="comb", top="c17")
+        insert_run(conn, campaign_id)
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=net_id,
+            net_name="n_bott",
+            compiled_net_index=cidx,
+            fault_type="sa0",
+            status="undetected",
+            fault_site_key=f"net:{net_id}:stem",
+        )
+        fault_id = int(conn.execute("SELECT id FROM faults").fetchone()[0])
+        record_sat_outcomes(conn, campaign_id, {fault_id: "timeout"}, round_idx=1)
+        # The fault's own net is a reconvergent stem -> it is its own bottleneck.
+        record_reconvergent_stems(conn, campaign_id, {net_id})
+        conn.commit()
+
+        _, _txt, report = write_reports(conn, cfg, campaign_id=campaign_id)
+        fault = report["undetected_faults"][0]
+        assert fault["reason"] == "sat_timeout"
+        assert fault["bottleneck_net"] == "n_bott"
     finally:
         conn.close()
 

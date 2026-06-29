@@ -25,6 +25,7 @@ from faultflow.db import (
     CAMPAIGN_TYPE_SCAN,
     connect,
     init_schema,
+    record_reconvergent_stems,
     record_sat_outcomes,
     summary,
 )
@@ -685,6 +686,13 @@ def run_progressive_native_atpg(
                             (campaign_id,),
                         ).fetchall()
                     }
+                    # Persist the pre-computed reconvergent stems so the coverage
+                    # report can name them as bottleneck_net (one write/campaign).
+                    init_schema(conn)
+                    record_reconvergent_stems(
+                        conn, campaign_id, _preflight.fanout_yosys_ids
+                    )
+                    conn.commit()
                 _reconv_fault_ids = frozenset(
                     fid
                     for fid, nid in _fid_to_netid.items()

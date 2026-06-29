@@ -864,7 +864,8 @@ py::dict compute_fault_structural_reasons(
     const std::vector<int64_t>& fault_ids,
     const std::vector<int64_t>& net_indices,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances,
+    const std::vector<int64_t>& reconvergent_yosys_ids) {
   if (fault_ids.size() != net_indices.size()) {
     throw std::invalid_argument(
         "compute_fault_structural_reasons: fault_ids and net_indices length "
@@ -888,6 +889,20 @@ py::dict compute_fault_structural_reasons(
     if (p >= 0 && p < cg.net_count) controllable[static_cast<size_t>(p)] = 1;
   }
 
+  // Optional reconvergent-stem set (Yosys IDs -> compiled flag) for the
+  // bottleneck_net join. Empty => bottleneck not computed.
+  const bool have_reconv = !reconvergent_yosys_ids.empty();
+  std::vector<char> reconvergent(n, 0);
+  for (int64_t yid : reconvergent_yosys_ids) {
+    const auto it = cg.yosys_to_compiled.find(static_cast<int>(yid));
+    if (it != cg.yosys_to_compiled.end()) {
+      const int cidx = it->second;
+      if (cidx >= 0 && cidx < cg.net_count) {
+        reconvergent[static_cast<size_t>(cidx)] = 1;
+      }
+    }
+  }
+
   py::dict out;
   for (size_t i = 0; i < fault_ids.size(); ++i) {
     const int64_t net = net_indices[i];
@@ -897,10 +912,17 @@ py::dict compute_fault_structural_reasons(
           cg, static_cast<uint32_t>(net), driver, observable, controllable);
       d["reaches_observable"] = r.reaches_observable;
       d["reachable_from_pi"] = r.reachable_from_pi;
+      if (have_reconv) {
+        const int b = atpg::nearest_reconvergent_stem(
+            cg, static_cast<uint32_t>(net), driver, reconvergent);
+        d["bottleneck_yosys_id"] =
+            (b >= 0) ? cg.compiled_to_yosys[static_cast<size_t>(b)] : -1;
+      }
     } else {
       // Unknown net index: don't assert any structural reason.
       d["reaches_observable"] = true;
       d["reachable_from_pi"] = true;
+      if (have_reconv) d["bottleneck_yosys_id"] = -1;
     }
     out[py::int_(fault_ids[i])] = d;
   }
@@ -1086,5 +1108,6 @@ PYBIND11_MODULE(_faultflow_core, m) {
         &faultflow::compute_fault_structural_reasons, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("fault_ids"), py::arg("net_indices"),
         py::arg("unsupported_policy") = "fail",
-        py::arg("blackbox_instances") = std::vector<std::string>{});
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("reconvergent_yosys_ids") = std::vector<int64_t>{});
 }

@@ -142,4 +142,40 @@ FaultStructuralReason structural_reason(const CompiledSimGraph& cg,
   return r;
 }
 
+int nearest_reconvergent_stem(const CompiledSimGraph& cg, uint32_t fault_net,
+                              const std::vector<int>& driver,
+                              const std::vector<char>& reconvergent) {
+  if (fault_net < reconvergent.size() && reconvergent[fault_net]) {
+    return static_cast<int>(fault_net);
+  }
+  const size_t n = static_cast<size_t>(cg.net_count);
+  std::vector<char> seen(n, 0);
+  seen[fault_net] = 1;
+  // BFS (FIFO via a head index) so the first reconvergent net found is the
+  // nearest to the fault site by backward depth.
+  std::vector<uint32_t> queue;
+  queue.push_back(fault_net);
+  size_t head = 0;
+  while (head < queue.size()) {
+    const uint32_t net = queue[head++];
+    const int d = driver[net];
+    if (d < 0) {
+      continue;  // source net with no driving node
+    }
+    const SimNode& node = cg.nodes[static_cast<size_t>(d)];
+    const uint32_t ins[] = {node.in0, node.in1, node.in2,
+                            node.in3, node.in4, node.in5};
+    for (uint32_t in : ins) {
+      if (in != UNUSED_INPUT && !seen[in]) {
+        seen[in] = 1;
+        if (in < reconvergent.size() && reconvergent[in]) {
+          return static_cast<int>(in);
+        }
+        queue.push_back(in);
+      }
+    }
+  }
+  return -1;
+}
+
 }  // namespace faultflow::atpg

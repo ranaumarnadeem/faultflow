@@ -131,3 +131,35 @@ TEST_CASE("structural_reason: constant net is structurally uncontrollable",
       cg, static_cast<uint32_t>(c0), driver, observable, controllable);
   REQUIRE_FALSE(r.reachable_from_pi);  // CONST net: no PI in its backward cone
 }
+
+TEST_CASE("nearest_reconvergent_stem finds the nearest fan-in stem",
+          "[compiled_graph][cone]") {
+  const CompiledSimGraph cg =
+      test::load_compiled_benchmark("iscas85/synth_sky130/c17.json");
+  const std::vector<int> driver = atpg::build_driver_index(cg);
+
+  // Pick any gate and mark its direct input net as reconvergent; the nearest
+  // reconvergent stem from the gate output must be that input (BFS depth 1).
+  uint32_t gate_out = 0;
+  uint32_t gate_in = 0;
+  bool found = false;
+  for (const auto& sn : cg.nodes) {
+    if (sn.type != GateType::INPUT &&
+        sn.in0 < static_cast<uint32_t>(cg.net_count)) {
+      gate_out = sn.out;
+      gate_in = sn.in0;
+      found = true;
+      break;
+    }
+  }
+  REQUIRE(found);
+
+  std::vector<char> reconvergent(static_cast<size_t>(cg.net_count), 0);
+  reconvergent[gate_in] = 1;
+  REQUIRE(atpg::nearest_reconvergent_stem(cg, gate_out, driver, reconvergent) ==
+          static_cast<int>(gate_in));
+
+  // No reconvergent nets in the cone -> -1.
+  const std::vector<char> none(static_cast<size_t>(cg.net_count), 0);
+  REQUIRE(atpg::nearest_reconvergent_stem(cg, gate_out, driver, none) == -1);
+}

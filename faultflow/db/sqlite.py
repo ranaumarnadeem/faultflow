@@ -173,6 +173,18 @@ CREATE TABLE IF NOT EXISTS fault_sat_outcome (
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id),
     FOREIGN KEY (fault_id) REFERENCES faults(id)
 );
+
+-- Reconvergent fanout stems from the OpenTestability preflight (Yosys net IDs),
+-- persisted once per campaign so the coverage report can name the reconvergent
+-- bottleneck on a SAT-hard fault's cone without re-running OT. Pre-computed list
+-- consumed as-is (no OT engine change). Python-managed side table; idempotent
+-- CREATE, invisible to require_v3_schema. Empty when preflight did not run.
+CREATE TABLE IF NOT EXISTS reconvergent_stems (
+    campaign_id INTEGER NOT NULL,
+    yosys_net_id INTEGER NOT NULL,
+    PRIMARY KEY (campaign_id, yosys_net_id),
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
+);
 """
 
 
@@ -298,6 +310,21 @@ def record_sat_outcomes(
         "ON CONFLICT(campaign_id, fault_id) DO UPDATE SET "
         "outcome = excluded.outcome, round = excluded.round",
         [(campaign_id, fid, oc, round_idx) for fid, oc in outcomes.items()],
+    )
+
+
+def record_reconvergent_stems(
+    conn: sqlite3.Connection, campaign_id: int, yosys_ids: "frozenset[int] | set[int]"
+) -> None:
+    """Persist the OT preflight's reconvergent stem Yosys net IDs for the campaign
+    (for the coverage report's bottleneck_net join). Caller owns the transaction.
+    No-op when empty (preflight did not run / OT unavailable)."""
+    if not yosys_ids:
+        return
+    conn.executemany(
+        "INSERT OR IGNORE INTO reconvergent_stems (campaign_id, yosys_net_id) "
+        "VALUES (?, ?)",
+        [(campaign_id, int(nid)) for nid in yosys_ids],
     )
 
 

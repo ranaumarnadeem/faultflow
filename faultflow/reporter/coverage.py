@@ -148,6 +148,43 @@ def _undetected_faults(
     return faults
 
 
+def _reconvergent_stems(conn: sqlite3.Connection, campaign_id: int) -> list[int]:
+    """The OpenTestability reconvergent stem Yosys net IDs persisted for the
+    campaign (empty if preflight did not run / the side table is absent)."""
+    exists = (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='reconvergent_stems'"
+        ).fetchone()
+        is not None
+    )
+    if not exists:
+        return []
+    return [
+        int(row["yosys_net_id"])
+        for row in conn.execute(
+            "SELECT yosys_net_id FROM reconvergent_stems WHERE campaign_id = ?",
+            (campaign_id,),
+        )
+    ]
+
+
+def _net_names_by_id(
+    conn: sqlite3.Connection, campaign_id: int, net_ids: list[int]
+) -> dict[int, str]:
+    """Resolve Yosys net IDs to human-readable names via the faults table (a stem
+    is a fault site, so its name is recorded there)."""
+    if not net_ids:
+        return {}
+    placeholders = ",".join("?" * len(net_ids))
+    rows = conn.execute(
+        "SELECT DISTINCT net_id, net_name FROM faults "
+        f"WHERE campaign_id = ? AND net_id IN ({placeholders})",
+        [campaign_id, *net_ids],
+    ).fetchall()
+    return {int(row["net_id"]): str(row["net_name"]) for row in rows}
+
+
 def _annotate_structural_reasons(
     conn: sqlite3.Connection,
     cfg: FaultflowConfig,
@@ -163,7 +200,10 @@ def _annotate_structural_reasons(
     so any failure -- no core extension, unreadable netlist -- silently leaves the
     Tier-A/B reasons intact; the report is never blocked."""
     candidates = [
-        f for f in undetected if f["reason"] in ("never_attempted", "sat_hard")
+        f
+        for f in undetected
+        if f["reason"]
+        in ("never_attempted", "sat_hard", "sat_timeout", "solver_unknown")
     ]
     if not candidates:
         return
@@ -185,6 +225,7 @@ def _annotate_structural_reasons(
         if not fault_ids:
             return
         net_indices = [net_by_id[fid] for fid in fault_ids]
+        stems = _reconvergent_stems(conn, campaign_id)
         reasons = core.compute_fault_structural_reasons(
             str(cfg.netlist),
             str(cfg.cell_lib),
@@ -192,14 +233,31 @@ def _annotate_structural_reasons(
             net_indices,
             unsupported_policy,
             list(cfg.blackbox_instances),
+            stems,
         )
         by_id = {f["id"]: f for f in candidates}
+        pending: list[tuple[dict[str, Any], int]] = []
         for fid in fault_ids:
             info = reasons.get(fid)
-            if info is not None and not info.get("reachable_from_pi", True):
-                fault = by_id[fid]
+            if info is None:
+                continue
+            fault = by_id[fid]
+            if not info.get("reachable_from_pi", True):
+                # Uncontrollable: the site itself is the bottleneck.
                 fault["reason"] = "structurally_uncontrollable"
                 fault["bottleneck_net"] = fault["net_name"]
+            else:
+                # Controllable but SAT-hard: the reconvergent stem on its cone is
+                # the test-point candidate (resolved to a name below).
+                stem = int(info.get("bottleneck_yosys_id", -1) or -1)
+                if stem >= 0:
+                    pending.append((fault, stem))
+        if pending:
+            names = _net_names_by_id(
+                conn, campaign_id, sorted({stem for _, stem in pending})
+            )
+            for fault, stem in pending:
+                fault["bottleneck_net"] = names.get(stem, str(stem))
     except Exception:
         return
 

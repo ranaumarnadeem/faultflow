@@ -11,6 +11,7 @@ from faultflow.db.campaign import (
 from faultflow.db.sqlite import (
     connect,
     init_schema,
+    record_reconvergent_stems,
     record_sat_outcomes,
     summary,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "ensure_campaign",
     "init_schema",
     "latest_campaign_id",
+    "record_reconvergent_stems",
     "record_sat_outcomes",
     "require_v3_schema",
     "summary",

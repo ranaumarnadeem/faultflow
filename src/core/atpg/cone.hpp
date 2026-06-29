@@ -62,4 +62,14 @@ FaultStructuralReason structural_reason(const CompiledSimGraph& cg,
                                         const std::vector<char>& observable,
                                         const std::vector<char>& controllable);
 
+// Nearest reconvergent stem in the fault site's backward (fan-in / justification)
+// cone, for the undetected-fault reason report's bottleneck_net. `reconvergent` is
+// a per-net flag (size >= net_count) of the OpenTestability reconvergent stems.
+// Returns the CompiledNetIndex of the first such net reached by a breadth-first
+// backward walk from `fault_net` (nearest by depth), or -1 if the cone contains
+// none. O(cone) per fault.
+int nearest_reconvergent_stem(const CompiledSimGraph& cg, uint32_t fault_net,
+                              const std::vector<int>& driver,
+                              const std::vector<char>& reconvergent);
+
 }  // namespace faultflow::atpg
