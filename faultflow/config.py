@@ -145,7 +145,7 @@ def _optional_int(parser: ConfigParser, section: str, key: str) -> int | None:
 class FaultModelConfig:
     model: str = "stuck_at"
     launch: str = "loc"
-    collapsing: bool = False
+    collapsing: bool = True
     include_clock_faults: bool = False
     include_reset_faults: bool = False
 
@@ -524,7 +524,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     if fault_launch not in {"loc", "los"}:
         raise ConfigError("fault_model.launch must be 'loc' or 'los'")
 
-    fault_collapsing = _bool(parser, "fault_model", "collapsing", False)
+    fault_collapsing = _bool(parser, "fault_model", "collapsing", True)
     if fault_model == "transition" and fault_collapsing:
         raise ConfigError(
             "fault collapsing is not supported for the transition model "
