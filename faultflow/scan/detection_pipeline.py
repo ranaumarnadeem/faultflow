@@ -1174,10 +1174,9 @@ def run_progressive_scan_atpg(
         )
 
     # Cone-size fault ordering (atpg.order_by_cone_size): the structural cone size
-    # is computed once (it never changes) and reused to sort each round's SAT
-    # sweep smallest-cone-first. Skipped for transition faults, whose two-frame
-    # cone is not captured by the single-frame size (they keep enumeration order).
-    cone_sizes: dict[int, int] = {}
+    # is computed per-round for only the current active set (lazy — faults detected
+    # by earlier rounds never pay the BFS cost). Skipped for transition faults,
+    # whose two-frame cone is not captured by the single-frame size.
     order_faults = cfg.atpg.order_by_cone_size and not transition
     if cfg.atpg.order_by_cone_size and transition:
         log.info(
@@ -1372,22 +1371,26 @@ def run_progressive_scan_atpg(
                         1, prior_timeout_count.get(_row.fault_id, 0)
                     )
 
-        # Sort: (1) reconvergent-site faults last, (2) smallest cone first within
-        # each group. Both criteria are independent; either can be inactive.
+        # Sort: (1) reconvergent-site faults last (no cone BFS on the full set),
+        # (2) smallest cone first within each group — computed lazily for the
+        # current round's active set only (faults detected in prior rounds skip it).
         if (order_faults or _reconv_ids) and active_rows:
-            if order_faults and not cone_sizes:
-                cone_sizes = _cone_size_map(
+            _round_cone_sizes: dict[int, int] = (
+                _cone_size_map(
                     core,
                     reduced_json_path,
                     reduced_cell_map,
                     active_rows,
                     unsupported,
                 )
+                if order_faults
+                else {}
+            )
             active_rows = sorted(
                 active_rows,
                 key=lambda r: (
                     r.net_id in _reconv_ids,
-                    cone_sizes.get(r.fault_id, 1 << 30) if order_faults else 0,
+                    _round_cone_sizes.get(r.fault_id, 1 << 30) if order_faults else 0,
                 ),
             )
 

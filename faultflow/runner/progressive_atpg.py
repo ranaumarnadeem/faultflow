@@ -629,8 +629,8 @@ def run_progressive_native_atpg(
         )
 
     # Cone-size fault ordering (atpg.order_by_cone_size): structural cone size is
-    # computed once and reused to sort each round's SAT sweep smallest-cone-first.
-    cone_sizes: dict[int, int] = {}
+    # computed lazily per wave (W faults at a time) so faults that are detected by
+    # pattern grading never pay the BFS cost.
     order_faults = cfg.atpg.order_by_cone_size
 
     # Parallel SAT solving — same fork+copy-on-write scheme as the scan pipeline.
@@ -795,6 +795,9 @@ def run_progressive_native_atpg(
             active_rows = _active_fault_rows(conn, campaign_id)
             active_ids = [int(row["id"]) for row in active_rows]
 
+        # O(N) dict for per-wave row lookup without re-scanning active_rows.
+        row_by_id: dict[int, Any] = {int(r["id"]): r for r in active_rows}
+
         # Phase A: seed tier-skip for reconvergent-site faults before sort and
         # before parallel dispatch so both paths pick up the updated count.
         if _reconv_fault_ids:
@@ -802,23 +805,12 @@ def run_progressive_native_atpg(
                 if _fid in _reconv_fault_ids:
                     prior_timeout_count[_fid] = max(1, prior_timeout_count.get(_fid, 0))
 
-        # Sort: reconvergent-site faults last, smallest cone first within each group.
-        if (order_faults or _reconv_fault_ids) and active_ids:
-            if order_faults and not cone_sizes:
-                cone_sizes = _cone_size_order(
-                    core,
-                    json_path,
-                    effective_cell_map,
-                    active_rows,
-                    unsupported,
-                    bb_instances,
-                )
+        # Sort: reconvergent-site faults last (no cone BFS cost on the full set).
+        # Cone-size ordering within each group is applied lazily per dispatch wave.
+        if _reconv_fault_ids and active_ids:
             active_ids = sorted(
                 active_ids,
-                key=lambda fid: (
-                    fid in _reconv_fault_ids,
-                    cone_sizes.get(fid, 1 << 30) if order_faults else 0,
-                ),
+                key=lambda fid: fid in _reconv_fault_ids,
             )
 
         # M1: grade each accepted SAT pattern against every still-undetected
@@ -870,6 +862,19 @@ def run_progressive_native_atpg(
                     if (not drop_sat) or (_wfid in remaining):
                         _wave_ids.append(_wfid)
                 if _wave_ids:
+                    if order_faults:
+                        _wave_rows = [row_by_id[_wid] for _wid in _wave_ids]
+                        _wave_cone_sizes = _cone_size_order(
+                            core,
+                            json_path,
+                            effective_cell_map,
+                            _wave_rows,
+                            unsupported,
+                            bb_instances,
+                        )
+                        _wave_ids.sort(
+                            key=lambda _wid: _wave_cone_sizes.get(_wid, 1 << 30)
+                        )
                     _dispatch_ids = (
                         interleave_easy_hard(_wave_ids, cfg.atpg.workers, _easy_reserve)
                         if _easy_reserve > 0 and cfg.atpg.workers >= 4

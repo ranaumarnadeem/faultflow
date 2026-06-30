@@ -209,6 +209,61 @@ def test_incremental_sat_matches_baseline_coverage(
 
 
 @pytest.mark.integration
+def test_cone_ordering_coverage_matches_no_ordering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    # T3: lazy per-wave cone ordering must produce the same final fault
+    # classification as no ordering. Ordering changes the sequence in which
+    # workers receive faults but must not change what is detected, what is
+    # redundant, or the denominator.
+    if not C17_JSON.exists():
+        pytest.skip("c17 netlist missing")
+
+    def _run(sub: str, ordering: str) -> tuple[dict, int]:
+        wd = tmp_path / sub
+        wd.mkdir()
+        schema_dir = wd / "schemas"
+        schema_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(
+            ROOT / "schemas/coverage.schema.json",
+            schema_dir / "coverage.schema.json",
+        )
+        monkeypatch.chdir(wd)
+        cfg_path = _write_cfg(
+            tmp_path=wd,
+            top="c17",
+            netlist=C17_JSON,
+            atpg_overrides={"order_by_cone_size": ordering},
+        )
+        runner = Runner(load_config(cfg_path, "c17"))
+        runner.init()
+        runner.sim(clean=True, max_rounds=20, target_coverage=100.0)
+        with connect(runner.cfg.db_path) as conn:
+            init_schema(conn)
+            s = summary(conn)
+            redundant = conn.execute(
+                "SELECT COUNT(*) FROM faults WHERE status='redundant'"
+            ).fetchone()[0]
+        return s, int(redundant)
+
+    ordered, ordered_red = _run("ordered", "true")
+    unordered, unordered_red = _run("unordered", "false")
+
+    assert ordered["detected"] > 0
+    assert ordered["denominator"] == unordered["denominator"]
+    assert ordered_red == unordered_red
+    assert (
+        abs(
+            float(ordered["coverage_percent"] or 0.0)
+            - float(unordered["coverage_percent"] or 0.0)
+        )
+        <= 0.1
+    )
+
+
+@pytest.mark.integration
 def test_runner_fingerprint_mismatch_blocks_resume(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
