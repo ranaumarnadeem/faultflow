@@ -1423,6 +1423,7 @@ class Runner:
             work_dir=self.cfg.verification_dir,
             gate_verilog=self._find_gate_verilog(),
             verilog_models=[self.cfg.verilog_models],
+            use_power_pins=self.cfg.simulation.verify_use_power_pins,
         )
 
         sequential_steps = None

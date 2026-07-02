@@ -155,6 +155,13 @@ class SimulationConfig:
     unsupported_cells: str = "fail"
     verify: bool = False
     verify_tool: str = "iverilog"
+    # Sky130 behavioral models are `ifdef USE_POWER_PINS`-gated: the default (this
+    # flag false) branch has no VPWR/VGND ports at all (implicit supply1/supply0
+    # nets), which is what every model in cells/sky130/*.v uses out of the box, so
+    # the verify testbench needs no power-pin wiring by default. When a selected
+    # model set genuinely requires the power-pins variant, this drives VPWR=1 /
+    # VGND=0 in the generated testbench and passes -DUSE_POWER_PINS to iverilog.
+    verify_use_power_pins: bool = False
     # Tie Yosys "x"/"z" constant bits to 0 before simulation.
     # Required for netlists with unconnected/don't-care inputs (e.g. unused scan pins).
     tie_xz: bool = False
@@ -565,6 +572,9 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             unsupported_cells=unsupported,
             verify=_bool(parser, "simulation", "verify", False),
             verify_tool=verify_tool,
+            verify_use_power_pins=_bool(
+                parser, "simulation", "verify_use_power_pins", False
+            ),
             tie_xz=_bool(parser, "simulation", "tie_xz", False),
             sim_threads=sim_threads,
         ),

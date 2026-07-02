@@ -20,6 +20,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_CELL_LIB = _REPO_ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 _SCHEMA_PATH = _REPO_ROOT / "schemas/oracle_response.schema.json"
 
+
+class OracleResponseError(RuntimeError):
+    """Raised when an oracle_response payload fails schema validation."""
+
+
 _TERMINAL_MAP: dict[str, str] = {
     "target_reached": "target_reached",
     "exhausted": "exhausted",
@@ -108,17 +113,25 @@ def build_oracle_response(
 
 
 def write_oracle_response(response: dict[str, Any], path: Path) -> None:
-    """Validate against schema and write oracle_response.json."""
-    if _SCHEMA_PATH.exists():
-        try:
-            import jsonschema  # type: ignore[import-untyped]
+    """Validate against schema and write oracle_response.json.
 
+    A schema validation failure is fatal: writing a malformed oracle_response.json
+    to disk would silently hand OT's bridge a payload it cannot trust. Only the
+    jsonschema-not-installed case (a genuinely optional dependency) is a soft skip.
+    """
+    try:
+        import jsonschema  # type: ignore[import-untyped]
+    except ImportError:
+        log.debug("jsonschema not installed; skipping oracle response validation")
+    else:
+        if _SCHEMA_PATH.exists():
             schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
-            jsonschema.validate(response, schema)
-        except ImportError:
-            log.debug("jsonschema not installed; skipping oracle response validation")
-        except Exception as exc:
-            log.warning("oracle response schema validation failed: %s", exc)
+            try:
+                jsonschema.validate(response, schema)
+            except jsonschema.ValidationError as exc:
+                raise OracleResponseError(
+                    f"oracle response failed schema validation: {exc.message}"
+                ) from exc
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(response, indent=2) + "\n", encoding="utf-8")
