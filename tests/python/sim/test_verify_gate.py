@@ -492,6 +492,87 @@ def test_runner_verification_failure_aborts_before_sim(
     ).exists()
 
 
+def test_runner_verify_skipped_when_blackbox_instances_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """verify=True together with a non-empty blackbox_instances must force
+    verification off (iverilog cannot drive/observe blackbox pseudo-ports),
+    logging a warning instead of invoking the iverilog gate."""
+    from dataclasses import replace
+
+    monkeypatch.chdir(tmp_path)
+    cfg_path = tmp_path / "config.ofs"
+    _config(cfg_path, "verify = true")
+    cfg = load_config(cfg_path, "demo")
+    assert cfg.simulation.verify is True
+    cfg = replace(cfg, blackbox_instances=("u_bb",))
+    runner = Runner(cfg)
+    bench = tmp_path / "demo.bench"
+    bench.write_text("INPUT(a)\nOUTPUT(y)\n", encoding="utf-8")
+    called = {"report": False, "verify": False}
+    vectors = VectorSet(
+        source=str(tmp_path / "demo.test"),
+        input_order=["a"],
+        vectors=[{"a": True}],
+    )
+
+    monkeypatch.setattr(runner, "_find_netlist", lambda: tmp_path / "demo.json")
+    monkeypatch.setattr(
+        Runner, "_ensure_campaign", lambda self, conn, fp, scan=False: 1
+    )
+    monkeypatch.setattr(runner, "_find_order_sidecar", lambda: (bench, ["a"]))
+
+    def fake_run_verification(*_args: object, **_kwargs: object) -> None:
+        called["verify"] = True
+        raise AssertionError("iverilog verification must be bypassed for blackbox")
+
+    monkeypatch.setattr(
+        runner, "_run_verification", fake_run_verification, raising=False
+    )
+
+    def fake_progressive(*_args: object, **_kwargs: object) -> tuple[object, ...]:
+        from faultflow.runner.progressive_atpg import AtpgStats
+
+        return vectors, AtpgStats(terminal_reason="COMPLETE"), 1, 0.0, 0.0
+
+    monkeypatch.setattr(
+        "faultflow.runner.progressive_atpg.run_progressive_native_atpg",
+        fake_progressive,
+    )
+
+    def fake_write_reports(*_args: object, **_kwargs: object) -> tuple[object, ...]:
+        called["report"] = True
+        report_path = (
+            tmp_path
+            / "output"
+            / "demo"
+            / ".faultflow"
+            / "intermediate"
+            / "coverage_report.json"
+        )
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text("{}", encoding="utf-8")
+        return (
+            report_path,
+            tmp_path / "output" / "demo" / "coverage.rpt",
+            {"summary": {"coverage_percent": 100.0}},
+        )
+
+    monkeypatch.setattr("faultflow.runner.runner.write_reports", fake_write_reports)
+
+    with caplog.at_level("WARNING", logger="faultflow.runner.runner"):
+        result = runner.sim()
+
+    assert isinstance(result, str) and "sim complete" in result
+    assert called["verify"] is False, "verification must be skipped, not invoked"
+    assert called["report"] is True
+    assert any(
+        "blackbox instances present" in rec.message for rec in caplog.records
+    ), f"expected blackbox-skip warning, got: {[r.message for r in caplog.records]}"
+
+
 def test_runner_verification_dependency_failure_writes_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
