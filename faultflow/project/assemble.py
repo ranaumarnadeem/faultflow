@@ -121,17 +121,30 @@ def compose_soc(
     soc_top: str,
     blocks: dict[str, dict[str, Any]],
     block_module: dict[str, str],
+    *,
+    graybox: bool = False,
+    block_names: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Splice each block's real cells/netnames into the glue's instance site.
 
     Returns a NEW flat Yosys-JSON dict: one module (`soc_top`) containing the
     glue's own cells plus every block's cells (net-ID-remapped + spliced in), with
     each block's instance cell removed. See the module docstring for the algorithm.
+
+    ``graybox``: splice ONLY each block's WBC (IEEE-1500 wrapper) cells, dropping
+    its core logic + internal scan FFs. This is the EXTEST view -- the wrapper
+    boundary + interconnect is the DUT, the core is held dead -- and it keeps the
+    fault set (and the scan manifest) free of dead-core noise / internal chains.
+
+    ``block_names``: instance -> the block's canonical name. WBC cells are tagged
+    ``faultflow_block`` with this name so aggregation's cross-scope fault keys line
+    up with the block INTEST scope's name; defaults to the instance name.
     """
     glue_module = _find_top(glue_json, soc_top)
     cells = glue_module.get("cells")
     if not isinstance(cells, dict):
         raise AssembleError(f"top module {soc_top!r} has no cells")
+    names = block_names or {}
 
     result_module: dict[str, Any] = {
         "attributes": dict(glue_module.get("attributes", {})),
@@ -167,7 +180,14 @@ def compose_soc(
 
         remap, next_id = _build_remap(block_module_data, inst_connections, next_id)
 
-        _splice_cells(result_module, block_module_data, inst, remap)
+        _splice_cells(
+            result_module,
+            block_module_data,
+            inst,
+            remap,
+            graybox=graybox,
+            block_tag=names.get(inst, inst),
+        )
         _splice_netnames(result_module, block_module_data, inst, remap)
 
         del result_module["cells"][inst]
@@ -293,22 +313,31 @@ def _splice_cells(
     block_module: dict[str, Any],
     inst: str,
     remap: dict[int, int],
+    *,
+    graybox: bool = False,
+    block_tag: str | None = None,
 ) -> None:
     block_cells = block_module.get("cells", {})
     if not isinstance(block_cells, dict):
         return
+    tag = block_tag if block_tag is not None else inst
     dest_cells = result_module["cells"]
     for cell_name, cell in block_cells.items():
         if not isinstance(cell, dict):
+            continue
+        cell_type = str(cell.get("type", ""))
+        is_wbc = cell_type in _WBC_CELL_TYPES
+        # Graybox EXTEST view: keep only the wrapper boundary cells (the DUT); the
+        # dead core's logic + internal scan FFs are dropped.
+        if graybox and not is_wbc:
             continue
         new_cell = _deep_copy_cell(cell)
         new_cell["connections"] = {
             pin: _remap_bits(bits, remap)
             for pin, bits in new_cell["connections"].items()
         }
-        cell_type = str(cell.get("type", ""))
-        if cell_type in _WBC_CELL_TYPES:
-            new_cell["attributes"]["faultflow_block"] = inst
+        if is_wbc:
+            new_cell["attributes"]["faultflow_block"] = tag
             new_cell["attributes"]["faultflow_wbc"] = cell_name
         dest_cells[f"{inst}__{cell_name}"] = new_cell
 

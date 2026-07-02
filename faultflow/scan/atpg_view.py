@@ -455,7 +455,10 @@ def build_scan_atpg_view(
 
     records = _scan_cell_records(manifest)
     if not records:
-        raise ScanError("manifest has no scan cells for ATPG view")
+        # A wrapper-only EXTEST graybox has NO internal scan FFs to reduce to
+        # pseudo-ports; its IEEE-1500 WBR cells are handled downstream by
+        # fuse_wbr_into_view. Return the netlist unchanged (no pseudo-ports).
+        return view, {}
 
     instances = [str(record["instance"]) for record in records]
     _check_pseudo_names_free(module, instances)
