@@ -174,6 +174,18 @@ COMMAND_HELP = {
         "",
         "report_testmode",
     ),
+    "retarget": CommandHelp(
+        "Test Mode",
+        "retarget -patterns PATH -soc_access PATH -block NAME -o PATH",
+        "Retarget a block's INTEST patterns onto a SoC scan path",
+        "Reads a block's exported INTEST scan patterns (from run_atpg "
+        "-export-patterns), places each pattern at its segment offsets on the "
+        "SoC chains described by the SoC-access manifest, and writes the "
+        "retargeted patterns to -o. No re-ATPG happens at the assembly level.",
+        "Exported block patterns and an SoC-access manifest.",
+        "retarget -patterns blkA_patterns.json -soc_access soc_access.json "
+        "-block blkA -o blkA_retargeted.json",
+    ),
     "add_scan": CommandHelp(
         "Scan",
         "add_scan -chains N [-max_length N] [-SI NAME] [-SO NAME] "
