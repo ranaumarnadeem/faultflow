@@ -538,3 +538,118 @@ def test_assemble_soc_end_to_end(tmp_path: Path, require_cpp_core: None) -> None
         ["y"],
     )
     assert len(outputs) == len(vectors)
+
+
+# --------------------------------------------------------------------------- #
+# 6. assemble_soc graybox option (scan-model EXTEST DUT)                      #
+# --------------------------------------------------------------------------- #
+
+
+def test_assemble_soc_graybox_keeps_only_wbc_cells_and_tags_block_names(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """`assemble_soc(..., graybox=True, block_names=...)` must thread both options
+    through to `compose_soc` -- the EXTEST DUT keeps only each block's WBC ring
+    (dropping core + internal scan cells) and tags WBC cells with the CALLER's
+    canonical block name (not the glue instance name), so aggregation's canonical
+    keys line up with the block INTEST scope's own name."""
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+
+    from faultflow.shell.session import ProjectSession
+    from faultflow.shell.tcl_bridge import TclBridge
+    from faultflow.wrap.ports import wrap_ports
+
+    def _build_scan_wrapped_block(name: str, op: str) -> Path:
+        rtl = tmp_path / f"{name}.v"
+        rtl.write_text(
+            f"module {name}(input clk, input a, input b, output y);\n"
+            f"  reg r;\n"
+            f"  always @(posedge clk) r <= a {op} b;\n"
+            f"  assign y = ~r;\n"
+            f"endmodule\n",
+            encoding="utf-8",
+        )
+        session = ProjectSession(output_root=tmp_path / "out" / name)
+        bridge = TclBridge(session)
+        bridge.call("read_netlist", str(rtl), "-top", name)
+        bridge.call("use_lib_cells", "sky130")
+        bridge.call("add_clock", "clk")
+        bridge.call("synth")
+        bridge.call("add_scan", "-chains", "1")
+
+        cfg = session.materialize_config()
+        scan_json = cfg.intermediate_dir / f"{name}_scan.json"
+        scanned = json.loads(scan_json.read_text(encoding="utf-8"))
+        wrapped = wrap_ports(scanned, name, wbr_model="scan")
+
+        out_path = tmp_path / f"{name}_wrapped.json"
+        out_path.write_text(json.dumps(wrapped), encoding="utf-8")
+        return out_path
+
+    block_a_path = _build_scan_wrapped_block("gblock_a", "&")
+    block_b_path = _build_scan_wrapped_block("gblock_b", "|")
+
+    soc_rtl = tmp_path / "gsoc.v"
+    soc_rtl.write_text(
+        "module gsoc(input clk, input a, input b, output y,\n"
+        "            input soc_wbr_se, input soc_wbr_si, output soc_wbr_so);\n"
+        "  wire w;\n"
+        "  wire a_scan_out, b_scan_out, wbr_mid;\n"
+        "  gblock_a u_a(\n"
+        "    .clk(clk), .a(a), .b(b), .y(w),\n"
+        "    .scan_en(1'b0), .scan_in(1'b0), .scan_out(a_scan_out),\n"
+        "    .CLK(clk), .wbr_se(soc_wbr_se), .wbr_si(soc_wbr_si), .wbr_so(wbr_mid)\n"
+        "  );\n"
+        "  gblock_b u_b(\n"
+        "    .clk(clk), .a(w), .b(b), .y(y),\n"
+        "    .scan_en(1'b0), .scan_in(1'b0), .scan_out(b_scan_out),\n"
+        "    .CLK(clk), .wbr_se(soc_wbr_se), .wbr_si(wbr_mid), .wbr_so(soc_wbr_so)\n"
+        "  );\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+
+    liberty = ROOT / "cells" / "sky130" / "sky130_fd_sc_hd.lib"
+    if not liberty.exists():
+        candidates = list((ROOT / "cells" / "sky130").glob("*.lib"))
+        assert candidates, "no sky130 liberty file found for assemble_soc"
+        liberty = candidates[0]
+
+    output_json = tmp_path / "gsoc_graybox.json"
+    workdir = tmp_path / "gassemble_work"
+
+    result_path = assemble_soc(
+        soc_rtl=soc_rtl,
+        soc_top="gsoc",
+        liberty=liberty,
+        blocks={"u_a": block_a_path, "u_b": block_b_path},
+        block_module={"u_a": "gblock_a", "u_b": "gblock_b"},
+        output_json=output_json,
+        workdir=workdir,
+        graybox=True,
+        block_names={"u_a": "blkA", "u_b": "blkB"},
+    )
+    composed = json.loads(result_path.read_text(encoding="utf-8"))
+    module = composed["modules"]["gsoc"]
+
+    from faultflow.project.assemble import _WBC_CELL_TYPES
+
+    spliced = {
+        name: cell
+        for name, cell in module["cells"].items()
+        if name.startswith("u_a__") or name.startswith("u_b__")
+    }
+    assert spliced, "expected spliced-in block cells"
+    # Graybox: every spliced cell is a WBC cell -- no core/internal-scan cells.
+    for name, cell in spliced.items():
+        assert cell["type"] in _WBC_CELL_TYPES, f"{name}: non-WBC cell in graybox"
+
+    # block_names threaded through: tagged with the CALLER's canonical name, not
+    # the glue instance name ("u_a"/"u_b").
+    for name, cell in spliced.items():
+        block_tag = cell["attributes"]["faultflow_block"]
+        if name.startswith("u_a__"):
+            assert block_tag == "blkA"
+        else:
+            assert block_tag == "blkB"

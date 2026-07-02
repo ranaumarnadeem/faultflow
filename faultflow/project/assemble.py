@@ -375,9 +375,16 @@ def assemble_soc(
     output_json: Path,
     *,
     workdir: Path,
+    graybox: bool = False,
+    block_names: dict[str, str] | None = None,
 ) -> Path:
     """Synthesize the SoC glue (blocks as blackboxes) and splice in each block's
     frozen JSON, producing one flat, single-top Yosys-JSON netlist at `output_json`.
+
+    ``graybox``/``block_names`` are forwarded to `compose_soc` unchanged -- see its
+    docstring. Use ``graybox=True`` for a scan-model EXTEST DUT (WBC ring only, dead
+    core dropped) and ``block_names`` to tag WBC cells with each block's canonical
+    name (matching the block INTEST scope) rather than its glue instance name.
     """
     yosys = shutil.which("yosys")
     if yosys is None:
@@ -452,6 +459,8 @@ def assemble_soc(
         soc_top=soc_top,
         blocks=blocks_data,
         block_module=block_module,
+        graybox=graybox,
+        block_names=block_names,
     )
 
     output_json.parent.mkdir(parents=True, exist_ok=True)
