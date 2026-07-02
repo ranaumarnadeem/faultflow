@@ -35,14 +35,18 @@
         "unsupported_cells",
         "include_clock_faults",
         "include_reset_faults",
-        "collapsing"
+        "collapsing",
+        "blackbox_instances",
+        "blackbox_boundary"
       ],
       "additionalProperties": false,
       "properties": {
         "unsupported_cells": { "enum": ["fail", "blackbox"] },
         "include_clock_faults": { "type": "boolean" },
         "include_reset_faults": { "type": "boolean" },
-        "collapsing": { "type": "boolean" }
+        "collapsing": { "type": "boolean" },
+        "blackbox_instances": { "type": "array", "items": { "type": "string" } },
+        "blackbox_boundary": { "enum": ["none", "pseudo_port"] }
       }
     },
     "summary": {

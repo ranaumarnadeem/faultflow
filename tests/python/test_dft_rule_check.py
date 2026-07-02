@@ -268,3 +268,69 @@ def test_cli_rule_check_passes_clean_design(
     cfg = _write_config(tmp_path, netlist)
     assert main(["rule_check", "--top", "comb", "-c", str(cfg)]) == 0
     assert (tmp_path / "output" / "comb" / "rule_check.rpt").exists()
+
+
+# --- rule_check.json schema validation ---------------------------------------
+
+
+def test_rule_check_json_validates_against_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jsonschema = pytest.importorskip("jsonschema")
+
+    monkeypatch.chdir(tmp_path)
+    design = _module(
+        "gated",
+        {
+            "A": _port("input", 2),
+            "B": _port("input", 3),
+            "D": _port("input", 4),
+            "Q": _port("output", 7),
+        },
+        {
+            "u_and": _cell(AND2, {"A": [2], "B": [3], "X": [5]}),
+            "u_ff": _cell(DFF, {"CLK": [5], "D": [4], "Q": [7]}),
+        },
+    )
+    netlist = _write(tmp_path, "gated", design)
+    cfg = _write_config(tmp_path, netlist)
+    assert main(["rule_check", "--top", "gated", "-c", str(cfg)]) == 1
+
+    json_path = tmp_path / "output" / "gated" / "rule_check.json"
+    assert json_path.exists()
+    report = json.loads(json_path.read_text(encoding="utf-8"))
+
+    schema_path = ROOT / "schemas" / "rule_check.schema.json"
+    assert schema_path.exists(), f"missing schema: {schema_path}"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    jsonschema.validate(report, schema)
+
+    assert report["status"] == "FAIL"
+    assert any(v["rule_id"] == "CLK001" for v in report["violations"])
+
+
+def test_rule_check_schema_rejects_malformed_report() -> None:
+    jsonschema = pytest.importorskip("jsonschema")
+
+    schema_path = ROOT / "schemas" / "rule_check.schema.json"
+    assert schema_path.exists(), f"missing schema: {schema_path}"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+    malformed = {
+        "version": 1,
+        "top": "gated",
+        # "status" missing entirely -- required field
+        "summary": {"errors": 1, "warnings": 0, "info": 0},
+        "violations": [
+            {
+                "rule_id": "CLK001",
+                # "severity" missing; also has a bogus extra key below
+                "title": "Uncontrollable clock",
+                "message": "clock net driven by combinational logic",
+                "unexpected_extra_field": True,
+            }
+        ],
+    }
+
+    with pytest.raises(jsonschema.exceptions.ValidationError):
+        jsonschema.validate(malformed, schema)
