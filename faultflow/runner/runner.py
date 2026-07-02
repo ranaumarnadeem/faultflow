@@ -92,6 +92,7 @@ opt_clean
 synth -top {top}
 dfflibmap -liberty {liberty}
 abc -liberty {liberty}
+delete t:$scopeinfo
 clean
 write_json {json}
 write_verilog {gate_verilog}
