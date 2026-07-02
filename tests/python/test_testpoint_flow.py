@@ -10,6 +10,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from faultflow.shell.errors import ShellError
+from faultflow.shell.session import ProjectSession
+from faultflow.shell.tcl_bridge import TclBridge
+
 # ---------------------------------------------------------------------------
 # Version stack (versions.py)
 # ---------------------------------------------------------------------------
@@ -424,3 +428,223 @@ def test_help_overview_includes_test_point_section() -> None:
     assert "Test Point" in overview
     assert "add_tp" in overview
     assert "reject_tp" in overview
+
+
+# ---------------------------------------------------------------------------
+# tcl_bridge._add_tp / _reject_tp flag parsing
+# ---------------------------------------------------------------------------
+
+
+def _tiny_json(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "modules": {
+                    "demo": {
+                        "attributes": {"top": "1"},
+                        "ports": {},
+                        "cells": {},
+                        "netnames": {},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _loaded_session(tmp_path: Path) -> ProjectSession:
+    source = tmp_path / "demo.json"
+    _tiny_json(source)
+    session = ProjectSession(output_root=tmp_path / "output")
+    session.read_netlist(source, "demo")
+    session.use_lib_cells("sky130")
+    return session
+
+
+def test_tcl_add_tp_parses_all_flags_into_session_kwargs(tmp_path: Path) -> None:
+    session = _loaded_session(tmp_path)
+    bridge = TclBridge(session)
+    captured: dict[str, object] = {}
+
+    def _fake_add_tp(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"ok": True}
+
+    session.add_tp = _fake_add_tp  # type: ignore[method-assign]
+
+    bridge.call("add_tp", "-m", "cont0", "-t", "80", "-n", "16")
+
+    assert captured == {"metric": "cont0", "threshold": 80, "max_points": 16}
+
+
+def test_tcl_add_tp_long_flags_parsed(tmp_path: Path) -> None:
+    session = _loaded_session(tmp_path)
+    bridge = TclBridge(session)
+    captured: dict[str, object] = {}
+
+    def _fake_add_tp(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"ok": True}
+
+    session.add_tp = _fake_add_tp  # type: ignore[method-assign]
+
+    bridge.call(
+        "add_tp",
+        "--metric",
+        "sc0",
+        "--threshold",
+        "50",
+        "--max-points",
+        "4",
+    )
+
+    assert captured == {"metric": "sc0", "threshold": 50, "max_points": 4}
+
+
+def test_tcl_add_tp_no_flags_calls_with_empty_kwargs(tmp_path: Path) -> None:
+    session = _loaded_session(tmp_path)
+    bridge = TclBridge(session)
+    captured: dict[str, object] = {}
+
+    def _fake_add_tp(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"ok": True}
+
+    session.add_tp = _fake_add_tp  # type: ignore[method-assign]
+
+    bridge.call("add_tp")
+
+    assert captured == {}
+
+
+def test_tcl_add_tp_bad_threshold_integer_raises(tmp_path: Path) -> None:
+    session = _loaded_session(tmp_path)
+    bridge = TclBridge(session)
+
+    with pytest.raises(ShellError) as excinfo:
+        bridge.call("add_tp", "-t", "not-a-number")
+
+    assert excinfo.value.code == ("FAULTFLOW", "CONFIG", "INVALID_VALUE")
+
+
+def test_tcl_add_tp_bad_max_points_integer_raises(tmp_path: Path) -> None:
+    session = _loaded_session(tmp_path)
+    bridge = TclBridge(session)
+
+    with pytest.raises(ShellError) as excinfo:
+        bridge.call("add_tp", "-n", "abc")
+
+    assert excinfo.value.code == ("FAULTFLOW", "CONFIG", "INVALID_VALUE")
+
+
+def test_tcl_add_tp_missing_flag_value_raises(tmp_path: Path) -> None:
+    session = _loaded_session(tmp_path)
+    bridge = TclBridge(session)
+
+    with pytest.raises(ShellError) as excinfo:
+        bridge.call("add_tp", "-m")
+
+    assert excinfo.value.code == ("FAULTFLOW", "CONFIG", "INVALID_OPTION")
+
+
+def test_tcl_add_tp_unknown_flag_raises(tmp_path: Path) -> None:
+    session = _loaded_session(tmp_path)
+    bridge = TclBridge(session)
+
+    with pytest.raises(ShellError) as excinfo:
+        bridge.call("add_tp", "--bogus", "value")
+
+    assert excinfo.value.code == ("FAULTFLOW", "CONFIG", "INVALID_OPTION")
+
+
+def test_tcl_reject_tp_calls_session_with_no_args(tmp_path: Path) -> None:
+    session = _loaded_session(tmp_path)
+    bridge = TclBridge(session)
+    called: dict[str, bool] = {"invoked": False}
+
+    def _fake_reject_tp() -> str:
+        called["invoked"] = True
+        return "rejected"
+
+    session.reject_tp = _fake_reject_tp  # type: ignore[method-assign]
+
+    result = bridge.call("reject_tp")
+
+    assert called["invoked"] is True
+    assert result == "rejected"
+
+
+def test_tcl_reject_tp_rejects_unexpected_args(tmp_path: Path) -> None:
+    session = _loaded_session(tmp_path)
+    bridge = TclBridge(session)
+
+    with pytest.raises(ShellError) as excinfo:
+        bridge.call("reject_tp", "extra")
+
+    assert excinfo.value.code == ("FAULTFLOW", "CONFIG", "INVALID_OPTION")
+
+
+# ---------------------------------------------------------------------------
+# session.add_tp — NO_BASELINE_CAMPAIGN precondition
+# ---------------------------------------------------------------------------
+
+
+def test_session_add_tp_no_db_raises_no_baseline_campaign(tmp_path: Path) -> None:
+    session = _loaded_session(tmp_path)
+
+    with pytest.raises(ShellError) as excinfo:
+        session.add_tp()
+
+    assert excinfo.value.code == ("FAULTFLOW", "PRECONDITION", "NO_BASELINE_CAMPAIGN")
+
+
+def test_session_add_tp_db_without_comb_campaign_raises_no_baseline_campaign(
+    tmp_path: Path,
+) -> None:
+    session = _loaded_session(tmp_path)
+    cfg = session.materialize_config()
+    cfg.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    from faultflow.db import connect, init_schema
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+
+    with pytest.raises(ShellError) as excinfo:
+        session.add_tp()
+
+    assert excinfo.value.code == ("FAULTFLOW", "PRECONDITION", "NO_BASELINE_CAMPAIGN")
+
+
+# ---------------------------------------------------------------------------
+# session.reject_tp — NO_TP_TO_REJECT precondition (session level)
+# ---------------------------------------------------------------------------
+
+
+def test_session_reject_tp_at_baseline_only_raises_no_tp_to_reject(
+    tmp_path: Path,
+) -> None:
+    from faultflow.testpoint.versions import TestpointVersionStack
+
+    session = _loaded_session(tmp_path)
+    assert session.source is not None
+    stack = TestpointVersionStack.load_or_create(session._tp_stack_path())
+    stack.push(session.source, campaign_id=1, label="baseline")
+    assert len(stack.all()) == 1
+
+    with pytest.raises(ShellError) as excinfo:
+        session.reject_tp()
+
+    assert excinfo.value.code == ("FAULTFLOW", "TP", "NO_TP_TO_REJECT")
+
+
+def test_session_reject_tp_with_no_stack_at_all_raises_no_tp_to_reject(
+    tmp_path: Path,
+) -> None:
+    session = _loaded_session(tmp_path)
+
+    with pytest.raises(ShellError) as excinfo:
+        session.reject_tp()
+
+    assert excinfo.value.code == ("FAULTFLOW", "TP", "NO_TP_TO_REJECT")
