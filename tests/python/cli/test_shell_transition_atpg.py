@@ -94,6 +94,7 @@ def test_run_atpg_tf_rejects_bad_and_missing_mode(tmp_path: Path) -> None:
 def test_session_run_atpg_maps_transition_model_onto_config(tmp_path: Path) -> None:
     service = _CapturingService()
     session = _ready_session(tmp_path, service)
+    session.set_option("fault_model.collapsing", "false")
 
     session.run_atpg(transition_model="broadside")
     cfg, _scan, options = service.captured

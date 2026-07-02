@@ -345,6 +345,7 @@ def test_async_reset_transition_atpg_with_reset_faults(
     bridge.call("use_lib_cells", "sky130")
     bridge.call("add_clock", "clk")
     bridge.call("set_option", "fault_model.include_reset_faults", "true")
+    bridge.call("set_option", "fault_model.collapsing", "false")
     # buffer WBC: transition (LOC/LOS) ATPG is unsupported with the 1-FF scan WBC.
     bridge.call("set_option", "wrap.wbr_model", "buffer")
     bridge.call("synth")

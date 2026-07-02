@@ -67,7 +67,7 @@ def test_config_parses_transition_model(tmp_path: Path) -> None:
     cfg_path = _write_cfg(
         tmp_path,
         netlist=C17_JSON,
-        fault_model_lines="model = transition\nlaunch = loc",
+        fault_model_lines="model = transition\nlaunch = loc\ncollapsing = false",
     )
     cfg = load_config(cfg_path, "c17")
     assert cfg.fault_model.model == "transition"
@@ -84,7 +84,9 @@ def test_config_defaults_to_stuck_at(tmp_path: Path) -> None:
 def test_config_type_alias_back_compat(tmp_path: Path) -> None:
     # Legacy configs carried `type = stuck_at`; it remains accepted as an alias.
     cfg_path = _write_cfg(
-        tmp_path, netlist=C17_JSON, fault_model_lines="type = transition"
+        tmp_path,
+        netlist=C17_JSON,
+        fault_model_lines="type = transition\ncollapsing = false",
     )
     cfg = load_config(cfg_path, "c17")
     assert cfg.fault_model.model == "transition"
@@ -94,7 +96,7 @@ def test_config_model_prefers_model_over_type(tmp_path: Path) -> None:
     cfg_path = _write_cfg(
         tmp_path,
         netlist=C17_JSON,
-        fault_model_lines="model = transition\ntype = stuck_at",
+        fault_model_lines="model = transition\ntype = stuck_at\ncollapsing = false",
     )
     cfg = load_config(cfg_path, "c17")
     assert cfg.fault_model.model == "transition"
@@ -114,7 +116,7 @@ def test_config_accepts_los_launch(tmp_path: Path) -> None:
     cfg_path = _write_cfg(
         tmp_path,
         netlist=C17_JSON,
-        fault_model_lines="model = transition\nlaunch = los",
+        fault_model_lines="model = transition\nlaunch = los\ncollapsing = false",
     )
     cfg = load_config(cfg_path, "c17")
     assert cfg.fault_model.launch == "los"
@@ -187,7 +189,7 @@ def test_transition_c17_end_to_end(
     cfg_path = _write_cfg(
         tmp_path,
         netlist=C17_JSON,
-        fault_model_lines="model = transition",
+        fault_model_lines="model = transition\ncollapsing = false",
         threshold=100.0,
     )
     runner = Runner(load_config(cfg_path, "c17"))
