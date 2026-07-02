@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from faultflow.project.aggregate import ChipCoverage, ScopeCoverage
-from faultflow.reporter.soc import write_soc_report
+from faultflow.reporter.soc import soc_report_dict, write_soc_report
 
 _SCHEMA_SRC = Path(__file__).resolve().parents[3] / "schemas/soc_coverage.schema.json"
 
@@ -119,3 +119,80 @@ def test_write_soc_report_missing_schema_file_raises(
         write_soc_report(chip, out_dir)
 
     assert not (out_dir / "soc_coverage.json").exists()
+
+
+# --------------------------------------------------------------------------- #
+# _validate_report_shape: the manual fallback used when jsonschema is not     #
+# installed (a genuinely optional dependency). Exercised directly rather than #
+# by uninstalling jsonschema, since it's a plain, independently testable      #
+# function -- see faultflow/reporter/coverage.py for the identical pattern    #
+# this mirrors.                                                               #
+# --------------------------------------------------------------------------- #
+
+
+def test_validate_report_shape_rejects_missing_top_level_key() -> None:
+    from faultflow.reporter.soc import SocReportError, _validate_report_shape
+
+    report = json.loads(json.dumps(soc_report_dict(_sample_chip())))
+    del report["guards"]
+
+    with pytest.raises(SocReportError, match="missing keys"):
+        _validate_report_shape(report)
+
+
+def test_validate_report_shape_rejects_malformed_chip_section() -> None:
+    from faultflow.reporter.soc import SocReportError, _validate_report_shape
+
+    report = json.loads(json.dumps(soc_report_dict(_sample_chip())))
+    del report["chip"]["coverage_percent"]
+
+    with pytest.raises(SocReportError, match="'chip' section is malformed"):
+        _validate_report_shape(report)
+
+
+def test_validate_report_shape_rejects_non_int_denominator() -> None:
+    from faultflow.reporter.soc import SocReportError, _validate_report_shape
+
+    report = json.loads(json.dumps(soc_report_dict(_sample_chip())))
+    report["chip"]["denominator"] = "120"
+
+    with pytest.raises(SocReportError, match="denominator must be an int"):
+        _validate_report_shape(report)
+
+
+def test_validate_report_shape_rejects_non_int_detected() -> None:
+    from faultflow.reporter.soc import SocReportError, _validate_report_shape
+
+    report = json.loads(json.dumps(soc_report_dict(_sample_chip())))
+    report["chip"]["detected"] = "110"
+
+    with pytest.raises(SocReportError, match="detected must be an int"):
+        _validate_report_shape(report)
+
+
+def test_validate_report_shape_rejects_non_list_scopes() -> None:
+    from faultflow.reporter.soc import SocReportError, _validate_report_shape
+
+    report = json.loads(json.dumps(soc_report_dict(_sample_chip())))
+    report["scopes"] = {}
+
+    with pytest.raises(SocReportError, match="'scopes' must be an array"):
+        _validate_report_shape(report)
+
+
+def test_validate_report_shape_rejects_non_dict_guards() -> None:
+    from faultflow.reporter.soc import SocReportError, _validate_report_shape
+
+    report = json.loads(json.dumps(soc_report_dict(_sample_chip())))
+    report["guards"] = []
+
+    with pytest.raises(SocReportError, match="'guards' must be an object"):
+        _validate_report_shape(report)
+
+
+def test_validate_report_shape_accepts_well_formed_report() -> None:
+    from faultflow.reporter.soc import _validate_report_shape
+
+    report = json.loads(json.dumps(soc_report_dict(_sample_chip())))
+
+    _validate_report_shape(report)  # must not raise

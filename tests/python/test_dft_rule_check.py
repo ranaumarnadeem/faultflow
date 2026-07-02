@@ -334,3 +334,57 @@ def test_rule_check_schema_rejects_malformed_report() -> None:
 
     with pytest.raises(jsonschema.exceptions.ValidationError):
         jsonschema.validate(malformed, schema)
+
+
+# --------------------------------------------------------------------------- #
+# _validate_report_shape: the manual fallback used when jsonschema is not     #
+# installed (a genuinely optional dependency). Exercised directly rather than #
+# by uninstalling jsonschema, since it's a plain, independently testable      #
+# function.                                                                    #
+# --------------------------------------------------------------------------- #
+
+
+def _well_formed_report() -> dict[str, object]:
+    return {
+        "version": 1,
+        "top": "gated",
+        "status": "PASS",
+        "summary": {"errors": 0, "warnings": 0, "info": 0},
+        "violations": [],
+    }
+
+
+def test_validate_report_shape_rejects_missing_top_level_key() -> None:
+    from faultflow.rule_check.report import RuleCheckReportError, _validate_report_shape
+
+    report = _well_formed_report()
+    del report["status"]
+
+    with pytest.raises(RuleCheckReportError, match="missing keys"):
+        _validate_report_shape(report)
+
+
+def test_validate_report_shape_rejects_missing_summary_key() -> None:
+    from faultflow.rule_check.report import RuleCheckReportError, _validate_report_shape
+
+    report = _well_formed_report()
+    del report["summary"]["warnings"]  # type: ignore[attr-defined]
+
+    with pytest.raises(RuleCheckReportError, match="summary missing keys"):
+        _validate_report_shape(report)
+
+
+def test_validate_report_shape_rejects_non_list_violations() -> None:
+    from faultflow.rule_check.report import RuleCheckReportError, _validate_report_shape
+
+    report = _well_formed_report()
+    report["violations"] = {}
+
+    with pytest.raises(RuleCheckReportError, match="violations must be an array"):
+        _validate_report_shape(report)
+
+
+def test_validate_report_shape_accepts_well_formed_report() -> None:
+    from faultflow.rule_check.report import _validate_report_shape
+
+    _validate_report_shape(_well_formed_report())  # must not raise
