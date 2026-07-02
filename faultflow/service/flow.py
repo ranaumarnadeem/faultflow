@@ -10,7 +10,14 @@ import subprocess
 from typing import Any, Callable
 
 from faultflow.config import FaultflowConfig
-from faultflow.db import connect, latest_campaign_id, summary
+from faultflow.db import (
+    CAMPAIGN_TYPE_COMB,
+    CAMPAIGN_TYPE_SCAN,
+    CAMPAIGN_TYPE_SCAN_EXTEST,
+    connect,
+    latest_campaign_id,
+    summary,
+)
 from faultflow.project.profiles import profile_for_cell_map
 from faultflow.reporter.unified import write_unified_report
 from faultflow.runner import Runner
@@ -155,11 +162,19 @@ class FlowService:
         log.info("sim    start  top=%s", cfg.top)
         message = str(self._runner(cfg).sim(**options))
         scan = bool(options.get("scan", False))
+        # Scan-model EXTEST (test_mode="extest" + scan=True) routes to _sim_extest,
+        # which records CAMPAIGN_TYPE_SCAN_EXTEST specifically so it never collides
+        # with the block's own INTEST/scan campaign in the same DB (runner.py) --
+        # metrics must look up that same campaign, not plain "scan".
+        if scan and str(cfg.test_mode) == "extest":
+            campaign_type = CAMPAIGN_TYPE_SCAN_EXTEST
+        else:
+            campaign_type = CAMPAIGN_TYPE_SCAN if scan else CAMPAIGN_TYPE_COMB
         return AtpgResult(
             "run_atpg",
             cfg.top,
             message,
-            metrics=self._campaign_metrics(cfg, "scan" if scan else "comb"),
+            metrics=self._campaign_metrics(cfg, campaign_type),
         )
 
     def serial_reference(
