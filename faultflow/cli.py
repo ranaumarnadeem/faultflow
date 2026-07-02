@@ -82,6 +82,16 @@ def _parser() -> argparse.ArgumentParser:
         choices=["stuck-at", "transition"],
         help="Override [fault_model] model for this sim run",
     )
+    sim.add_argument(
+        "--export-patterns",
+        dest="export_patterns",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "Export scan ATPG patterns as JSON to PATH (requires --scan); "
+            "input for `retarget --patterns`"
+        ),
+    )
 
     def add_wrapper_mode_opts(p: argparse.ArgumentParser) -> None:
         add_common(p)
@@ -348,6 +358,8 @@ def main(argv: list[str] | None = None) -> int:
                 "target_coverage": args.target_coverage,
                 "scan": args.scan,
             }
+            if args.export_patterns is not None:
+                sim_kwargs["export_patterns"] = args.export_patterns
             if args.ext is None:
                 print(service.run_atpg(cfg, **sim_kwargs).message)
             else:
