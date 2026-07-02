@@ -116,7 +116,24 @@ std::vector<AtpgPiInfo> ordered_pis(const ParsedGraph& parsed,
   std::vector<AtpgPiInfo> pis;
   const ParsedModule& mod = parsed.top_module();
   for (const auto& [name, port] : mod.ports) {
-    if (port.direction != "input" || port.bits.size() != 1) {
+    // A multi-bit top-level port (the locked synth script never runs
+    // `splitnets`, so Yosys JSON keeps e.g. `input [3:0] b` as ONE port entry
+    // with 4 bits) used to be skipped here entirely, silently dropping it
+    // from the SAT PI set. That desynced this PI enumeration from the
+    // Python-side PI-name list used to size/persist `blocked_patterns`
+    // bit-strings (faultflow/runner/runner.py's `_port_names`, which counts
+    // a bus port once regardless of width, matching how
+    // ParsedGraph::net_id_by_name resolves a bare port name to its first
+    // bit) -- the two disagreed in length, and a later re-solve with an
+    // already-persisted blocked pattern hit the length-mismatch guard below.
+    // Worse than the crash: a dropped PI is UNCONSTRAINED in the CNF, so the
+    // good/faulty miter could pick different values for it, an actual
+    // soundness gap, not just a cosmetic count mismatch. Fix: take the same
+    // first-bit net (bits.front()) the rest of the codebase already uses for
+    // a bus PI's stimulus/name resolution, so every port -- single- or
+    // multi-bit -- contributes exactly one PI, keeping this enumeration and
+    // the Python-side one in lockstep.
+    if (port.direction != "input" || port.bits.empty()) {
       continue;
     }
     const int yid = port.bits.front();

@@ -1,0 +1,127 @@
+{
+  "creator": "Yosys 0.61+129 (faultflow fixture generator)",
+  "modules": {
+    "tiny_bus_pi": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "A": {
+          "direction": "input",
+          "bits": [
+            2,
+            3
+          ]
+        },
+        "B": {
+          "direction": "input",
+          "bits": [
+            4
+          ]
+        },
+        "C": {
+          "direction": "input",
+          "bits": [
+            5
+          ]
+        },
+        "Y1": {
+          "direction": "output",
+          "bits": [
+            6
+          ]
+        },
+        "Y2": {
+          "direction": "output",
+          "bits": [
+            7
+          ]
+        }
+      },
+      "cells": {
+        "u0": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__and2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "X": "output"
+          },
+          "connections": {
+            "A": [
+              2
+            ],
+            "B": [
+              4
+            ],
+            "X": [
+              6
+            ]
+          }
+        },
+        "u1": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__or2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "X": "output"
+          },
+          "connections": {
+            "A": [
+              3
+            ],
+            "B": [
+              5
+            ],
+            "X": [
+              7
+            ]
+          }
+        }
+      },
+      "netnames": {
+        "A": {
+          "hide_name": 0,
+          "bits": [
+            2,
+            3
+          ],
+          "attributes": {}
+        },
+        "B": {
+          "hide_name": 0,
+          "bits": [
+            4
+          ],
+          "attributes": {}
+        },
+        "C": {
+          "hide_name": 0,
+          "bits": [
+            5
+          ],
+          "attributes": {}
+        },
+        "Y1": {
+          "hide_name": 0,
+          "bits": [
+            6
+          ],
+          "attributes": {}
+        },
+        "Y2": {
+          "hide_name": 0,
+          "bits": [
+            7
+          ],
+          "attributes": {}
+        }
+      }
+    }
+  }
+}
