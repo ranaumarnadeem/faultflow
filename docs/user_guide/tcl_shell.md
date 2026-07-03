@@ -113,7 +113,7 @@ See [External tools](../external_tools.md).
 
 | Command | Summary |
 |---|---|
-| `write_netlist [-scan] [-techmap\|-notech] [-o PATH]` | Publish a functional or scanned netlist (`-verify` is reserved; techmap verification is not yet implemented) |
+| `write_netlist [-scan] [-techmap\|-notech] [-o PATH] [-verify]` | Publish a functional or scanned netlist. `-verify` (requires `-scan -techmap`) simulates the written techmapped netlist against the generic scan design and fails if their outputs differ |
 | `write_patterns` | Export ATPG patterns *(reserved; not yet implemented)* |
 
 ### Options / session
@@ -130,9 +130,10 @@ The options accepted by `set_option` are: `atpg.max_rounds`,
 `simulation.unsupported_cells`.
 
 ```{note}
-Two shell features are placeholders today and raise a clear "not implemented" error:
-`write_patterns` (STIL/WGL export) and `write_netlist -verify` (techmap
-verification).
+`write_patterns` (STIL/WGL export) is a placeholder today and raises a clear
+"not implemented" error. `write_netlist -verify` (techmap verification) is
+implemented — it fault-free-simulates the written techmapped netlist against the
+generic scan design over the scan vectors and fails if their outputs diverge.
 ```
 
 ## The Yosys synthesis script
