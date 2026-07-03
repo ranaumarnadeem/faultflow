@@ -194,3 +194,21 @@ def test_write_patterns_is_registered_but_unsupported(tmp_path: Path) -> None:
         bridge.call("write_patterns")
 
     assert exc.value.code == ("FAULTFLOW", "UNSUPPORTED", "PATTERN_EXPORT")
+
+
+def test_workers_command_updates_readable_global(tmp_path: Path) -> None:
+    """`WORKERS N` must update the $WORKERS global a script can read. The handler
+    runs inside the `proc WORKERS` frame, so a plain setvar wrote a proc-LOCAL
+    variable and left the global stale at its seeded value."""
+    bridge = TclBridge(
+        ProjectSession(output_root=tmp_path / "output", service=FakeService())
+    )
+
+    # Seeded default.
+    assert str(bridge.eval("set ::WORKERS")) == "1"
+
+    bridge.eval("WORKERS 8")
+    # Read the GLOBAL exactly as a script would.
+    assert str(bridge.eval("set ::WORKERS")) == "8"
+    # And from inside a fresh proc frame (the realistic scripted-read case).
+    assert str(bridge.eval("proc _r {} {return $::WORKERS}; _r")) == "8"

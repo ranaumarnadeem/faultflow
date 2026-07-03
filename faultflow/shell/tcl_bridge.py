@@ -70,7 +70,7 @@ proc {name} {{args}} {{
 }}
 """)
         # Seed the $WORKERS Tcl global so scripts can read it with $WORKERS.
-        self.interp.setvar("WORKERS", "1")
+        self.interp.globalsetvar("WORKERS", "1")
 
     @property
     def command_names(self) -> tuple[str, ...]:
@@ -377,7 +377,11 @@ proc {name} {{args}} {{
                 "WORKERS must be a positive integer", "CONFIG", "INVALID_VALUE"
             )
         self.session.set_option("atpg.workers", n)
-        self.interp.setvar("WORKERS", n)
+        # _workers runs as a Tcl command callback, invoked from inside the `proc
+        # WORKERS` frame -- so setvar would write that proc-LOCAL variable, leaving
+        # the global $WORKERS (seeded in __init__) stale. globalsetvar targets the
+        # global (::WORKERS) so scripts reading $WORKERS see the update.
+        self.interp.globalsetvar("WORKERS", n)
         return f"WORKERS = {n}"
 
     def _set_option(self, args: list[str]) -> Any:

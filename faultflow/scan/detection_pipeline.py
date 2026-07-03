@@ -998,6 +998,31 @@ def _process_scan_candidate(
     return True, False, scan_pattern
 
 
+def _guard_transition_on_scan_wbr(
+    wbr_model: str, manifest: dict[str, Any], transition: bool
+) -> None:
+    """Reject transition (LOC/LOS) ATPG only on a design that ACTUALLY carries
+    scan WBR cells.
+
+    The 1-FF scan WBC delivers boundary stimulus for exactly one capture cycle; a
+    second capture clobbers q, so a scan-WBR-wrapped block cannot run transition
+    ATPG until the 2-FF WBC upgrade lands. But the earlier guard fired on the
+    ``wbr_model`` config alone -- which defaults to "scan" -- so it wrongly rejected
+    transition ATPG on a plain, UNWRAPPED scan design that has no WBR cells at all.
+    A design is scan-WBR-wrapped iff its manifest has a non-empty ``wrapper_chains``
+    (empty for a plain scan design and for the buffer model).
+    """
+    design_has_scan_wbr = bool(manifest.get("wrapper_chains"))
+    if transition and wbr_model == "scan" and design_has_scan_wbr:
+        raise ScanError(
+            "wbr_model='scan' does not support transition (LOC/LOS) ATPG: "
+            "the 1-FF WBC delivers stimulus for exactly one capture cycle; "
+            "a second capture clobbers q and corrupts boundary stimulus. "
+            "Use wbr_model='buffer' for transition faults, or upgrade to a "
+            "2-FF WBC first."
+        )
+
+
 def run_progressive_scan_atpg(
     cfg: FaultflowConfig,
     netlist: Path,
@@ -1020,18 +1045,9 @@ def run_progressive_scan_atpg(
     # scan_pattern_out is set (used by SoC retargeting). One per accepted vector.
     accepted_patterns: list[ScanPattern] = []
 
-    # S4.8 — the 1-FF WBC is correct ONLY under single-capture INTEST.
-    # LOC/LOS two-capture sequences clobber q before the second frame, so a
-    # scan-WBR block with wbr_model="scan" must never run transition ATPG until
-    # the 2-FF upgrade lands. Fail loudly rather than silently mis-deliver.
-    if cfg.wbr_model == "scan" and transition:
-        raise ScanError(
-            "wbr_model='scan' does not support transition (LOC/LOS) ATPG: "
-            "the 1-FF WBC delivers stimulus for exactly one capture cycle; "
-            "a second capture clobbers q and corrupts boundary stimulus. "
-            "Use wbr_model='buffer' for transition faults, or upgrade to a "
-            "2-FF WBC first."
-        )
+    # S4.8 — the 1-FF WBC is correct ONLY under single-capture INTEST. Fail loudly
+    # rather than silently mis-deliver on a scan-WBR-wrapped block.
+    _guard_transition_on_scan_wbr(cfg.wbr_model, scan_ctx.manifest, transition)
 
     los = transition and launch_mode == "los"
     los_couple_ports: list[tuple[str, str]] = []
