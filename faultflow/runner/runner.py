@@ -48,6 +48,7 @@ from faultflow.scan import (
     write_scan_techmap,
     run_scan_techmap,
     run_scan_techmap_json,
+    verilog_to_json,
 )
 from faultflow.rule_check.model import RuleCheckReport
 from faultflow.scan.checks import check_scan_structure
@@ -906,6 +907,23 @@ class Runner:
         except ScanError as exc:
             raise RunnerError(str(exc)) from exc
 
+        # Re-deriving techmap_json from techmap_verilog (above) only proves the
+        # techmap PROCESS is reproducible -- it never reads sky130_v itself, so a
+        # sky130_verilog that has drifted from that process (corrupted, hand-edited,
+        # written by a stale/different techmap run) would go undetected. Import the
+        # actual on-disk artifact and compare its behavior too.
+        sky130_json = self.cfg.intermediate_dir / "scan_sky130_check.json"
+        try:
+            verilog_to_json(
+                sky130_v,
+                str(manifest["top"]),
+                sky130_json,
+                self.cfg.logs_dir / "yosys_sky130_check.log",
+                self.cfg.generated_scripts_dir / "yosys_sky130_check.ys",
+            )
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+
         generic_out = self._sequence_outputs(
             generic_json,
             scanned_vectors,
@@ -926,10 +944,24 @@ class Runner:
             raise RunnerError(
                 "normal-mode generic scan outputs differ from techmapped scan outputs"
             )
+        sky130_out = self._sequence_outputs(
+            sky130_json,
+            scanned_vectors,
+            output_order,
+            clock_names,
+            extra_inputs=scan_extra,
+            cell_map_path=self.cfg.cell_lib,
+        )
+        if generic_out != sky130_out:
+            raise RunnerError(
+                "normal-mode generic scan outputs differ from the on-disk "
+                f"sky130_verilog artifact ({sky130_v})"
+            )
         return {
             "vector_count": scanned_vectors.count,
             "techmap_json": str(techmap_json),
             "sky130_verilog": str(sky130_v),
+            "sky130_json": str(sky130_json),
         }
 
     def scan_check(
