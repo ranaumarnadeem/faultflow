@@ -70,6 +70,10 @@ struct SolverTimeGuard {
 // whole solve; on its destruction the terminator is disconnected.
 [[nodiscard]] SolverTimeGuard apply_solver_limits(CaDiCaL::Solver& solver,
                                                   const SatSolveOptions& options) {
+  // Silence CaDiCaL's own diagnostic chatter (e.g. "c found falsified original
+  // clause") so it never leaks into the tool's stdout; the ATPG layer reads the
+  // solve() return code, not the solver's text output.
+  solver.set("quiet", 1);
   if (options.conflict_limit >= 0) {
     solver.limit("conflicts", options.conflict_limit);
   }

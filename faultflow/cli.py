@@ -437,7 +437,15 @@ def _handle_retarget(args: object) -> int:
 
     patterns_path = Path(getattr(args, "patterns"))
     block = str(getattr(args, "block"))
-    raw = json.loads(patterns_path.read_text(encoding="utf-8"))
+    # Guard the patterns file the same way --soc-access is guarded, so a missing or
+    # malformed file gives a clean CLI error (caught in main -> exit 2) instead of a
+    # raw FileNotFoundError / JSONDecodeError traceback.
+    if not patterns_path.exists():
+        raise ConfigError(f"patterns file not found: {patterns_path}")
+    try:
+        raw = json.loads(patterns_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"patterns file is not valid JSON: {patterns_path}: {exc}")
     block_patterns = [scan_pattern_from_dict(d) for d in raw]
     access = load_soc_access(Path(getattr(args, "soc_access")))
     retargeted = [retarget_block_pattern(p, access, block) for p in block_patterns]

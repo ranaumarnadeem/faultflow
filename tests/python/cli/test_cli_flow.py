@@ -67,6 +67,54 @@ def test_init_creates_top_output_dir(
     assert (tmp_path / "output" / "demo" / ".faultflow" / "faultflow.sqlite").exists()
 
 
+def test_sim_on_sequential_design_gives_clean_scan_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    require_cpp_core: None,
+) -> None:
+    """Plain (non-scan) `sim` on a design with flip-flops must fail with a clean,
+    actionable CLI error pointing at --scan (exit 2), not leak the C++ engine's
+    bare `progressive native ATPG is combinational-only` RuntimeError traceback --
+    forgetting --scan on a sequential design is a very common mistake."""
+    monkeypatch.chdir(tmp_path)
+    repo = Path(__file__).resolve().parents[3]
+    fixture = repo / "tests" / "cpp" / "fixtures" / "tiny_dff.json"
+    cell_lib = repo / "cells" / "sky130" / "sky130_fd_sc_hd.json"
+    cfg = tmp_path / "config.ofs"
+    cfg.write_text(
+        f"""
+[design]
+netlist = {fixture}
+cell_lib = {cell_lib}
+
+[fault_model]
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+mode = comb
+compaction = none
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+
+    assert main(["init", "--top", "tiny_dff", "-c", str(cfg)]) == 0
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exc:
+        main(["sim", "--top", "tiny_dff", "-c", str(cfg)])
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "sequential elements" in err
+    assert "--scan" in err
+    assert "Traceback" not in err
+    assert "combinational-only" not in err  # the raw engine message is not leaked
+
+
 def test_status_command_smoke(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

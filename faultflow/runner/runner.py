@@ -1746,16 +1746,30 @@ class Runner:
                 vector_source = "native_transition_atpg"
             else:
                 log.info("sim    running progressive ATPG (top=%s) ...", self.cfg.top)
-                vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
-                    run_progressive_native_atpg(
-                        self.cfg,
-                        netlist,
-                        model_id,
-                        campaign_id=campaign_id,
-                        max_rounds=max_rounds,
-                        target_coverage=target_coverage,
+                try:
+                    vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
+                        run_progressive_native_atpg(
+                            self.cfg,
+                            netlist,
+                            model_id,
+                            campaign_id=campaign_id,
+                            max_rounds=max_rounds,
+                            target_coverage=target_coverage,
+                        )
                     )
-                )
+                except RuntimeError as exc:
+                    # The C++ engine rejects sequential designs on the plain
+                    # combinational path. Turn its bare "combinational-only"
+                    # runtime error into an actionable one pointing at --scan,
+                    # instead of leaking a raw traceback for a very common mistake.
+                    if "combinational-only" in str(exc):
+                        raise RunnerError(
+                            "design has sequential elements (flip-flops); "
+                            "combinational sim/ATPG cannot test it. Insert scan "
+                            "(add_scan / ff.py scan) and run with --scan "
+                            "(ff.py sim --scan, or run_atpg -scan in the shell)."
+                        ) from exc
+                    raise
                 vector_source = "native_sat_atpg"
             sidecar = self.cfg.intermediate_dir / vector_source
             atpg_terminal = atpg_stats.terminal_reason
