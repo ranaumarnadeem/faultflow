@@ -233,9 +233,13 @@ COMMAND_HELP = {
         "write_netlist [-scan] [-techmap|-notech] [-o PATH] [-verify]",
         "Publish a functional or scanned netlist",
         "-scan writes generic scan Verilog. -techmap binds supported physical "
-        "scan cells. -verify is currently unsupported.",
-        "A synthesized design; scanned writes require add_scan.",
-        "write_netlist -scan -techmap",
+        "scan cells. -verify (requires -scan -techmap) fault-free-simulates the "
+        "written techmapped netlist against the generic scan design over the scan "
+        "vectors and fails if their outputs differ -- catching a broken or drifted "
+        "physical-cell binding at write time.",
+        "A synthesized design; scanned writes require add_scan; -verify also "
+        "requires the C++ core and yosys.",
+        "write_netlist -scan -techmap -verify",
     ),
     "write_patterns": CommandHelp(
         "Output",

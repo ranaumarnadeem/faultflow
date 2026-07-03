@@ -964,6 +964,79 @@ class Runner:
             "sky130_json": str(sky130_json),
         }
 
+    def verify_techmapped_netlist(self, destination: Path) -> dict[str, object]:
+        """Verify a just-written techmapped scan Verilog netlist is functionally
+        equivalent to the generic scan JSON it was mapped from.
+
+        ``write_netlist -scan -techmap`` writes real Sky130 scan cells; ``-verify``
+        must prove that mapped netlist behaves identically to the generic
+        ``$scanff_faultflow`` design it came from. Import ``destination`` back to
+        JSON (``verilog_to_json`` -- referenced cells stay opaque, the C++ core
+        resolves their semantics from the cell-map at sim time), then fault-free
+        sequence-simulate the generic scan JSON and the imported mapped netlist over
+        the same scan-pattern vectors (generic via the generic scan cell map, mapped
+        via the Sky130 cell_lib) and require identical outputs. Raises RunnerError on
+        any mismatch or missing prerequisite. Mirrors the comparison in
+        ``_run_scan_techmap_equivalence_check``, but pinned to the EXACT file
+        ``write_netlist`` produced rather than the manifest's ``sky130_verilog``.
+        """
+        manifest_path = self._scan_manifest_path()
+        if not manifest_path.exists():
+            raise RunnerError(f"scan manifest not found: {manifest_path}")
+        manifest = load_manifest(manifest_path)
+        generic_json = Path(str(manifest["generic_json"]))
+        if not destination.exists():
+            raise RunnerError(f"techmapped netlist not found: {destination}")
+
+        (
+            _vectors,
+            scanned_vectors,
+            output_order,
+            clock_names,
+            scan_extra,
+            _vector_source,
+        ) = self._scan_normal_mode_context(manifest, None)
+
+        mapped_json = self.cfg.intermediate_dir / "scan_write_verify.json"
+        try:
+            verilog_to_json(
+                destination,
+                str(manifest["top"]),
+                mapped_json,
+                self.cfg.logs_dir / "yosys_write_verify.log",
+                self.cfg.generated_scripts_dir / "yosys_write_verify.ys",
+            )
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+
+        generic_out = self._sequence_outputs(
+            generic_json,
+            scanned_vectors,
+            output_order,
+            clock_names,
+            extra_inputs=scan_extra,
+            cell_map_path=resolve_scan_cell_map(self.cfg),
+        )
+        mapped_out = self._sequence_outputs(
+            mapped_json,
+            scanned_vectors,
+            output_order,
+            clock_names,
+            extra_inputs=scan_extra,
+            cell_map_path=self.cfg.cell_lib,
+        )
+        if generic_out != mapped_out:
+            raise RunnerError(
+                "techmap verify: written netlist outputs differ from the generic "
+                f"scan netlist ({destination})"
+            )
+        return {
+            "verified": True,
+            "vector_count": scanned_vectors.count,
+            "mapped_json": str(mapped_json),
+            "netlist": str(destination),
+        }
+
     def scan_check(
         self,
         vectors_path: Path | None = None,

@@ -736,10 +736,10 @@ class ProjectSession:
         verify: bool = False,
         output: Path | None = None,
     ) -> OperationResult:
-        if verify:
-            raise unsupported(
-                "techmap verification is not implemented",
-                "TECHMAP_VERIFICATION",
+        if verify and not (scan and techmap):
+            raise precondition(
+                "write_netlist -verify requires -scan -techmap",
+                "VERIFY_REQUIRES_TECHMAP",
             )
         if scan and not self.scan_inserted:
             raise precondition("run add_scan first", "SCAN_REQUIRED")
@@ -756,6 +756,7 @@ class ProjectSession:
             self.materialize_config(),
             scan=scan,
             techmap=techmap,
+            verify=verify,
             output=output,
         )
 

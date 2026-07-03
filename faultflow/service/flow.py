@@ -378,8 +378,11 @@ class FlowService:
         *,
         scan: bool = False,
         techmap: bool = False,
+        verify: bool = False,
         output: Path | None = None,
     ) -> NetlistWriteResult:
+        if verify and not (scan and techmap):
+            raise RuntimeError("write_netlist -verify requires -scan -techmap")
         if scan:
             if not cfg.scan_manifest_path.exists():
                 raise RuntimeError("scan manifest not found")
@@ -414,9 +417,20 @@ class FlowService:
             source = self._runner(cfg).find_netlist()
             destination = output or cfg.output_dir / f"{cfg.top}.v"
             self._write_json_verilog(cfg, source, destination)
+
+        message = f"netlist written: {destination}"
+        artifacts = {"netlist": destination}
+        if verify:
+            summary = self._runner(cfg).verify_techmapped_netlist(destination)
+            message += (
+                f" (techmap verify PASS, " f"{summary.get('vector_count', 0)} vectors)"
+            )
+            mapped_json = summary.get("mapped_json")
+            if isinstance(mapped_json, str):
+                artifacts["mapped_json"] = Path(mapped_json)
         return NetlistWriteResult(
             "write_netlist",
             cfg.top,
-            f"netlist written: {destination}",
-            artifacts={"netlist": destination},
+            message,
+            artifacts=artifacts,
         )
