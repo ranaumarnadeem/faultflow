@@ -3,13 +3,16 @@
 #include <cadical.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 #include <unordered_set>
 #include <vector>
 
 #include "atpg/cnf_encoder.hpp"
 #include "atpg/cone.hpp"
+#include "atpg/sat_terminator.hpp"
 #include "common/types.hpp"
 #include "ir/compiled_graph/compiled_graph.hpp"
 
@@ -40,13 +43,44 @@ std::vector<bool> assignment_from_pattern(const std::string& pattern) {
   return out;
 }
 
-void apply_solver_limits(CaDiCaL::Solver& solver, const SatSolveOptions& options) {
+// RAII: connects a wall-clock terminator for the duration of a fault's solve(s)
+// and disconnects it before the terminator (or the solver) is destroyed. The
+// deadline is set once when solving begins and spans every internal solve() call
+// (the incremental solver calls solve() in a loop), so it bounds the TOTAL
+// wall-clock budget per fault, matching the configured sat_timeout_seconds.
+struct SolverTimeGuard {
+  CaDiCaL::Solver* solver = nullptr;
+  std::unique_ptr<WallClockTerminator> term;
+
+  SolverTimeGuard() = default;
+  SolverTimeGuard(SolverTimeGuard&&) = default;
+  SolverTimeGuard& operator=(SolverTimeGuard&&) = default;
+  SolverTimeGuard(const SolverTimeGuard&) = delete;
+  SolverTimeGuard& operator=(const SolverTimeGuard&) = delete;
+  ~SolverTimeGuard() {
+    if (solver != nullptr && term) {
+      solver->disconnect_terminator();
+    }
+  }
+};
+
+// Apply CaDiCaL search limits. The conflict limit is a native CaDiCaL limit; the
+// wall-clock timeout is enforced via a Terminator (CaDiCaL has no "time" limit --
+// see sat_terminator.hpp). Returns a guard the caller must keep alive for the
+// whole solve; on its destruction the terminator is disconnected.
+[[nodiscard]] SolverTimeGuard apply_solver_limits(CaDiCaL::Solver& solver,
+                                                  const SatSolveOptions& options) {
   if (options.conflict_limit >= 0) {
     solver.limit("conflicts", options.conflict_limit);
   }
+  SolverTimeGuard guard;
   if (options.sat_timeout_seconds > 0) {
-    solver.limit("time", static_cast<int64_t>(options.sat_timeout_seconds));
+    guard.term = std::make_unique<WallClockTerminator>(
+        WallClockTerminator::deadline_in(options.sat_timeout_seconds));
+    guard.solver = &solver;
+    solver.connect_terminator(guard.term.get());
   }
+  return guard;
 }
 
 bool had_solver_limits(const SatSolveOptions& options) {
@@ -186,7 +220,7 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
                                     std::map<std::string, bool>& out) {
   CnfVarMap vars(cg.net_count);
   CaDiCaL::Solver solver;
-  apply_solver_limits(solver, options);
+  const auto time_guard = apply_solver_limits(solver, options);
 
   const std::vector<uint32_t> observable_set(cg.observable.begin(),
                                              cg.observable.end());
@@ -318,7 +352,7 @@ SatSolveResult solve_stuck_at_fault_incremental(
 
   CnfVarMap vars(cg.net_count);
   CaDiCaL::Solver solver;
-  apply_solver_limits(solver, options);
+  const auto time_guard = apply_solver_limits(solver, options);
 
   // Fault injection at the faulty site (permanent).
   add_unit(solver, (fault.type == FaultType::SA1)
@@ -513,7 +547,7 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
 
   CnfVarMap vars(cg.net_count);
   CaDiCaL::Solver solver;
-  apply_solver_limits(solver, options);
+  const auto time_guard = apply_solver_limits(solver, options);
 
   // Build a fast-lookup set for safe-zero nets. In EXTEST mode these are the
   // TO_CORE outputs of WBR_IN cells (core inputs forced to 0 so the core is
@@ -644,7 +678,7 @@ SatSolveResult solve_two_frame_transition(
   }
 
   CaDiCaL::Solver solver;
-  apply_solver_limits(solver, options);
+  const auto time_guard = apply_solver_limits(solver, options);
 
   // Cone masks restrict the two CAPTURE-frame machines (good + faulty); the
   // LAUNCH frame stays full because the scan LOC/LOS PI coupling forces every
