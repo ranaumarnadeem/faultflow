@@ -9,21 +9,12 @@ same behavior for `schemas/soc_coverage.schema.json`.
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import pytest
 
 from faultflow.project.aggregate import ChipCoverage, ScopeCoverage
-from faultflow.reporter.soc import soc_report_dict, write_soc_report
-
-_SCHEMA_SRC = Path(__file__).resolve().parents[3] / "schemas/soc_coverage.schema.json"
-
-
-def _copy_schema(tmp_path: Path) -> None:
-    schema_dir = tmp_path / "schemas"
-    schema_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy(_SCHEMA_SRC, schema_dir / "soc_coverage.schema.json")
+from faultflow.reporter.soc import SocReportError, soc_report_dict, write_soc_report
 
 
 def _sample_chip() -> ChipCoverage:
@@ -74,11 +65,13 @@ def _sample_chip() -> ChipCoverage:
     return chip
 
 
-def test_write_soc_report_validates_against_schema(
+def test_write_soc_report_validates_from_any_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Runs from an arbitrary cwd with NO schema copied alongside -- the schema is
+    resolved relative to the package, not cwd. A cwd-relative Path("schemas/...")
+    crashed `project` from outside the repo root (found in the e2e bug hunt)."""
     monkeypatch.chdir(tmp_path)
-    _copy_schema(tmp_path)
     chip = _sample_chip()
 
     json_path, txt_path = write_soc_report(chip, tmp_path / "output" / "soc2")
@@ -96,7 +89,6 @@ def test_write_soc_report_rejects_malformed_chip(
     """A ChipCoverage whose chip_denominator is a str (schema violation) must be
     rejected before anything is written -- never silently emit a bad report."""
     monkeypatch.chdir(tmp_path)
-    _copy_schema(tmp_path)
     chip = _sample_chip()
     chip.chip_denominator = "not-an-int"  # type: ignore[assignment]
 
@@ -110,12 +102,16 @@ def test_write_soc_report_rejects_malformed_chip(
 def test_write_soc_report_missing_schema_file_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No schemas/soc_coverage.schema.json on disk -- fail loudly, not silently."""
-    monkeypatch.chdir(tmp_path)
+    """If the shipped schema is somehow absent (broken packaging), fail loudly.
+    The schema now resolves relative to the package, so force the branch by
+    pointing _SCHEMA_PATH at a nonexistent file rather than relying on cwd."""
+    monkeypatch.setattr(
+        "faultflow.reporter.soc._SCHEMA_PATH", tmp_path / "nonexistent.json"
+    )
     chip = _sample_chip()
 
     out_dir = tmp_path / "output" / "soc2"
-    with pytest.raises(Exception):
+    with pytest.raises(SocReportError, match="missing SoC coverage schema"):
         write_soc_report(chip, out_dir)
 
     assert not (out_dir / "soc_coverage.json").exists()

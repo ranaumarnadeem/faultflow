@@ -9,6 +9,12 @@ from typing import Any, cast
 from faultflow.config import FaultflowConfig
 from faultflow.db import latest_campaign_id, summary
 
+# The coverage schema ships with the package; resolve it relative to this file so
+# validation works from ANY working directory. A cwd-relative Path("schemas/...")
+# crashed every coverage-producing command (sim/intest/extest/project) whenever it
+# was run from outside the repo root -- after the ATPG had already completed.
+_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schemas/coverage.schema.json"
+
 
 class CoverageError(RuntimeError):
     pass
@@ -315,15 +321,14 @@ def _latest_run(conn: sqlite3.Connection, campaign_id: int) -> dict[str, Any]:
 
 
 def _validate_report(report: dict[str, Any]) -> None:
-    schema_path = Path("schemas/coverage.schema.json")
-    if not schema_path.exists():
-        raise CoverageError(f"missing coverage schema: {schema_path}")
+    if not _SCHEMA_PATH.exists():
+        raise CoverageError(f"missing coverage schema: {_SCHEMA_PATH}")
     try:
         from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
     except ImportError:  # pragma: no cover - local fallback for minimal envs
         _validate_report_shape(report)
         return
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
     Draft202012Validator(schema).validate(report)
 
 

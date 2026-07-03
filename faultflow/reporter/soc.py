@@ -17,6 +17,11 @@ from faultflow.project.aggregate import ChipCoverage
 
 SOC_COVERAGE_SCHEMA = "faultflow_soc_coverage_v1"
 
+# Ships with the package; resolve relative to this file so validation works from
+# any working directory (a cwd-relative path crashed `project` from outside the
+# repo root -- see reporter/coverage.py for the same fix).
+_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schemas/soc_coverage.schema.json"
+
 
 class SocReportError(RuntimeError):
     pass
@@ -37,15 +42,14 @@ def soc_report_dict(chip: ChipCoverage) -> dict[str, object]:
 
 
 def _validate_report(report: dict[str, Any]) -> None:
-    schema_path = Path("schemas/soc_coverage.schema.json")
-    if not schema_path.exists():
-        raise SocReportError(f"missing SoC coverage schema: {schema_path}")
+    if not _SCHEMA_PATH.exists():
+        raise SocReportError(f"missing SoC coverage schema: {_SCHEMA_PATH}")
     try:
         from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
     except ImportError:  # pragma: no cover - local fallback for minimal envs
         _validate_report_shape(report)
         return
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
     try:
         Draft202012Validator(schema).validate(report)
     except Exception as exc:  # jsonschema.ValidationError

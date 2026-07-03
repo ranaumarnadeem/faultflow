@@ -76,3 +76,87 @@ def test_schema_requires_blackbox_instances_field() -> None:
 
     with pytest.raises(jsonschema.exceptions.ValidationError):
         jsonschema.validate(instance=policy, schema=_policy_schema())
+
+
+def _minimal_valid_report() -> dict[str, Any]:
+    return {
+        "metadata": {
+            "top": "demo",
+            "generated_at": "2026-01-01T00:00:00Z",
+            "faultflow_version": "0",
+            "yosys_version": "0",
+            "netlist_hash": "h",
+            "cell_lib_hash": "h",
+            "config_hash": "h",
+            "template_hash": "h",
+        },
+        "policy": _policy(blackbox_instances=[], blackbox_boundary="none"),
+        "summary": {
+            "total_raw_faults": 1,
+            "structural_eligible": 1,
+            "denominator": 1,
+            "detected": 1,
+            "undetected": 0,
+            "redundant": 0,
+            "collapsed": 0,
+            "excluded_blackbox": 0,
+            "excluded_clock": 0,
+            "excluded_reset": 0,
+            "excluded_scan": 0,
+            "excluded_scan_internal": 0,
+            "excluded_scan_chain": 0,
+            "excluded_cross_domain": 0,
+            "excluded_wbr_decoupled": 0,
+            "protocol_unresolved": 0,
+            "fault_coverage_percent": 100.0,
+            "test_coverage_percent": 100.0,
+            "coverage_percent": 100.0,
+        },
+        "run": {
+            "id": 1,
+            "vector_source": "native_sat_atpg",
+            "vector_count": 1,
+            "atpg_generation_seconds": 0.0,
+            "fault_simulation_seconds": 0.0,
+            "total_sim_seconds": 0.0,
+            "coverage": 100.0,
+            "atpg_terminal_reason": "COMPLETE",
+            "atpg_rounds": 1,
+            "atpg_sat": 1,
+            "atpg_unsat": 0,
+            "atpg_timeout": 0,
+            "atpg_unknown": 0,
+            "atpg_rejected_candidates": 0,
+            "atpg_generated_vectors": 1,
+            "atpg_accepted_vectors": 1,
+        },
+        "per_node": [],
+        "reason_summary": {},
+        "undetected_faults": [],
+    }
+
+
+def test_validate_report_resolves_schema_independent_of_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_validate_report` must find the schema relative to the package, not cwd.
+    A cwd-relative Path("schemas/...") crashed every coverage-producing command
+    (sim/intest/extest/project) run from outside the repo root -- AFTER the ATPG
+    had already completed (found in the e2e bug hunt)."""
+    from faultflow.reporter.coverage import _validate_report
+
+    monkeypatch.chdir(tmp_path)  # a dir with no schemas/ subtree
+    _validate_report(_minimal_valid_report())  # must not raise
+
+
+def test_validate_report_rejects_malformed_from_any_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from faultflow.reporter.coverage import CoverageError, _validate_report
+
+    monkeypatch.chdir(tmp_path)
+    bad = _minimal_valid_report()
+    bad["summary"]["denominator"] = 0  # schema minimum is 1 (Policy 3)
+
+    with pytest.raises((jsonschema.exceptions.ValidationError, CoverageError)):
+        _validate_report(bad)
