@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,8 @@ from faultflow.scan.atpg_view import (
     OBSERVE_BUF_CELL,
     PPI_PREFIX,
     PPO_PREFIX,
+    _BitIndex,
+    _bit_to_single_net_name,
     build_scan_atpg_view,
 )
 from faultflow.scan.reports import manifest_from_result
@@ -63,6 +66,137 @@ def _manifest_for_fixture() -> tuple[dict[str, Any], dict[str, Any]]:
         ],
     }
     return data, manifest
+
+
+def _big_scan_chain(n: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A shift register of ``n`` scan FFs (each FF's Q drives the next FF's D).
+
+    Every FF's Q net has a downstream consumer, so building the ATPG view must
+    rewire each Q net and resolve its consumers -- the operations that were
+    O(FFs * netlist_size) each (a per-FF full-module scan) before the bit-index
+    fix. ``n`` scan cells + ``n`` nets, so one-time O(N) passes (deepcopy, id
+    allocation) stay cheap while the per-FF work dominates the quadratic version.
+    """
+    top = "bigchain"
+    clk, se, sdi0, pi = 2, 3, 4, 5
+    cells: dict[str, Any] = {}
+    netnames: dict[str, Any] = {"clk": {"bits": [clk]}, "se": {"bits": [se]}}
+    records: list[dict[str, Any]] = []
+    for i in range(n):
+        q = 100 + i
+        d = pi if i == 0 else 100 + (i - 1)
+        sdi = sdi0 if i == 0 else 100 + (i - 1)
+        cells[f"ff{i}"] = {
+            "type": "$scanff_faultflow",
+            "attributes": {
+                "faultflow_scan": "1",
+                "faultflow_scan_chain": "0",
+                "faultflow_scan_index": str(i),
+            },
+            "connections": {
+                "CLK": [clk],
+                "D": [d],
+                "SDI": [sdi],
+                "SE": [se],
+                "Q": [q],
+            },
+        }
+        netnames[f"q{i}"] = {"bits": [q]}
+        records.append(
+            {
+                "instance": f"ff{i}",
+                "chain_index": 0,
+                "chain_position": i,
+                "q_net": q,
+                "data_net": d,
+            }
+        )
+    ports = {
+        "clk": {"direction": "input", "bits": [clk]},
+        "se": {"direction": "input", "bits": [se]},
+        "sdi": {"direction": "input", "bits": [sdi0]},
+        "pi": {"direction": "input", "bits": [pi]},
+        "sdo": {"direction": "output", "bits": [100 + n - 1]},
+    }
+    generic = {
+        "modules": {
+            top: {
+                "attributes": {"top": "0" * 31 + "1"},
+                "ports": ports,
+                "cells": cells,
+                "netnames": netnames,
+            }
+        }
+    }
+    manifest = {
+        "top": top,
+        "clock_net": clk,
+        "scan_enable": "se",
+        "scan_inputs": ["sdi"],
+        "scan_outputs": ["sdo"],
+        "cells": records,
+    }
+    return generic, manifest
+
+
+def test_build_scan_atpg_view_scales_with_ff_count() -> None:
+    # Rewiring each scan FF's Q net and resolving its consumers used to be a
+    # per-FF full-module scan -> O(FFs * netlist_size), which spins for tens of
+    # minutes on a 12k-FF design. An incrementally-maintained bit->location index
+    # makes each per-FF operation touch only the net's actual locations. Require
+    # a 1000-FF chain to build well under a bound the quadratic version blows past.
+    generic, manifest = _big_scan_chain(1000)
+    t0 = time.perf_counter()
+    _, port_map = build_scan_atpg_view(generic, manifest)
+    secs = time.perf_counter() - t0
+    assert len(port_map) == 1000
+    assert secs < 3.0
+
+
+def test_bit_index_rewire_consumers_and_removal() -> None:
+    module = {
+        "cells": {
+            "g0": {"connections": {"A": [5], "Y": [6]}},  # reads net 5
+            "g1": {"connections": {"A": [5], "B": [7], "Y": [8]}},  # also reads 5
+            "drv": {"connections": {"A": [9], "Y": [5]}},  # drives net 5
+        },
+        "ports": {"po": {"direction": "output", "bits": [8]}, "scan_in": {"bits": [5]}},
+        "netnames": {"n5": {"bits": [5]}, "n8": {"bits": [8]}},
+    }
+    idx = _BitIndex(module)
+    # net 5 appears on 3 cell sites: (g0,A), (g1,A), (drv,Y)
+    assert idx.consumer_count(5) == 3
+    assert idx.consumer_count(999) == 0
+
+    # Rewire 5 -> 42 everywhere except the excluded scan_in port.
+    idx.rewire(5, 42, {"scan_in"})
+    assert module["cells"]["g0"]["connections"]["A"] == [42]
+    assert module["cells"]["g1"]["connections"]["A"] == [42]
+    assert module["cells"]["drv"]["connections"]["Y"] == [42]
+    assert module["netnames"]["n5"]["bits"] == [42]  # non-excluded net rewired
+    assert module["ports"]["scan_in"]["bits"] == [5]  # excluded port untouched
+    assert idx.consumer_count(42) == 3
+    assert idx.consumer_count(5) == 0
+
+    # A newly-inserted cell reading 42 bumps the count; removing a cell drops it.
+    idx.add_cell("g2", {"connections": {"A": [42], "Y": [50]}})
+    assert idx.consumer_count(42) == 4
+    idx.remove_cell("g0", module["cells"]["g0"])
+    assert idx.consumer_count(42) == 3
+
+
+def test_bit_to_single_net_name_maps_single_bit_nets() -> None:
+    module = {
+        "netnames": {
+            "a": {"bits": [5]},
+            "b": {"bits": [7]},
+            "bus": {"bits": [8, 9]},  # multi-bit: skipped
+            "alias_of_a": {"bits": [5]},  # duplicate bit: first name wins
+            "bad": {"bits": ["0"]},  # constant literal: no int bit -> skipped
+        }
+    }
+    mapping = _bit_to_single_net_name(module)
+    assert mapping == {5: "a", 7: "b"}
 
 
 def test_pseudo_port_naming_and_direction() -> None:

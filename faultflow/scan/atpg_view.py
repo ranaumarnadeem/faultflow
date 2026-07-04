@@ -187,56 +187,133 @@ def _current_data_net(cell: dict[str, Any], fallback: int) -> int:
     return bits[0] if len(bits) == 1 else fallback
 
 
-def _net_name_for_bit(module: dict[str, Any], bit: int) -> str | None:
+def _bit_to_single_net_name(module: dict[str, Any]) -> dict[int, str]:
+    """Map each single-bit net's bit id -> its net name (first name wins).
+
+    Built once per module so resolving a net name from a bit id is an O(1) dict
+    lookup instead of an O(netnames) linear scan. Called per scan FF, the old
+    linear scan made view construction O(FFs * netnames) -- ~45 min on a
+    12k-FF / 148k-net design; this makes it O(netnames + FFs).
+    """
+    result: dict[int, str] = {}
     netnames = module.get("netnames", {})
     if not isinstance(netnames, dict):
-        return None
+        return result
     for name, net in netnames.items():
         if not isinstance(net, dict):
             continue
         bits = _all_int_bits(net.get("bits"))
-        if len(bits) == 1 and bits[0] == bit:
-            return str(name)
-    return None
+        if len(bits) == 1 and bits[0] not in result:
+            result[bits[0]] = str(name)
+    return result
 
 
-def _rewire_net_in_module(
-    module: dict[str, Any],
-    old_bit: int,
-    new_bit: int,
-    *,
-    excluded_ports: set[str],
-) -> None:
-    cells = module.get("cells", {})
-    if not isinstance(cells, dict):
-        raise ScanError("top module cells must be an object")
-    for cell in cells.values():
+class _BitIndex:
+    """Incremental ``bit -> location`` index over a module's cells/ports/nets.
+
+    Resolving "where does net bit B appear" and rewiring a net used to be a full
+    scan of every cell (plus ports and nets) -- run once per scan FF, i.e.
+    O(FFs * netlist_size), which spins for tens of minutes on a 12k-FF design.
+    This index answers a consumer count in O(1) and rewires a net in
+    O(occurrences of that net), and is kept in sync as the view builder rewires
+    nets and inserts mux/buf cells. Behaviour matches the old per-scan rewrite
+    for every location that actually holds the rewired bit.
+    """
+
+    def __init__(self, module: dict[str, Any]) -> None:
+        cells = module.get("cells", {})
+        ports = module.get("ports", {})
+        netnames = module.get("netnames", {})
+        self._cells: dict[str, Any] = cells if isinstance(cells, dict) else {}
+        self._ports: dict[str, Any] = ports if isinstance(ports, dict) else {}
+        self._netnames: dict[str, Any] = netnames if isinstance(netnames, dict) else {}
+        self._cell_locs: dict[int, set[tuple[str, str]]] = {}
+        self._port_locs: dict[int, set[str]] = {}
+        self._net_locs: dict[int, set[str]] = {}
+        for instance, cell in self._cells.items():
+            self.add_cell(str(instance), cell)
+        for name, port in self._ports.items():
+            if isinstance(port, dict):
+                for bit in _all_int_bits(port.get("bits")):
+                    self._port_locs.setdefault(bit, set()).add(str(name))
+        for name, net in self._netnames.items():
+            if isinstance(net, dict):
+                for bit in _all_int_bits(net.get("bits")):
+                    self._net_locs.setdefault(bit, set()).add(str(name))
+
+    def add_cell(self, instance: str, cell: dict[str, Any]) -> None:
+        """Index a cell's connections (call for every cell inserted mid-build)."""
         if not isinstance(cell, dict):
-            continue
+            return
         conns = cell.get("connections", {})
         if not isinstance(conns, dict):
-            continue
+            return
         for pin, bits in conns.items():
-            raw_bits = _all_int_bits(bits)
-            if not raw_bits:
+            for bit in _all_int_bits(bits):
+                self._cell_locs.setdefault(bit, set()).add((instance, str(pin)))
+
+    def remove_cell(self, instance: str, cell: dict[str, Any]) -> None:
+        """Drop a cell's connections from the index (call when it is removed).
+
+        A scan FF cell is popped from the reduced view after its Q net is rewired;
+        without this, its stale (instance, pin) sites would inflate later consumer
+        counts (the old full-cell scan simply never saw the removed cell).
+        """
+        if not isinstance(cell, dict):
+            return
+        conns = cell.get("connections", {})
+        if not isinstance(conns, dict):
+            return
+        for pin, bits in conns.items():
+            for bit in _all_int_bits(bits):
+                locs = self._cell_locs.get(bit)
+                if locs is not None:
+                    locs.discard((instance, str(pin)))
+
+    def consumer_count(self, bit: int) -> int:
+        """Number of distinct (cell, pin) sites that read/write ``bit``."""
+        return len(self._cell_locs.get(bit, ()))
+
+    def rewire(self, old_bit: int, new_bit: int, excluded_ports: set[str]) -> None:
+        """Replace ``old_bit`` with ``new_bit`` everywhere it is wired."""
+        if old_bit == new_bit:
+            return
+        for instance, pin in self._cell_locs.pop(old_bit, set()):
+            cell = self._cells.get(instance)
+            if not isinstance(cell, dict):
                 continue
+            conns = cell.get("connections", {})
+            if not isinstance(conns, dict) or pin not in conns:
+                continue
+            raw_bits = _all_int_bits(conns[pin])
             conns[pin] = [new_bit if bit == old_bit else bit for bit in raw_bits]
-    ports = module.get("ports", {})
-    if isinstance(ports, dict):
-        for name, port in ports.items():
-            if name in excluded_ports or not isinstance(port, dict):
+            self._cell_locs.setdefault(new_bit, set()).add((instance, pin))
+        moved_ports: set[str] = set()
+        for name in self._port_locs.pop(old_bit, set()):
+            if name in excluded_ports:
+                self._port_locs.setdefault(old_bit, set()).add(name)
                 continue
-            bits = port.get("bits")
-            if isinstance(bits, list):
-                port["bits"] = [new_bit if bit == old_bit else bit for bit in bits]
-    netnames = module.get("netnames", {})
-    if isinstance(netnames, dict):
-        for name, net in netnames.items():
-            if name in excluded_ports or not isinstance(net, dict):
+            port = self._ports.get(name)
+            if isinstance(port, dict) and isinstance(port.get("bits"), list):
+                port["bits"] = [
+                    new_bit if bit == old_bit else bit for bit in port["bits"]
+                ]
+                moved_ports.add(name)
+        if moved_ports:
+            self._port_locs.setdefault(new_bit, set()).update(moved_ports)
+        moved_nets: set[str] = set()
+        for name in self._net_locs.pop(old_bit, set()):
+            if name in excluded_ports:
+                self._net_locs.setdefault(old_bit, set()).add(name)
                 continue
-            bits = net.get("bits")
-            if isinstance(bits, list):
-                net["bits"] = [new_bit if bit == old_bit else bit for bit in bits]
+            net = self._netnames.get(name)
+            if isinstance(net, dict) and isinstance(net.get("bits"), list):
+                net["bits"] = [
+                    new_bit if bit == old_bit else bit for bit in net["bits"]
+                ]
+                moved_nets.add(name)
+        if moved_nets:
+            self._net_locs.setdefault(new_bit, set()).update(moved_nets)
 
 
 def _consumers_of_net(cells: dict[str, Any], net_bit: int) -> list[tuple[str, str]]:
@@ -259,6 +336,7 @@ def _add_internal_buf_cell(
     cell_type: str,
     in_bit: int,
     out_bit: int,
+    index: "_BitIndex | None" = None,
 ) -> None:
     cells[instance] = {
         "hide_name": 0,
@@ -268,6 +346,8 @@ def _add_internal_buf_cell(
         "port_directions": {"A": "input", "Y": "output"},
         "connections": {"A": [in_bit], "Y": [out_bit]},
     }
+    if index is not None:
+        index.add_cell(instance, cells[instance])
 
 
 def _add_internal_gate2_cell(
@@ -277,6 +357,7 @@ def _add_internal_gate2_cell(
     a_bit: int,
     b_bit: int,
     out_bit: int,
+    index: "_BitIndex | None" = None,
 ) -> None:
     cells[instance] = {
         "hide_name": 0,
@@ -286,6 +367,8 @@ def _add_internal_gate2_cell(
         "port_directions": {"A": "input", "B": "input", "Y": "output"},
         "connections": {"A": [a_bit], "B": [b_bit], "Y": [out_bit]},
     }
+    if index is not None:
+        index.add_cell(instance, cells[instance])
 
 
 def _async_capture_control(cell: dict[str, Any]) -> tuple[str, str, int] | None:
@@ -314,6 +397,7 @@ def _add_ctrl_branch(
     instance: str,
     control: tuple[str, str, int],
     next_id: int,
+    index: "_BitIndex | None" = None,
 ) -> tuple[int, str, int]:
     """Fan the FF's async control through a dedicated branch buffer.
 
@@ -332,6 +416,7 @@ def _add_ctrl_branch(
         D_BRANCH_BUF_CELL,
         control_net,
         control_branch_net,
+        index,
     )
     control_site_key = canonical_site_key(
         SiteProvenance(
@@ -353,6 +438,7 @@ def _ctrl_mux(
     kind: str,
     control_branch_net: int,
     next_id: int,
+    index: "_BitIndex | None" = None,
 ) -> tuple[int, int]:
     """Model ``control_active ? control_value : data_in`` (active-low control).
 
@@ -373,6 +459,7 @@ def _ctrl_mux(
             data_in,
             control_branch_net,
             mux_out,
+            index,
         )
         return mux_out, next_id
     # out = data_in OR NOT(SET_B)  (SET_B=0 forces 1, else passes data_in).
@@ -384,6 +471,7 @@ def _ctrl_mux(
         CAPTURE_INV_CELL,
         control_branch_net,
         inv_out,
+        index,
     )
     mux_out = next_id
     next_id += 1
@@ -394,6 +482,7 @@ def _ctrl_mux(
         data_in,
         inv_out,
         mux_out,
+        index,
     )
     return mux_out, next_id
 
@@ -404,14 +493,19 @@ def _resolve_d_observe_boundary(
     instance: str,
     d_net: int,
     next_id: int,
+    index: "_BitIndex | None" = None,
 ) -> tuple[int, str, int, int]:
     """Return (observe_input_net, d_boundary_site_key, next_id, d_observe_net_id)."""
-    consumers = _consumers_of_net(cells, d_net)
+    consumer_count = (
+        index.consumer_count(d_net)
+        if index is not None
+        else len(_consumers_of_net(cells, d_net))
+    )
     observe_input = d_net
     d_boundary_site_key = stem_site_key(d_net)
     d_observe_net_id = d_net
 
-    if len(consumers) > 1:
+    if consumer_count > 1:
         d_branch_bit = next_id
         next_id += 1
         branch_instance = f"$ffbranch_{instance}"
@@ -421,6 +515,7 @@ def _resolve_d_observe_boundary(
             D_BRANCH_BUF_CELL,
             d_net,
             d_branch_bit,
+            index,
         )
         observe_input = d_branch_bit
         d_observe_net_id = d_branch_bit
@@ -470,6 +565,12 @@ def build_scan_atpg_view(
     pseudo_port_map: dict[str, dict[str, Any]] = {}
     next_id = _next_net_id(module)
     scan_port_names = _manifest_scan_port_names(manifest)
+    # Precompute bit -> net-name once (O(netnames)); the per-FF lookups below are
+    # then O(1) instead of a linear scan over every net for every scan FF.
+    net_name_by_bit = _bit_to_single_net_name(source_module)
+    # Incremental bit -> location index so per-FF net rewiring and consumer counts
+    # touch only each net's actual sites, not a full-module scan every iteration.
+    bit_index = _BitIndex(module)
 
     for record in records:
         instance = str(record["instance"])
@@ -492,7 +593,11 @@ def build_scan_atpg_view(
         control_site_key: str | None = None
         if control is not None:
             control_branch_net, control_site_key, next_id = _add_ctrl_branch(
-                cells, instance=instance, control=control, next_id=next_id
+                cells,
+                instance=instance,
+                control=control,
+                next_id=next_id,
+                index=bit_index,
             )
         ppi_port = _ppi_name(instance)
         ppi_bit = next_id
@@ -510,13 +615,9 @@ def build_scan_atpg_view(
                 kind=control[0],
                 control_branch_net=control_branch_net,
                 next_id=next_id,
+                index=bit_index,
             )
-        _rewire_net_in_module(
-            module,
-            q_net,
-            q_drive,
-            excluded_ports=scan_port_names,
-        )
+        bit_index.rewire(q_net, q_drive, scan_port_names)
 
         # Create PPO only for FFs in the active domain (or always when single-domain).
         ppo_is_active = active_clock_net is None or record_clock_net == active_clock_net
@@ -535,6 +636,7 @@ def build_scan_atpg_view(
                     instance=instance,
                     d_net=d_net,
                     next_id=next_id,
+                    index=bit_index,
                 )
             )
             # Model the async control on the capture path too, so the PPO (the
@@ -550,6 +652,7 @@ def build_scan_atpg_view(
                     kind=control[0],
                     control_branch_net=control_branch_net,
                     next_id=next_id,
+                    index=bit_index,
                 )
             _add_internal_buf_cell(
                 cells,
@@ -557,6 +660,7 @@ def build_scan_atpg_view(
                 OBSERVE_BUF_CELL,
                 observe_input,
                 _ppo_bit_int,
+                bit_index,
             )
             ppo_port = _ppo_port_str
             ppo_bit = _ppo_bit_int
@@ -578,14 +682,15 @@ def build_scan_atpg_view(
             boundary["control_boundary_site_key"] = control_site_key
             boundary["control_observe_net_id"] = control_branch_net
 
+        bit_index.remove_cell(instance, cell)
         cells.pop(instance, None)
         pseudo_port_map[instance] = {
             "ppi_port": ppi_port,
             "ppo_port": ppo_port,
             "ppi_net_id": ppi_bit,
             "ppo_net_id": ppo_bit,
-            "original_q_net": _net_name_for_bit(source_module, q_net) or str(q_net),
-            "original_d_net": _net_name_for_bit(source_module, d_net) or str(d_net),
+            "original_q_net": net_name_by_bit.get(q_net) or str(q_net),
+            "original_d_net": net_name_by_bit.get(d_net) or str(d_net),
             "chain_id": int(record["chain_index"]),
             "position_in_chain": int(record["chain_position"]),
             "clock_net": record_clock_net,
