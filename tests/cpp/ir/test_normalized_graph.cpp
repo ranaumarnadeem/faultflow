@@ -146,6 +146,46 @@ TEST_CASE("Unsupported cell policy fail", "[normalized_graph]") {
                     UnsupportedCellError);
 }
 
+TEST_CASE("Blackbox policy tags X and HI/LO output pins (Sky130 shapes)",
+          "[normalized_graph]") {
+  // Policy 1: output nets of blackboxed cells get NO fault sites and are
+  // excluded from the denominator. Half of Sky130 HD (non-inverting gates:
+  // and/or/buf/mux/a21o/...) names its output pin "X", and conb drives HI/LO.
+  // The blackbox tagging path used a stale pin whitelist (Y/YS/YC/Q) that
+  // missed all of these, silently leaving their output nets in the
+  // denominator. The tagging must agree with the direction-aware
+  // is_output_pin fallback used by instance blackboxing.
+  const CellMap map = CellMap::load(test::cell_map_path());
+  const std::string json = R"({
+    "modules": {
+      "m": {
+        "attributes": {"top": "00000000000000000000000000000001"},
+        "ports": {
+          "a": {"direction": "input", "bits": [2]},
+          "y1": {"direction": "output", "bits": [3]},
+          "y2": {"direction": "output", "bits": [4]},
+          "y3": {"direction": "output", "bits": [5]}
+        },
+        "cells": {
+          "u_bufx": {"type": "TOTALLY_UNKNOWN_BUF",
+                     "connections": {"A": [2], "X": [3]}},
+          "u_conb": {"type": "TOTALLY_UNKNOWN_CONB",
+                     "connections": {"HI": [4], "LO": [5]}}
+        },
+        "netnames": {}
+      }
+    }
+  })";
+  const ParsedGraph pg = ParsedGraph::from_json_string(json);
+  const NormalizedGraph ng = NormalizedGraph::from_parsed(pg, map, "blackbox");
+  REQUIRE(ng.blackboxed.count(3) == 1);
+  REQUIRE(ng.nets.at(3).is_blackboxed);
+  REQUIRE(ng.blackboxed.count(4) == 1);
+  REQUIRE(ng.nets.at(4).is_blackboxed);
+  REQUIRE(ng.blackboxed.count(5) == 1);
+  REQUIRE(ng.nets.at(5).is_blackboxed);
+}
+
 TEST_CASE("NormalizedGraph rejects unknown cells by default", "[normalized_graph]") {
   const ParsedGraph pg = test::load_parsed("tiny_unknown.json");
   const CellMap yaml = CellMap::load(test::cell_map_path());

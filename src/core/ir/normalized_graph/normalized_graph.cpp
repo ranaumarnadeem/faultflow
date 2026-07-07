@@ -141,7 +141,7 @@ NormalizedGraph NormalizedGraph::from_parsed(
     }
     return pin == "Y" || pin == "YS" || pin == "YC" || pin == "Q" ||
            pin == "X" || pin == "CO" || pin == "SUM" || pin == "S" ||
-           pin == "YPAD" || pin == "DO";
+           pin == "YPAD" || pin == "DO" || pin == "HI" || pin == "LO";
   };
 
   auto ensure_net = [&](int raw_id) {
@@ -207,9 +207,13 @@ NormalizedGraph NormalizedGraph::from_parsed(
     const auto entry = cell_map.lookup(cell.type);
     if (!entry) {
       if (policy == "blackbox") {
+        // Policy 1: EVERY output net of a blackboxed cell must be tagged so it
+        // leaves the denominator. Use the direction-aware helper (same one
+        // instance blackboxing uses) -- a bare pin-name whitelist missed
+        // Sky130's dominant "X" output and conb's HI/LO.
         for (const auto& [pin, bits] : cell.conns) {
-          for (int bit : bits) {
-            if (pin == "Y" || pin == "YS" || pin == "YC" || pin == "Q") {
+          if (is_output_pin(cell, pin)) {
+            for (int bit : bits) {
               ng.nets[bit].is_blackboxed = true;
               ng.blackboxed.insert(bit);
             }
@@ -234,9 +238,10 @@ NormalizedGraph NormalizedGraph::from_parsed(
             }
           }
         } else {
+          // Deferred entry without outputs metadata: fall back to the same
+          // direction-aware helper (covers X / HI / LO, not just Y*/Q).
           for (const auto& [pin, bits] : cell.conns) {
-            if (pin == "Y" || pin == "YS" || pin == "YC" || pin == "Q" ||
-                pin == "YPAD" || pin == "DO") {
+            if (is_output_pin(cell, pin)) {
               for (int bit : bits) {
                 ng.nets[bit].is_blackboxed = true;
                 ng.blackboxed.insert(bit);
