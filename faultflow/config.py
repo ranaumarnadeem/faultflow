@@ -199,6 +199,14 @@ class AtpgConfig:
     mode: str = "comb"
     output: Path = Path("patterns.test")
     random_vectors: int = 64
+    # During each round's random-vector phase, stop grading further random
+    # vectors and switch straight to SAT once fault coverage reaches this
+    # percent -- or when all random_vectors are graded, whichever comes first.
+    # This avoids burning time on random fill past the point where the easy
+    # faults are already covered (SAT then targets the hard remainder). 0.0
+    # disables the early switch (always grade the full random_vectors budget);
+    # 100.0 only switches at full coverage (effectively the same).
+    random_stop_coverage: float = 85.0
     sat_conflict_limit: int = 100000
     max_rounds: int = 20
     sat_timeout_seconds: int = 10
@@ -592,6 +600,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             mode=atpg_mode,
             output=_path(parser, "atpg", "output", "patterns.test"),
             random_vectors=_int(parser, "atpg", "random_vectors", 64),
+            random_stop_coverage=_float(parser, "atpg", "random_stop_coverage", 85.0),
             sat_conflict_limit=_int(parser, "atpg", "sat_conflict_limit", 100000),
             max_rounds=_int(parser, "atpg", "max_rounds", 20),
             sat_timeout_seconds=_int(parser, "atpg", "sat_timeout_seconds", 10),

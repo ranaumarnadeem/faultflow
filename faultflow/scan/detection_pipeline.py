@@ -35,9 +35,11 @@ from faultflow.runner.progressive_atpg import (
     GradeHeartbeat,
     SolveHeartbeat,
     _RoundTracker,
+    _coverage_denominator,
     _escalation_headroom,
     _fault_counts,
     _live_detected,
+    _random_stop_reached,
     _should_stall,
     pattern_key,
 )
@@ -1285,6 +1287,9 @@ def run_progressive_scan_atpg(
         )
 
     terminal = "MAX_ROUNDS"
+    # Random fill runs ONCE (round 1): up to random_vectors patterns, or until
+    # fault coverage crosses random_stop_coverage -- then SAT mode for the rest.
+    switched_to_sat = False
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
         round_tracker = _RoundTracker()
@@ -1299,11 +1304,14 @@ def run_progressive_scan_atpg(
             terminal = "COMPLETE"
             break
 
-        random_started = time.perf_counter()
-        random_batch = core.atpg_random_vectors(
-            input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
-        )
-        atpg_seconds += time.perf_counter() - random_started
+        if switched_to_sat:
+            random_batch: list[dict[str, bool]] = []
+        else:
+            random_started = time.perf_counter()
+            random_batch = core.atpg_random_vectors(
+                input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
+            )
+            atpg_seconds += time.perf_counter() - random_started
         new_random: list[dict[str, bool]] = []
         for vector in list(random_batch):
             # LOS random candidates carry head bits = 0; the composite dedup key
@@ -1322,6 +1330,8 @@ def run_progressive_scan_atpg(
             len(new_random),
             lambda: _live_detected(effective_db_path, campaign_id),
         )
+        random_denom = _coverage_denominator(effective_db_path, campaign_id)
+        graded_random = 0
         for offset, vector in enumerate(new_random):
             stats.generated_vectors += 1
             candidate_counter += 1
@@ -1370,7 +1380,31 @@ def run_progressive_scan_atpg(
                 if protocol_no_progress:
                     round_tracker.sat_outcomes.append("protocol_no_progress")
                     stats.protocol_no_progress_rounds += 1
+            graded_random = offset + 1
             heartbeat.tick(offset + 1)
+            if _random_stop_reached(
+                effective_db_path,
+                campaign_id,
+                random_denom,
+                cfg.atpg.random_stop_coverage,
+            ):
+                log.info(
+                    "atpg   random-fill reached %.1f%% coverage after %d/%d "
+                    "vectors; switching to SAT",
+                    cfg.atpg.random_stop_coverage,
+                    offset + 1,
+                    len(new_random),
+                )
+                break
+        if not switched_to_sat:
+            # Release the patterns of any random vectors we did not grade so SAT
+            # can generate them for the remaining faults; then stay in SAT mode.
+            for _v in new_random[graded_random:]:
+                _k = pattern_key(_v, input_order)
+                if los:
+                    _k = _k + "0" * len(los_head_ports)
+                seen_patterns.discard(_k)
+            switched_to_sat = True
 
         with connect(effective_db_path) as conn:
             init_schema(conn)

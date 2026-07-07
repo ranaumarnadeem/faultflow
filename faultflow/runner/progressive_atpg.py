@@ -50,6 +50,30 @@ def _live_detected(db_path: str, campaign_id: int) -> int:
     return detected
 
 
+def _coverage_denominator(db_path: str, campaign_id: int) -> int:
+    """In-scope fault count (the fault-coverage denominator): not excluded, not
+    collapsed. Stable across a run, so compute it once per random phase."""
+    with connect(db_path) as conn:
+        init_schema(conn)
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM faults WHERE campaign_id = ? "
+            "AND exclusion = 'none' AND collapsed_into IS NULL",
+            (campaign_id,),
+        ).fetchone()
+    return int(row["n"] or 0)
+
+
+def _random_stop_reached(
+    db_path: str, campaign_id: int, denominator: int, threshold: float
+) -> bool:
+    """True once random-phase fault coverage (detected / in-scope denominator)
+    has reached ``threshold`` percent -- the signal to stop grading further
+    random vectors and switch to SAT. ``threshold <= 0`` disables the switch."""
+    if threshold <= 0.0 or denominator <= 0:
+        return False
+    return 100.0 * _live_detected(db_path, campaign_id) / denominator >= threshold
+
+
 class GradeHeartbeat:
     """Throttled INFO heartbeat for a round's vector-grading phase.
 
@@ -762,6 +786,11 @@ def run_progressive_native_atpg(
         )
 
     terminal = "MAX_ROUNDS"
+    # The random-fill phase runs ONCE (round 1): it grades up to random_vectors
+    # vectors, or stops early the moment fault coverage crosses
+    # random_stop_coverage. After that the run is in SAT mode for every
+    # remaining round -- no more random fill.
+    switched_to_sat = False
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
         round_tracker = _RoundTracker()
@@ -775,47 +804,73 @@ def run_progressive_native_atpg(
             terminal = "COMPLETE"
             break
 
-        atpg_started = time.perf_counter()
-        random_batch = core.atpg_random_vectors(
-            input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
-        )
-        atpg_seconds += time.perf_counter() - atpg_started
-        new_random = _append_unique_vectors(
-            vectors, seen_patterns, input_order, list(random_batch)
-        )
-        if new_random:
-            stats.generated_vectors += len(new_random)
-            stats.accepted_vectors += len(new_random)
-            base_index = len(vectors) - len(new_random) + 1
-            heartbeat = GradeHeartbeat(
-                log,
-                round_idx,
-                len(new_random),
-                lambda: _live_detected(effective_db_path, campaign_id),
+        if not switched_to_sat:
+            atpg_started = time.perf_counter()
+            random_batch = core.atpg_random_vectors(
+                input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
             )
-            for offset, vector in enumerate(new_random):
-                vector_index = base_index + offset
-                sim_started = time.perf_counter()
-                _accept_and_simulate(
-                    core,
-                    json_path=json_path,
-                    cell_map_path=effective_cell_map,
-                    db_path=effective_db_path,
-                    campaign_id=campaign_id,
-                    run_id=run_id,
-                    vector_source=vector_source,
-                    vector=vector,
-                    input_order=input_order,
-                    fault_ids=active_ids,
-                    vector_index=vector_index,
-                    unsupported=unsupported,
-                    blackbox_instances=bb_instances,
-                    test_mode=test_mode,
-                    sim_threads=sim_threads,
-                    on_vector_accepted=on_vector_accepted,
+            atpg_seconds += time.perf_counter() - atpg_started
+            new_random = _append_unique_vectors(
+                vectors, seen_patterns, input_order, list(random_batch)
+            )
+            if new_random:
+                base_index = len(vectors) - len(new_random) + 1
+                heartbeat = GradeHeartbeat(
+                    log,
+                    round_idx,
+                    len(new_random),
+                    lambda: _live_detected(effective_db_path, campaign_id),
                 )
-                fault_sim_seconds += time.perf_counter() - sim_started
-                heartbeat.tick(offset + 1)
+                random_denom = _coverage_denominator(effective_db_path, campaign_id)
+                graded = 0
+                for offset, vector in enumerate(new_random):
+                    vector_index = base_index + offset
+                    sim_started = time.perf_counter()
+                    _accept_and_simulate(
+                        core,
+                        json_path=json_path,
+                        cell_map_path=effective_cell_map,
+                        db_path=effective_db_path,
+                        campaign_id=campaign_id,
+                        run_id=run_id,
+                        vector_source=vector_source,
+                        vector=vector,
+                        input_order=input_order,
+                        fault_ids=active_ids,
+                        vector_index=vector_index,
+                        unsupported=unsupported,
+                        blackbox_instances=bb_instances,
+                        test_mode=test_mode,
+                        sim_threads=sim_threads,
+                        on_vector_accepted=on_vector_accepted,
+                    )
+                    fault_sim_seconds += time.perf_counter() - sim_started
+                    graded += 1
+                    heartbeat.tick(offset + 1)
+                    if _random_stop_reached(
+                        effective_db_path,
+                        campaign_id,
+                        random_denom,
+                        cfg.atpg.random_stop_coverage,
+                    ):
+                        log.info(
+                            "atpg   random-fill reached %.1f%% coverage after "
+                            "%d/%d vectors; switching to SAT",
+                            cfg.atpg.random_stop_coverage,
+                            graded,
+                            len(new_random),
+                        )
+                        break
+                # Drop the random vectors we chose not to grade -- and release
+                # their patterns from seen_patterns so SAT may generate them for
+                # the remaining faults (they are exactly the tail-fault vectors).
+                if graded < len(new_random):
+                    for _v in new_random[graded:]:
+                        seen_patterns.discard(pattern_key(_v, input_order))
+                    del vectors[base_index - 1 + graded :]
+                stats.generated_vectors += graded
+                stats.accepted_vectors += graded
+            switched_to_sat = True
 
         with connect(effective_db_path) as conn:
             init_schema(conn)

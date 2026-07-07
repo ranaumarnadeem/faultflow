@@ -107,6 +107,8 @@ def test_set_option_materializes_into_config(tmp_path: Path) -> None:
     session.set_option("atpg.sat_conflict_limit", "2000000")
     session.set_option("fault_model.collapsing", "true")
     session.set_option("atpg.incremental_sat", "true")
+    session.set_option("atpg.random_vectors", "64")
+    session.set_option("atpg.random_stop_coverage", "85")
 
     cfg = session.materialize_config()
     assert cfg.atpg.max_rounds == 37
@@ -115,6 +117,24 @@ def test_set_option_materializes_into_config(tmp_path: Path) -> None:
     assert cfg.atpg.sat_conflict_limit == 2000000
     assert cfg.fault_model.collapsing is True
     assert cfg.atpg.incremental_sat is True
+    assert cfg.atpg.random_vectors == 64
+    assert cfg.atpg.random_stop_coverage == 85.0
+
+
+def test_set_option_validates_random_switch_knobs(tmp_path: Path) -> None:
+    session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
+    # random_stop_coverage is a percent in [0, 100]; random_vectors is a
+    # non-negative int (0 = skip the random phase, go straight to SAT).
+    with pytest.raises(ShellError, match="INVALID_VALUE|\\[0, 100\\]"):
+        session.set_option("atpg.random_stop_coverage", "150")
+    with pytest.raises(ShellError, match="INVALID_VALUE|\\[0, 100\\]"):
+        session.set_option("atpg.random_stop_coverage", "-1")
+    with pytest.raises(ShellError, match="INVALID_VALUE|non-negative"):
+        session.set_option("atpg.random_vectors", "-4")
+    # Boundary/valid values are accepted.
+    session.set_option("atpg.random_stop_coverage", "0")
+    session.set_option("atpg.random_stop_coverage", "100")
+    session.set_option("atpg.random_vectors", "0")
 
 
 def test_shell_native_atpg_with_incremental_sat_reaches_full_coverage(

@@ -115,6 +115,28 @@ def test_mark_fault_redundant_never_overwrites_detected(
     assert status_by_net[1] == "redundant"  # active fault still markable
 
 
+def test_coverage_denominator_excludes_excluded_and_collapsed(tmp_path: Path) -> None:
+    from faultflow.runner.progressive_atpg import _coverage_denominator
+
+    db = tmp_path / "faultflow.sqlite"
+    cid, _ids = _four_fault_campaign(db)
+    # 4 faults: undetected + detected are in scope; excluded + collapsed are not.
+    assert _coverage_denominator(str(db), cid) == 2
+
+
+def test_random_stop_reached_fires_at_threshold(tmp_path: Path) -> None:
+    from faultflow.runner.progressive_atpg import _random_stop_reached
+
+    db = tmp_path / "faultflow.sqlite"
+    cid, _ids = _four_fault_campaign(db)
+    # denominator = 2 in-scope faults, 1 detected -> 50.0% random coverage.
+    assert _random_stop_reached(str(db), cid, 2, 50.0) is True  # >= threshold
+    assert _random_stop_reached(str(db), cid, 2, 49.9) is True
+    assert _random_stop_reached(str(db), cid, 2, 50.1) is False  # not yet
+    assert _random_stop_reached(str(db), cid, 2, 0.0) is False  # 0 disables
+    assert _random_stop_reached(str(db), cid, 0, 50.0) is False  # empty denom
+
+
 def test_pattern_key_matches_cpp_order() -> None:
     vector = {"A": True, "B": False}
     assert pattern_key(vector, ["A", "B"]) == "10"

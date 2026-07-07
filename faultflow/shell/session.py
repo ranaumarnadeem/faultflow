@@ -414,6 +414,12 @@ class ProjectSession:
                 )
             elif key == "atpg.workers":
                 cfg = replace(cfg, atpg=replace(cfg.atpg, workers=int(value)))
+            elif key == "atpg.random_vectors":
+                cfg = replace(cfg, atpg=replace(cfg.atpg, random_vectors=int(value)))
+            elif key == "atpg.random_stop_coverage":
+                cfg = replace(
+                    cfg, atpg=replace(cfg.atpg, random_stop_coverage=float(value))
+                )
             elif key == "atpg.sat_conflict_limit":
                 cfg = replace(
                     cfg, atpg=replace(cfg.atpg, sat_conflict_limit=int(value))
@@ -766,6 +772,8 @@ class ProjectSession:
             "atpg.incremental_sat",
             "atpg.max_rounds",
             "atpg.preflight",
+            "atpg.random_stop_coverage",
+            "atpg.random_vectors",
             "atpg.sat_conflict_limit",
             "atpg.sat_timeout_seconds",
             "atpg.sat_timeout_schedule",
@@ -810,6 +818,28 @@ class ProjectSession:
             except ValueError:
                 raise ShellError(
                     "atpg.easy_fault_reserve must be a non-negative integer",
+                    "CONFIG",
+                    "INVALID_VALUE",
+                )
+        if key == "atpg.random_vectors":
+            try:
+                if int(value) < 0:
+                    raise ValueError
+            except ValueError:
+                raise ShellError(
+                    "atpg.random_vectors must be a non-negative integer "
+                    "(0 = no random phase)",
+                    "CONFIG",
+                    "INVALID_VALUE",
+                )
+        if key == "atpg.random_stop_coverage":
+            try:
+                if not 0.0 <= float(value) <= 100.0:
+                    raise ValueError
+            except ValueError:
+                raise ShellError(
+                    "atpg.random_stop_coverage must be a percent in [0, 100] "
+                    "(0 = grade the full random budget)",
                     "CONFIG",
                     "INVALID_VALUE",
                 )
