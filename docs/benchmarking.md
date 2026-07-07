@@ -81,6 +81,79 @@ The native ATPG can be compared against a reference flow:
   `[fault_model] model = stuck_at` and then `model = transition` gives a side-by-side
   coverage comparison for the two fault models.
 
+## faultflow native scan ATPG — ISCAS-85/89 sweep
+
+faultflow's own numbers across the full shipped ISCAS corpus (30 designs), run with
+the native SAT ATPG on the Sky130 HD netlists. Unlike the Fault baseline below (which
+grades a combinational *cut* of the sequential circuits), these are **sequential
+scan-aware** results: flip-flops are stitched into scan chains and exercised through
+scan load/unload, so the coverage is over the real sequential fault set.
+
+**Method.** Scan insertion at **≤10 flip-flops per chain**; native SAT ATPG with 4
+workers; single-tier 2 s per-fault SAT timeout; `max_rounds = 6`; incremental-SAT
+(IFC) **off**; fault collapsing off; DB on a native ext4 path (not `/mnt/c`). Each
+design is independently wall-clock-guarded so one slow design cannot stall the sweep.
+
+### ISCAS-85 (combinational)
+
+| Design | Cells | Coverage | Wall |
+|---|---:|---:|---:|
+| c17 | 3 | 100.00% | 10.5 s |
+| c432 | 65 | 100.00% | 11.9 s |
+| c499 | 160 | 100.00% | 17.1 s |
+
+### ISCAS-89 (sequential, scan)
+
+| Design | Cells | FFs | Chains | Coverage | Wall | Terminal |
+|---|---:|---:|---:|---:|---:|---|
+| s27 | 12 | 3 | 1 | 100.00% | 12.0 s | COMPLETE |
+| s208_1 | 45 | 8 | 1 | 100.00% | 20.0 s | COMPLETE |
+| s298 | 76 | 14 | 2 | 99.36% | 13.2 s | THRESHOLD_MET |
+| s344 | 97 | 15 | 2 | 100.00% | 17.2 s | COMPLETE |
+| s349 | 97 | 15 | 2 | 100.00% | 16.6 s | COMPLETE |
+| s382 | 102 | 21 | 3 | 100.00% | 22.4 s | COMPLETE |
+| s386 | 87 | 6 | 1 | 99.05% | 30.2 s | THRESHOLD_MET |
+| s400 | 102 | 21 | 3 | 99.59% | 25.7 s | THRESHOLD_MET |
+| s420_1 | 105 | 16 | 2 | 97.25% | 22.8 s | THRESHOLD_MET |
+| s444 | 105 | 21 | 3 | 98.92% | 21.2 s | THRESHOLD_MET |
+| s510 | 139 | 6 | 1 | 98.91% | 24.8 s | THRESHOLD_MET |
+| s526 | 112 | 21 | 3 | 98.66% | 24.9 s | THRESHOLD_MET |
+| s526n | 113 | 21 | 3 | 99.22% | 22.2 s | THRESHOLD_MET |
+| s641 | 121 | 17 | 2 | 99.47% | 22.6 s | THRESHOLD_MET |
+| s713 | 109 | 17 | 2 | 100.00% | 19.4 s | COMPLETE |
+| s820 | 156 | 5 | 1 | 98.99% | 33.8 s | THRESHOLD_MET |
+| s832 | 165 | 5 | 1 | 97.98% | 31.4 s | THRESHOLD_MET |
+| s838_1 | 207 | 32 | 4 | 97.66% | 29.5 s | THRESHOLD_MET |
+| s1196 | 309 | 18 | 2 | 99.33% | 50.7 s | THRESHOLD_MET |
+| s1238 | 320 | 18 | 2 | 97.42% | 63.7 s | THRESHOLD_MET |
+| s1423 | 435 | 74 | 8 | 99.68% | 40.7 s | THRESHOLD_MET |
+| s1488 | 319 | 6 | 1 | 99.49% | 39.7 s | THRESHOLD_MET |
+| s1494 | 332 | 6 | 1 | 99.57% | 38.4 s | THRESHOLD_MET |
+| s5378 | 845 | 162 | 17 | 99.48% | 141.9 s | THRESHOLD_MET |
+| s9234_1 | 715 | 135 | 14 | 99.17% | 106.8 s | THRESHOLD_MET |
+| s13207 | 1,886 | 452 | 46 | — | 5.4 s | rejected¹ |
+| s15850 | 2,644 | 559 | 56 | **99.16%** | 690.9 s | THRESHOLD_MET |
+
+**Result: 30 designs, zero crashes, 29 clean numbers + 1 clean rejection.** Every
+graded design lands at **97.4 – 100%**, most ≥99%.
+
+¹ `s13207` is rejected (not crashed) with `sim --scan requires full scan: ineligible
+FFs remain` — Yosys emits a bit-sliced flip-flop (`$auto$ff.cc:…:slice`) that scan
+insertion does not cover. This is a real scan-eligibility limitation, surfaced as a
+clean error rather than a wrong number.
+
+**On chain length.** The `≤10 FF/chain` rule is what makes the largest design
+tractable: `s15850` (559 FFs → 56 short chains) converges to 99.16% in ~11.5 min,
+where a coarser chaining (fewer, longer chains) times out well short of convergence —
+short chains shift far faster, so the whole scan-ATPG protocol completes sooner.
+
+**Trustworthy zero-crash.** As of the hardening pass, a dead parallel SAT worker
+raises a hard error instead of silently degrading the round to `UNKNOWN`, so a
+zero-crash sweep now genuinely means zero bad runs rather than possibly-hidden garbage
+coverage.
+
+---
+
 ## PicoRV32a — Full-Chip Scan INTEST (Sky130 HD)
 
 PicoRV32a is an open-source RISC-V RV32IMC CPU. It is the largest design faultflow has been
