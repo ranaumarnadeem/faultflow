@@ -17,6 +17,104 @@ from faultflow.runner.progressive_atpg import (
 from campaign_fixtures import campaign_id_for_cfg
 
 
+def _four_fault_campaign(db: Path) -> tuple[int, dict[int, int]]:
+    """A campaign with one fault in each guard-relevant state. Returns
+    (campaign_id, {net_id: fault_id})."""
+    from db_v3_helpers import insert_campaign, insert_fault_row
+
+    conn = connect(db)
+    init_schema(conn)
+    cid = insert_campaign(conn)
+    rows = [
+        # (net_id, status, exclusion, collapsed_into)
+        (1, "undetected", "none", None),  # eligible
+        (2, "detected", "none", None),  # empirical ground truth
+        (3, "excluded", "clock", None),  # outside the denominator
+        (4, "undetected", "none", 1),  # collapsed into another site
+    ]
+    for net_id, status, exclusion, collapsed in rows:
+        insert_fault_row(
+            conn,
+            cid,
+            net_id=net_id,
+            net_name=f"n{net_id}",
+            compiled_net_index=net_id,
+            fault_type="SA0",
+            status=status,
+            exclusion=exclusion,
+            collapsed_into=collapsed,
+        )
+    conn.commit()
+    ids = {
+        int(r["net_id"]): int(r["id"])
+        for r in conn.execute(
+            "SELECT id, net_id FROM faults WHERE campaign_id = ?", (cid,)
+        )
+    }
+    conn.close()
+    return cid, ids
+
+
+def test_precertify_redundant_batches_and_guards(tmp_path: Path) -> None:
+    """Preflight Phase B pre-certifies canceling-path stems as redundant. It
+    must (a) run as ONE batched transaction, not a fresh autocommit connection
+    per fault (~51 ms/fault on /mnt/c), and (b) never touch faults that are
+    detected (simulation evidence beats the structural claim), excluded, or
+    collapsed -- Phase B's id set is derived from net ids over ALL campaign
+    faults, so without guards it clobbers all of them and NULLs the detection."""
+    from faultflow.runner.progressive_atpg import _precertify_redundant
+
+    db = tmp_path / "faultflow.sqlite"
+    _cid, ids = _four_fault_campaign(db)
+
+    marked = _precertify_redundant(str(db), frozenset(ids.values()), "model-x")
+
+    assert marked == 1
+    conn = connect(db)
+    status_by_net = {
+        int(r["net_id"]): str(r["status"])
+        for r in conn.execute("SELECT net_id, status FROM faults")
+    }
+    model_n1 = conn.execute(
+        "SELECT redundancy_model_id FROM faults WHERE net_id = 1"
+    ).fetchone()[0]
+    conn.close()
+    assert status_by_net == {
+        1: "redundant",
+        2: "detected",
+        3: "excluded",
+        4: "undetected",
+    }
+    assert model_n1 == "model-x"
+
+
+def test_mark_fault_redundant_never_overwrites_detected(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """The C++ single-fault UNSAT path must carry the same guard: a fault the
+    simulator already DETECTED is empirical ground truth, and a late/racing
+    UNSAT verdict (e.g. the dynamic fault-drop path detected it mid-wave) must
+    not overwrite it -- overwriting also NULLed detected_by_vector, silently
+    shrinking coverage. Mirrors mark_fault_protocol_unresolved's guard."""
+    import faultflow.runner.runner as runner_mod
+
+    core = runner_mod._load_core()
+    db = tmp_path / "faultflow.sqlite"
+    _cid, ids = _four_fault_campaign(db)
+
+    core.mark_fault_redundant(str(db), ids[2], "model-x")  # detected fault
+    core.mark_fault_redundant(str(db), ids[1], "model-x")  # undetected fault
+
+    conn = connect(db)
+    status_by_net = {
+        int(r["net_id"]): str(r["status"])
+        for r in conn.execute("SELECT net_id, status FROM faults")
+    }
+    conn.close()
+    assert status_by_net[2] == "detected"  # guard held
+    assert status_by_net[1] == "redundant"  # active fault still markable
+
+
 def test_pattern_key_matches_cpp_order() -> None:
     vector = {"A": True, "B": False}
     assert pattern_key(vector, ["A", "B"]) == "10"
@@ -533,6 +631,98 @@ def test_stalled_when_sat_only_returns_timeout(
         ).fetchone()
     assert row is not None
     assert int(row["n"]) > 0
+
+
+@pytest.mark.unit
+def test_stalled_comb_run_keeps_true_undetected_reasons(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A STALLED combinational run must NOT stamp its undetected stem faults
+    protocol_unresolved: that is a scan-protocol concept (the scan pipeline has
+    its own q-stem-scoped sweep). The old blanket sweep (a) overwrote the true
+    per-fault timeout/unknown reason in the coverage report and (b) made every
+    grading path with skip_protocol_unresolved=true skip these faults forever,
+    so a resumed campaign could never re-target them."""
+    cfg, netlist = _tiny_inv_cfg(tmp_path, monkeypatch)
+    cfg_path = tmp_path / "config.ofs"
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8").replace(
+            "random_vectors = 8", "random_vectors = 0"
+        ),
+        encoding="utf-8",
+    )
+    from faultflow.config import load_config
+
+    cfg = load_config(cfg_path, top="tiny_inv")
+
+    from faultflow.runner import runner as runner_mod
+
+    core = runner_mod._load_core()
+    assert core is not None
+
+    def timeout_solve(*args: Any, **kwargs: Any) -> dict[str, object]:
+        del args, kwargs
+        return {"result": "TIMEOUT", "vector": {}}
+
+    monkeypatch.setattr(core, "solve_fault_atpg", timeout_solve)
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+
+    _, stats, _, _, _ = _run_atpg(
+        cfg, netlist, _model_id(), max_rounds=3, target_coverage=100.0
+    )
+    assert stats.terminal_reason == "STALLED"
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        marked = int(
+            conn.execute(
+                "SELECT COUNT(*) AS n FROM faults WHERE protocol_unresolved = 1"
+            ).fetchone()["n"]
+        )
+        undetected = int(
+            conn.execute(
+                "SELECT COUNT(*) AS n FROM faults WHERE status = 'undetected'"
+            ).fetchone()["n"]
+        )
+    assert undetected > 0  # the faults are still there, still re-targetable
+    assert marked == 0  # ...and none were mislabeled protocol_unresolved
+
+
+@pytest.mark.unit
+def test_broken_worker_pool_fails_loudly_not_silent_unknowns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When a parallel SAT worker process dies (OOM-killed -- the observed
+    incremental-SAT memory-blowup scenario), the run must abort with an
+    actionable RunnerError. The old blanket `except Exception` swallowed
+    BrokenProcessPool with one log.warning, defaulted the whole wave to
+    UNKNOWN, and -- because the dead pool is never recreated -- every later
+    wave of every later round did the same, so the run 'completed' with a
+    garbage coverage number instead of failing."""
+    cfg, netlist = _tiny_inv_cfg(tmp_path, monkeypatch)
+    cfg_path = tmp_path / "config.ofs"
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8")
+        .replace("random_vectors = 8", "random_vectors = 0")
+        .replace("sat_conflict_limit", "workers = 2\nsat_conflict_limit"),
+        encoding="utf-8",
+    )
+    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+
+    from faultflow.config import load_config
+    from faultflow.runner import RunnerError
+
+    cfg = load_config(cfg_path, top="tiny_inv")
+    assert cfg.atpg.workers == 2
+
+    def dead_pool_map(_self: object, *_args: Any, **_kwargs: Any) -> Any:
+        raise BrokenProcessPool("A child process terminated abruptly")
+
+    monkeypatch.setattr(ProcessPoolExecutor, "map", dead_pool_map)
+
+    with pytest.raises(RunnerError, match="worker"):
+        _run_atpg(cfg, netlist, _model_id(), max_rounds=3, target_coverage=100.0)
 
 
 @pytest.mark.unit

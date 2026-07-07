@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import time
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from multiprocessing import get_context
 from pathlib import Path
@@ -1472,6 +1473,19 @@ def run_progressive_scan_atpg(
                     _parallel_results[int(_fid)] = (_res, dict(_slv))
                     _solved_count += 1
                     _solve_hb.tick(_solved_count)
+            except BrokenProcessPool as _exc:
+                # A worker process DIED (typically OOM-killed). The pool is
+                # permanently broken: swallowing this used to turn every
+                # remaining fault of every remaining round into a silent
+                # UNKNOWN and "complete" with garbage coverage. Fail loudly
+                # with the remedy; DB state written so far is preserved.
+                _executor.shutdown(wait=False, cancel_futures=True)
+                raise RunnerError(
+                    "parallel SAT worker process died mid-wave (likely "
+                    "out-of-memory). Progress so far is saved; re-run with "
+                    "fewer workers (atpg.workers) and/or "
+                    "atpg.incremental_sat=false to cut per-worker memory."
+                ) from _exc
             except Exception as _exc:
                 log.warning(
                     "atpg   parallel wave error (%s); "
