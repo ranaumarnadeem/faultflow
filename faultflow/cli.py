@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 from pathlib import Path
 
 from faultflow.config import ConfigError, load_config, parse_bool_value
-from faultflow.runner import Runner, RunnerError
+from faultflow.runner import Runner
 from faultflow.service import FlowService
 from faultflow.shell.repl import run_shell
 
@@ -422,7 +423,13 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         else:
             parser.error(f"unknown command {args.command}")
-    except (ConfigError, RunnerError) as exc:
+    except (RuntimeError, sqlite3.Error) as exc:
+        # Every faultflow domain error subclasses RuntimeError by convention
+        # (ConfigError, RunnerError, SchemaError, CoverageError, ScanError,
+        # ShellError, and pybind11-mapped C++ engine errors), and sqlite3
+        # errors ("database is locked", legacy schema) are equally
+        # user-actionable -- map them all to a clean exit-2 message. Genuine
+        # programming bugs (TypeError, KeyError, ...) still traceback.
         parser.exit(2, f"error: {exc}\n")
     return 0
 

@@ -292,6 +292,44 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+# Every table SCHEMA_V3 creates, used by _schema_is_current to decide whether a
+# read path can skip init_schema entirely. Keep in sync with SCHEMA_V3.
+_SCHEMA_TABLE_NAMES = (
+    "campaigns",
+    "runs",
+    "vectors",
+    "faults",
+    "fault_detections",
+    "node_coverage",
+    "atpg_candidates",
+    "candidate_rejections",
+    "blocked_patterns",
+    "fault_sat_outcome",
+    "reconvergent_stems",
+)
+
+
+def _schema_is_current(conn: sqlite3.Connection) -> bool:
+    """True when the full v3 schema (all tables, current user_version, migrated
+    campaigns CHECK) is already in place, so callers on read paths can skip
+    init_schema -- whose executescript/PRAGMA are writes -- entirely."""
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if version < EXPECTED_USER_VERSION:
+        return False
+    placeholders = ",".join("?" * len(_SCHEMA_TABLE_NAMES))
+    count = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+        f"AND name IN ({placeholders})",
+        _SCHEMA_TABLE_NAMES,
+    ).fetchone()[0]
+    if count != len(_SCHEMA_TABLE_NAMES):
+        return False
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='campaigns'"
+    ).fetchone()
+    return row is not None and "'scan_extest'" in row[0]
+
+
 def record_sat_outcomes(
     conn: sqlite3.Connection,
     campaign_id: int,
@@ -329,7 +367,12 @@ def record_reconvergent_stems(
 
 
 def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[str, Any]:
-    init_schema(conn)
+    # summary() sits on read paths (status, reports) that may run beside a live
+    # ATPG writer: only touch DDL when the schema is genuinely absent or stale,
+    # so on any current DB this is a pure read that never contends for the
+    # write lock (init_schema's executescript + PRAGMA are writes).
+    if not _schema_is_current(conn):
+        init_schema(conn)
     require_v3_schema(conn)
     if campaign_id is None:
         row = conn.execute(

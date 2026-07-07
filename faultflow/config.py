@@ -73,6 +73,15 @@ def parse_timeout_schedule(value: str, fallback: int) -> list[int]:
             raise ConfigError(
                 f"sat_timeout_schedule entries must be >= 1 second, got {seconds}"
             )
+        if tiers and seconds <= tiers[-1]:
+            # The escalation loop retries a timed-out fault at the NEXT tier;
+            # a shorter or equal follow-up budget can never resolve anything
+            # the previous tier could not (the solve is deterministic), so an
+            # out-of-order schedule silently wastes the whole retry budget.
+            raise ConfigError(
+                "sat_timeout_schedule must be strictly increasing "
+                f"(smallest first): got {seconds} after {tiers[-1]}"
+            )
         tiers.append(seconds)
     return tiers
 

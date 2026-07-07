@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
@@ -14,9 +15,11 @@ from faultflow.db import (
     record_reconvergent_stems,
     record_sat_outcomes,
 )
+from faultflow.db.campaign import SchemaError
 from db_v3_helpers import insert_campaign, insert_fault_row, insert_run
 from faultflow.reporter import CoverageError, write_reports
 from faultflow.runner import Runner, RunnerError
+from faultflow.scan.errors import ScanError
 import faultflow.runner.runner as runner_mod
 
 
@@ -113,6 +116,45 @@ compaction = none
     assert "--scan" in err
     assert "Traceback" not in err
     assert "combinational-only" not in err  # the raw engine message is not leaked
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        SchemaError("Legacy database schema detected. Re-run with --clean."),
+        CoverageError("coverage report failed schema validation"),
+        ScanError("scan chain validation failed"),
+        sqlite3.OperationalError("database is locked"),
+    ],
+    ids=["schema", "coverage", "scan", "sqlite"],
+)
+def test_cli_maps_every_domain_error_to_clean_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    raised: Exception,
+) -> None:
+    """Every faultflow domain error (they all subclass RuntimeError by convention)
+    and sqlite3 errors carry user-actionable messages -- e.g. SchemaError's
+    "Re-run with --clean" hint -- and must reach the user as a clean `error: ...`
+    with exit code 2, never as a raw traceback."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    import faultflow.cli as cli_mod
+
+    def boom(_self: object, _cfg: object, **_kwargs: object) -> object:
+        raise raised
+
+    monkeypatch.setattr(cli_mod.FlowService, "run_atpg", boom)
+
+    with pytest.raises(SystemExit) as exc:
+        main(["sim", "--top", "demo", "-c", str(cfg)])
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert str(raised) in err
+    assert "Traceback" not in err
 
 
 def test_status_command_smoke(
