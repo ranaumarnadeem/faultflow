@@ -159,7 +159,31 @@ coverage.
 PicoRV32a is an open-source RISC-V RV32IMC CPU. It is the largest design faultflow has been
 exercised on to date and the first full-chip scan INTEST result with IEEE-1500 WBR wrapping.
 
-### Design and scan infrastructure
+### Plain stuck-at scan ATPG (audit-fixed core, ≤10 FF/chain, random→SAT switch)
+
+A fresh non-WBR run on the audit-fixed core exercising the ≤10 FF/chain rule, 6 workers,
+IFC off, fault collapsing on, and the `atpg.random_stop_coverage = 85%` random→SAT
+switch:
+
+| Metric | Value |
+|---|---|
+| Cells / flip-flops | 12,601 / 1,613 |
+| Scan chains | **162** (~10 FF/chain) · 1,613 scan cells |
+| **Test coverage** | **98.67%** (57,513 / 58,286 testable) |
+| Fault coverage | 96.4% (of 59,678 in-scope; collapsing on) |
+| Proven redundant (UNSAT) | 1,392 |
+| Undetected | 773 |
+| Vectors | **1,256** (compacted from 1,696) |
+| Terminal | THRESHOLD_MET (crossed 95% in round 1) |
+| Random→SAT switch | stopped random fill at 85% after **31 / 64 vectors** |
+
+The random→SAT switch is the notable behaviour: rather than grading all 64 random
+vectors, it detected the easy 85% with 31 vectors and handed the hard remainder to
+SAT (2,252 SAT-detected, 1,392 proven redundant). Note: reverse **vector compaction**
+of the 1,696 → 1,256 set took ~27 min single-threaded — a known post-ATPG scaling cost
+on a 60k-fault campaign (the coverage number is final before compaction runs).
+
+### Design and scan infrastructure (original full-chip INTEST run)
 
 | Metric | Value |
 |---|---|
