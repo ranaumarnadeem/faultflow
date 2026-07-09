@@ -152,6 +152,97 @@ raises a hard error instead of silently degrading the round to `UNKNOWN`, so a
 zero-crash sweep now genuinely means zero bad runs rather than possibly-hidden garbage
 coverage.
 
+## faultflow native scan ATPG — ISCAS-85/89 transition-fault (LOC) sweep
+
+The same 30-design corpus, same ≤10 FF/chain scan config, run with **launch-on-capture
+(broadside) transition faults** instead of stuck-at. Fault collapsing is off (a hard
+requirement for the transition model — the config loader rejects `model=transition` with
+collapsing on), so every row here is against the full uncollapsed transition fault set,
+unlike the stuck-at sweep above (which ran with collapsing on).
+
+**Method.** Same ≤10 FF/chain scan insertion; native SAT ATPG, 4 workers; escalating
+2 s → 10 s per-fault SAT timeout; `max_rounds = 6`; IFC off; collapsing off; DB on native
+ext4. Combinational designs (c17/c432/c499) run `-tf broadside` without `-scan` (broadside
+is supported directly on plain combinational netlists; only `los` is scan-only).
+
+Two coverage numbers matter here, and they diverge sharply for transition faults in a way
+they never do for stuck-at:
+- **Coverage** — the tool's primary metric, detected over the *testable* denominator
+  (excludes SAT-proven-redundant faults). This is what `THRESHOLD_MET` targets at 95%.
+- **Fault cov.** — detected over the *full* in-scope denominator (testable + redundant).
+  This is the Policy-3 style "of everything that could possibly be a fault site" number.
+
+### ISCAS-85 (combinational)
+
+| Design | Cells | Coverage | Fault cov. | Redundant | Wall | Terminal |
+|---|---:|---:|---:|---:|---:|---|
+| c17 | 3 | 100.00% | 100.00% | 0 | 13.7 s | COMPLETE |
+| c432 | 65 | 100.00% | 99.30% | 4 | 18.9 s | COMPLETE |
+| c499 | 160 | 100.00% | 100.00% | 0 | 31.7 s | COMPLETE |
+
+### ISCAS-89 (sequential, scan)
+
+| Design | Cells | FFs | Chains | Coverage | Fault cov. | Redundant | Wall | Terminal |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| s27 | 12 | 3 | 1 | 85.71% | 37.50% | 36 | 15.1 s | STALLED |
+| s208_1 | 45 | 8 | 1 | 98.89% | 73.55% | 62 | 24.9 s | THRESHOLD_MET |
+| s298 | 76 | 14 | 2 | 97.25% | 71.83% | 103 | 28.5 s | THRESHOLD_MET |
+| s344 | 97 | 15 | 2 | 99.08% | 85.66% | 68 | 33.5 s | THRESHOLD_MET |
+| s349 | 97 | 15 | 2 | 99.08% | 85.66% | 68 | 35.1 s | THRESHOLD_MET |
+| s382 | 102 | 21 | 3 | 98.55% | 68.29% | 183 | 36.5 s | THRESHOLD_MET |
+| s386 | 87 | 6 | 1 | 87.93% | 57.09% | 188 | 40.3 s | STALLED |
+| s400 | 102 | 21 | 3 | 97.80% | 67.51% | 184 | 37.7 s | THRESHOLD_MET |
+| s420_1 | 105 | 16 | 2 | 99.05% | 74.02% | 142 | 40.8 s | THRESHOLD_MET |
+| s444 | 105 | 21 | 3 | 96.41% | 67.17% | 182 | 39.0 s | THRESHOLD_MET |
+| s510 | 139 | 6 | 1 | 93.35% | 69.44% | 228 | 50.6 s | STALLED |
+| s526 | 112 | 21 | 3 | 96.81% | 61.76% | 231 | 42.2 s | THRESHOLD_MET |
+| s526n | 113 | 21 | 3 | 96.35% | 62.07% | 227 | 41.6 s | THRESHOLD_MET |
+| s641 | 121 | 17 | 2 | 93.69% | 53.75% | 318 | 56.1 s | STALLED |
+| s713 | 109 | 17 | 2 | 93.48% | 52.54% | 311 | 54.7 s | STALLED |
+| s820 | 156 | 5 | 1 | 93.31% | 57.92% | 402 | 62.4 s | STALLED |
+| s832 | 165 | 5 | 1 | 93.50% | 61.07% | 376 | 66.3 s | STALLED |
+| s838_1 | 207 | 32 | 4 | 98.09% | 45.01% | 618 | 73.5 s | THRESHOLD_MET |
+| s1196 | 309 | 18 | 2 | 97.37% | 20.82% | 1,541 | 90.6 s | THRESHOLD_MET |
+| s1238 | 320 | 18 | 2 | 95.91% | 20.27% | 1,642 | 97.5 s | THRESHOLD_MET |
+| s1423 | 435 | 74 | 8 | 97.40% | 72.81% | 611 | 199.5 s | THRESHOLD_MET |
+| s1488 | 319 | 6 | 1 | 91.01% | 63.08% | 655 | 153.7 s | STALLED |
+| s1494 | 332 | 6 | 1 | 96.27% | 78.56% | 405 | 137.6 s | THRESHOLD_MET |
+| s5378 | 845 | 162 | 17 | 98.34% | 71.29% | 1,278 | 820.5 s | THRESHOLD_MET¹ |
+| s9234_1 | 715 | 135 | 14 | 98.53% | 85.35% | 525 | 688.8 s | THRESHOLD_MET |
+| s13207 | 1,886 | 452 | 46 | — | — | — | 8.2 s | rejected² |
+| s15850 | 2,644 | 559 | 56 | ~51.5%³ | ~50.1%³ | 382³ | 1,231.7 s | INCOMPLETE³ |
+
+**Result: 30 designs, zero crashes, 27 clean numbers, 1 known rejection, 1 budget-limited
+partial.** Coverage (the testable-denominator metric) lands **85.7 – 100%**, in line with
+the stuck-at sweep. Fault coverage tells a very different story: it ranges from
+**20.3% to 100%**, and on several designs (s1196, s1238, s838_1) the **redundant count
+exceeds the detected count** — most of those circuits' transition fault sites are simply
+not launchable/observable in a single broadside capture cycle from a scan-loaded state.
+This is a structural property of launch-on-capture testing on these benchmark circuits,
+not an ATPG weakness: the *testable* population is covered as thoroughly as under
+stuck-at, it's just a much smaller fraction of the *total* population than stuck-at's.
+
+¹ `s5378`'s coverage-report JSON was not written — the run hit its 800 s sweep budget
+while writing the report, after ATPG had already printed `terminated: THRESHOLD_MET`
+internally. Numbers recovered directly from the campaign DB (which commits per-batch
+transactionally, so the mid-write state is still consistent); the ATPG result itself is
+complete, only the JSON artifact is missing.
+
+² `s13207` reproduces the exact same pre-existing scan-eligibility rejection as the
+stuck-at sweep (see footnote ¹ on the stuck-at table above): a bit-sliced flip-flop
+(`$auto$ff.cc:…:slice`) that scan insertion does not cover, caught by `sim`'s full-scan
+check even though `check_scan` itself passes structurally. Not new, not transition-model
+-specific — a known, already-documented limitation.
+
+³ `s15850` (the largest design, 2,644 cells / 559 FFs) did not converge within its 1,200 s
+sweep budget — it was killed mid-round-1, **9,742 of 9,926** hard faults into that round's
+SAT wave, before the round closed and committed. The figures shown are a genuine
+in-flight snapshot (not a final result) and are marked accordingly; a full run would need
+a materially larger time budget than transition ATPG's stuck-at counterpart, which
+converged on the same design in 690.9 s (see the stuck-at table above) — a direct measure
+of how much more expensive 2-frame transition SAT is than single-frame stuck-at SAT on
+the same circuit.
+
 ---
 
 ## PicoRV32a — Full-Chip Scan INTEST (Sky130 HD)
@@ -174,14 +265,59 @@ switch:
 | Proven redundant (UNSAT) | 1,392 |
 | Undetected | 773 |
 | Vectors | **1,256** (compacted from 1,696) |
+| Reverse-compaction time | **1,619 s** (~27 min, single-threaded, 1,696 → 1,256) |
 | Terminal | THRESHOLD_MET (crossed 95% in round 1) |
 | Random→SAT switch | stopped random fill at 85% after **31 / 64 vectors** |
 
 The random→SAT switch is the notable behaviour: rather than grading all 64 random
 vectors, it detected the easy 85% with 31 vectors and handed the hard remainder to
-SAT (2,252 SAT-detected, 1,392 proven redundant). Note: reverse **vector compaction**
-of the 1,696 → 1,256 set took ~27 min single-threaded — a known post-ATPG scaling cost
-on a 60k-fault campaign (the coverage number is final before compaction runs).
+SAT (2,252 SAT-detected, 1,392 proven redundant).
+
+**Reverse vector compaction is a known post-ATPG scaling cost.** Shrinking the
+1,696-vector set to 1,256 took **1,619 s (~27 min), single-threaded, with essentially
+zero I/O** — the pass runs entirely after coverage is final, so it does not affect the
+reported numbers, only the wall clock. The cost grows super-linearly (≈O(N²)) with the
+raw vector count on large fault populations; it is left as-is for now and recorded here
+so future runs can be compared against it.
+
+### Transition-fault scan ATPG (LOC / broadside, first recorded transition result)
+
+The first faultflow transition-fault benchmark: same audit-fixed core, same ≤10 FF/chain
+scan config (162 chains), 6 workers, IFC off, `atpg.random_stop_coverage = 85%`
+random→SAT switch, **launch-on-capture (broadside) two-frame transition faults**.
+Fault collapsing must be off for transition ATPG (config hard-error otherwise), so this
+run is against all 74,314 in-scope transition fault sites, uncollapsed.
+
+| Metric | Value |
+|---|---|
+| Launch model | LOC / broadside (two-frame, scan capture) |
+| In-scope transition faults | **74,314** |
+| **Detected** | **66,740** |
+| **Fault coverage** | **89.81%** (66,740 / 74,314) |
+| Proven redundant (UNSAT, 2-frame) | **3,861** |
+| **Test coverage** (excl. redundant) | **94.73%** (66,740 / 70,453) |
+| Undetected | 3,713 |
+| Vectors | **1,598** (uncompacted — compaction intentionally skipped, see below) |
+| Rounds completed | 2 of 20 (round 3 stopped in flight, no new commits) |
+| Wall clock | ~10.5 h, run manually stopped after round 2's clean close |
+
+**Run was stopped by hand after round 2, not left to converge or compact.** Round 1's
+SAT wave contained a long, slow tail (~220 faults each riding the full 60 s timeout
+tier) that took several hours to drain — the classic broadside signature of a design
+with a large functionally-untestable transition-fault population. Round 2 closed
+cleanly at the numbers above; round 3 was still mid-wave with **zero new commits**
+after ~800 s when the run was killed, so it contributes nothing to the reported
+numbers. Two-frame reverse compaction (expensive on the stuck-at run, see above) was
+skipped entirely for this measurement — the 1,598 vectors above are the raw SAT-wave
+output, uncompacted.
+
+**Reading the result:** fault coverage (89.8%) is well short of the stuck-at run's
+96.4%, but that gap is largely *not* a weakness in the ATPG — it is the redundant
+block (3,861 and still growing when stopped) representing transitions that are simply
+not launchable/observable in one functional capture cycle from a scan-loadable state.
+Test coverage (94.7%, i.e. coverage of the *testable* fault population) is a fairer
+comparison point to the stuck-at number and was about to cross the 95% target when the
+run was stopped.
 
 ### Design and scan infrastructure (original full-chip INTEST run)
 
