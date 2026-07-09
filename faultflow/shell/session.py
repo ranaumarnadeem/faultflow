@@ -110,9 +110,7 @@ class ProjectSession:
         if not path.exists():
             raise ShellError(f"netlist not found: {path}", "INPUT", "FILE_NOT_FOUND")
         suffix = path.suffix.lower()
-        if suffix == ".sv":
-            raise unsupported("SystemVerilog is not supported", "SYSTEMVERILOG")
-        if suffix not in {".v", ".json"}:
+        if suffix not in {".v", ".sv", ".json"}:
             raise ShellError(
                 f"unsupported netlist extension: {suffix}",
                 "INPUT",

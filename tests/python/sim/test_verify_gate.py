@@ -123,7 +123,7 @@ def test_unsupported_verify_tool_fails(tmp_path: Path) -> None:
         load_config(cfg_path, "demo")
 
 
-def test_systemverilog_input_fails_until_sv_is_supported(tmp_path: Path) -> None:
+def test_systemverilog_input_is_supported(tmp_path: Path) -> None:
     cfg_path = tmp_path / "config.ofs"
     rtl = tmp_path / "demo.sv"
     rtl.write_text(
@@ -137,8 +137,8 @@ def test_systemverilog_input_fails_until_sv_is_supported(tmp_path: Path) -> None
         encoding="utf-8",
     )
 
-    with pytest.raises(RunnerError, match="SystemVerilog"):
-        Runner(load_config(cfg_path, "demo"))._find_verilog_source()
+    found = Runner(load_config(cfg_path, "demo"))._find_verilog_source()
+    assert found == rtl
 
 
 def test_parse_bench_inputs_and_outputs(tmp_path: Path) -> None:

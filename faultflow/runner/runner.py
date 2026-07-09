@@ -84,7 +84,7 @@ TRANSIENT_NAMES = {
 }
 
 
-YOSYS_TEMPLATE = """read_verilog {verilog}
+YOSYS_TEMPLATE = """read_verilog -sv {verilog}
 hierarchy -check -top {top}
 proc
 flatten
@@ -312,7 +312,7 @@ class Runner:
 
     def _existing_verilog_source(self) -> Path | None:
         candidates = []
-        if self.cfg.netlist.suffix == ".v":
+        if self.cfg.netlist.suffix in {".v", ".sv"}:
             candidates.append(self.cfg.netlist)
         candidates.extend(
             [
@@ -430,8 +430,6 @@ class Runner:
         return result
 
     def _find_verilog_source(self) -> Path:
-        if self.cfg.netlist.suffix == ".sv":
-            raise RunnerError("SystemVerilog (.sv) is not supported yet")
         existing = self._existing_verilog_source()
         if existing is not None:
             return existing

@@ -145,7 +145,7 @@ It is a Jinja2 template rendered per run into
 `yosys -s`:
 
 ```tcl
-read_verilog {{ verilog }}
+read_verilog -sv {{ verilog }}
 hierarchy -check -top {{ top }}
 proc
 flatten
