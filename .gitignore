@@ -98,8 +98,5 @@ presentation/
 bench_iscas85*.log
 bench_iscas89*.log
 
-# Design-specific scripts and examples (not part of the generic tool)
-scripts/retarget_picorv32a.py
-scripts/run_picorv32a_intest_extest.py
-scripts/wrap_picorv32a.py
+# Design-specific artifacts (not part of the generic tool)
 examples/picorv32_synth/

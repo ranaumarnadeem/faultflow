@@ -1,7 +1,7 @@
 """Inject IEEE 1500 wrapper cells onto a Yosys-JSON netlist's boundary ports.
 
-The ``buffer`` model reproduces ``scripts/wrap_ports.py`` byte-for-byte (transparent
-``$wbc_*_faultflow`` cells). The ``scan`` model emits native shiftable
+The ``buffer`` model injects transparent ``$wbc_*_faultflow`` cells (a plain
+port-buffer wrap). The ``scan`` model emits native shiftable
 ``$wbc_*_scan_faultflow`` cells and stitches their boundary registers into one
 dedicated wrapper scan chain (head = ``scan_in``, tail = ``scan_out``), sharing the
 design clock and a wrapper scan-enable. Each scan wrapper cell is tagged

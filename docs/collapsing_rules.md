@@ -30,7 +30,7 @@ detectable faults and inflate coverage. The collapser leaves XOR/XNOR faults unt
 
 ## Compound AOI/OAI cells
 
-Equivalence classes derived exhaustively by `scripts/derive_collapsing_rules.py` (which enumerates
+Equivalence classes derived exhaustively by `tools/derive_collapsing_rules.py` (which enumerates
 every fault's detecting-vector set over the full 2^N truth table and groups identical sets).
 `inN` is the cell-map input order. Each class drops `len(class) - 1` faults per cell instance,
 subject to the fanout-free guard on input members.
