@@ -47,23 +47,24 @@ and `status --scan` report from the same `output/serial_adder/.faultflow/faultfl
 The same flow can be scripted in the [Tcl shell](tcl_shell.md) with `add_scan`,
 `check_scan`, and `run_atpg -scan`.
 
-## A real core, pre-synthesized: PicoRV32
+## More designs under `examples/`
 
-`examples/picorv32a.v` is the full [PicoRV32](https://github.com/YosysHQ/picorv32)
-RV32I core. To avoid a multi-minute synthesis on every run, a pre-synthesized Sky130
-netlist is shipped under `examples/picorv32_synth/`, and `examples/picorv32a_sky130.ofs`
-consumes the JSON directly:
+Beyond `cla4` and `serial_adder`, the repository ships additional RTL to grade
+with your own config (see [Bringing your own design](#bringing-your-own-design)
+for the config pattern — none of these ship with a `.ofs`):
 
-```bash
-python3 ff.py init   --top picorv32a -c examples/picorv32a_sky130.ofs
-python3 ff.py sim    --top picorv32a -c examples/picorv32a_sky130.ofs
-python3 ff.py status --top picorv32a -c examples/picorv32a_sky130.ofs
-```
+- **DSP filters** — `dsp_iiravg.v` (IIR averager, top `iiravg`), `dsp_boxcar.v`
+  (boxcar / moving-average, top `boxcar`), and `dsp_genericfir_small.v` /
+  `dsp_genericfir_full.v` (parameterized FIR filters). Real sequential
+  arithmetic; good mid-size stuck-at and transition-fault targets.
+- **RV32I cores** — `rv32i_single_cycle.sv` and `rv32i_multi_cycle.sv`,
+  synthesizable SystemVerilog RISC-V cores (MIT-licensed; see
+  `examples/RV32I_UPSTREAM_LICENSE`). Larger multi-module designs that exercise
+  the SystemVerilog synthesis path (`read_verilog -sv`).
 
-This config is a good template for large designs: it sets
-`unsupported_cells = blackbox` (to tolerate Yosys internal cells such as
-`$scopeinfo`), `tie_xz = true`, a lower `max_rounds = 5`, and a `threshold = 90.0` so
-the run is bounded.
+A pre-synthesized PicoRV32 Sky130 netlist lives under `examples/picorv32_synth/`
+and backs the benchmarking numbers (see [Benchmarking](../benchmarking.md)); it
+is a generated build artifact and is not tracked in git.
 
 ## Bringing your own design
 
@@ -86,15 +87,14 @@ faultflow runs the locked Yosys synthesis script automatically when the input is
 Verilog (so `yosys` must be on your `PATH`), after which `init` / `sim` / `status` work
 exactly as in the [quick start](../getting_started/quickstart.md). If your netlist is
 already synthesized to standard cells, give the Yosys JSON directly and synthesis is
-skipped — as the PicoRV32 example does.
+skipped.
 
 ## A reusable batch script
 
-The ISCAS-85 circuits (`c17`, `c432`, `c499`) ship as Sky130-mapped JSON under
-`tests/benchmarks/iscas85/synth_sky130/` (OSU035 under `…/synth/`). This script grades all three
-with the native ATPG
-by generating a small config per circuit. Save it as `run_iscas85.sh` at the repo
-root:
+The ISCAS-85 circuits (`c17`, `c432`, `c499`) ship as Verilog under
+`tests/benchmarks/iscas85/`. This script synthesizes and grades all three with the
+native ATPG by generating a small config per circuit. Save it as `run_iscas85.sh`
+at the repo root:
 
 ```bash
 #!/usr/bin/env bash
@@ -105,7 +105,7 @@ for top in c17 c432 c499; do
   cfg="$(mktemp --suffix=.ofs)"
   cat > "$cfg" <<EOF
 [design]
-netlist  = tests/benchmarks/iscas85/synth_sky130/${top}.json
+netlist  = tests/benchmarks/iscas85/${top}.v
 top      = ${top}
 cell_lib = cells/sky130/sky130_fd_sc_hd.json
 liberty  = cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib
@@ -133,7 +133,7 @@ chmod +x run_iscas85.sh
 ```
 
 Each circuit's deliverables land in `output/<top>/` (see [Outputs](outputs.md)). The
-sequential ISCAS-89 netlists ship as `*_bench.json` under
-`tests/benchmarks/iscas89/synth_sky130/` (for example `s27_bench.json`,
-`s298_bench.json`); point `[design] netlist` at the file and set `top` to the module
-name, then follow the scan flow shown for `serial_adder`.
+sequential ISCAS-89 circuits ship as Verilog under `tests/benchmarks/iscas89/` (for
+example `s27.v`, `s298.v`), each declaring a module named `s<N>_bench`; point
+`[design] netlist` at the `.v` and set `top` to that module name (e.g. `s27_bench`),
+then follow the scan flow shown for `serial_adder`.

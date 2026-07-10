@@ -94,8 +94,10 @@ inputs and outputs — which reduces scan ATPG to the combinational SAT problem.
   already includes primary-input source nets and materialized fanout branches — and
   emits SA0 and SA1. Exclusions (clock, reset, blackbox) are tagged on the fault, not
   skipped.
-- **Collapsing** (`src/core/fault/collapser/`) applies verified equivalence and
-  dominance rules to shrink the list; compound cells are left uncollapsed.
+- **Collapsing** (`src/core/fault/collapser/`) shrinks the list by verified
+  **equivalence** only (never dominance) — INV/BUF, the controlling-value input of
+  AND/OR/NAND/NOR, and the compound AOI/OAI cells; see
+  [Collapsing rules](../collapsing_rules.md).
 - Faults are carried at runtime as flat `CompactFault` records, batched 63 at a time to
   match the 63 faulty lanes.
 

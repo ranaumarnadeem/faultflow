@@ -321,6 +321,15 @@ run was stopped.
 
 ### Design and scan infrastructure (original full-chip INTEST run)
 
+```{warning}
+The coverage numbers in this "original full-chip INTEST run" block predate the
+FF Q-stem grading fix and should not be cited as-is. The old grading mis-handled
+roughly one fault per flip-flop (~1,613 sites), so the 97.44% figure below is
+approximate. The **plain stuck-at scan ATPG (audit-fixed core)** result at the
+top of this section (98.67%) uses the corrected grading and supersedes it; the
+raw pre-fix data is in `benchmark_picorv32a.md`, which carries the same caveat.
+```
+
 | Metric | Value |
 |---|---|
 | Technology | Sky130 HD (`sky130_fd_sc_hd`) |
@@ -366,17 +375,20 @@ Fault model: stuck-at SA0/SA1. Fault collapsing **disabled** (see
 
 ### Why fault collapsing was not used on PicoRV32a
 
-Fault collapsing removes equivalent/dominated fault sites from the denominator, reducing
-vector count. faultflow's verified collapsing rules only cover INV, BUF, AND2/NAND2,
-OR2/NOR2. Sky130 synthesis produces many AOI/OAI compound cells
-(`o21ai`, `a21oi`, `o22ai`, `a22o`, …) where dominance across fanout-split branches has
-not been formally verified. Collapsing unverified compound cells can silently inflate
-coverage by removing detectable faults. The ATPG was therefore run against all 75,654
-individually-enumerated fault sites.
+Fault collapsing removes equivalent fault sites from the denominator, reducing vector
+count. This run was made with collapsing **disabled** so every fault site was graded
+individually (all 75,654) — a deliberately conservative choice for a first full-chip
+measurement.
 
-With collapsing enabled (once AOI/OAI rules are verified), the denominator would shrink
-by ~30–40%, SAT call count would drop proportionally, and the formal coverage % would
-be approximately the same or slightly higher.
+Collapsing is off by default but is not limited to simple primitives: faultflow's rules
+cover the Sky130 compound AOI/OAI cells (`o21ai`, `a21oi`, `o22ai`, `a22o`, …) too, via
+equivalence classes derived exhaustively (identical detecting-vector sets) and
+cross-checked against the simulator — see [Collapsing rules](collapsing_rules.md). The
+rules are equivalence-based, not dominance-based, so no detectable fault is ever dropped.
+
+With collapsing enabled the denominator would shrink by roughly a third, the SAT call
+count would drop proportionally, and the formal coverage % would be approximately the
+same or slightly higher.
 
 For the complete raw data and timing breakdown, see `benchmark_picorv32a.md`.
 
@@ -449,8 +461,7 @@ For raw data and methodology, see `benchmark_fault.md` in the repository root.
 ## On C++ micro-benchmarks
 
 ```{note}
-The project documentation references Google Benchmark for C++ micro-benchmarks, but no
-such benchmark target is built today. Performance is currently measured with the
-run-level timing fields above. A dedicated micro-benchmark harness is a possible future
-addition.
+There is no dedicated C++ micro-benchmark harness today — performance is measured with
+the run-level timing fields shown above. A Google-Benchmark-based harness is a possible
+future addition.
 ```

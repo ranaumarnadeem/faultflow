@@ -6,7 +6,7 @@ unchanged. A fault may be collapsed into another only when every *input* member 
 class is **fanout-free** (drives exactly one gate) — otherwise the input fault has additional
 downstream effects and the equivalence no longer holds in-circuit.
 
-## Primitive gates (implemented since Phase 1)
+## Primitive gates
 
 Derived from the controlling-value argument (Abramovici Ch. 5):
 
@@ -28,7 +28,7 @@ sets (each input is symmetric and there is no controlling value). Collapsing the
 detectable faults and inflate coverage. The collapser leaves XOR/XNOR faults untouched, and
 `test_xor_xnor_not_collapsed` locks this in.
 
-## Compound AOI/OAI cells (this change)
+## Compound AOI/OAI cells
 
 Equivalence classes derived exhaustively by `scripts/derive_collapsing_rules.py` (which enumerates
 every fault's detecting-vector set over the full 2^N truth table and groups identical sets).
