@@ -49,7 +49,10 @@ rustPlatform.buildRustPackage rec {
   meta = {
     description = "Logic circuit analysis and optimization, incl. reference ATPG (BENCH-only)";
     homepage = "https://github.com/Coloquinte/quaigh";
-    license = with lib.licenses; [ mit asl20 ]; # Cargo.toml: "MIT OR Apache-2.0"
+    license = with lib.licenses; [
+      mit
+      asl20
+    ]; # Cargo.toml: "MIT OR Apache-2.0"
     mainProgram = "quaigh";
     platforms = lib.platforms.unix;
   };

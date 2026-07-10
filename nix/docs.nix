@@ -4,6 +4,7 @@
 {
   lib,
   stdenv,
+  version,
   python3,
 }:
 
@@ -20,20 +21,27 @@ let
 in
 stdenv.mkDerivation {
   pname = "faultflow-docs";
-  version = "0-unstable";
+  inherit version;
 
+  # docs/contributing.md is a `{include} ../CONTRIBUTING.md` shim, so the
+  # root-level CONTRIBUTING.md must be in the sandbox alongside docs/.
   src = lib.fileset.toSource {
-    root = ../docs;
-    fileset = ../docs;
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../docs
+      ../CONTRIBUTING.md
+    ];
   };
 
   nativeBuildInputs = [ sphinxEnv ];
 
   dontConfigure = true;
 
+  # -W --keep-going matches .github/workflows/docs.yml: warnings are errors,
+  # but collect them all before failing. Keeps the two doc builds in lockstep.
   buildPhase = ''
     runHook preBuild
-    sphinx-build -b html . "$out"
+    sphinx-build -b html -W --keep-going docs "$out"
     runHook postBuild
   '';
 
@@ -43,5 +51,13 @@ stdenv.mkDerivation {
     description = "faultflow documentation (Sphinx/Furo/MyST HTML site)";
     homepage = "https://github.com/ranaumarnadeem/faultflow";
     license = lib.licenses.asl20;
+    maintainers = [
+      {
+        name = "Rana Umar Nadeem";
+        github = "ranaumarnadeem";
+      }
+    ];
+    sourceProvenance = [ lib.sourceTypes.fromSource ];
+    platforms = lib.platforms.linux;
   };
 }

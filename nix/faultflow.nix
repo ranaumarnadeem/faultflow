@@ -23,6 +23,7 @@
 {
   lib,
   stdenv,
+  version,
   # NOTE: `python3` here is expected to be a `python3.withPackages [...]`
   # result (jsonschema, rich, tkinter — see flake.nix's pythonRuntimeEnv),
   # not the bare interpreter. faultflow.shell.tcl_bridge imports stdlib
@@ -36,7 +37,7 @@
 
 stdenv.mkDerivation {
   pname = "faultflow";
-  version = "0-unstable";
+  inherit version;
 
   src = lib.fileset.toSource {
     root = ../.;
@@ -45,6 +46,9 @@ stdenv.mkDerivation {
       ../faultflow
       ../schemas
       ../cells
+      # Single source of truth for the version; faultflow/__init__.py reads it
+      # at ../VERSION relative to the package dir, so it must sit alongside.
+      ../VERSION
     ];
   };
 
@@ -57,7 +61,7 @@ stdenv.mkDerivation {
     runHook preInstall
 
     mkdir -p "$out/share/faultflow"
-    cp ff.py "$out/share/faultflow/"
+    cp ff.py VERSION "$out/share/faultflow/"
     cp -r faultflow "$out/share/faultflow/"
     cp -r schemas "$out/share/faultflow/"
     cp -r cells "$out/share/faultflow/"
@@ -65,7 +69,12 @@ stdenv.mkDerivation {
 
     makeWrapper ${python3}/bin/python3 "$out/bin/faultflow" \
       --add-flags "$out/share/faultflow/ff.py" \
-      --prefix PATH : ${lib.makeBinPath [ yosys iverilog ]}
+      --prefix PATH : ${
+        lib.makeBinPath [
+          yosys
+          iverilog
+        ]
+      }
 
     runHook postInstall
   '';
@@ -75,6 +84,13 @@ stdenv.mkDerivation {
     homepage = "https://github.com/ranaumarnadeem/faultflow";
     license = lib.licenses.asl20;
     mainProgram = "faultflow";
+    maintainers = [
+      {
+        name = "Rana Umar Nadeem";
+        github = "ranaumarnadeem";
+      }
+    ];
+    sourceProvenance = [ lib.sourceTypes.fromSource ];
     platforms = lib.platforms.linux;
   };
 }

@@ -1,0 +1,34 @@
+name: Nix
+
+# Runs the flake's checks — the full Catch2 suite (201/201) and the full
+# tests/python suite — hermetically inside the Nix sandbox. This is the
+# structure that turns `nix flake check` into a real gate once the repo is
+# pushed; nothing here needs the repo to be public.
+#
+# First runs are slow (~15-30 min): faultflow-core + the pinned CaDiCaL 1.7.4
+# compile from source, and the checks synth ISCAS benchmarks with Yosys. To
+# speed up repeat runs, add a binary cache (Cachix) — see the "Publishing to
+# Nix" section of docs/getting_started/installation.md. If a runner ever hits
+# a disk-full error pulling the closure (Yosys + Verilator + a Tk-enabled
+# Python are large), add a free-disk-space step before the Nix install.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flake-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: nix flake check
+        run: nix flake check -L

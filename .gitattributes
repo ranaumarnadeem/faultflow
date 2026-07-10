@@ -1,0 +1,7 @@
+# Vendored third-party PDK data: track byte-for-byte, no line-ending
+# normalization. This is a proven-working artifact (see .gitignore's
+# comment on cells/**/*.lib) -- CRLF/LF conversion on checkout could
+# silently produce a different file than what was actually verified.
+cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib -text
+cells/osu/osu035_stdcells.lib -text
+cells/sky130/sky130_fd_sc_hd.v -text
