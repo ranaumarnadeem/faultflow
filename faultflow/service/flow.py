@@ -81,10 +81,35 @@ class FlowService:
         )
 
     def has_campaign(self, cfg: FaultflowConfig, campaign_type: str) -> bool:
+        """Return True only when an existing campaign has a DIFFERENT manifest hash.
+
+        A matching manifest hash means the same scan configuration is already in the
+        DB and ATPG can resume it — that is NOT stale.  An absent DB or absent
+        campaign is also not stale (fresh start).
+        """
         if not cfg.db_path.exists():
             return False
         with connect(cfg.db_path) as conn:
-            return latest_campaign_id(conn, campaign_type) is not None
+            campaign_id = latest_campaign_id(conn, campaign_type)
+            if campaign_id is None:
+                return False
+        # There is an existing campaign — compare its manifest hash against the
+        # current scan manifest so we only block on a genuinely different config.
+        try:
+            manifest_path = cfg.scan_manifest_path
+            if not manifest_path.exists():
+                return True  # No manifest yet — can't confirm a match; treat as stale
+            current_hash = json.loads(manifest_path.read_text()).get(
+                "generic_json_hash", ""
+            )
+        except Exception:
+            return True  # Unreadable manifest → err on the side of caution
+        with connect(cfg.db_path) as conn:
+            row = conn.execute(
+                "SELECT manifest_hash FROM campaigns WHERE id = ?", (campaign_id,)
+            ).fetchone()
+        stored_hash = (row[0] or "") if row else ""
+        return stored_hash != current_hash
 
     def initialize(self, cfg: FaultflowConfig) -> InitializationResult:
         message = str(self._runner(cfg).init())
