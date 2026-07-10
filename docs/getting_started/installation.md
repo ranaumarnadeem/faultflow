@@ -68,8 +68,21 @@ CaDiCaL is not reliably packaged with its development headers, so the most porta
 is to build and install it from source. This puts `libcadical` and `cadical.hpp` on the
 default search paths, so the core's bare `-lcadical` link resolves:
 
+```{important}
+**Pin to `rel-1.7.4`, don't clone HEAD.** Newer CaDiCaL (3.0.0, confirmed) enables
+stricter variable-declaration checking by default that crashes every SAT-based
+test and every real ATPG run outright: `cadical: fatal error: invalid API usage
+of 'void CaDiCaL::Solver::add(int)'... adding literal '-3' with undeclared
+variable '3'`. 1.7.4 is what this repo's CNF encoder (`src/core/atpg/
+cnf_encoder.cpp`) is actually compatible with today — it's the version a working
+install already runs (Ubuntu's `libcadical-dev` package). Cloning
+unpinned HEAD, as an earlier version of this recipe did, will eventually drift
+past a compatible version; there's no CI or fingerprint check that would catch
+it before you hit the crash above.
+```
+
 ```bash
-git clone https://github.com/arminbiere/cadical.git
+git clone --branch rel-1.7.4 https://github.com/arminbiere/cadical.git
 cd cadical
 ./configure && make
 sudo install -m 0644 src/cadical.hpp   /usr/local/include/
@@ -140,10 +153,82 @@ If `status` prints a coverage summary, the core extension, the Python layer, and
 SQLite campaign database are all working. Continue with the
 [Quick start](quickstart.md).
 
-## A note on Nix
+## Building with Nix
 
-faultflow is intended to be packaged with [Nix](https://nixos.org/) in the future.
-The documentation toolchain (Sphinx, Furo, MyST) was chosen for clean nixpkgs
-mapping; the doc dependencies are pinned in [`docs/requirements.txt`](https://github.com/ranaumarnadeem/faultflow/blob/main/docs/requirements.txt)
-so they can be translated to a Nix derivation. A Nix flake for the tool itself is not
-yet provided.
+A flake at the repository root (`flake.nix`, plus helper derivations under `nix/`)
+packages everything above. Requires Nix with flakes enabled
+(`--extra-experimental-features 'nix-command flakes'`, or set
+`experimental-features = nix-command flakes` in `nix.conf`).
+
+```{list-table}
+:header-rows: 1
+
+* - Output
+  - What it gives you
+* - `nix develop`
+  - The full toolchain: cmake/ninja/gcc, SQLiteCpp, pybind11, CaDiCaL, Yosys,
+    Icarus Verilog, Verilator, and a Python environment (jsonschema, rich,
+    tkinter, pytest, black, flake8, mypy, the Sphinx doc toolchain). Use this
+    for the traditional `cmake -S . -B build -G Ninja && cmake --build build`
+    workflow, or to run the test suites (see below).
+* - `nix build` / `nix build .#faultflow`
+  - The wrapped `faultflow` command: the C++ core, the Python control plane,
+    and the compiled `_faultflow_core` extension staged together, with Yosys
+    and Icarus Verilog on `PATH`. `result/bin/faultflow`.
+* - `nix build .#faultflow-core`
+  - Just the C++ side: `libfaultflow_core.a`, the `_faultflow_core*.so`
+    extension, and the `faultflow_tests` Catch2 binary.
+* - `nix build .#docs`
+  - This documentation site as static HTML.
+* - `nix run . -- <args>`
+  - Run faultflow without building a local `result` symlink, e.g.
+    `nix run . -- status --top c17 -c config.ofs`.
+```
+
+Two things worth knowing about what this packaging does and doesn't include:
+
+- **The small, faultflow-authored `cells/**/*.json` cell maps (+ `osu035.yml`)
+  are bundled** in `nix build .#faultflow` — `[design] cell_lib` works out of the
+  box, pointing at `<result>/share/faultflow/cells/sky130/sky130_fd_sc_hd.json`
+  (confirmed by running the packaged binary from a directory with no faultflow
+  checkout anywhere nearby). What's **not** bundled is `cells/**/*.lib` and
+  `cells/**/*.v` — the large, third-party Sky130 PDK Liberty/behavioral-model
+  files (~94MB) — which stay gitignored. Point `[design] liberty` /
+  `verilog_models` at your own copy for synthesis or `verify = true`.
+- **`ctest` and `pytest tests/python` are not run as part of `nix build` or `nix
+  flake check`.** Not because of `cells/` (that's bundled, see above) — the
+  remaining gap is `tests/benchmarks/*/synth_sky130/*.json`, pre-synthesized
+  ISCAS netlists that are *generated* Yosys output (regenerable from the tracked
+  RTL, e.g. `tests/benchmarks/iscas85/c17.v`) and correctly gitignored as a
+  build artifact, the same category as `build/`. With `cells/` available and
+  CaDiCaL pinned correctly (see below), a hermetic `nix build` gets 160/201
+  Catch2 tests passing (80%) — the other 41 are all exactly this. Run the full
+  201/201 from `nix develop`, in a real checkout that has `tests/benchmarks/`
+  populated:
+
+  ```bash
+  nix develop --command bash -c '
+    cmake -S . -B build -G Ninja &&
+    cmake --build build &&
+    ctest --test-dir build --output-on-failure
+  '
+  nix develop --command bash -c 'PYTHONPATH=. pytest tests/python -q'
+  ```
+
+A related, real fix landed alongside this: **CaDiCaL is pinned to 1.7.4**
+(`nix/cadical.nix`), not nixpkgs' `cadical` (3.0.0 as of writing). The newer
+version enables stricter variable-declaration checking that crashes every
+SAT-based test outright (`cadical: fatal error: invalid API usage... adding
+literal '-3' with undeclared variable '3'`) — a real, previously-latent gap:
+this repo's own `git clone .../cadical.git` build recipe has no version pin
+either, so a fresh non-Nix install today is equally exposed. 1.7.4 is what a
+working install actually runs on (Ubuntu's `libcadical-dev` package).
+
+Not packaged: **Quaigh** (optional reference/comparison ATPG, `[atpg] tool =
+quaigh`) and **`nl2bench`**. `nix/quaigh.nix` builds up to a real, verified
+`fetchCrate`/`cargoHash`, but Quaigh's `rustsat-kissat` dependency clones and
+compiles [Kissat](https://github.com/arminbiere/kissat) from a `build.rs` at
+build time, which cannot work inside Nix's network-disabled sandbox — see the
+comment at the top of that file for what a real fix would need. Get Quaigh with
+`cargo install quaigh` outside Nix if you need the comparison path; `nl2bench`
+has no confirmed upstream source and remains a manually-supplied tool either way.

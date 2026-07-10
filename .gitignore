@@ -22,13 +22,27 @@ htmlcov/
 # VS Code / IDE
 .vscode/
 
+# direnv (.envrc itself is committed; this is its local cache)
+.direnv/
+
+# Nix build output symlinks
+/result
+/result-*
+
 # Local doc-handoff scratch (not part of the repo)
 newchanges.md
 
 tests/benchmarks
 config.ofs.example
 misc/
-cells/
+# cells/: track the small, faultflow-authored JSON cell maps (+ osu035.yml
+# config); exclude the large third-party PDK-derived Liberty/behavioral-model
+# files (sky130's *.lib alone is ~94MB). git history shows cells/ used to be
+# tracked (e.g. "feat(cells): add sky130 adders..."), so this looks like a
+# later blanket rule that collaterally swept up the JSON along with the big
+# PDK files rather than a deliberate exclusion of the JSON itself.
+cells/**/*.lib
+cells/**/*.v
 parser.out
 parsetab.py
 config.ofs.example*
