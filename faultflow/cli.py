@@ -3,7 +3,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from faultflow.config import ConfigError, load_config, parse_bool_value
+from faultflow.config import (
+    ConfigError,
+    add_clock_to_config,
+    load_config,
+    parse_bool_value,
+)
 from faultflow.runner import Runner, RunnerError
 from faultflow.service import FlowService
 from faultflow.shell.repl import run_shell
@@ -255,6 +260,26 @@ def _parser() -> argparse.ArgumentParser:
         help="Report violations but always exit 0 (no gate)",
     )
 
+    add_clock = sub.add_parser(
+        "add-clock",
+        help=(
+            "Declare a clock domain in a config.ofs [clocks] section "
+            "(equivalent to the Tcl shell's add_clock, for one-shot CLI use)"
+        ),
+    )
+    add_clock.add_argument("port", help="Clock port name")
+    add_clock.add_argument(
+        "-c", "--config", default="config.ofs", help="Config file to edit"
+    )
+    add_clock.add_argument(
+        "--off",
+        dest="off_state",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Clock's inactive level (0=active-high/posedge default, 1=negedge)",
+    )
+
     run = sub.add_parser(
         "run",
         help=(
@@ -306,6 +331,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "retarget":
             return _handle_retarget(args)
+        if args.command == "add-clock":
+            add_clock_to_config(Path(args.config), args.port, off_state=args.off_state)
+            print(
+                f"declared clock '{args.port}' (off={args.off_state}) in "
+                f"{args.config}"
+            )
+            return 0
         cfg = load_config(Path(args.config), args.top)
         service = FlowService(runner_factory=Runner)
         if args.command == "init":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
@@ -433,6 +434,68 @@ def _parse_clocks(parser: ConfigParser) -> tuple[ClockSpec, ...]:
             off_states[port] = int(val)
 
     return tuple(ClockSpec(port=p, off_state=off_states.get(p, 0)) for p in ports)
+
+
+def add_clock_to_config(path: str | Path, port: str, *, off_state: int = 0) -> None:
+    """Declare a clock in a config.ofs file's ``[clocks]`` section, in place.
+
+    Mirrors the Tcl shell's ``add_clock`` (dedup by port; redeclaring a port
+    replaces its off_state), but persists directly to the config file since a
+    one-shot CLI invocation has no interactive session to hold the declaration
+    in. Edits only the ``ports``/``off`` lines of ``[clocks]`` (adding the
+    section if absent) so the rest of the file, including comments, is left
+    untouched -- unlike a full ``ConfigParser.write()`` round-trip.
+    """
+    if off_state not in (0, 1):
+        raise ConfigError(f"add_clock: off_state must be 0 or 1, got {off_state}")
+    port = port.strip()
+    if not port:
+        raise ConfigError("add_clock: port must not be empty")
+
+    cfg_path = Path(path)
+    if not cfg_path.exists():
+        raise ConfigError(f"config file not found: {cfg_path}")
+
+    parser = ConfigParser()
+    if not parser.read(cfg_path):
+        raise ConfigError(f"config file not found: {cfg_path}")
+    existing = _parse_clocks(parser)
+    updated = tuple(cs for cs in existing if cs.port != port) + (
+        ClockSpec(port=port, off_state=off_state),
+    )
+
+    ports_line = "ports = " + ", ".join(cs.port for cs in updated)
+    off_tokens = [f"{cs.port}:{cs.off_state}" for cs in updated if cs.off_state != 0]
+    off_line = "off = " + ", ".join(off_tokens) if off_tokens else None
+
+    text = cfg_path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    section_start = next(
+        (i for i, ln in enumerate(lines) if re.match(r"^\s*\[clocks\]\s*$", ln)), None
+    )
+
+    if section_start is None:
+        block = ["", "[clocks]", ports_line]
+        if off_line:
+            block.append(off_line)
+        new_text = text.rstrip("\n") + "\n" + "\n".join(block) + "\n"
+    else:
+        section_end = len(lines)
+        for i in range(section_start + 1, len(lines)):
+            if re.match(r"^\s*\[[^\]]+\]\s*$", lines[i]):
+                section_end = i
+                break
+        body = lines[section_start + 1 : section_end]
+        kept = [
+            ln
+            for ln in body
+            if not re.match(r"^\s*ports\s*=", ln) and not re.match(r"^\s*off\s*=", ln)
+        ]
+        new_body = [ports_line] + ([off_line] if off_line else []) + kept
+        lines[section_start + 1 : section_end] = new_body
+        new_text = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+    cfg_path.write_text(new_text, encoding="utf-8")
 
 
 def _parse_blackbox(parser: ConfigParser) -> tuple[str, ...]:
