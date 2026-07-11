@@ -8,6 +8,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from multiprocessing import get_context
 from pathlib import Path
@@ -47,6 +48,30 @@ def _live_detected(db_path: str, campaign_id: int) -> int:
         init_schema(conn)
         detected, _ = _fault_counts(conn, campaign_id)
     return detected
+
+
+def _coverage_denominator(db_path: str, campaign_id: int) -> int:
+    """In-scope fault count (the fault-coverage denominator): not excluded, not
+    collapsed. Stable across a run, so compute it once per random phase."""
+    with connect(db_path) as conn:
+        init_schema(conn)
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM faults WHERE campaign_id = ? "
+            "AND exclusion = 'none' AND collapsed_into IS NULL",
+            (campaign_id,),
+        ).fetchone()
+    return int(row["n"] or 0)
+
+
+def _random_stop_reached(
+    db_path: str, campaign_id: int, denominator: int, threshold: float
+) -> bool:
+    """True once random-phase fault coverage (detected / in-scope denominator)
+    has reached ``threshold`` percent -- the signal to stop grading further
+    random vectors and switch to SAT. ``threshold <= 0`` disables the switch."""
+    if threshold <= 0.0 or denominator <= 0:
+        return False
+    return 100.0 * _live_detected(db_path, campaign_id) / denominator >= threshold
 
 
 class GradeHeartbeat:
@@ -407,21 +432,48 @@ def _accept_and_simulate_transition(
     core.update_run_vector_count(db_path, run_id, vector_index)
 
 
-def _termination_sweep_q_stems(conn: sqlite3.Connection, campaign_id: int) -> int:
-    cur = conn.execute(
-        """
-        UPDATE faults
-        SET protocol_unresolved = 1
-        WHERE campaign_id = ?
-          AND status = 'undetected'
-          AND exclusion = 'none'
-          AND collapsed_into IS NULL
-          AND fault_site_key LIKE 'net:%:stem'
-        """,
-        (campaign_id,),
-    )
-    conn.commit()
-    return int(cur.rowcount)
+def _precertify_redundant(
+    db_path: str, fault_ids: "frozenset[int] | set[int]", redundancy_model_id: str
+) -> int:
+    """Preflight Phase B: mark canceling-path faults redundant in ONE guarded,
+    batched transaction.
+
+    Only active faults are eligible: a fault the simulator already DETECTED is
+    empirical ground truth (the structural claim lost), and excluded/collapsed
+    faults sit outside the denominator -- Phase B's id set is derived from net
+    ids over ALL campaign faults, so the guards are load-bearing, not
+    defensive. One connection + one transaction replaces the previous fresh
+    autocommit connection per fault (~51 ms/fault on /mnt/c)."""
+    if not fault_ids:
+        return 0
+    conn = connect(db_path)
+    try:
+        cur = conn.executemany(
+            """
+            UPDATE faults
+            SET status = 'redundant', redundancy_model_id = ?,
+                detected_by_vector = NULL
+            WHERE id = ?
+              AND status = 'undetected'
+              AND exclusion = 'none'
+              AND collapsed_into IS NULL
+            """,
+            [(redundancy_model_id, int(fid)) for fid in sorted(fault_ids)],
+        )
+        conn.commit()
+        return int(cur.rowcount)
+    finally:
+        conn.close()
+
+
+# NOTE: no termination sweep here. protocol_unresolved is a scan-protocol
+# concept; the scan pipeline marks its own q-stem faults with a site-key-scoped
+# sweep (faultflow/scan/detection_pipeline.py::_termination_sweep_q_stems).
+# A previous blanket sweep in this file stamped EVERY undetected stem fault on
+# STALLED/MAX_ROUNDS, overwriting the true timeout/unknown reason in the
+# coverage report and permanently hiding those faults from every grading path
+# that passes skip_protocol_unresolved=true (so resume could not re-target
+# them).
 
 
 def _should_stall(
@@ -721,14 +773,13 @@ def run_progressive_native_atpg(
                     len(_preflight.fanout_yosys_ids),
                     len(_preflight.redundant_stem_ids),
                 )
-                # Phase B: pre-certify canceling-path faults as UNSAT.
+                # Phase B: pre-certify canceling-path faults as UNSAT -- one
+                # guarded batched txn (never touches detected/excluded/collapsed
+                # faults; see _precertify_redundant).
                 if _redundant_fault_ids:
-                    _b_count = 0
-                    for _fid in _redundant_fault_ids:
-                        core.mark_fault_redundant(
-                            effective_db_path, _fid, redundancy_model
-                        )
-                        _b_count += 1
+                    _b_count = _precertify_redundant(
+                        effective_db_path, _redundant_fault_ids, redundancy_model
+                    )
                     if _b_count:
                         log.info(
                             "atpg   preflight Phase B: pre-certified %d faults"
@@ -748,6 +799,11 @@ def run_progressive_native_atpg(
         )
 
     terminal = "MAX_ROUNDS"
+    # The random-fill phase runs ONCE (round 1): it grades up to random_vectors
+    # vectors, or stops early the moment fault coverage crosses
+    # random_stop_coverage. After that the run is in SAT mode for every
+    # remaining round -- no more random fill.
+    switched_to_sat = False
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
         round_tracker = _RoundTracker()
@@ -761,47 +817,73 @@ def run_progressive_native_atpg(
             terminal = "COMPLETE"
             break
 
-        atpg_started = time.perf_counter()
-        random_batch = core.atpg_random_vectors(
-            input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
-        )
-        atpg_seconds += time.perf_counter() - atpg_started
-        new_random = _append_unique_vectors(
-            vectors, seen_patterns, input_order, list(random_batch)
-        )
-        if new_random:
-            stats.generated_vectors += len(new_random)
-            stats.accepted_vectors += len(new_random)
-            base_index = len(vectors) - len(new_random) + 1
-            heartbeat = GradeHeartbeat(
-                log,
-                round_idx,
-                len(new_random),
-                lambda: _live_detected(effective_db_path, campaign_id),
+        if not switched_to_sat:
+            atpg_started = time.perf_counter()
+            random_batch = core.atpg_random_vectors(
+                input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
             )
-            for offset, vector in enumerate(new_random):
-                vector_index = base_index + offset
-                sim_started = time.perf_counter()
-                _accept_and_simulate(
-                    core,
-                    json_path=json_path,
-                    cell_map_path=effective_cell_map,
-                    db_path=effective_db_path,
-                    campaign_id=campaign_id,
-                    run_id=run_id,
-                    vector_source=vector_source,
-                    vector=vector,
-                    input_order=input_order,
-                    fault_ids=active_ids,
-                    vector_index=vector_index,
-                    unsupported=unsupported,
-                    blackbox_instances=bb_instances,
-                    test_mode=test_mode,
-                    sim_threads=sim_threads,
-                    on_vector_accepted=on_vector_accepted,
+            atpg_seconds += time.perf_counter() - atpg_started
+            new_random = _append_unique_vectors(
+                vectors, seen_patterns, input_order, list(random_batch)
+            )
+            if new_random:
+                base_index = len(vectors) - len(new_random) + 1
+                heartbeat = GradeHeartbeat(
+                    log,
+                    round_idx,
+                    len(new_random),
+                    lambda: _live_detected(effective_db_path, campaign_id),
                 )
-                fault_sim_seconds += time.perf_counter() - sim_started
-                heartbeat.tick(offset + 1)
+                random_denom = _coverage_denominator(effective_db_path, campaign_id)
+                graded = 0
+                for offset, vector in enumerate(new_random):
+                    vector_index = base_index + offset
+                    sim_started = time.perf_counter()
+                    _accept_and_simulate(
+                        core,
+                        json_path=json_path,
+                        cell_map_path=effective_cell_map,
+                        db_path=effective_db_path,
+                        campaign_id=campaign_id,
+                        run_id=run_id,
+                        vector_source=vector_source,
+                        vector=vector,
+                        input_order=input_order,
+                        fault_ids=active_ids,
+                        vector_index=vector_index,
+                        unsupported=unsupported,
+                        blackbox_instances=bb_instances,
+                        test_mode=test_mode,
+                        sim_threads=sim_threads,
+                        on_vector_accepted=on_vector_accepted,
+                    )
+                    fault_sim_seconds += time.perf_counter() - sim_started
+                    graded += 1
+                    heartbeat.tick(offset + 1)
+                    if _random_stop_reached(
+                        effective_db_path,
+                        campaign_id,
+                        random_denom,
+                        cfg.atpg.random_stop_coverage,
+                    ):
+                        log.info(
+                            "atpg   random-fill reached %.1f%% coverage after "
+                            "%d/%d vectors; switching to SAT",
+                            cfg.atpg.random_stop_coverage,
+                            graded,
+                            len(new_random),
+                        )
+                        break
+                # Drop the random vectors we chose not to grade -- and release
+                # their patterns from seen_patterns so SAT may generate them for
+                # the remaining faults (they are exactly the tail-fault vectors).
+                if graded < len(new_random):
+                    for _v in new_random[graded:]:
+                        seen_patterns.discard(pattern_key(_v, input_order))
+                    del vectors[base_index - 1 + graded :]
+                stats.generated_vectors += graded
+                stats.accepted_vectors += graded
+            switched_to_sat = True
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
@@ -926,6 +1008,21 @@ def run_progressive_native_atpg(
                             _parallel_results[int(_fid)] = (_res, dict(_slv))
                             _solved_count += 1
                             _solve_hb.tick(_solved_count)
+                    except BrokenProcessPool as _exc:
+                        # A worker process DIED (typically OOM-killed). The pool
+                        # is permanently broken: swallowing this used to turn
+                        # every remaining fault of every remaining round into a
+                        # silent UNKNOWN and "complete" with garbage coverage.
+                        # Fail loudly with the remedy instead; DB state written
+                        # so far (detections, vectors) is preserved.
+                        _executor.shutdown(wait=False, cancel_futures=True)
+                        raise RunnerError(
+                            "parallel SAT worker process died mid-wave (likely "
+                            "out-of-memory). Progress so far is saved; re-run "
+                            "with fewer workers (atpg.workers) and/or "
+                            "atpg.incremental_sat=false to cut per-worker "
+                            "memory."
+                        ) from _exc
                     except Exception as _exc:
                         log.warning(
                             "atpg   parallel wave error (%s); faults absent from "
@@ -1079,9 +1176,6 @@ def run_progressive_native_atpg(
         ) and not _escalation_headroom(
             active_ids_end, prior_timeout_count, timeout_tiers
         ):
-            with connect(effective_db_path) as conn:
-                init_schema(conn)
-                _termination_sweep_q_stems(conn, campaign_id)
             terminal = "STALLED"
             break
 
@@ -1092,8 +1186,6 @@ def run_progressive_native_atpg(
 
     with connect(effective_db_path) as conn:
         init_schema(conn)
-        if terminal == "MAX_ROUNDS":
-            _termination_sweep_q_stems(conn, campaign_id)
         data = summary(conn, campaign_id=campaign_id)
         if data["denominator"] == 0:
             raise RunnerError("denominator is zero after progressive ATPG")
@@ -1469,9 +1561,6 @@ def run_progressive_transition_atpg(
         ) and not _escalation_headroom(
             active_ids_end, prior_timeout_count, timeout_tiers
         ):
-            with connect(effective_db_path) as conn:
-                init_schema(conn)
-                _termination_sweep_q_stems(conn, campaign_id)
             terminal = "STALLED"
             break
 
@@ -1479,8 +1568,6 @@ def run_progressive_transition_atpg(
 
     with connect(effective_db_path) as conn:
         init_schema(conn)
-        if terminal == "MAX_ROUNDS":
-            _termination_sweep_q_stems(conn, campaign_id)
         data = summary(conn, campaign_id=campaign_id)
         if data["denominator"] == 0:
             raise RunnerError("denominator is zero after progressive ATPG")

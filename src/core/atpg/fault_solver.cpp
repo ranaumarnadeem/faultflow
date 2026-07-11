@@ -3,13 +3,16 @@
 #include <cadical.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 #include <unordered_set>
 #include <vector>
 
 #include "atpg/cnf_encoder.hpp"
 #include "atpg/cone.hpp"
+#include "atpg/sat_terminator.hpp"
 #include "common/types.hpp"
 #include "ir/compiled_graph/compiled_graph.hpp"
 
@@ -40,13 +43,48 @@ std::vector<bool> assignment_from_pattern(const std::string& pattern) {
   return out;
 }
 
-void apply_solver_limits(CaDiCaL::Solver& solver, const SatSolveOptions& options) {
+// RAII: connects a wall-clock terminator for the duration of a fault's solve(s)
+// and disconnects it before the terminator (or the solver) is destroyed. The
+// deadline is set once when solving begins and spans every internal solve() call
+// (the incremental solver calls solve() in a loop), so it bounds the TOTAL
+// wall-clock budget per fault, matching the configured sat_timeout_seconds.
+struct SolverTimeGuard {
+  CaDiCaL::Solver* solver = nullptr;
+  std::unique_ptr<WallClockTerminator> term;
+
+  SolverTimeGuard() = default;
+  SolverTimeGuard(SolverTimeGuard&&) = default;
+  SolverTimeGuard& operator=(SolverTimeGuard&&) = default;
+  SolverTimeGuard(const SolverTimeGuard&) = delete;
+  SolverTimeGuard& operator=(const SolverTimeGuard&) = delete;
+  ~SolverTimeGuard() {
+    if (solver != nullptr && term) {
+      solver->disconnect_terminator();
+    }
+  }
+};
+
+// Apply CaDiCaL search limits. The conflict limit is a native CaDiCaL limit; the
+// wall-clock timeout is enforced via a Terminator (CaDiCaL has no "time" limit --
+// see sat_terminator.hpp). Returns a guard the caller must keep alive for the
+// whole solve; on its destruction the terminator is disconnected.
+[[nodiscard]] SolverTimeGuard apply_solver_limits(CaDiCaL::Solver& solver,
+                                                  const SatSolveOptions& options) {
+  // Silence CaDiCaL's own diagnostic chatter (e.g. "c found falsified original
+  // clause") so it never leaks into the tool's stdout; the ATPG layer reads the
+  // solve() return code, not the solver's text output.
+  solver.set("quiet", 1);
   if (options.conflict_limit >= 0) {
     solver.limit("conflicts", options.conflict_limit);
   }
+  SolverTimeGuard guard;
   if (options.sat_timeout_seconds > 0) {
-    solver.limit("time", static_cast<int64_t>(options.sat_timeout_seconds));
+    guard.term = std::make_unique<WallClockTerminator>(
+        WallClockTerminator::deadline_in(options.sat_timeout_seconds));
+    guard.solver = &solver;
+    solver.connect_terminator(guard.term.get());
   }
+  return guard;
 }
 
 bool had_solver_limits(const SatSolveOptions& options) {
@@ -116,7 +154,24 @@ std::vector<AtpgPiInfo> ordered_pis(const ParsedGraph& parsed,
   std::vector<AtpgPiInfo> pis;
   const ParsedModule& mod = parsed.top_module();
   for (const auto& [name, port] : mod.ports) {
-    if (port.direction != "input" || port.bits.size() != 1) {
+    // A multi-bit top-level port (the locked synth script never runs
+    // `splitnets`, so Yosys JSON keeps e.g. `input [3:0] b` as ONE port entry
+    // with 4 bits) used to be skipped here entirely, silently dropping it
+    // from the SAT PI set. That desynced this PI enumeration from the
+    // Python-side PI-name list used to size/persist `blocked_patterns`
+    // bit-strings (faultflow/runner/runner.py's `_port_names`, which counts
+    // a bus port once regardless of width, matching how
+    // ParsedGraph::net_id_by_name resolves a bare port name to its first
+    // bit) -- the two disagreed in length, and a later re-solve with an
+    // already-persisted blocked pattern hit the length-mismatch guard below.
+    // Worse than the crash: a dropped PI is UNCONSTRAINED in the CNF, so the
+    // good/faulty miter could pick different values for it, an actual
+    // soundness gap, not just a cosmetic count mismatch. Fix: take the same
+    // first-bit net (bits.front()) the rest of the codebase already uses for
+    // a bus PI's stimulus/name resolution, so every port -- single- or
+    // multi-bit -- contributes exactly one PI, keeping this enumeration and
+    // the Python-side one in lockstep.
+    if (port.direction != "input" || port.bits.empty()) {
       continue;
     }
     const int yid = port.bits.front();
@@ -169,7 +224,7 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
                                     std::map<std::string, bool>& out) {
   CnfVarMap vars(cg.net_count);
   CaDiCaL::Solver solver;
-  apply_solver_limits(solver, options);
+  const auto time_guard = apply_solver_limits(solver, options);
 
   const std::vector<uint32_t> observable_set(cg.observable.begin(),
                                              cg.observable.end());
@@ -301,7 +356,7 @@ SatSolveResult solve_stuck_at_fault_incremental(
 
   CnfVarMap vars(cg.net_count);
   CaDiCaL::Solver solver;
-  apply_solver_limits(solver, options);
+  const auto time_guard = apply_solver_limits(solver, options);
 
   // Fault injection at the faulty site (permanent).
   add_unit(solver, (fault.type == FaultType::SA1)
@@ -496,7 +551,7 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
 
   CnfVarMap vars(cg.net_count);
   CaDiCaL::Solver solver;
-  apply_solver_limits(solver, options);
+  const auto time_guard = apply_solver_limits(solver, options);
 
   // Build fast-lookup sets for safe-zero nets and free stimulus nets.
   // safe_zero: in EXTEST mode these are the TO_CORE outputs of WBR_IN cells
@@ -667,7 +722,7 @@ SatSolveResult solve_two_frame_transition(
   }
 
   CaDiCaL::Solver solver;
-  apply_solver_limits(solver, options);
+  const auto time_guard = apply_solver_limits(solver, options);
 
   // Cone masks restrict the two CAPTURE-frame machines (good + faulty); the
   // LAUNCH frame stays full because the scan LOC/LOS PI coupling forces every

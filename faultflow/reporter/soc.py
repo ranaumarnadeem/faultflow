@@ -11,10 +11,20 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 from faultflow.project.aggregate import ChipCoverage
 
 SOC_COVERAGE_SCHEMA = "faultflow_soc_coverage_v1"
+
+# Ships with the package; resolve relative to this file so validation works from
+# any working directory (a cwd-relative path crashed `project` from outside the
+# repo root -- see reporter/coverage.py for the same fix).
+_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schemas/soc_coverage.schema.json"
+
+
+class SocReportError(RuntimeError):
+    pass
 
 
 def soc_report_dict(chip: ChipCoverage) -> dict[str, object]:
@@ -31,15 +41,52 @@ def soc_report_dict(chip: ChipCoverage) -> dict[str, object]:
     }
 
 
+def _validate_report(report: dict[str, Any]) -> None:
+    if not _SCHEMA_PATH.exists():
+        raise SocReportError(f"missing SoC coverage schema: {_SCHEMA_PATH}")
+    try:
+        from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
+    except ImportError:  # pragma: no cover - local fallback for minimal envs
+        _validate_report_shape(report)
+        return
+    schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    try:
+        Draft202012Validator(schema).validate(report)
+    except Exception as exc:  # jsonschema.ValidationError
+        raise SocReportError(f"SoC coverage report failed schema validation: {exc}")
+
+
+def _validate_report_shape(report: dict[str, Any]) -> None:
+    required = {"schema", "project", "chip", "scopes", "guards"}
+    missing = required - set(report)
+    if missing:
+        raise SocReportError(f"SoC coverage report missing keys: {sorted(missing)}")
+    chip_required = {"denominator", "detected", "coverage_percent"}
+    chip = report["chip"]
+    if not isinstance(chip, dict) or chip_required - set(chip):
+        raise SocReportError("SoC coverage report 'chip' section is malformed")
+    if not isinstance(chip["denominator"], int) or isinstance(
+        chip["denominator"], bool
+    ):
+        raise SocReportError("SoC coverage report chip.denominator must be an int")
+    if not isinstance(chip["detected"], int) or isinstance(chip["detected"], bool):
+        raise SocReportError("SoC coverage report chip.detected must be an int")
+    if not isinstance(report["scopes"], list):
+        raise SocReportError("SoC coverage report 'scopes' must be an array")
+    if not isinstance(report["guards"], dict):
+        raise SocReportError("SoC coverage report 'guards' must be an object")
+
+
 def _fmt_pct(value: float | None) -> str:
     return "n/a" if value is None else f"{float(value):.3f}%"
 
 
 def write_soc_report(chip: ChipCoverage, out_dir: Path) -> tuple[Path, Path]:
     """Write the SoC coverage JSON + text report; return (json_path, txt_path)."""
-    out_dir.mkdir(parents=True, exist_ok=True)
     report = soc_report_dict(chip)
+    _validate_report(report)
 
+    out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / "soc_coverage.json"
     json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 

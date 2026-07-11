@@ -9,7 +9,7 @@ every INPUT member is fanout-free in the netlist).
 
 This is the authoritative source for the C++ `compound_classes_for` table in
 src/core/fault/collapser/fault_collapser.cpp and for docs/collapsing_rules.md.
-Run: python3 scripts/derive_collapsing_rules.py
+Run: python3 tools/derive_collapsing_rules.py
 
 The inN order matches the C++ eval_bitwise switch and the sky130 cell-map inputs.
 """

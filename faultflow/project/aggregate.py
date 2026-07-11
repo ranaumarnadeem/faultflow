@@ -26,7 +26,13 @@ Guards (on the UNCOLLAPSED canonical fault universe, keyed net-id-independently 
 same identity in the block and assembly netlists): (1) disjoint tops; (2) no
 canonical key chip-owned by two scopes; (3) handoff completeness — every handed-off
 WBC fault (a block's WBC-outward, the assembly's WBC-inward) is chip-owned by another
-scope, else the chip number is optimistic by that wrapper population.
+scope, OR independently ``accounted`` for there (excluded_by_design under the SAME
+canonical key — e.g. Policy 3's clock/reset exclusion, or fault collapsing folding a
+fused-view WBC pin's fault into a surviving equivalent). Both are chip-wide,
+decomposition-independent outcomes a flat whole-chip run would reach identically, so
+they satisfy completeness without a literal ownership entry; only a handoff with
+NEITHER an owner NOR an accounting entry anywhere means the chip number is optimistic
+by that wrapper population.
 
 The native scan WBC (``$wbc_out_scan_faultflow`` etc., ``[wrap] wbr_model = scan``,
 the default) is what gives these guards real teeth: its ``TO_SYS``/``CTO`` output is
@@ -158,6 +164,53 @@ def _wbc_pin_index(
     return index
 
 
+def _wbc_pin_index_extest(
+    netlist: Path, top: str
+) -> dict[int, tuple[str | None, str, str, str]]:
+    """Like `_wbc_pin_index`, but for a scan-model EXTEST scope.
+
+    `_sim_extest` never runs ATPG on the graybox in `netlist` directly -- it runs on
+    `fuse_wbr_into_view`'s output, which allocates BRAND NEW net ids for the wrapper
+    boundary observe/control ports (`__wbi_obs_*` / `__wbo_ctl_*`), disjoint from the
+    graybox's own numbering (confirmed empirically: a composed graybox's
+    `FROM_SYS` net 4 became a fresh net 127 after fusion). So `_wbc_pin_index` on the
+    graybox can never match a `scan_extest` scope's real fault net ids.
+
+    Fusion is pure and deterministic, so re-run it here and bridge through its
+    returned `port_map` (keyed by the ORIGINAL cell name, carrying the ORIGINAL
+    sys-side net in `sys_net` -- which DOES match the graybox) back to the graybox's
+    own pin index. Only the OUTWARD (sys-facing) pins are covered: Guard 3's handoff
+    check only needs those (`FROM_SYS`/`TO_SYS` -- what a block excludes as
+    `wbr_decoupled` and the assembly must own); the core-facing pins are
+    block-owned regardless and, post-fusion, safed/dangling with no live fault site.
+    """
+    from faultflow.scan.wbr_view import fuse_wbr_into_view
+
+    graybox_pins = _wbc_pin_index(netlist, top)
+    if not graybox_pins:
+        return {}
+    data = json.loads(netlist.read_text(encoding="utf-8"))
+    fused, port_map = fuse_wbr_into_view(data, top, "extest")
+    fused_module = fused.get("modules", {}).get(top, {})
+    fused_ports = (
+        fused_module.get("ports", {}) if isinstance(fused_module, dict) else {}
+    )
+
+    index: dict[int, tuple[str | None, str, str, str]] = {}
+    for info in port_map.values():
+        if not isinstance(info, dict):
+            continue
+        sys_net = info.get("sys_net")
+        pin_info = graybox_pins.get(sys_net) if isinstance(sys_net, int) else None
+        if pin_info is None:
+            continue
+        port = fused_ports.get(info.get("port"))
+        bits = port.get("bits") if isinstance(port, dict) else None
+        for bit in _int_bits(bits):
+            index[bit] = pin_info
+    return index
+
+
 def _net_id_of(fault_site_key: str, net_id: int) -> int:
     """Prefer the explicit net_id column; fall back to parsing the site key."""
     if net_id >= 0:
@@ -200,6 +253,7 @@ def _canonical_key(
 class _ScopeKeys:
     owned: set[tuple[Any, ...]]  # keys this scope CHIP-owns (by the owning-role rule)
     handoff: set[tuple[Any, ...]]  # keys owned by the OTHER role (foreign + excluded)
+    accounted: set[tuple[Any, ...]]  # WBC keys excluded_by_design here (see below)
 
 
 def _owning_role(pin: tuple[str | None, str, str, str] | None, scope_role: str) -> str:
@@ -228,7 +282,16 @@ def _scope_coverage(scope: ScopeRun) -> tuple[ScopeCoverage, _ScopeKeys]:
     if not scope.db_path.exists():
         raise AggregateError(f"scope {scope.name!r}: no database at {scope.db_path}")
     scope_role = "block" if scope.kind == "block" else "assembly"
-    wbc_pins = _wbc_pin_index(scope.netlist, scope.top)
+    # A scan-model EXTEST campaign ran on fuse_wbr_into_view's fused view, not on
+    # `scope.netlist` (the pre-fusion graybox) directly -- see
+    # _wbc_pin_index_extest's docstring for why the plain (graybox-keyed) index
+    # cannot resolve those fault net ids. Combinational EXTEST/INTEST never fuse,
+    # so they keep the original, netlist-keyed index unchanged.
+    wbc_pins = (
+        _wbc_pin_index_extest(scope.netlist, scope.top)
+        if scope.campaign_type == "scan_extest"
+        else _wbc_pin_index(scope.netlist, scope.top)
+    )
     with connect(scope.db_path) as conn:
         conn.row_factory = sqlite3.Row
         campaign_id = latest_campaign_id(conn, scope.campaign_type)
@@ -249,6 +312,7 @@ def _scope_coverage(scope: ScopeRun) -> tuple[ScopeCoverage, _ScopeKeys]:
     owned = owned_detected = foreign = handoff = excluded_by_design = 0
     owned_keys: set[tuple[Any, ...]] = set()
     handoff_keys: set[tuple[Any, ...]] = set()
+    accounted_keys: set[tuple[Any, ...]] = set()
     for row in rows:
         exclusion = str(row["exclusion"])
         status = str(row["status"])
@@ -279,7 +343,15 @@ def _scope_coverage(scope: ScopeRun) -> tuple[ScopeCoverage, _ScopeKeys]:
             if key[0] == "wbc":
                 handoff_keys.add(key)
         else:
+            # Excluded here for a reason that applies chip-wide regardless of
+            # decomposition (clock/reset policy, or collapsed into a surviving
+            # equivalent fault). A flat whole-chip run would exclude/collapse the
+            # exact same fault the exact same way, so this is not a scope-boundary
+            # gap: record it as "accounted for" so Guard 3 doesn't demand a literal
+            # owned entry under this identity (see `accounted` below).
             excluded_by_design += 1
+            if key[0] == "wbc":
+                accounted_keys.add(key)
 
     total = len(rows)
     if owned + foreign + handoff + excluded_by_design != total:
@@ -301,7 +373,9 @@ def _scope_coverage(scope: ScopeRun) -> tuple[ScopeCoverage, _ScopeKeys]:
         total_sites=total,
         coverage_percent=data.get("test_coverage_percent"),
     )
-    return cov, _ScopeKeys(owned=owned_keys, handoff=handoff_keys)
+    return cov, _ScopeKeys(
+        owned=owned_keys, handoff=handoff_keys, accounted=accounted_keys
+    )
 
 
 def aggregate_project(project_name: str, scopes: list[ScopeRun]) -> ChipCoverage:
@@ -317,6 +391,7 @@ def aggregate_project(project_name: str, scopes: list[ScopeRun]) -> ChipCoverage
     chip = ChipCoverage(project=project_name)
     all_owned: dict[tuple[Any, ...], str] = {}
     all_handoff: set[tuple[Any, ...]] = set()
+    all_accounted: set[tuple[Any, ...]] = set()
     overlaps: list[dict[str, Any]] = []
     for scope in scopes:
         cov, keys = _scope_coverage(scope)
@@ -331,17 +406,26 @@ def aggregate_project(project_name: str, scopes: list[ScopeRun]) -> ChipCoverage
             else:
                 all_owned[key] = scope.name
         all_handoff |= keys.handoff
+        all_accounted |= keys.accounted
 
     if overlaps:
         raise AggregateError(f"faults double-counted across scopes: {overlaps}")
 
     # Guard 3 — chip-wide handoff completeness: every WBC fault a scope hands off
     # (its WBC-outward excluded as wbr_decoupled, or the assembly's WBC-inward that
-    # is block-owned) MUST be chip-owned by another scope. An unowned handoff means
-    # the chip number is OPTIMISTIC by exactly that wrapper population. This is the
-    # check that "folds the WBC ring into the assembly fault universe".
+    # is block-owned) MUST be chip-owned by another scope, UNLESS the same canonical
+    # fault is independently `accounted` for there (excluded by clock/reset policy or
+    # collapsed into a surviving equivalent — both are chip-wide, decomposition-
+    # independent outcomes a flat run would reach identically; see `_scope_coverage`).
+    # An unowned, unaccounted handoff means the chip number is OPTIMISTIC by exactly
+    # that wrapper population. This is the check that "folds the WBC ring into the
+    # assembly fault universe".
     unowned = sorted(
-        {":".join(map(str, k[1:])) for k in all_handoff if k not in all_owned}
+        {
+            ":".join(map(str, k[1:]))
+            for k in all_handoff
+            if k not in all_owned and k not in all_accounted
+        }
     )
     if unowned:
         raise AggregateError(
@@ -360,5 +444,6 @@ def aggregate_project(project_name: str, scopes: list[ScopeRun]) -> ChipCoverage
         "handoff_complete": True,
         "owned_sites": len(all_owned),
         "handoff_sites": len(all_handoff),
+        "accounted_sites": len(all_accounted),
     }
     return chip

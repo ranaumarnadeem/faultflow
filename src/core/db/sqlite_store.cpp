@@ -600,9 +600,15 @@ void mark_fault_redundant(const std::string& db_path, int64_t fault_id,
                           const std::string& redundancy_model_id) {
   SQLite::Database db = open_db(db_path);
   require_v3_schema(db);
+  // Guard: only an ACTIVE fault may be certified redundant. A fault the
+  // simulator already detected is empirical ground truth -- a late or racing
+  // UNSAT verdict (e.g. the dynamic fault-drop path detected it mid-wave) must
+  // never overwrite it (the old unguarded UPDATE also NULLed
+  // detected_by_vector, silently shrinking coverage). Mirrors the guard on
+  // mark_fault_protocol_unresolved below.
   SQLite::Statement q(
       db, "UPDATE faults SET status='redundant', redundancy_model_id=?, "
-          "detected_by_vector=NULL WHERE id=?");
+          "detected_by_vector=NULL WHERE id=? AND status='undetected'");
   q.bind(1, redundancy_model_id);
   q.bind(2, fault_id);
   q.exec();

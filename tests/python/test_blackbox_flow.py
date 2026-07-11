@@ -478,6 +478,7 @@ cell_lib = {CELL_MAP}
 
 [fault_model]
 model = transition
+collapsing = false
 
 [blackbox]
 instances = u_bb

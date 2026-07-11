@@ -42,9 +42,6 @@ exclude_patterns = [
     "_build",
     "Thumbs.db",
     ".DS_Store",
-    "plans/**",  # planning baselines + docs/plans/papers/
-    "integration/**",  # internal OpenTestability integration notes
-    "superpowers/**",  # internal implementation plans
 ]
 
 # -- HTML output -------------------------------------------------------------

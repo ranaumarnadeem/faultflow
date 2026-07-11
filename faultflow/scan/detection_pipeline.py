@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import time
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from multiprocessing import get_context
 from pathlib import Path
@@ -34,9 +35,11 @@ from faultflow.runner.progressive_atpg import (
     GradeHeartbeat,
     SolveHeartbeat,
     _RoundTracker,
+    _coverage_denominator,
     _escalation_headroom,
     _fault_counts,
     _live_detected,
+    _random_stop_reached,
     _should_stall,
     pattern_key,
 )
@@ -998,6 +1001,31 @@ def _process_scan_candidate(
     return True, False, scan_pattern
 
 
+def _guard_transition_on_scan_wbr(
+    wbr_model: str, manifest: dict[str, Any], transition: bool
+) -> None:
+    """Reject transition (LOC/LOS) ATPG only on a design that ACTUALLY carries
+    scan WBR cells.
+
+    The 1-FF scan WBC delivers boundary stimulus for exactly one capture cycle; a
+    second capture clobbers q, so a scan-WBR-wrapped block cannot run transition
+    ATPG until the 2-FF WBC upgrade lands. But the earlier guard fired on the
+    ``wbr_model`` config alone -- which defaults to "scan" -- so it wrongly rejected
+    transition ATPG on a plain, UNWRAPPED scan design that has no WBR cells at all.
+    A design is scan-WBR-wrapped iff its manifest has a non-empty ``wrapper_chains``
+    (empty for a plain scan design and for the buffer model).
+    """
+    design_has_scan_wbr = bool(manifest.get("wrapper_chains"))
+    if transition and wbr_model == "scan" and design_has_scan_wbr:
+        raise ScanError(
+            "wbr_model='scan' does not support transition (LOC/LOS) ATPG: "
+            "the 1-FF WBC delivers stimulus for exactly one capture cycle; "
+            "a second capture clobbers q and corrupts boundary stimulus. "
+            "Use wbr_model='buffer' for transition faults, or upgrade to a "
+            "2-FF WBC first."
+        )
+
+
 def run_progressive_scan_atpg(
     cfg: FaultflowConfig,
     netlist: Path,
@@ -1020,18 +1048,9 @@ def run_progressive_scan_atpg(
     # scan_pattern_out is set (used by SoC retargeting). One per accepted vector.
     accepted_patterns: list[ScanPattern] = []
 
-    # S4.8 — the 1-FF WBC is correct ONLY under single-capture INTEST.
-    # LOC/LOS two-capture sequences clobber q before the second frame, so a
-    # scan-WBR block with wbr_model="scan" must never run transition ATPG until
-    # the 2-FF upgrade lands. Fail loudly rather than silently mis-deliver.
-    if cfg.wbr_model == "scan" and transition:
-        raise ScanError(
-            "wbr_model='scan' does not support transition (LOC/LOS) ATPG: "
-            "the 1-FF WBC delivers stimulus for exactly one capture cycle; "
-            "a second capture clobbers q and corrupts boundary stimulus. "
-            "Use wbr_model='buffer' for transition faults, or upgrade to a "
-            "2-FF WBC first."
-        )
+    # S4.8 — the 1-FF WBC is correct ONLY under single-capture INTEST. Fail loudly
+    # rather than silently mis-deliver on a scan-WBR-wrapped block.
+    _guard_transition_on_scan_wbr(cfg.wbr_model, scan_ctx.manifest, transition)
 
     los = transition and launch_mode == "los"
     los_couple_ports: list[tuple[str, str]] = []
@@ -1268,6 +1287,9 @@ def run_progressive_scan_atpg(
         )
 
     terminal = "MAX_ROUNDS"
+    # Random fill runs ONCE (round 1): up to random_vectors patterns, or until
+    # fault coverage crosses random_stop_coverage -- then SAT mode for the rest.
+    switched_to_sat = False
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
         round_tracker = _RoundTracker()
@@ -1282,11 +1304,14 @@ def run_progressive_scan_atpg(
             terminal = "COMPLETE"
             break
 
-        random_started = time.perf_counter()
-        random_batch = core.atpg_random_vectors(
-            input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
-        )
-        atpg_seconds += time.perf_counter() - random_started
+        if switched_to_sat:
+            random_batch: list[dict[str, bool]] = []
+        else:
+            random_started = time.perf_counter()
+            random_batch = core.atpg_random_vectors(
+                input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
+            )
+            atpg_seconds += time.perf_counter() - random_started
         new_random: list[dict[str, bool]] = []
         for vector in list(random_batch):
             # LOS random candidates carry head bits = 0; the composite dedup key
@@ -1305,6 +1330,8 @@ def run_progressive_scan_atpg(
             len(new_random),
             lambda: _live_detected(effective_db_path, campaign_id),
         )
+        random_denom = _coverage_denominator(effective_db_path, campaign_id)
+        graded_random = 0
         for offset, vector in enumerate(new_random):
             stats.generated_vectors += 1
             candidate_counter += 1
@@ -1353,7 +1380,31 @@ def run_progressive_scan_atpg(
                 if protocol_no_progress:
                     round_tracker.sat_outcomes.append("protocol_no_progress")
                     stats.protocol_no_progress_rounds += 1
+            graded_random = offset + 1
             heartbeat.tick(offset + 1)
+            if _random_stop_reached(
+                effective_db_path,
+                campaign_id,
+                random_denom,
+                cfg.atpg.random_stop_coverage,
+            ):
+                log.info(
+                    "atpg   random-fill reached %.1f%% coverage after %d/%d "
+                    "vectors; switching to SAT",
+                    cfg.atpg.random_stop_coverage,
+                    offset + 1,
+                    len(new_random),
+                )
+                break
+        if not switched_to_sat:
+            # Release the patterns of any random vectors we did not grade so SAT
+            # can generate them for the remaining faults; then stay in SAT mode.
+            for _v in new_random[graded_random:]:
+                _k = pattern_key(_v, input_order)
+                if los:
+                    _k = _k + "0" * len(los_head_ports)
+                seen_patterns.discard(_k)
+            switched_to_sat = True
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
@@ -1456,6 +1507,19 @@ def run_progressive_scan_atpg(
                     _parallel_results[int(_fid)] = (_res, dict(_slv))
                     _solved_count += 1
                     _solve_hb.tick(_solved_count)
+            except BrokenProcessPool as _exc:
+                # A worker process DIED (typically OOM-killed). The pool is
+                # permanently broken: swallowing this used to turn every
+                # remaining fault of every remaining round into a silent
+                # UNKNOWN and "complete" with garbage coverage. Fail loudly
+                # with the remedy; DB state written so far is preserved.
+                _executor.shutdown(wait=False, cancel_futures=True)
+                raise RunnerError(
+                    "parallel SAT worker process died mid-wave (likely "
+                    "out-of-memory). Progress so far is saved; re-run with "
+                    "fewer workers (atpg.workers) and/or "
+                    "atpg.incremental_sat=false to cut per-worker memory."
+                ) from _exc
             except Exception as _exc:
                 log.warning(
                     "atpg   parallel wave error (%s); "

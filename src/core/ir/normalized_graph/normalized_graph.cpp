@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <unordered_map>
+#include <vector>
 #include "common/errors.hpp"
 
 namespace faultflow {
@@ -139,7 +141,7 @@ NormalizedGraph NormalizedGraph::from_parsed(
     }
     return pin == "Y" || pin == "YS" || pin == "YC" || pin == "Q" ||
            pin == "X" || pin == "CO" || pin == "SUM" || pin == "S" ||
-           pin == "YPAD" || pin == "DO";
+           pin == "YPAD" || pin == "DO" || pin == "HI" || pin == "LO";
   };
 
   auto ensure_net = [&](int raw_id) {
@@ -205,9 +207,13 @@ NormalizedGraph NormalizedGraph::from_parsed(
     const auto entry = cell_map.lookup(cell.type);
     if (!entry) {
       if (policy == "blackbox") {
+        // Policy 1: EVERY output net of a blackboxed cell must be tagged so it
+        // leaves the denominator. Use the direction-aware helper (same one
+        // instance blackboxing uses) -- a bare pin-name whitelist missed
+        // Sky130's dominant "X" output and conb's HI/LO.
         for (const auto& [pin, bits] : cell.conns) {
-          for (int bit : bits) {
-            if (pin == "Y" || pin == "YS" || pin == "YC" || pin == "Q") {
+          if (is_output_pin(cell, pin)) {
+            for (int bit : bits) {
               ng.nets[bit].is_blackboxed = true;
               ng.blackboxed.insert(bit);
             }
@@ -232,9 +238,10 @@ NormalizedGraph NormalizedGraph::from_parsed(
             }
           }
         } else {
+          // Deferred entry without outputs metadata: fall back to the same
+          // direction-aware helper (covers X / HI / LO, not just Y*/Q).
           for (const auto& [pin, bits] : cell.conns) {
-            if (pin == "Y" || pin == "YS" || pin == "YC" || pin == "Q" ||
-                pin == "YPAD" || pin == "DO") {
+            if (is_output_pin(cell, pin)) {
               for (int bit : bits) {
                 ng.nets[bit].is_blackboxed = true;
                 ng.blackboxed.insert(bit);
@@ -445,30 +452,69 @@ NormalizedGraph NormalizedGraph::from_parsed(
     }
   }
 
-  // Levelization: level = 1 + max(driver levels); sources at 0
-  bool changed = true;
-  int guard = 0;
-  while (changed && guard++ < static_cast<int>(ng.nodes.size()) + 5) {
-    changed = false;
-    for (auto& [nid, node] : ng.nodes) {
-      if (node.type == NodeType::FF) {
-        node.level = 0;
+  // Levelization: level = 1 + max(driver levels); sources at 0.
+  //
+  // Single-pass Kahn longest-path in O(V + E). FF outputs and source nodes
+  // (PIs, constants) are level 0; every other node is 1 + max(driver level).
+  // FFs are treated as level-0 sources whose own inputs are ignored here, which
+  // also breaks all sequential feedback so the combinational edge subgraph is a
+  // DAG. This yields the identical node levels an iterate-to-fixpoint relaxation
+  // converges to, but avoids its O(depth * V * log V) worst case — a real blowup
+  // on deep, non-topologically-ordered netlists (e.g. a flattened multi-thousand-
+  // level FIR) where std::map iteration order fights the dataflow order.
+  std::unordered_map<int, int> indeg;
+  std::unordered_map<int, int> level;
+  std::unordered_map<int, std::vector<int>> consumers;
+  indeg.reserve(ng.nodes.size() * 2);
+  level.reserve(ng.nodes.size() * 2);
+  consumers.reserve(ng.nodes.size() * 2);
+  for (const auto& [nid, node] : ng.nodes) {
+    (void)node;
+    indeg[nid] = 0;
+    level[nid] = 0;
+  }
+  for (const auto& [nid, node] : ng.nodes) {
+    if (node.type == NodeType::FF) {
+      continue;  // level-0 source; ignore inputs (also breaks sequential loops)
+    }
+    for (const auto& [pin, in_net] : node.input_pins) {
+      (void)pin;
+      const auto net_it = ng.nets.find(in_net);
+      if (net_it == ng.nets.end()) {
         continue;
       }
-      int max_in = -1;
-      for (const auto& [pin, in_net] : node.input_pins) {
-        (void)pin;
-        const int driver = ng.nets[in_net].driver;
-        if (driver >= 0 && ng.nodes.count(driver)) {
-          max_in = std::max(max_in, ng.nodes[driver].level);
-        }
-      }
-      const int new_level = (max_in < 0) ? 0 : max_in + 1;
-      if (node.level != new_level) {
-        node.level = new_level;
-        changed = true;
+      const int driver = net_it->second.driver;
+      if (driver >= 0 && driver != nid && ng.nodes.count(driver)) {
+        consumers[driver].push_back(nid);
+        ++indeg[nid];
       }
     }
+  }
+  std::vector<int> ready;
+  ready.reserve(ng.nodes.size());
+  for (const auto& [nid, deg] : indeg) {
+    if (deg == 0) {
+      ready.push_back(nid);
+    }
+  }
+  for (std::size_t head = 0; head < ready.size(); ++head) {
+    const int u = ready[head];
+    const int next_level = level[u] + 1;
+    const auto cons_it = consumers.find(u);
+    if (cons_it == consumers.end()) {
+      continue;
+    }
+    for (const int v : cons_it->second) {
+      if (next_level > level[v]) {
+        level[v] = next_level;
+      }
+      if (--indeg[v] == 0) {
+        ready.push_back(v);
+      }
+    }
+  }
+  for (auto& [nid, node] : ng.nodes) {
+    node.level = level[nid];
   }
 
   return ng;

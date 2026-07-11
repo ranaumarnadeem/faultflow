@@ -5,12 +5,35 @@ from pathlib import Path
 import pytest
 
 from faultflow.shell.errors import ShellError
+from faultflow.shell.help_text import COMMAND_HELP
 from faultflow.shell.session import ProjectSession
 from faultflow.shell.tcl_bridge import TclBridge
 
 
 def _bridge(tmp_path: Path) -> TclBridge:
     return TclBridge(ProjectSession(output_root=tmp_path / "output"))
+
+
+def test_every_registered_command_has_help_and_vice_versa(tmp_path: Path) -> None:
+    """A command registered in TclBridge but missing from COMMAND_HELP silently
+    reports "unknown command" from `help <name>` even though it works fine --
+    e.g. `retarget` shipped with no help entry for a while. Guard both
+    directions so this can't regress silently again."""
+    bridge = _bridge(tmp_path)
+    registered = set(bridge._handlers.keys())
+    documented = set(COMMAND_HELP.keys())
+
+    assert registered - documented == set(), "registered command(s) with no help"
+    assert documented - registered == set(), "help entry/entries for unknown command(s)"
+
+
+def test_help_retarget_is_documented(tmp_path: Path) -> None:
+    text = str(_bridge(tmp_path).call("help", "retarget"))
+
+    assert text.startswith("retarget")
+    assert "-patterns PATH -soc_access PATH -block NAME -o PATH" in text
+    assert "Requires:" in text
+    assert "Example:" in text
 
 
 def test_help_overview_is_categorized_and_descriptive(tmp_path: Path) -> None:

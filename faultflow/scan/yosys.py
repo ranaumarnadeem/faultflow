@@ -106,10 +106,21 @@ def verilog_to_json(
     output_json: Path,
     log_path: Path,
     script_path: Path,
-    *,
-    verilog_models: Path | None = None,
 ) -> Path:
-    """Import gate-level Verilog for C++ JSON simulation (optional fallback path)."""
+    """Import gate-level Verilog for C++ JSON simulation (optional fallback path).
+
+    Deliberately does NOT read cell library behavioral models and does NOT run
+    `hierarchy -check`: the C++ core resolves cell semantics from the selected
+    cell-map JSON at simulation time, not from Yosys elaboration, so referenced
+    library cells only need to survive as opaque (type-name-only) instances --
+    `hierarchy` without `-check` does exactly that. Reading the real Sky130
+    behavioral models here was tried and reliably fails: they use full UDP
+    `primitive`/`table` blocks that Yosys's Verilog-2005 frontend cannot parse
+    (a real frontend limitation, not a flag to work around), and even with those
+    primitive declarations skipped (`-DNO_PRIMITIVES`), `-DFUNCTIONAL` still ends
+    up selected for the cell body regardless of macro state, referencing a UDP
+    type that was never defined.
+    """
     yosys = shutil.which("yosys")
     if yosys is None:
         raise ScanError("verilog import requires yosys on PATH")
@@ -118,16 +129,11 @@ def verilog_to_json(
 
     output_json.parent.mkdir(parents=True, exist_ok=True)
     script_path.parent.mkdir(parents=True, exist_ok=True)
-    lines: list[str] = []
-    if verilog_models is not None and verilog_models.exists():
-        lines.append(f"read_verilog -DNO_PRIMITIVES {_quote(verilog_models)}")
-    lines.extend(
-        [
-            f"read_verilog {_quote(verilog)}",
-            f"hierarchy -check -top {top}",
-            f"write_json {_quote(output_json)}",
-        ]
-    )
+    lines = [
+        f"read_verilog {_quote(verilog)}",
+        f"hierarchy -top {top}",
+        f"write_json {_quote(output_json)}",
+    ]
     script_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     proc = subprocess.run(
         [yosys, "-Q", "-s", str(script_path)],

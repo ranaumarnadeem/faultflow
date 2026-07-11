@@ -132,7 +132,7 @@ def test_transition_with_multiple_declared_clocks_allowed(tmp_path: Path) -> Non
         "\n[clocks]\nports = clk_a, clk_b\n",
     )
     text = cfg_path.read_text(encoding="utf-8").replace(
-        "model = stuck_at", "model = transition"
+        "model = stuck_at", "model = transition\ncollapsing = false"
     )
     cfg_path.write_text(text, encoding="utf-8")
 
@@ -145,7 +145,7 @@ def test_transition_with_single_declared_clock_allowed(tmp_path: Path) -> None:
     cfg_path = tmp_path / "config.ofs"
     _write_config(cfg_path, "\n[clocks]\nports = clk_a\n")
     text = cfg_path.read_text(encoding="utf-8").replace(
-        "model = stuck_at", "model = transition"
+        "model = stuck_at", "model = transition\ncollapsing = false"
     )
     cfg_path.write_text(text, encoding="utf-8")
 

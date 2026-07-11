@@ -21,6 +21,33 @@ Schema ``faultflow_project_v1``:
 ```
 
 Block fields are resolved relative to the manifest's directory.
+
+Interconnect ``mode`` (default ``"comb"``, back-compat with the shape above): the
+buffer-model wrapper is stateless, so its EXTEST is plain combinational ATPG on an
+already-synthesized `assembly_netlist` with the block cores blackboxed.
+
+``mode: "scan"`` targets the native, shiftable IEEE-1500 scan WBC instead: each
+block's WBC ring is sequential (an internal shift FF per pin), so its EXTEST needs
+the fused scan-EXTEST view (see `faultflow/scan/wbr_view.py`), and the assembly
+netlist doesn't pre-exist -- it's composed at run time from a glue RTL + each
+block's frozen JSON (see `faultflow/project/assemble.py`). Schema:
+
+```json
+{ "...": "...",
+  "blocks": [ {"name": "blkA", "top": "alu_acc", "soc_instance": "u_a",
+               "generic_json": "...", "scan_manifest": "..."} ],
+  "interconnect": {"assembly_top": "soc_top", "mode": "scan",
+                   "soc_rtl": "soc2/soc_glue.v",
+                   "soc_wbr_si": "soc_wbr_si", "soc_wbr_so": "soc_wbr_so",
+                   "soc_wbr_se": "soc_wbr_se", "clock_port": "clk"} }
+```
+
+``soc_instance`` is the block's instance name in ``soc_rtl`` (required, scan mode
+only) -- `assemble_soc`/`compose_soc` key blocks by glue-RTL instance name, which is
+generally not the same as the block's own ``name``/``top``. ``assembly_netlist`` /
+``blackbox_instances`` are comb-mode-only and must be absent in scan mode; the
+liberty file for glue synthesis comes from the project's `base_config` (`[design]
+liberty`), not a manifest field.
 """
 
 from __future__ import annotations
@@ -45,13 +72,25 @@ class BlockSpec:
     top: str
     generic_json: Path
     scan_manifest: Path
+    # The block's instance name in interconnect.soc_rtl -- required for mode="scan"
+    # (assemble_soc/compose_soc key blocks by glue-RTL instance name); unused for
+    # mode="comb", where the assembly netlist is already synthesized/composed.
+    soc_instance: str | None = None
 
 
 @dataclass(frozen=True)
 class InterconnectSpec:
     assembly_top: str
-    assembly_netlist: Path
-    blackbox_instances: tuple[str, ...]
+    mode: str = "comb"  # "comb" (buffer-model, back-compat) | "scan" (native WBC)
+    # comb mode:
+    assembly_netlist: Path | None = None
+    blackbox_instances: tuple[str, ...] = ()
+    # scan mode:
+    soc_rtl: Path | None = None
+    soc_wbr_si: str | None = None
+    soc_wbr_so: str | None = None
+    soc_wbr_se: str | None = None
+    clock_port: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,11 +136,19 @@ def load_project(path: str | Path) -> ProjectManifest:
         )
     root = manifest_path.resolve().parent
 
+    raw_ic = _req(data, "interconnect", "project")
+    if not isinstance(raw_ic, dict):
+        raise ProjectError("project.interconnect must be an object")
+    mode = str(raw_ic.get("mode", "comb"))
+    if mode not in ("comb", "scan"):
+        raise ProjectError(f"interconnect.mode must be 'comb' or 'scan', got {mode!r}")
+
     raw_blocks = _req(data, "blocks", "project")
     if not isinstance(raw_blocks, list) or not raw_blocks:
         raise ProjectError("project.blocks must be a non-empty list")
     blocks: list[BlockSpec] = []
     seen_tops: set[str] = set()
+    seen_instances: set[str] = set()
     for i, raw in enumerate(raw_blocks):
         where = f"project.blocks[{i}]"
         if not isinstance(raw, dict):
@@ -110,36 +157,71 @@ def load_project(path: str | Path) -> ProjectManifest:
         if top in seen_tops:
             raise ProjectError(f"{where}: duplicate block top {top!r}")
         seen_tops.add(top)
+        soc_instance: str | None = None
+        if mode == "scan":
+            soc_instance = str(_req(raw, "soc_instance", where))
+            if soc_instance in seen_instances:
+                raise ProjectError(f"{where}: duplicate soc_instance {soc_instance!r}")
+            seen_instances.add(soc_instance)
         blocks.append(
             BlockSpec(
                 name=str(raw.get("name", top)),
                 top=top,
                 generic_json=_resolve(root, _req(raw, "generic_json", where), where),
                 scan_manifest=_resolve(root, _req(raw, "scan_manifest", where), where),
+                soc_instance=soc_instance,
             )
         )
 
-    raw_ic = _req(data, "interconnect", "project")
-    if not isinstance(raw_ic, dict):
-        raise ProjectError("project.interconnect must be an object")
-    bb = raw_ic.get("blackbox_instances", [])
-    if not isinstance(bb, list) or not all(isinstance(x, str) for x in bb):
-        raise ProjectError("interconnect.blackbox_instances must be a list of strings")
     assembly_top = str(_req(raw_ic, "assembly_top", "project.interconnect"))
     if assembly_top in seen_tops:
         raise ProjectError(
             f"assembly_top {assembly_top!r} collides with a block top; "
             "the assembly must be a distinct top"
         )
-    interconnect = InterconnectSpec(
-        assembly_top=assembly_top,
-        assembly_netlist=_resolve(
-            root,
-            _req(raw_ic, "assembly_netlist", "project.interconnect"),
-            "project.interconnect",
-        ),
-        blackbox_instances=tuple(bb),
-    )
+
+    if mode == "scan":
+        for forbidden in ("assembly_netlist", "blackbox_instances"):
+            if forbidden in raw_ic:
+                raise ProjectError(
+                    f"interconnect.{forbidden} is comb-mode-only; "
+                    "mode='scan' composes the assembly netlist at run time"
+                )
+        interconnect = InterconnectSpec(
+            assembly_top=assembly_top,
+            mode="scan",
+            soc_rtl=_resolve(
+                root,
+                _req(raw_ic, "soc_rtl", "project.interconnect"),
+                "project.interconnect",
+            ),
+            soc_wbr_si=str(_req(raw_ic, "soc_wbr_si", "project.interconnect")),
+            soc_wbr_so=str(_req(raw_ic, "soc_wbr_so", "project.interconnect")),
+            soc_wbr_se=str(_req(raw_ic, "soc_wbr_se", "project.interconnect")),
+            clock_port=str(_req(raw_ic, "clock_port", "project.interconnect")),
+        )
+    else:
+        for forbidden in ("soc_rtl", "soc_wbr_si", "soc_wbr_so", "soc_wbr_se"):
+            if forbidden in raw_ic:
+                raise ProjectError(
+                    f"interconnect.{forbidden} is scan-mode-only "
+                    "(interconnect.mode='scan')"
+                )
+        bb = raw_ic.get("blackbox_instances", [])
+        if not isinstance(bb, list) or not all(isinstance(x, str) for x in bb):
+            raise ProjectError(
+                "interconnect.blackbox_instances must be a list of strings"
+            )
+        interconnect = InterconnectSpec(
+            assembly_top=assembly_top,
+            mode="comb",
+            assembly_netlist=_resolve(
+                root,
+                _req(raw_ic, "assembly_netlist", "project.interconnect"),
+                "project.interconnect",
+            ),
+            blackbox_instances=tuple(bb),
+        )
 
     agg = data.get("aggregation", {})
     policy = (

@@ -48,6 +48,19 @@ def test_schedule_rejects_non_positive() -> None:
         parse_timeout_schedule("-3", 10)
 
 
+def test_schedule_rejects_out_of_order_tiers() -> None:
+    """The escalation loop depends on the documented smallest-first ordering: a
+    descending schedule like "60,10,2" retries a fault that already timed out at
+    60s with SHORTER budgets -- pure waste that can never resolve anything new.
+    An equal adjacent tier ("2,2,60") is the same deterministic solve twice."""
+    with pytest.raises(ConfigError, match="strictly increasing"):
+        parse_timeout_schedule("60,10,2", 10)
+    with pytest.raises(ConfigError, match="strictly increasing"):
+        parse_timeout_schedule("2,60,10", 10)
+    with pytest.raises(ConfigError, match="strictly increasing"):
+        parse_timeout_schedule("2,2,60", 10)
+
+
 # --------------------------------------------------------------------------- #
 # Behavioural escalation over the native progressive loop
 # --------------------------------------------------------------------------- #

@@ -46,8 +46,65 @@ def _and_core() -> dict[str, Any]:
     }
 
 
+def _clocked_core() -> dict[str, Any]:
+    """Tiny sequential core: a single D flip-flop (clk, d -> q)."""
+    return {
+        "creator": "test",
+        "modules": {
+            "core": {
+                "attributes": {"top": "00000000000000000000000000000001"},
+                "ports": {
+                    "clk": {"direction": "input", "bits": [2]},
+                    "d": {"direction": "input", "bits": [3]},
+                    "q": {"direction": "output", "bits": [4]},
+                },
+                "cells": {
+                    "u0": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__dfxtp_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {
+                            "CLK": "input",
+                            "D": "input",
+                            "Q": "output",
+                        },
+                        "connections": {"CLK": [2], "D": [3], "Q": [4]},
+                    }
+                },
+                "netnames": {
+                    "clk": {"hide_name": 0, "bits": [2], "attributes": {}},
+                    "d": {"hide_name": 0, "bits": [3], "attributes": {}},
+                    "q": {"hide_name": 0, "bits": [4], "attributes": {}},
+                },
+            }
+        },
+    }
+
+
 def _cells(netlist: dict[str, Any]) -> dict[str, Any]:
     return netlist["modules"]["core"]["cells"]
+
+
+@pytest.mark.parametrize("model", ["buffer", "scan"])
+def test_clock_is_never_wrapped(model: str) -> None:
+    """The clock is a functional control port, not a WBR data boundary -- neither
+    model may wrap it. The buffer model used to (its clock-exclusion was gated on
+    the scan model), rewiring the core FF's CLK to an internal net so scan-check
+    could no longer map it to an input port -- breaking the whole buffer flow."""
+    out = wrap_ports(_clocked_core(), wbr_model=model, clock="clk")
+    mod = out["modules"]["core"]
+    cells = mod["cells"]
+
+    # No wrapper cell inserted for the clock port.
+    assert "__wi_clk" not in cells
+    # The core FF's CLK pin still reads the original clk input net (net 2),
+    # NOT an internal wrapper output net.
+    assert cells["u0"]["connections"]["CLK"] == [2]
+    # The clk input port survives, still on net 2.
+    assert mod["ports"]["clk"] == {"direction": "input", "bits": [2]}
+    # The data port d IS wrapped in both models.
+    assert "__wi_d" in cells
 
 
 def test_buffer_model_inserts_transparent_wrappers() -> None:

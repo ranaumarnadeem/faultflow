@@ -98,6 +98,7 @@ user_guide/outputs
 
 architecture/overview
 architecture/cell_libraries
+collapsing_rules
 ```
 
 ```{toctree}

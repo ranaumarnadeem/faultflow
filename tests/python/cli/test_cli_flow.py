@@ -1,3 +1,5 @@
+import json
+import sqlite3
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
@@ -13,9 +15,11 @@ from faultflow.db import (
     record_reconvergent_stems,
     record_sat_outcomes,
 )
+from faultflow.db.campaign import SchemaError
 from db_v3_helpers import insert_campaign, insert_fault_row, insert_run
 from faultflow.reporter import CoverageError, write_reports
 from faultflow.runner import Runner, RunnerError
+from faultflow.scan.errors import ScanError
 import faultflow.runner.runner as runner_mod
 
 
@@ -64,6 +68,118 @@ def test_init_creates_top_output_dir(
 
     assert main(["init", "--top", "demo", "-c", str(cfg)]) == 0
     assert (tmp_path / "output" / "demo" / ".faultflow" / "faultflow.sqlite").exists()
+
+
+def test_sim_on_sequential_design_gives_clean_scan_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    require_cpp_core: None,
+) -> None:
+    """Plain (non-scan) `sim` on a design with flip-flops must fail with a clean,
+    actionable CLI error pointing at --scan (exit 2), not leak the C++ engine's
+    bare `progressive native ATPG is combinational-only` RuntimeError traceback --
+    forgetting --scan on a sequential design is a very common mistake."""
+    monkeypatch.chdir(tmp_path)
+    repo = Path(__file__).resolve().parents[3]
+    fixture = repo / "tests" / "cpp" / "fixtures" / "tiny_dff.json"
+    cell_lib = repo / "cells" / "sky130" / "sky130_fd_sc_hd.json"
+    cfg = tmp_path / "config.ofs"
+    cfg.write_text(
+        f"""
+[design]
+netlist = {fixture}
+cell_lib = {cell_lib}
+
+[fault_model]
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+mode = comb
+compaction = none
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+
+    assert main(["init", "--top", "tiny_dff", "-c", str(cfg)]) == 0
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exc:
+        main(["sim", "--top", "tiny_dff", "-c", str(cfg)])
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "sequential elements" in err
+    assert "--scan" in err
+    assert "Traceback" not in err
+    assert "combinational-only" not in err  # the raw engine message is not leaked
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        SchemaError("Legacy database schema detected. Re-run with --clean."),
+        CoverageError("coverage report failed schema validation"),
+        ScanError("scan chain validation failed"),
+        sqlite3.OperationalError("database is locked"),
+    ],
+    ids=["schema", "coverage", "scan", "sqlite"],
+)
+def test_cli_maps_every_domain_error_to_clean_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    raised: Exception,
+) -> None:
+    """Every faultflow domain error (they all subclass RuntimeError by convention)
+    and sqlite3 errors carry user-actionable messages -- e.g. SchemaError's
+    "Re-run with --clean" hint -- and must reach the user as a clean `error: ...`
+    with exit code 2, never as a raw traceback."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    import faultflow.cli as cli_mod
+
+    def boom(_self: object, _cfg: object, **_kwargs: object) -> object:
+        raise raised
+
+    monkeypatch.setattr(cli_mod.FlowService, "run_atpg", boom)
+
+    with pytest.raises(SystemExit) as exc:
+        main(["sim", "--top", "demo", "-c", str(cfg)])
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert str(raised) in err
+    assert "Traceback" not in err
+
+
+def test_status_command_smoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`status` is wired via argparse -> FlowService.status -> Runner.status. A
+    dest= typo on --scan or the `status` subparser itself would go undetected
+    without an actual `main([...])` invocation (FlowService.status is otherwise
+    only exercised directly, never through the CLI)."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    (tmp_path / "missing.json").write_text("{}", encoding="utf-8")
+
+    assert main(["init", "--top", "demo", "-c", str(cfg)]) == 0
+    capsys.readouterr()
+
+    # No campaign run yet -> status reports coverage=n/a, but must still exit 0
+    # and correctly thread the --scan flag through to FlowService/Runner (the
+    # printed scan_mode reflects the actual arg, proving argparse wiring works).
+    assert main(["status", "--top", "demo", "-c", str(cfg)]) == 0
+    assert "scan_mode=false" in capsys.readouterr().out
+
+    assert main(["status", "--top", "demo", "-c", str(cfg), "--scan"]) == 0
+    assert "scan_mode=true" in capsys.readouterr().out
 
 
 def test_init_rejects_fingerprint_mismatch_by_field(
@@ -381,6 +497,122 @@ def test_coverage_report_schema_and_denominator_invariant(
         assert report["run"]["atpg_terminal_reason"] == "THRESHOLD_MET"
         assert report["run"]["atpg_rounds"] == 2
         assert report["run"]["atpg_sat"] == 4
+    finally:
+        conn.close()
+
+
+def _parse_coverage_rpt(text: str) -> dict[str, float]:
+    """Pull the numeric summary fields out of coverage.rpt's ``key: value`` lines.
+
+    Field names in the .rpt use a shorthand (``fault_coverage_%`` instead of
+    ``fault_coverage_percent``) — map them to their coverage_report.json keys.
+    """
+    rename = {
+        "fault_coverage_%": "fault_coverage_percent",
+        "test_coverage_%": "test_coverage_percent",
+        "coverage_percent": "coverage_percent",
+    }
+    values: dict[str, float] = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, _, raw = line.partition(":")
+        key = key.strip()
+        if key not in (
+            "total_raw_faults",
+            "structural_eligible",
+            "denominator",
+            "detected",
+            "undetected",
+            "redundant",
+            "collapsed",
+            "excluded_blackbox",
+            "excluded_clock",
+            "excluded_reset",
+            "fault_coverage_%",
+            "test_coverage_%",
+            "coverage_percent",
+        ):
+            continue
+        values[rename.get(key, key)] = float(raw.strip())
+    return values
+
+
+def test_coverage_rpt_and_json_agree_on_summary_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """coverage.rpt (text) and coverage_report.json are both written by
+    write_reports() from the SAME in-memory `data`/`report` dict (see
+    faultflow/reporter/coverage.py::write_reports) — never computed
+    independently. Parse the .rpt's numeric summary fields and assert they
+    match coverage_report.json's `summary` numerically, for a real generated
+    report, so any future refactor that lets them drift apart is caught."""
+    monkeypatch.chdir(tmp_path)
+    schema_dir = tmp_path / "schemas"
+    schema_dir.mkdir(parents=True)
+    shutil.copy(
+        Path(__file__).resolve().parents[3] / "schemas/coverage.schema.json",
+        schema_dir / "coverage.schema.json",
+    )
+    cfg_path = tmp_path / "config.ofs"
+    _config(cfg_path)
+    cfg = load_config(cfg_path, "demo")
+    conn = connect(cfg.db_path)
+    try:
+        init_schema(conn)
+        campaign_id = insert_campaign(conn)
+        insert_run(conn, campaign_id, vector_count=5)
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=1,
+            net_name="a",
+            compiled_net_index=1,
+            fault_type="sa0",
+            status="detected",
+        )
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=1,
+            net_name="a",
+            compiled_net_index=1,
+            fault_type="sa1",
+            status="undetected",
+        )
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=2,
+            net_name="b",
+            compiled_net_index=2,
+            fault_type="sa0",
+            status="undetected",
+            collapsed_into=1,
+        )
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=3,
+            net_name="clk",
+            compiled_net_index=3,
+            fault_type="sa0",
+            status="excluded",
+            exclusion="clock",
+        )
+        conn.commit()
+
+        json_path, txt_path, report = write_reports(conn, cfg, campaign_id=campaign_id)
+
+        json_summary = json.loads(json_path.read_text(encoding="utf-8"))["summary"]
+        rpt_values = _parse_coverage_rpt(txt_path.read_text(encoding="utf-8"))
+
+        assert rpt_values, "expected numeric summary fields in coverage.rpt"
+        for key, rpt_value in rpt_values.items():
+            assert key in json_summary, f"{key} in .rpt but not in .json summary"
+            assert rpt_value == pytest.approx(
+                json_summary[key]
+            ), f"{key} mismatch: rpt={rpt_value} json={json_summary[key]}"
     finally:
         conn.close()
 

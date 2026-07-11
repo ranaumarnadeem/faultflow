@@ -106,8 +106,7 @@ sphinx-build -b html docs docs/_build/html
 ```
 
 Or, from `docs/`, `make html`. The site is published to GitHub Pages automatically by
-`.github/workflows/docs.yml` on pushes to `main`. The internal planning notes under
-`docs/plans/` (including `docs/plans/papers/`) are intentionally excluded from the build.
+`.github/workflows/docs.yml` on pushes to `main`.
 
 ## Where the deep specs live
 

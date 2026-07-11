@@ -48,6 +48,7 @@ from faultflow.scan import (
     write_scan_techmap,
     run_scan_techmap,
     run_scan_techmap_json,
+    verilog_to_json,
 )
 from faultflow.rule_check.model import RuleCheckReport
 from faultflow.scan.checks import check_scan_structure
@@ -83,7 +84,7 @@ TRANSIENT_NAMES = {
 }
 
 
-YOSYS_TEMPLATE = """read_verilog {verilog}
+YOSYS_TEMPLATE = """read_verilog -sv {verilog}
 hierarchy -check -top {top}
 proc
 flatten
@@ -92,6 +93,7 @@ opt_clean
 synth -top {top}
 dfflibmap -liberty {liberty}
 abc -liberty {liberty}
+delete t:$scopeinfo
 clean
 write_json {json}
 write_verilog {gate_verilog}
@@ -310,7 +312,7 @@ class Runner:
 
     def _existing_verilog_source(self) -> Path | None:
         candidates = []
-        if self.cfg.netlist.suffix == ".v":
+        if self.cfg.netlist.suffix in {".v", ".sv"}:
             candidates.append(self.cfg.netlist)
         candidates.extend(
             [
@@ -428,8 +430,6 @@ class Runner:
         return result
 
     def _find_verilog_source(self) -> Path:
-        if self.cfg.netlist.suffix == ".sv":
-            raise RunnerError("SystemVerilog (.sv) is not supported yet")
         existing = self._existing_verilog_source()
         if existing is not None:
             return existing
@@ -905,6 +905,23 @@ class Runner:
         except ScanError as exc:
             raise RunnerError(str(exc)) from exc
 
+        # Re-deriving techmap_json from techmap_verilog (above) only proves the
+        # techmap PROCESS is reproducible -- it never reads sky130_v itself, so a
+        # sky130_verilog that has drifted from that process (corrupted, hand-edited,
+        # written by a stale/different techmap run) would go undetected. Import the
+        # actual on-disk artifact and compare its behavior too.
+        sky130_json = self.cfg.intermediate_dir / "scan_sky130_check.json"
+        try:
+            verilog_to_json(
+                sky130_v,
+                str(manifest["top"]),
+                sky130_json,
+                self.cfg.logs_dir / "yosys_sky130_check.log",
+                self.cfg.generated_scripts_dir / "yosys_sky130_check.ys",
+            )
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+
         generic_out = self._sequence_outputs(
             generic_json,
             scanned_vectors,
@@ -925,10 +942,97 @@ class Runner:
             raise RunnerError(
                 "normal-mode generic scan outputs differ from techmapped scan outputs"
             )
+        sky130_out = self._sequence_outputs(
+            sky130_json,
+            scanned_vectors,
+            output_order,
+            clock_names,
+            extra_inputs=scan_extra,
+            cell_map_path=self.cfg.cell_lib,
+        )
+        if generic_out != sky130_out:
+            raise RunnerError(
+                "normal-mode generic scan outputs differ from the on-disk "
+                f"sky130_verilog artifact ({sky130_v})"
+            )
         return {
             "vector_count": scanned_vectors.count,
             "techmap_json": str(techmap_json),
             "sky130_verilog": str(sky130_v),
+            "sky130_json": str(sky130_json),
+        }
+
+    def verify_techmapped_netlist(self, destination: Path) -> dict[str, object]:
+        """Verify a just-written techmapped scan Verilog netlist is functionally
+        equivalent to the generic scan JSON it was mapped from.
+
+        ``write_netlist -scan -techmap`` writes real Sky130 scan cells; ``-verify``
+        must prove that mapped netlist behaves identically to the generic
+        ``$scanff_faultflow`` design it came from. Import ``destination`` back to
+        JSON (``verilog_to_json`` -- referenced cells stay opaque, the C++ core
+        resolves their semantics from the cell-map at sim time), then fault-free
+        sequence-simulate the generic scan JSON and the imported mapped netlist over
+        the same scan-pattern vectors (generic via the generic scan cell map, mapped
+        via the Sky130 cell_lib) and require identical outputs. Raises RunnerError on
+        any mismatch or missing prerequisite. Mirrors the comparison in
+        ``_run_scan_techmap_equivalence_check``, but pinned to the EXACT file
+        ``write_netlist`` produced rather than the manifest's ``sky130_verilog``.
+        """
+        manifest_path = self._scan_manifest_path()
+        if not manifest_path.exists():
+            raise RunnerError(f"scan manifest not found: {manifest_path}")
+        manifest = load_manifest(manifest_path)
+        generic_json = Path(str(manifest["generic_json"]))
+        if not destination.exists():
+            raise RunnerError(f"techmapped netlist not found: {destination}")
+
+        (
+            _vectors,
+            scanned_vectors,
+            output_order,
+            clock_names,
+            scan_extra,
+            _vector_source,
+        ) = self._scan_normal_mode_context(manifest, None)
+
+        mapped_json = self.cfg.intermediate_dir / "scan_write_verify.json"
+        try:
+            verilog_to_json(
+                destination,
+                str(manifest["top"]),
+                mapped_json,
+                self.cfg.logs_dir / "yosys_write_verify.log",
+                self.cfg.generated_scripts_dir / "yosys_write_verify.ys",
+            )
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+
+        generic_out = self._sequence_outputs(
+            generic_json,
+            scanned_vectors,
+            output_order,
+            clock_names,
+            extra_inputs=scan_extra,
+            cell_map_path=resolve_scan_cell_map(self.cfg),
+        )
+        mapped_out = self._sequence_outputs(
+            mapped_json,
+            scanned_vectors,
+            output_order,
+            clock_names,
+            extra_inputs=scan_extra,
+            cell_map_path=self.cfg.cell_lib,
+        )
+        if generic_out != mapped_out:
+            raise RunnerError(
+                "techmap verify: written netlist outputs differ from the generic "
+                f"scan netlist ({destination})"
+            )
+        return {
+            "verified": True,
+            "vector_count": scanned_vectors.count,
+            "mapped_json": str(mapped_json),
+            "netlist": str(destination),
         }
 
     def scan_check(
@@ -1422,6 +1526,7 @@ class Runner:
             work_dir=self.cfg.verification_dir,
             gate_verilog=self._find_gate_verilog(),
             verilog_models=[self.cfg.verilog_models],
+            use_power_pins=self.cfg.simulation.verify_use_power_pins,
         )
 
         sequential_steps = None
@@ -1639,16 +1744,30 @@ class Runner:
                 vector_source = "native_transition_atpg"
             else:
                 log.info("sim    running progressive ATPG (top=%s) ...", self.cfg.top)
-                vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
-                    run_progressive_native_atpg(
-                        self.cfg,
-                        netlist,
-                        model_id,
-                        campaign_id=campaign_id,
-                        max_rounds=max_rounds,
-                        target_coverage=target_coverage,
+                try:
+                    vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
+                        run_progressive_native_atpg(
+                            self.cfg,
+                            netlist,
+                            model_id,
+                            campaign_id=campaign_id,
+                            max_rounds=max_rounds,
+                            target_coverage=target_coverage,
+                        )
                     )
-                )
+                except RuntimeError as exc:
+                    # The C++ engine rejects sequential designs on the plain
+                    # combinational path. Turn its bare "combinational-only"
+                    # runtime error into an actionable one pointing at --scan,
+                    # instead of leaking a raw traceback for a very common mistake.
+                    if "combinational-only" in str(exc):
+                        raise RunnerError(
+                            "design has sequential elements (flip-flops); "
+                            "combinational sim/ATPG cannot test it. Insert scan "
+                            "(add_scan / ff.py scan) and run with --scan "
+                            "(ff.py sim --scan, or run_atpg -scan in the shell)."
+                        ) from exc
+                    raise
                 vector_source = "native_sat_atpg"
             sidecar = self.cfg.intermediate_dir / vector_source
             atpg_terminal = atpg_stats.terminal_reason

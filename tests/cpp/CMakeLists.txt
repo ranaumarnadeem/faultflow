@@ -30,6 +30,7 @@ add_executable(
   atpg/test_scan_transition_atpg.cpp
   atpg/test_scan_los_transition_atpg.cpp
   atpg/test_progressive_sim.cpp
+  atpg/test_sat_timeout.cpp
   atpg/test_parallel_sim.cpp
   atpg/test_compaction.cpp
   atpg/test_blackbox_boundary_atpg.cpp

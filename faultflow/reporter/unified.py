@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from faultflow.config import FaultflowConfig
-from faultflow.db import latest_campaign_id, summary
+from faultflow.db import connect, latest_campaign_id, summary
 
 
 def _campaign(conn: sqlite3.Connection, campaign_type: str) -> dict[str, Any] | None:
@@ -65,8 +65,10 @@ def write_unified_report(cfg: FaultflowConfig) -> Path:
     scan: dict[str, Any] | None = None
     comb: dict[str, Any] | None = None
     if cfg.db_path.exists():
-        conn = sqlite3.connect(cfg.db_path)
-        conn.row_factory = sqlite3.Row
+        # Policy connect(): busy_timeout=30000 so a report generated beside a
+        # live ATPG writer waits out the commit window instead of failing after
+        # the stdlib's 5s default (long single commits are real on /mnt/c).
+        conn = connect(cfg.db_path)
         try:
             scan = _campaign(conn, "scan")
             comb = _campaign(conn, "comb")

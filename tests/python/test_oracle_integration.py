@@ -234,6 +234,33 @@ def test_write_oracle_response_creates_file(tmp_path: Path) -> None:
     assert loaded["coverage_percent"] == pytest.approx(75.0)
 
 
+def test_write_oracle_response_invalid_raises(tmp_path: Path) -> None:
+    """A response failing schema validation must be fatal, not a silent warning.
+
+    terminal_reason is set to a value outside the schema enum, so a well-formed
+    jsonschema install will reject it -- write_oracle_response must raise instead
+    of writing the malformed response to disk.
+    """
+    pytest.importorskip("jsonschema")
+    resp = build_oracle_response(_fake_report(), manifest=None)
+    resp["terminal_reason"] = "not_a_valid_enum_value"
+    out = tmp_path / "oracle_response.json"
+    with pytest.raises(Exception):
+        write_oracle_response(resp, out)
+    assert not out.exists()
+
+
+def test_write_oracle_response_missing_required_field_raises(tmp_path: Path) -> None:
+    """A response missing a schema-required field must also be fatal."""
+    pytest.importorskip("jsonschema")
+    resp = build_oracle_response(_fake_report(), manifest=None)
+    del resp["backend"]
+    out = tmp_path / "oracle_response.json"
+    with pytest.raises(Exception):
+        write_oracle_response(resp, out)
+    assert not out.exists()
+
+
 # --------------------------------------------------------------------------- #
 # M1-G01 — golden: run_oracle end-to-end writes valid oracle_response.json
 # --------------------------------------------------------------------------- #

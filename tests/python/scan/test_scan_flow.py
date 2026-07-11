@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -345,6 +346,7 @@ def test_async_reset_transition_atpg_with_reset_faults(
     bridge.call("use_lib_cells", "sky130")
     bridge.call("add_clock", "clk")
     bridge.call("set_option", "fault_model.include_reset_faults", "true")
+    bridge.call("set_option", "fault_model.collapsing", "false")
     # buffer WBC: transition (LOC/LOS) ATPG is unsupported with the 1-FF scan WBC.
     bridge.call("set_option", "wrap.wbr_model", "buffer")
     bridge.call("synth")
@@ -487,3 +489,97 @@ def test_yosys_scan_techmap_produces_sky130_cell(tmp_path: Path) -> None:
     text = out_v.read_text(encoding="utf-8")
     assert "sky130_fd_sc_hd__sdfxtp_1" in text
     assert "scanff_faultflow" not in text
+
+
+def test_scan_status_command_smoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`scan-status` is wired via argparse -> FlowService.scan_status ->
+    Runner.scan_status. Only exercised directly against FlowService/Runner
+    elsewhere; a dest= typo on the subparser itself would go undetected without
+    an actual `main([...])` invocation."""
+    monkeypatch.chdir(tmp_path)
+    source = _write_json(tmp_path / "tiny_dff.json", _tiny_dff_json())
+    cfg = _write_config(tmp_path / "config.ofs", source)
+
+    assert main(["scan", "--top", "tiny_dff", "-c", str(cfg), "--no-techmap"]) == 0
+    capsys.readouterr()
+
+    assert main(["scan-status", "--top", "tiny_dff", "-c", str(cfg)]) == 0
+    out = capsys.readouterr().out
+    assert "top=tiny_dff" in out
+    assert "scan_cells=1" in out
+
+
+@pytest.mark.integration
+def test_scan_techmap_command_smoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`scan-techmap` is wired via argparse -> FlowService.regenerate_scan_techmap
+    -> Runner.scan_techmap. Requires yosys to actually regenerate the Sky130
+    Verilog; skipped when unavailable, matching the existing integration-test
+    pattern in this file."""
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+    monkeypatch.chdir(tmp_path)
+    source = _write_json(tmp_path / "tiny_dff.json", _tiny_dff_json())
+    cfg = _write_config(tmp_path / "config.ofs", source)
+
+    assert main(["scan", "--top", "tiny_dff", "-c", str(cfg), "--no-techmap"]) == 0
+    capsys.readouterr()
+
+    assert main(["scan-techmap", "--top", "tiny_dff", "-c", str(cfg)]) == 0
+    out = capsys.readouterr().out
+    assert "scan techmap complete top=tiny_dff" in out
+    sky130_v = tmp_path / "output/tiny_dff/tiny_dff_scan.v"
+    assert sky130_v.exists()
+    assert "sky130_fd_sc_hd__sdfxtp_1" in sky130_v.read_text(encoding="utf-8")
+
+
+def test_scan_skip_techmap_forces_run_techmap_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--skip-techmap is a legacy argparse.SUPPRESS alias (cli.py ~L218-222)
+    that must force run_techmap=False regardless of --techmap/--no-techmap,
+    by overriding args.techmap at dispatch (cli.py ~L378-380). Mock
+    FlowService.insert_scan to capture the kwargs actually passed, rather than
+    running a full techmap."""
+    monkeypatch.chdir(tmp_path)
+    source = _write_json(tmp_path / "tiny_dff.json", _tiny_dff_json())
+    cfg = _write_config(tmp_path / "config.ofs", source)
+
+    import faultflow.cli as cli_mod
+
+    captured: dict[str, object] = {}
+
+    def fake_insert_scan(_self: object, _cfg: object, **options: object) -> object:
+        captured.clear()
+        captured.update(options)
+        return SimpleNamespace(message="scan complete (stub)")
+
+    monkeypatch.setattr(cli_mod.FlowService, "insert_scan", fake_insert_scan)
+
+    # --skip-techmap alone (no explicit --techmap) -> run_techmap forced False.
+    assert main(["scan", "--top", "tiny_dff", "-c", str(cfg), "--skip-techmap"]) == 0
+    assert captured["run_techmap"] is False
+
+    # --skip-techmap even overrides an explicit --techmap request.
+    assert (
+        main(
+            [
+                "scan",
+                "--top",
+                "tiny_dff",
+                "-c",
+                str(cfg),
+                "--techmap",
+                "--skip-techmap",
+            ]
+        )
+        == 0
+    )
+    assert captured["run_techmap"] is False
+
+    # Sanity: without --skip-techmap, --techmap is honored as True.
+    assert main(["scan", "--top", "tiny_dff", "-c", str(cfg), "--techmap"]) == 0
+    assert captured["run_techmap"] is True

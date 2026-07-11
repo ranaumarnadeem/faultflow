@@ -39,11 +39,13 @@ without losing coverage fidelity.
 
 ## Fault collapsing
 
-Many faults are logically equivalent (always detected together) or dominated by
-others. **Collapsing** removes the redundant ones from the fault list so coverage is
-computed over a minimal, non-redundant set. faultflow applies verified equivalence and
-dominance rules for simple primitives (INV/BUF equivalence, AND/OR/NAND/NOR
-dominance) and deliberately leaves compound cells uncollapsed. Collapsing is off by
+Many faults share the exact same set of detecting vectors. **Collapsing** removes such
+redundant faults from the fault list so coverage is computed over a minimal set.
+faultflow collapses by **equivalence only** (never dominance), so coverage is provably
+unchanged: INV/BUF, the controlling-value input polarity of AND/OR/NAND/NOR, and the
+Sky130 compound AOI/OAI cells (`a21oi`, `o21ai`, `a22oi`, …) via exhaustively-derived
+classes. XOR/XNOR have no equivalent faults and are left untouched. See
+[Collapsing rules](../collapsing_rules.md) for the full table. Collapsing is off by
 default (`[fault_model] collapsing = false`).
 
 ## ATPG

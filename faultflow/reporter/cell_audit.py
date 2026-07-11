@@ -9,9 +9,8 @@ Given a synthesized Yosys JSON netlist and a faultflow JSON cell map, report --
   * cell types NOT covered by the cell map (they would be blackboxed under the
     ``blackbox`` policy, or hard-fail under ``fail``).
 
-This module owns the glob-match and counting logic. It is consumed both by the
-``scripts/techmap_audit.py`` CLI wrapper and by the ``check_cells`` shell
-command.
+This module owns the glob-match and counting logic; it backs the ``check_cells``
+shell command.
 """
 
 from __future__ import annotations

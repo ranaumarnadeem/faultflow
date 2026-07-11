@@ -70,3 +70,11 @@ cmake --build build -- -j2
 ctest --test-dir build --output-on-failure
 PYTHONPATH=. venv/bin/pytest tests/python -q
 ```
+
+## Nix
+
+A flake (`flake.nix` + `nix/`) packages the above: `nix develop` for the full
+toolchain, `nix build` for a standalone `faultflow` binary, `nix flake check`
+to run both full test suites fully hermetically. See
+[`docs/getting_started/installation.md`](docs/getting_started/installation.md#building-with-nix)
+for details.

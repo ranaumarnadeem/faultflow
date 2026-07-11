@@ -95,6 +95,47 @@ def test_intest_extest_commands_force_mode_and_scan(
     assert captured == {"test_mode": "extest", "scan": True}
 
 
+def test_sim_export_patterns_flag_reaches_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`sim --scan --export-patterns PATH` must thread PATH through to
+    Runner.sim(export_patterns=...), matching the shell's
+    `run_atpg -scan -export-patterns` contract (tcl_bridge.py)."""
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "tiny_dff.json"
+    source.write_text(json.dumps(_tiny_dff_json(), indent=2) + "\n", encoding="utf-8")
+    cfg = _write_basic_config(tmp_path, source)
+    patterns_path = tmp_path / "patterns.json"
+
+    import faultflow.runner.runner as runner_mod
+
+    captured: dict[str, object] = {}
+
+    def fake_sim(self: object, **kwargs: object) -> str:
+        captured["scan"] = kwargs.get("scan")
+        captured["export_patterns"] = kwargs.get("export_patterns")
+        return "sim complete (stub)"
+
+    monkeypatch.setattr(runner_mod.Runner, "sim", fake_sim)
+
+    assert (
+        main(
+            [
+                "sim",
+                "--scan",
+                "--top",
+                "tiny_dff",
+                "-c",
+                str(cfg),
+                "--export-patterns",
+                str(patterns_path),
+            ]
+        )
+        == 0
+    )
+    assert captured == {"scan": True, "export_patterns": patterns_path}
+
+
 def test_sim_scan_ext_blocked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

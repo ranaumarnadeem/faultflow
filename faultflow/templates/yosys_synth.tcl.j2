@@ -1,4 +1,4 @@
-read_verilog {{ verilog }}
+read_verilog -sv {{ verilog }}
 hierarchy -check -top {{ top }}
 proc
 flatten
@@ -7,6 +7,7 @@ opt_clean
 synth -top {{ top }}
 dfflibmap -liberty {{ liberty }}
 abc -liberty {{ liberty }}
+delete t:$scopeinfo
 clean
 write_json {{ output_json }}
 write_verilog {{ output_verilog }}

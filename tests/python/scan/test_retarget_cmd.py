@@ -139,3 +139,51 @@ def test_cli_retarget(tmp_path: Path) -> None:
     )
     assert rc == 0
     assert read_retargeted(out_path)["source_block"] == "blkB"
+
+
+def test_cli_retarget_missing_patterns_file_exits_cleanly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A nonexistent --patterns file must give a clean CLI error (exit 2), not a
+    raw FileNotFoundError traceback -- matching how --soc-access is guarded."""
+    _patterns, soc_path, out_path = _write_inputs(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        main(
+            [
+                "retarget",
+                "--patterns",
+                str(tmp_path / "does_not_exist.json"),
+                "--soc-access",
+                str(soc_path),
+                "--block",
+                "blkB",
+                "--out",
+                str(out_path),
+            ]
+        )
+    assert exc.value.code == 2
+    assert "patterns file not found" in capsys.readouterr().err
+
+
+def test_cli_retarget_malformed_patterns_file_exits_cleanly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _patterns, soc_path, out_path = _write_inputs(tmp_path)
+    bad = tmp_path / "bad_patterns.json"
+    bad.write_text("{not json", encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        main(
+            [
+                "retarget",
+                "--patterns",
+                str(bad),
+                "--soc-access",
+                str(soc_path),
+                "--block",
+                "blkB",
+                "--out",
+                str(out_path),
+            ]
+        )
+    assert exc.value.code == 2
+    assert "not valid JSON" in capsys.readouterr().err

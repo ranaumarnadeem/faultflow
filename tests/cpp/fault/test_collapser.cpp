@@ -261,7 +261,7 @@ TEST_CASE("Multi-fanout stem not collapsed, fanout-free branches are",
 
 // ---------------------------------------------------------------------------
 // Compound AOI/OAI cell collapsing (equivalence classes from
-// scripts/derive_collapsing_rules.py, documented in docs/collapsing_rules.md)
+// tools/derive_collapsing_rules.py, documented in docs/collapsing_rules.md)
 // ---------------------------------------------------------------------------
 
 namespace {

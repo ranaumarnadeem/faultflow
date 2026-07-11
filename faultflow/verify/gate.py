@@ -152,6 +152,8 @@ def render_testbench(
     output_order: list[str],
     vectors: VectorSet,
     sequential_steps: list[list[SequentialStep]] | None = None,
+    *,
+    use_power_pins: bool = False,
 ) -> str:
     if not input_order:
         raise VerificationError("verification requires at least one PI")
@@ -175,17 +177,26 @@ def render_testbench(
         lines.append(f"reg {_verilog_ident(name)};")
     for name in output_order:
         lines.append(f"wire {_verilog_ident(name)};")
+    if use_power_pins:
+        lines.append("reg VPWR;")
+        lines.append("reg VGND;")
 
     ports = [
         f".{_verilog_ident(name)}({_verilog_ident(name)})"
         for name in [*input_order, *output_order]
     ]
+    if use_power_pins:
+        ports.append(".VPWR(VPWR)")
+        ports.append(".VGND(VGND)")
     lines.append(f"{_verilog_ident(top)} dut (")
     for idx, port in enumerate(ports):
         suffix = "," if idx + 1 < len(ports) else ""
         lines.append(f"  {port}{suffix}")
     lines.append(");")
     lines.append("initial begin")
+    if use_power_pins:
+        lines.append("  VPWR = 1'b1;")
+        lines.append("  VGND = 1'b0;")
 
     output_concat = ", ".join(_verilog_ident(name) for name in output_order)
     if sequential_steps is None:
@@ -248,11 +259,14 @@ class IverilogVerifier:
         work_dir: Path,
         gate_verilog: Path,
         verilog_models: list[Path],
+        *,
+        use_power_pins: bool = False,
     ):
         self.top = top
         self.work_dir = work_dir
         self.gate_verilog = gate_verilog
         self.verilog_models = verilog_models
+        self.use_power_pins = use_power_pins
 
     def _write_reports(
         self, passed: bool, expected: list[dict[str, bool]], errors: list[str]
@@ -311,6 +325,7 @@ class IverilogVerifier:
                 output_order,
                 vectors,
                 sequential_steps,
+                use_power_pins=self.use_power_pins,
             ),
             encoding="utf-8",
         )
@@ -319,6 +334,7 @@ class IverilogVerifier:
             iverilog,
             "-g2012",
             "-DFUNCTIONAL",
+            *(["-DUSE_POWER_PINS"] if self.use_power_pins else []),
             "-o",
             str(exe),
             str(tb),

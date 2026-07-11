@@ -89,7 +89,7 @@ struct CompoundMember {
 };
 
 // Equivalence classes for compound AOI/OAI cells, derived exhaustively by
-// scripts/derive_collapsing_rules.py (every member of a class has an identical
+// tools/derive_collapsing_rules.py (every member of a class has an identical
 // detecting-vector set). See docs/collapsing_rules.md. A class is collapsed only
 // when every INPUT member is fanout-free; the output member (if present) is the
 // representative, otherwise the first member is. inN order matches the gate

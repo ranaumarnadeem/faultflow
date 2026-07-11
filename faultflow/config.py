@@ -74,6 +74,15 @@ def parse_timeout_schedule(value: str, fallback: int) -> list[int]:
             raise ConfigError(
                 f"sat_timeout_schedule entries must be >= 1 second, got {seconds}"
             )
+        if tiers and seconds <= tiers[-1]:
+            # The escalation loop retries a timed-out fault at the NEXT tier;
+            # a shorter or equal follow-up budget can never resolve anything
+            # the previous tier could not (the solve is deterministic), so an
+            # out-of-order schedule silently wastes the whole retry budget.
+            raise ConfigError(
+                "sat_timeout_schedule must be strictly increasing "
+                f"(smallest first): got {seconds} after {tiers[-1]}"
+            )
         tiers.append(seconds)
     return tiers
 
@@ -156,6 +165,13 @@ class SimulationConfig:
     unsupported_cells: str = "fail"
     verify: bool = False
     verify_tool: str = "iverilog"
+    # Sky130 behavioral models are `ifdef USE_POWER_PINS`-gated: the default (this
+    # flag false) branch has no VPWR/VGND ports at all (implicit supply1/supply0
+    # nets), which is what every model in cells/sky130/*.v uses out of the box, so
+    # the verify testbench needs no power-pin wiring by default. When a selected
+    # model set genuinely requires the power-pins variant, this drives VPWR=1 /
+    # VGND=0 in the generated testbench and passes -DUSE_POWER_PINS to iverilog.
+    verify_use_power_pins: bool = False
     # Tie Yosys "x"/"z" constant bits to 0 before simulation.
     # Required for netlists with unconnected/don't-care inputs (e.g. unused scan pins).
     tie_xz: bool = False
@@ -184,6 +200,14 @@ class AtpgConfig:
     mode: str = "comb"
     output: Path = Path("patterns.test")
     random_vectors: int = 64
+    # During each round's random-vector phase, stop grading further random
+    # vectors and switch straight to SAT once fault coverage reaches this
+    # percent -- or when all random_vectors are graded, whichever comes first.
+    # This avoids burning time on random fill past the point where the easy
+    # faults are already covered (SAT then targets the hard remainder). 0.0
+    # disables the early switch (always grade the full random_vectors budget);
+    # 100.0 only switches at full coverage (effectively the same).
+    random_stop_coverage: float = 85.0
     sat_conflict_limit: int = 100000
     max_rounds: int = 20
     sat_timeout_seconds: int = 10
@@ -628,6 +652,9 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             unsupported_cells=unsupported,
             verify=_bool(parser, "simulation", "verify", False),
             verify_tool=verify_tool,
+            verify_use_power_pins=_bool(
+                parser, "simulation", "verify_use_power_pins", False
+            ),
             tie_xz=_bool(parser, "simulation", "tie_xz", False),
             sim_threads=sim_threads,
         ),
@@ -636,6 +663,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             mode=atpg_mode,
             output=_path(parser, "atpg", "output", "patterns.test"),
             random_vectors=_int(parser, "atpg", "random_vectors", 64),
+            random_stop_coverage=_float(parser, "atpg", "random_stop_coverage", 85.0),
             sat_conflict_limit=_int(parser, "atpg", "sat_conflict_limit", 100000),
             max_rounds=_int(parser, "atpg", "max_rounds", 20),
             sat_timeout_seconds=_int(parser, "atpg", "sat_timeout_seconds", 10),

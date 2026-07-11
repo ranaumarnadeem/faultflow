@@ -258,11 +258,10 @@ Run a specific C++ test suite:
 wsl -e bash -c "cd /mnt/c/Users/Potato/Desktop/faultflow && ctest --test-dir build -R 'SimEngine' --output-on-failure"
 ```
 
-Run C++ benchmarks:
-
-```bash
-wsl -e bash -c "cd /mnt/c/Users/Potato/Desktop/faultflow && ./build/tests/cpp/benchmarks/benchmark_sim --benchmark_min_time=1"
-```
+There is no standalone C++ micro-benchmark binary today (no `benchmark_sim` target is
+built). The `benchmarks/` C++ sources under `tests/cpp/` are compiled into the Catch2
+`faultflow_tests` binary; performance is otherwise measured with the run-level timing
+fields reported by the tool (see the published benchmarking guide).
 
 ### Linting and Type Checking
 

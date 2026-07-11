@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://faultflow.local/schemas/rule_check.schema.json",
+  "title": "faultflow rule_check (DFT DRC) report",
+  "type": "object",
+  "required": ["version", "top", "status", "summary", "violations"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "top": { "type": "string" },
+    "status": { "enum": ["PASS", "FAIL"] },
+    "summary": {
+      "type": "object",
+      "required": ["errors", "warnings", "info"],
+      "additionalProperties": false,
+      "properties": {
+        "errors": { "type": "integer", "minimum": 0 },
+        "warnings": { "type": "integer", "minimum": 0 },
+        "info": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule_id", "severity", "title", "message"],
+        "additionalProperties": false,
+        "properties": {
+          "rule_id": { "type": "string" },
+          "severity": { "enum": ["error", "warning", "info"] },
+          "title": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    }
+  }
+}

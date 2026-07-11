@@ -56,10 +56,10 @@ The following capabilities are **implemented and working today**:
 | Verification | Optional iverilog gate that re-simulates the gate-level netlist against golden outputs |
 | Interfaces | `ff.py` argparse CLI, an interactive Tcl shell, and an OpenTestability "oracle" mode |
 
-The following are **planned** and described in the [Roadmap](roadmap.md): expanded
-multi-clock support, three-valued (X-state) simulation, a general latch model, and
-tristate/TBUF handling (currently a hard error by policy). The `rule_check` DFT
-rule-check command exists today as an initial thread whose rule set continues to grow.
+The following are **planned** and described in the [Roadmap](roadmap.md):
+three-valued (X-state) simulation, a general latch model, and tristate/TBUF handling
+(currently a hard error by policy). The `rule_check` DFT rule-check command exists
+today as an initial thread whose rule set continues to grow.
 
 ## What faultflow is not
 

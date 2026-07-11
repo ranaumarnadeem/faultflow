@@ -1,6 +1,10 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
+#include <iomanip>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include "common/errors.hpp"
@@ -64,6 +68,67 @@ TEST_CASE("NormalizedGraph c17 levelization", "[normalized_graph]") {
   REQUIRE(max_level >= 1);
 }
 
+TEST_CASE("NormalizedGraph levelization is linear-time on deep chains",
+          "[normalized_graph][perf]") {
+  // A straight chain of N inverters has logic depth N, which is the worst case
+  // for an iterate-until-fixpoint leveler: it needs N full-graph sweeps, giving
+  // O(N^2 * log N) work that spins for many seconds on a few-thousand-node chain.
+  // A single-pass topological leveler is O(N). Build the chain and require both
+  // correctness (deepest level == N) and that levelization stays well under a
+  // wall-clock bound a quadratic leveler cannot meet.
+  // Nodes are created in cell-iteration order (ParsedGraph stores cells in a
+  // std::map, i.e. ALPHABETICAL instance-name order) and keyed by that sequential
+  // id, so the leveler sweeps nodes in alphabetical-name order. Zero-pad the names
+  // so alphabetical == numeric, then wire cell g000000 as the DEEPEST node and
+  // g<N-1> as the shallowest: creation/sweep order is now the exact reverse of
+  // dataflow order — the worst case for an iterate-to-fixpoint leveler, needing N
+  // full sweeps => O(N^2). Yosys net/cell names on a real flattened netlist are
+  // likewise non-topological, which is why genericfir hit this and a naively
+  // in-order chain does not.
+  const int kChain = 6000;
+  const int kPI = kChain + 1;  // primary input net (read by the last-created cell)
+  std::ostringstream os;
+  os << R"({"modules":{"chain":{"attributes":{"top":")"
+     << "00000000000000000000000000000001"
+     << R"("},"ports":{"pi":{"direction":"input","bits":[)" << kPI
+     << R"(]},"po":{"direction":"output","bits":[1]}},"cells":{)";
+  for (int i = 0; i < kChain; ++i) {
+    if (i > 0) {
+      os << ',';
+    }
+    // cell i reads net (i+2), writes net (i+1): dataflow is g<N-1> -> ... -> g0,
+    // so g0 (first in sweep order) is the deepest node (level N).
+    std::ostringstream name;
+    name << "g" << std::setfill('0') << std::setw(6) << i;
+    os << '"' << name.str()
+       << R"(":{"type":"sky130_fd_sc_hd__inv_1","connections":{"A":[)" << (i + 2)
+       << R"(],"Y":[)" << (i + 1) << R"(]}})";
+  }
+  os << R"(},"netnames":{}}}})";
+
+  const ParsedGraph pg = ParsedGraph::from_json_string(os.str());
+  const CellMap map = CellMap::load(test::cell_map_path());
+
+  const auto t0 = std::chrono::steady_clock::now();
+  const NormalizedGraph ng = NormalizedGraph::from_parsed(pg, map, "fail");
+  const double secs =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+
+  int max_level = 0;
+  for (const auto& [id, node] : ng.nodes) {
+    (void)id;
+    if (node.gate_type != GateType::INPUT) {
+      max_level = std::max(max_level, node.level);
+    }
+  }
+  // Correctness: the last inverter in an N-long chain sits at level N.
+  REQUIRE(max_level == kChain);
+  // Performance: a single-pass topological leveler finishes in milliseconds; the
+  // old iterate-to-fixpoint leveler takes ~20s on this worst-case 6000-deep chain.
+  CAPTURE(secs);
+  REQUIRE(secs < 3.0);
+}
+
 TEST_CASE("Unsupported cell policy fail", "[normalized_graph]") {
   const CellMap yaml = CellMap::load(test::cell_map_path());
   const std::string json = R"({
@@ -79,6 +144,46 @@ TEST_CASE("Unsupported cell policy fail", "[normalized_graph]") {
   const ParsedGraph pg = ParsedGraph::from_json_string(json);
   REQUIRE_THROWS_AS(NormalizedGraph::from_parsed(pg, yaml, "fail"),
                     UnsupportedCellError);
+}
+
+TEST_CASE("Blackbox policy tags X and HI/LO output pins (Sky130 shapes)",
+          "[normalized_graph]") {
+  // Policy 1: output nets of blackboxed cells get NO fault sites and are
+  // excluded from the denominator. Half of Sky130 HD (non-inverting gates:
+  // and/or/buf/mux/a21o/...) names its output pin "X", and conb drives HI/LO.
+  // The blackbox tagging path used a stale pin whitelist (Y/YS/YC/Q) that
+  // missed all of these, silently leaving their output nets in the
+  // denominator. The tagging must agree with the direction-aware
+  // is_output_pin fallback used by instance blackboxing.
+  const CellMap map = CellMap::load(test::cell_map_path());
+  const std::string json = R"({
+    "modules": {
+      "m": {
+        "attributes": {"top": "00000000000000000000000000000001"},
+        "ports": {
+          "a": {"direction": "input", "bits": [2]},
+          "y1": {"direction": "output", "bits": [3]},
+          "y2": {"direction": "output", "bits": [4]},
+          "y3": {"direction": "output", "bits": [5]}
+        },
+        "cells": {
+          "u_bufx": {"type": "TOTALLY_UNKNOWN_BUF",
+                     "connections": {"A": [2], "X": [3]}},
+          "u_conb": {"type": "TOTALLY_UNKNOWN_CONB",
+                     "connections": {"HI": [4], "LO": [5]}}
+        },
+        "netnames": {}
+      }
+    }
+  })";
+  const ParsedGraph pg = ParsedGraph::from_json_string(json);
+  const NormalizedGraph ng = NormalizedGraph::from_parsed(pg, map, "blackbox");
+  REQUIRE(ng.blackboxed.count(3) == 1);
+  REQUIRE(ng.nets.at(3).is_blackboxed);
+  REQUIRE(ng.blackboxed.count(4) == 1);
+  REQUIRE(ng.nets.at(4).is_blackboxed);
+  REQUIRE(ng.blackboxed.count(5) == 1);
+  REQUIRE(ng.nets.at(5).is_blackboxed);
 }
 
 TEST_CASE("NormalizedGraph rejects unknown cells by default", "[normalized_graph]") {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 from pathlib import Path
 
 from faultflow.config import (
@@ -9,7 +10,7 @@ from faultflow.config import (
     load_config,
     parse_bool_value,
 )
-from faultflow.runner import Runner, RunnerError
+from faultflow.runner import Runner
 from faultflow.service import FlowService
 from faultflow.shell.repl import run_shell
 
@@ -86,6 +87,16 @@ def _parser() -> argparse.ArgumentParser:
         "--model",
         choices=["stuck-at", "transition"],
         help="Override [fault_model] model for this sim run",
+    )
+    sim.add_argument(
+        "--export-patterns",
+        dest="export_patterns",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "Export scan ATPG patterns as JSON to PATH (requires --scan); "
+            "input for `retarget --patterns`"
+        ),
     )
 
     def add_wrapper_mode_opts(p: argparse.ArgumentParser) -> None:
@@ -380,6 +391,8 @@ def main(argv: list[str] | None = None) -> int:
                 "target_coverage": args.target_coverage,
                 "scan": args.scan,
             }
+            if args.export_patterns is not None:
+                sim_kwargs["export_patterns"] = args.export_patterns
             if args.ext is None:
                 print(service.run_atpg(cfg, **sim_kwargs).message)
             else:
@@ -442,7 +455,13 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         else:
             parser.error(f"unknown command {args.command}")
-    except (ConfigError, RunnerError) as exc:
+    except (RuntimeError, sqlite3.Error) as exc:
+        # Every faultflow domain error subclasses RuntimeError by convention
+        # (ConfigError, RunnerError, SchemaError, CoverageError, ScanError,
+        # ShellError, and pybind11-mapped C++ engine errors), and sqlite3
+        # errors ("database is locked", legacy schema) are equally
+        # user-actionable -- map them all to a clean exit-2 message. Genuine
+        # programming bugs (TypeError, KeyError, ...) still traceback.
         parser.exit(2, f"error: {exc}\n")
     return 0
 
@@ -457,7 +476,15 @@ def _handle_retarget(args: object) -> int:
 
     patterns_path = Path(getattr(args, "patterns"))
     block = str(getattr(args, "block"))
-    raw = json.loads(patterns_path.read_text(encoding="utf-8"))
+    # Guard the patterns file the same way --soc-access is guarded, so a missing or
+    # malformed file gives a clean CLI error (caught in main -> exit 2) instead of a
+    # raw FileNotFoundError / JSONDecodeError traceback.
+    if not patterns_path.exists():
+        raise ConfigError(f"patterns file not found: {patterns_path}")
+    try:
+        raw = json.loads(patterns_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"patterns file is not valid JSON: {patterns_path}: {exc}")
     block_patterns = [scan_pattern_from_dict(d) for d in raw]
     access = load_soc_access(Path(getattr(args, "soc_access")))
     retargeted = [retarget_block_pattern(p, access, block) for p in block_patterns]

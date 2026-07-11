@@ -1,10 +1,20 @@
 """Drive per-block INTEST + assembly EXTEST for a hierarchical project.
 
 Stage 1 (block-as-top): each block is tested in isolation as its own top via the
-existing scan INTEST pipeline; the interconnect is tested by a combinational
-EXTEST on the assembly netlist with the block *cores* blackboxed. Every scope runs
-in its own workspace (`output_root/<scope>/.faultflow/faultflow.sqlite`), so the
-campaigns are isolated by path and need no DB schema change.
+existing scan INTEST pipeline. The interconnect is tested one of two ways,
+selected by `project.interconnect.mode`:
+
+  * "comb" (buffer-model wrapper, back-compat): plain combinational EXTEST on an
+    already-synthesized assembly netlist with the block *cores* blackboxed.
+  * "scan" (native, shiftable IEEE-1500 scan WBC): the wrapper ring is sequential,
+    so its EXTEST needs the fused scan-EXTEST view. The assembly netlist doesn't
+    pre-exist -- it's a WBC-only graybox composed at run time from a glue RTL +
+    each block's frozen JSON (`faultflow.project.assemble.assemble_soc`), staged
+    into the scope's own scan workspace alongside a generated wrapper-chain
+    manifest (`faultflow.project.soc_scan.build_soc_scan_manifest`).
+
+Every scope runs in its own workspace (`output_root/<scope>/.faultflow/faultflow.
+sqlite`), so the campaigns are isolated by path and need no DB schema change.
 
 The orchestrator reuses the whole existing pipeline — it only sets up each scope's
 config + workspace and calls `FlowService.run_atpg`.
@@ -20,7 +30,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from faultflow.config import FaultflowConfig, load_config
+from faultflow.project.assemble import assemble_soc
 from faultflow.project.manifest import ProjectManifest
+from faultflow.project.soc_scan import build_soc_scan_manifest
 from faultflow.scan.reports import hash_file, utc_timestamp
 
 log = logging.getLogger(__name__)
@@ -141,6 +153,21 @@ def run_project(
         )
 
     ic = project.interconnect
+    if ic.mode == "scan":
+        scopes.append(
+            _run_scan_extest(
+                project,
+                base,
+                project_out,
+                run_atpg,
+                max_rounds=max_rounds,
+                target_coverage=target_coverage,
+                clean=clean,
+            )
+        )
+        return scopes
+
+    assert ic.assembly_netlist is not None  # guaranteed by load_project for mode="comb"
     cfg_asm = _scope_config(
         base,
         project_out,
@@ -175,3 +202,96 @@ def run_project(
         )
     )
     return scopes
+
+
+def _run_scan_extest(
+    project: ProjectManifest,
+    base: FaultflowConfig,
+    project_out: Path,
+    run_atpg: Callable[..., Any],
+    *,
+    max_rounds: int | None,
+    target_coverage: float | None,
+    clean: bool,
+) -> ScopeRun:
+    """Compose the WBC-only graybox + generate its scan manifest, then run
+    scan-model EXTEST (`run_atpg(cfg, scan=True)` with `test_mode="extest"`, which
+    routes to `Runner._sim_extest`'s fused combinational ATPG -- see runner.py).
+    """
+    ic = project.interconnect
+    # Guaranteed non-None by load_project for mode="scan" (see manifest.py).
+    assert ic.soc_rtl is not None
+    assert ic.soc_wbr_si is not None
+    assert ic.soc_wbr_so is not None
+    assert ic.soc_wbr_se is not None
+    assert ic.clock_port is not None
+    # load_config always resolves a liberty path (defaults to SKY130_LIBERTY).
+    assert base.liberty is not None
+
+    scope_dir = project_out / "_interconnect"
+    graybox_path = scope_dir / "graybox.json"
+    blocks: dict[str, Path] = {}
+    block_module: dict[str, str] = {}
+    block_names: dict[str, str] = {}
+    for block in project.blocks:
+        assert block.soc_instance is not None  # guaranteed by load_project
+        blocks[block.soc_instance] = block.generic_json
+        block_module[block.soc_instance] = block.top
+        block_names[block.soc_instance] = block.name
+
+    assemble_soc(
+        soc_rtl=ic.soc_rtl,
+        soc_top=ic.assembly_top,
+        liberty=base.liberty,
+        blocks=blocks,
+        block_module=block_module,
+        output_json=graybox_path,
+        workdir=scope_dir / "assemble_work",
+        graybox=True,
+        block_names=block_names,
+    )
+
+    cfg_asm = _scope_config(
+        base,
+        project_out,
+        top=ic.assembly_top,
+        netlist=graybox_path,
+        test_mode="extest",
+        name="_interconnect",
+    )
+    cfg_asm.ensure_workspace()
+    staged = cfg_asm.scan_json_path
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_text(graybox_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    manifest = build_soc_scan_manifest(
+        staged,
+        ic.assembly_top,
+        soc_wbr_si=ic.soc_wbr_si,
+        soc_wbr_so=ic.soc_wbr_so,
+        soc_wbr_se=ic.soc_wbr_se,
+        clock_port=ic.clock_port,
+    )
+    cfg_asm.scan_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_asm.scan_manifest_path.write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
+
+    log.info("project interconnect scan-EXTEST  top=%s", ic.assembly_top)
+    result = run_atpg(
+        cfg_asm,
+        scan=True,
+        clean=clean,
+        max_rounds=max_rounds,
+        target_coverage=target_coverage,
+    )
+    return ScopeRun(
+        kind="interconnect",
+        name=ic.assembly_top,
+        top=ic.assembly_top,
+        campaign_type="scan_extest",
+        db_path=cfg_asm.db_path,
+        netlist=staged,
+        blackbox_instances=(),
+        message=str(getattr(result, "message", result)),
+    )
