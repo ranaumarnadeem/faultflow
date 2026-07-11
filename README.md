@@ -3,6 +3,20 @@
 Gate-level stuck-at and transition fault simulator with native SAT ATPG, for
 post-synthesis netlists from Yosys.
 
+## Features
+
+- **Native SAT ATPG** (CaDiCaL) for combinational and full-scan designs — cone-of-influence
+  CNF, escalating per-fault timeouts, parallel workers, sim-verified compaction.
+- **Stuck-at and transition faults** — transition as combinational broadside plus scan LOC and LOS.
+- **Full-scan insertion** with structural chain validation and scan ATPG on a reduced pseudo-PI/PO view.
+- **DFT rule check** (`rule_check`) — structural scan/clock design rules.
+- **IEEE-1500 wrapper (WBR)** — INTEST (core) and EXTEST (interconnect) boundary test.
+- **Hierarchical SoC aggregation** — per-block INTEST + assembly EXTEST rolled into one chip number.
+- **Scan-pattern retargeting** — remap a block's scan patterns onto a SoC scan path.
+- **Multi-clock** — domain-aware protocol, per-domain at-speed, cross-domain paths masked.
+- **Fault collapsing** — equivalence-based (incl. compound AOI/OAI cells).
+- **PDKs** — Sky130 HD (default) and OSU035; Yosys front end, optional iverilog verification.
+
 ## Quick start
 
 ```bash

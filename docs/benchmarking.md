@@ -326,8 +326,7 @@ The coverage numbers in this "original full-chip INTEST run" block predate the
 FF Q-stem grading fix and should not be cited as-is. The old grading mis-handled
 roughly one fault per flip-flop (~1,613 sites), so the 97.44% figure below is
 approximate. The **plain stuck-at scan ATPG (audit-fixed core)** result at the
-top of this section (98.67%) uses the corrected grading and supersedes it; the
-raw pre-fix data is in `benchmark_picorv32a.md`, which carries the same caveat.
+top of this section (98.67%) uses the corrected grading and supersedes it.
 ```
 
 | Metric | Value |
@@ -389,8 +388,6 @@ rules are equivalence-based, not dominance-based, so no detectable fault is ever
 With collapsing enabled the denominator would shrink by roughly a third, the SAT call
 count would drop proportionally, and the formal coverage % would be approximately the
 same or slightly higher.
-
-For the complete raw data and timing breakdown, see `benchmark_picorv32a.md`.
 
 ---
 
@@ -455,8 +452,6 @@ resulting cut (combinational) netlist, not the original sequential circuit.
 - **Compact TVs**: vector count after Fault's internal compaction pass.
 - **Synth**: wall-clock time for `fault synth` (Yosys synthesis).
 - **Sim**: wall-clock time for fault simulation (Fault's PRNG, default ceiling 200 vectors).
-
-For raw data and methodology, see `benchmark_fault.md` in the repository root.
 
 ## On C++ micro-benchmarks
 

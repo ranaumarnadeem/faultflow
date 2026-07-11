@@ -57,8 +57,8 @@ misc/
 # Two exceptions, both small and both actually needed (Yosys dfflibmap/abc
 # during synthesis) rather than large unused corners:
 #   sky130_fd_sc_hd__tt_025C_1v80.lib (13MB) -- the only Sky130 corner ever
-#     referenced anywhere in this repo (config.ofs.example, bench_iscas85.sh,
-#     bench_iscas89.sh, the Nix packaging's benchmark-regeneration steps).
+#     referenced anywhere in this repo (config.ofs.example and the Nix
+#     packaging's benchmark-regeneration steps).
 #     The other two corners on disk (*_ff_n40C_1v95.lib, *_ss_n40C_1v40.lib,
 #     81MB combined) are genuinely unused and stay excluded. Upstream's raw
 #     form (google/skywater-pdk-libs-sky130_fd_sc_hd) ships a different,
