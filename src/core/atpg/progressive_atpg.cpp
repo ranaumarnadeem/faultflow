@@ -298,6 +298,19 @@ TestVector vector_from_map(const ParsedGraph& parsed,
     vec.inputs[parsed.net_id_by_name(input)] =
         (it != values.end()) ? it->second : false;
   }
+  // `input_order` only lists real top-level input ports; a solved vector may
+  // also carry blackbox pseudo-PI keys (ordered_pis() in fault_solver.cpp)
+  // that are not real ports at all -- a fully-blackboxed design (e.g. an
+  // EXTEST assembly with every core blackboxed) can have zero real ports, so
+  // relying on `input_order` alone would silently drop every meaningful
+  // assignment as a don't-care. Apply any such keys directly.
+  for (const auto& [name, value] : values) {
+    if (std::find(input_order.begin(), input_order.end(), name) !=
+        input_order.end()) {
+      continue;  // already applied above
+    }
+    vec.inputs[parsed.net_id_by_name(name)] = value;
+  }
   return vec;
 }
 

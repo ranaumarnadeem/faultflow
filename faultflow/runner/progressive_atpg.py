@@ -175,7 +175,20 @@ class _RoundTracker:
 
 
 def pattern_key(vector: dict[str, bool], input_order: list[str]) -> str:
-    return "".join("1" if vector.get(name, False) else "0" for name in input_order)
+    """Canonical string key for a PI assignment, used to dedupe candidate vectors.
+
+    `input_order` lists only the design's real top-level input ports. A solved
+    vector may also carry blackbox pseudo-PI keys (``__bbpi_<net_id>``, see
+    ``ordered_pis`` in fault_solver.cpp) that are not in `input_order` at all --
+    e.g. a fully-blackboxed EXTEST assembly has zero real ports, so
+    `input_order` is empty. Any such extra keys are appended, sorted, so two
+    vectors that differ only in pseudo-PI values are never wrongly collapsed
+    onto the same key (which previously discarded every SAT-found candidate
+    after the first as a false "duplicate" whenever `input_order` was empty).
+    """
+    extra = sorted(set(vector) - set(input_order))
+    ordered = list(input_order) + extra
+    return "".join("1" if vector.get(name, False) else "0" for name in ordered)
 
 
 def redundancy_model_id(fp: dict[str, Any]) -> str:

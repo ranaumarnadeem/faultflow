@@ -196,25 +196,23 @@ def apply_scan_execution_map(
         "UPDATE faults SET atpg_compiled_net_index = NULL WHERE campaign_id = ?",
         (campaign_id,),
     )
-    for key, compiled_index in execution.items():
-        conn.execute(
-            """
-            UPDATE faults
-            SET atpg_compiled_net_index = ?
-            WHERE campaign_id = ? AND fault_site_key = ?
-            """,
-            (compiled_index, campaign_id, key),
-        )
-    for key, exclusion in exclusions.items():
-        conn.execute(
-            """
-            UPDATE faults
-            SET exclusion = ?, excluded = ?, status = 'excluded',
-                atpg_compiled_net_index = NULL
-            WHERE campaign_id = ? AND fault_site_key = ?
-            """,
-            (exclusion, exclusion, campaign_id, key),
-        )
+    conn.executemany(
+        """
+        UPDATE faults
+        SET atpg_compiled_net_index = ?
+        WHERE campaign_id = ? AND fault_site_key = ?
+        """,
+        [(compiled_index, campaign_id, key) for key, compiled_index in execution.items()],
+    )
+    conn.executemany(
+        """
+        UPDATE faults
+        SET exclusion = ?, excluded = ?, status = 'excluded',
+            atpg_compiled_net_index = NULL
+        WHERE campaign_id = ? AND fault_site_key = ?
+        """,
+        [(exclusion, exclusion, campaign_id, key) for key, exclusion in exclusions.items()],
+    )
     missing = conn.execute(
         """
         SELECT fault_site_key

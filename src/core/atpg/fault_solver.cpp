@@ -498,11 +498,29 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
   CaDiCaL::Solver solver;
   apply_solver_limits(solver, options);
 
-  // Build a fast-lookup set for safe-zero nets. In EXTEST mode these are the
-  // TO_CORE outputs of WBR_IN cells (core inputs forced to 0 so the core is
-  // decoupled from the interconnect under test).
+  // Build fast-lookup sets for safe-zero nets and free stimulus nets.
+  // safe_zero: in EXTEST mode these are the TO_CORE outputs of WBR_IN cells
+  // (core inputs forced to 0 so the core is decoupled from the interconnect
+  // under test); the symmetric INTEST case forces WBR_OUT.TO_SYS to 0.
+  // wbr_stimulus: nets the simulator's mode-aware path treats as an ordinary
+  // externally-driven control point rather than deriving from the wrapper
+  // cell's own (buffer) function (mc.wbr_action == SKIP_STIMULUS -- e.g.
+  // EXTEST's WBR_OUT.TO_SYS, INTEST's WBR_IN.TO_CORE). The generic gate-CNF
+  // loop below would otherwise force such a net to equal its `in0` (the
+  // FUNCTIONAL buffer truth table), which is wrong in mode-aware ATPG and is
+  // exactly why SAT could find a "detecting" vector the simulator then
+  // disagreed with on replay.
   const std::unordered_set<uint32_t> safe_zero_set(mc.safe_zero_nets.begin(),
                                                     mc.safe_zero_nets.end());
+  std::vector<uint32_t> wbr_stimulus_nets;
+  for (uint32_t net : mc.stimulus_nets) {
+    if (net < mc.wbr_action.size() &&
+        mc.wbr_action[net] == static_cast<uint8_t>(WbrAction::SKIP_STIMULUS)) {
+      wbr_stimulus_nets.push_back(net);
+    }
+  }
+  const std::unordered_set<uint32_t> wbr_stimulus_set(wbr_stimulus_nets.begin(),
+                                                       wbr_stimulus_nets.end());
 
   const ConeMasks masks = build_cone_masks(cg, fault.net_index,
                                            mc.observable_nets,
@@ -525,6 +543,18 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
       }
       if (masks.in_outcone[node.out] && node.out != fault.net_index) {
         add_unit(solver, -vars.faulty_vars.at(node.out));
+      }
+      continue;
+    }
+    // A free stimulus net (see above) is left unconstrained by any gate
+    // function, exactly like a real PI: the solver may assign it any value,
+    // tied good==faulty outside the fault's cone so the miter cannot cheat by
+    // giving the two machines different external stimulus at this pin.
+    if ((node.type == GateType::WBR_IN || node.type == GateType::WBR_OUT) &&
+        wbr_stimulus_set.count(node.out)) {
+      if (node.out != fault.net_index && masks.in_outcone[node.out]) {
+        add_equiv(solver, vars.free_vars.at(node.out),
+                  vars.faulty_vars.at(node.out));
       }
       continue;
     }
@@ -591,6 +621,16 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
   out.clear();
   for (const AtpgPiInfo& pi : pis) {
     out[pi.name] = solver.val(vars.free_vars.at(pi.compiled)) > 0;
+  }
+  // Capture the solved value of every free wrapper-stimulus net too (see
+  // above) so the caller's candidate vector fully determines the test -- the
+  // independent re-verification/replay step (verify_fault_vector,
+  // vector_from_map) must apply the exact same externally-driven value the
+  // solver chose, not silently default it to 0 as an unmentioned don't-care.
+  for (uint32_t net : wbr_stimulus_nets) {
+    const int yid = cg.compiled_to_yosys[net];
+    out["__wbrstim_" + std::to_string(yid)] =
+        solver.val(vars.free_vars.at(net)) > 0;
   }
   return SatSolveResult::SAT;
 }

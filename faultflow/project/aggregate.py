@@ -28,9 +28,14 @@ canonical key chip-owned by two scopes; (3) handoff completeness — every hande
 WBC fault (a block's WBC-outward, the assembly's WBC-inward) is chip-owned by another
 scope, else the chip number is optimistic by that wrapper population.
 
-NOTE (Stage 1): the transparent-buffer wrapper has no EXTEST-mux / capture path, so
-the wrapper-outward population is small; these guards grow real teeth with the native
-scan WBC (Stage 4), proven by a dedicated gap-closing fixture.
+The native scan WBC (``$wbc_out_scan_faultflow`` etc., ``[wrap] wbr_model = scan``,
+the default) is what gives these guards real teeth: its ``TO_SYS``/``CTO`` output is
+functionally decoupled during block INTEST (excluded ``wbr_decoupled``) and only
+becomes testable once the assembly drives it during EXTEST. The gap-closing fixture
+in ``tests/python/project/test_project_aggregate.py`` proves this directly: a
+wrapper-outward fault excluded (undetectable) in a block's own INTEST campaign is
+independently confirmed SAT-detected under the same canonical key in the assembly's
+EXTEST campaign.
 """
 
 from __future__ import annotations
@@ -54,10 +59,11 @@ from faultflow.scan.wbr_view import (
 )
 
 # Exclusion tags that hand a fault to the OTHER scope (cross-scope ownership).
+# `wbr_decoupled` is the only tag `site_resolution.py` actually produces today; it
+# covers both wrapper directions (a single generic "this boundary pin isn't driven
+# in this test mode" reason), so there is no separate inward/outward tag to track.
 _CROSS_SCOPE_EXCLUSIONS = {
     "wbr_decoupled",
-    "wbr_inward_excluded",
-    "wbr_outward_excluded",
 }
 
 
