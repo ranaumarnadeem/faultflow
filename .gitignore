@@ -101,6 +101,14 @@ bench_iscas89*.log
 # Design-specific artifacts (not part of the generic tool)
 examples/picorv32_synth/
 
+# Design-specific picorv32a driver scripts kept local (wrap -> run INTEST/EXTEST
+# -> retarget). Not part of the generic tool -- the tracked `retarget` CLI
+# supersedes retarget_picorv32a.py. Restored here after a dev-branch .gitignore
+# change dropped these lines; this checkout still has the files locally.
+scripts/retarget_picorv32a.py
+scripts/run_picorv32a_intest_extest.py
+scripts/wrap_picorv32a.py
+
 # Vendored upstream source trees kept locally for reference/RTL extraction --
 # same story as examples/picorv32_synth/ above. The individual files actually
 # used as examples are extracted and tracked on their own (see examples/*.v,
