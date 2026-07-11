@@ -81,6 +81,98 @@ The native ATPG can be compared against a reference flow:
   `[fault_model] model = stuck_at` and then `model = transition` gives a side-by-side
   coverage comparison for the two fault models.
 
+## faultflow results — Sky130 HD, native SAT ATPG
+
+Complete sweep across ISCAS-85 and ISCAS-89. Technology: Sky130 HD
+(`sky130_fd_sc_hd`). All circuits use scan insertion, structural chain validation,
+progressive CaDiCaL SAT ATPG, and post-ATPG compaction. Wall time is end-to-end
+(scan insert + check\_scan + ATPG+fault-sim + compaction). ATPG and fault simulation
+are interleaved per vector and cannot be separated from the run logs.
+
+Fault model abbreviations: **SA** = stuck-at (SA0/SA1), **TF** = transition fault
+(broadside LOC scan). Vectors shown as raw SAT count → post-compaction count.
+† = STALLED (SAT exhausted before target; remaining faults are likely redundant).
+
+### ISCAS-85 (combinational, no scan)
+
+| Circuit | SA denom | SA cov% | SA vecs | SA wall | TF denom | TF cov% | TF vecs | TF wall |
+|---------|--------:|--------:|--------:|--------:|---------:|--------:|--------:|--------:|
+| c17     |      28 | 100.00% |   31→9  |      9s |       28 | 100.00% |   64→11 |      7s |
+| c432    |     570 | 100.00% |  88→50  |     10s |      570 | 100.00% | 132→101 |     12s |
+| c499    |   1,022 | 100.00% |  96→63  |     12s |    1,022 | 100.00% | 220→165 |     22s |
+
+### ISCAS-89 (sequential, scan SAT ATPG)
+
+Per-phase timing — Check: structural scan chain validation. ATPG+Sim: SAT solve +
+bit-parallel fault grading. Compact: post-ATPG vector minimisation.
+
+#### Stuck-at (SA)
+
+| Circuit  | Denom  | Det    | Cov%    | Vecs (raw→cmp) | Check  | ATPG+Sim | Compact | Wall    |
+|----------|-------:|-------:|--------:|---------------:|-------:|---------:|--------:|--------:|
+| s27      |     64 |     64 | 100.00% |        55→10   |   0.2s |     4.5s |    0.2s |     5s  |
+| s208     |    242 |    242 | 100.00% |        85→28   |   0.5s |     8.8s |    0.3s |    10s  |
+| s298     |    382 |    378 |  98.95% |        66→30   |   0.2s |    15.4s |    0.3s |    16s  |
+| s344     |    502 |    502 | 100.00% |        78→31   |   0.2s |    14.8s |    0.5s |    16s  |
+| s349     |    502 |    502 | 100.00% |        78→31   |   0.1s |     7.8s |    0.3s |     8s  |
+| s382     |    586 |    586 | 100.00% |        81→34   |   0.4s |     9.5s |    0.6s |    11s  |
+| s386     |    536 |    536 | 100.00% |       103→46   |   0.1s |    35.7s |    1.0s |    37s  |
+| s400     |    582 |    580 |  99.66% |        85→34   |   0.2s |    10.7s |    0.7s |    12s  |
+| s420     |    562 |    562 | 100.00% |       111→54   |   0.2s |    32.2s |    0.5s |    33s  |
+| s444     |    588 |    586 |  99.66% |        90→40   |   0.2s |     8.9s |    0.3s |     9s  |
+| s510     |    820 |    820 | 100.00% |        88→49   |   0.3s |    11.8s |    1.0s |    13s  |
+| s526     |    628 |    628 | 100.00% |        87→42   |   0.4s |    14.4s |    0.7s |    16s  |
+| s526n    |    630 |    630 | 100.00% |        90→42   |   0.3s |    16.8s |    0.6s |    18s  |
+| s641     |    746 |    746 | 100.00% |        92→49   |   0.3s |    24.7s |    0.3s |    25s  |
+| s713     |    708 |    708 | 100.00% |        90→45   |   0.2s |    15.0s |    0.8s |    16s  |
+| s820     |  1,025 |  1,020 |  99.51% |       134→68   |   0.2s |    30.1s |    0.5s |    31s  |
+| s832     |  1,078 |  1,076 |  99.81% |       124→66   |   0.2s |    26.4s |    0.5s |    27s  |
+| s838     |    764 |    758 |  99.22% |        91→38   |   0.4s |    15.9s |    0.6s |    17s  |
+| s1196    |  1,954 |  1,948 |  99.69% |       175→114  |   0.4s |    35.3s |    3.7s |    39s  |
+| s1238    |  1,945 |  1,912 |  98.30% |       187→122  |   0.6s |    33.9s |    1.3s |    36s  |
+| s1423    |  2,373 |  2,370 |  99.87% |       130→91   |   0.7s |    35.5s |    1.0s |    37s  |
+| s1488    |  2,064 |  2,060 |  99.81% |       142→101  |   0.2s |    20.6s |    0.8s |    22s  |
+| s1494    |  2,144 |  2,138 |  99.72% |       140→90   |   0.4s |    18.5s |    0.9s |    20s  |
+| s5378    |  4,563 |  4,546 |  99.63% |       287→217  |   1.7s |    59.1s |    4.9s |  1m 6s  |
+| s9234    |  3,852 |  3,838 |  99.64% |       219→160  |   1.6s |    45.1s |    4.0s |    51s  |
+| s15850   | 13,581 | 13,472 |  99.20% |       557→384  |  21.8s |  6m 40s  |   44.9s | 7m 47s  |
+
+#### Transition faults (TF, broadside LOC scan)
+
+| Circuit  | Denom  | Det    | Cov%    | Vecs (raw→cmp) | Check  | ATPG+Sim | Compact  | Wall     |
+|----------|-------:|-------:|--------:|---------------:|-------:|---------:|---------:|---------:|
+| s27      |     28 |     24 |  85.71%†|        49→5    |   0.1s |    <1s   |     1.6s |      2s  |
+| s208     |    180 |    178 |  98.89% |        72→26   |   0.1s |    <1s   |     1.3s |      2s  |
+| s298     |    291 |    283 |  97.25% |        86→29   |   0.3s |    <1s   |     3.3s |      2s  |
+| s344     |    434 |    430 |  99.08% |        95→39   |   0.1s |    <1s   |     3.7s |      2s  |
+| s349     |    434 |    430 |  99.08% |        95→39   |   0.3s |    <1s   |     2.6s |      2s  |
+| s382     |    413 |    407 |  98.55% |        96→35   |   0.3s |     1.6s |     2.4s |      4s  |
+| s386     |    348 |    306 |  87.93%†|       111→36   |   0.2s |    <1s   |     3.4s |      3s  |
+| s400     |    410 |    401 |  97.81% |       101→38   |   0.1s |     0.1s |     2.1s |      2s  |
+| s420     |    420 |    416 |  99.05% |       102→53   |   0.2s |    <1s   |     3.9s |      2s  |
+| s444     |    418 |    403 |  96.41% |       105→43   |   0.4s |    <1s   |     3.2s |      1s  |
+| s510     |    639 |    596 |  93.27% |       123→58   |   0.5s |    <1s   |     4.1s |      1s  |
+| s526     |    398 |    386 |  96.99% |        96→39   |   0.2s |    <1s   |     3.0s |      2s  |
+| s526n    |    404 |    390 |  96.54% |       101→40   |   0.9s |    29.6s |     2.6s |     33s  |
+| s641     |    428 |    401 |  93.69% |       128→50   |   0.2s |    25.2s |     4.0s |     30s  |
+| s713     |    399 |    373 |  93.48% |       129→55   |   0.3s |    41.2s |     8.5s |     50s  |
+| s820     |    658 |    614 |  93.31% |       138→61   |   0.1s |    33.8s |     5.0s |     39s  |
+| s832     |    708 |    662 |  93.50% |       148→60   |   0.4s |    31.1s |     5.7s |     37s  |
+| s838     |    524 |    514 |  98.09% |       113→64   |   0.4s |    54.8s |     8.0s |  1m 3s   |
+| s1196    |    419 |    408 |  97.37% |       107→36   |   0.2s |    41.4s |     9.4s |     51s  |
+| s1238    |    420 |    406 |  96.67% |       107→41   |   0.2s |    42.8s |     8.9s |     52s  |
+| s1423    |  1,809 |  1,762 |  97.40% |       212→130  |   0.6s |  1m 31s  |    20.9s |  1m 52s  |
+| s1488    |  1,479 |  1,346 |  91.01% |       215→112  |   0.2s |    32.9s |    12.9s |     46s  |
+| s1494    |  1,797 |  1,730 |  96.27% |       207→125  |   0.2s |    30.4s |    11.7s |     42s  |
+| s5378    |  3,319 |  3,264 |  98.34% |       432→323  |   1.8s |  3m 3s   |  2m 7s   |  5m 12s  |
+| s9234    |  3,405 |  3,355 |  98.53% |       372→276  |   1.5s |  2m 16s  |  1m 27s  |  3m 44s  |
+| s15850   |  9,576 |  9,163 |  95.69% |       744→564  |  16.5s | 22m 29s  | 30m 3s   | 52m 48s  |
+
+† Stalled: SAT exhausted without reaching target. Remaining faults are likely
+redundant or require longer sequential unrolling.
+
+---
+
 ## PicoRV32a — Full-Chip Scan INTEST (Sky130 HD)
 
 PicoRV32a is an open-source RISC-V RV32IMC CPU. It is the largest design faultflow has been
