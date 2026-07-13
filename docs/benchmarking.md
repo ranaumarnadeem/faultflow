@@ -36,7 +36,7 @@ without any external harness.
 ## Measuring throughput
 
 A simple way to time the ISCAS-85 grades is to wrap the batch script from
-[Examples](user_guide/examples.md) with `/usr/bin/time`:
+[Flow recipes](user_guide/examples.md) with `/usr/bin/time`:
 
 ```bash
 #!/usr/bin/env bash

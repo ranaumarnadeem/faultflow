@@ -9,7 +9,6 @@ deliverables live at the top of that directory; transient internal state lives i
 ```text
 output/<top>/
 ├── coverage.rpt           # human-readable coverage report
-├── patterns.test          # generated ATPG test vectors
 ├── rule_check.rpt         # DFT rule-check report (rule_check command)
 ├── report.rpt             # unified report (shell `report` command)
 ├── <top>_scan.v           # scan deliverable (after scan + techmap)
@@ -78,9 +77,21 @@ raised as an error rather than producing a NaN.
 
 ## `patterns.test`
 
-The generated test vectors, in a simple text format, named by `[atpg] output`.
-External vectors supplied with `sim --ext` use the same format and require a same-stem
-`.bench` sidecar that fixes the primary-input order.
+```{important}
+Despite being a documented config key (`[atpg] output`, default `patterns.test`),
+this file is **not** written by a normal `sim` / `run_atpg` run — combinational or
+scan. It is only ever written as an internal fallback inside `scan_check`'s
+vector-source resolution, when the optional Quaigh comparison path (`quaigh atpg
+... -o patterns.test`) runs because no vectors were found any other way. In
+practice it is rarely present — don't rely on it as a routine deliverable.
+```
+
+The reliable ways to get generated vectors out are the campaign database
+(`faultflow.sqlite`) and `coverage_report.json` below, or
+`sim --scan --export-patterns PATH` — a distinct, JSON-format mechanism (see
+[Running without the shell](running_without_shell.md)). External vectors supplied
+with `sim --ext` use the same plain-text format as `patterns.test` and require a
+same-stem `.bench` sidecar that fixes the primary-input order.
 
 ## `faultflow.sqlite`
 

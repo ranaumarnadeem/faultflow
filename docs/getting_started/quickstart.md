@@ -1,96 +1,106 @@
 # Quick start
 
-This walkthrough runs a complete stuck-at fault campaign on **`c17`**, the smallest
-ISCAS-85 benchmark (5 inputs, 2 outputs, 6 NAND gates). It uses the pre-synthesized
-netlist shipped under `tests/benchmarks/`, so **no Yosys run is required** — a good
-first smoke test.
+This walkthrough grades stuck-at faults on **`c17`**, the smallest ISCAS-85
+benchmark (5 inputs, 2 outputs, 6 NAND gates), from the interactive **Tcl shell** —
+faultflow's primary interface. It uses the pre-synthesized netlist shipped under
+`tests/benchmarks/`, so **no Yosys run is required**: a good first smoke test.
 
 ```{note}
 Make sure you have [built the C++ core](installation.md) (`cmake --build build`)
 before running these commands.
 ```
 
-## 1. Create a config
-
-The repository ships a complete template. Copy it to `config.ofs`:
+## 1. Launch the shell
 
 ```bash
-cp config.ofs.example config.ofs
+python3 ff.py shell
 ```
 
-Out of the box it points at the Sky130-mapped `c17` netlist:
+This drops you into an interactive REPL. The prompt starts bare (`faultflow> `) and
+grows to show the loaded design and PDK as you go (`faultflow[c17:sky130]> `). Every
+command below is typed at that prompt.
 
-```ini
-[design]
-netlist   = tests/benchmarks/iscas85/synth_sky130/c17.json
-top       = c17
-cell_lib  = cells/sky130/sky130_fd_sc_hd.json
-liberty   = cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib
+## 2. Load and prepare the design
 
-[atpg]
-tool      = native      # built-in SAT ATPG
-
-[report]
-threshold = 95.0
+```tcl
+faultflow> read_netlist tests/benchmarks/iscas85/synth_sky130/c17.json -top c17
+faultflow[c17]> use_lib_cells sky130
+faultflow[c17:sky130]> synth
 ```
 
-The full set of options is documented in the
-[Configuration reference](../user_guide/configuration.md).
+- `read_netlist` loads a Verilog or Yosys-JSON netlist. `c17.json` here is already
+  synthesized, but the same command works for a `.v` file — synthesis just happens
+  in the next step instead of being a no-op.
+- `use_lib_cells` selects the PDK cell semantics (`sky130` or `osu035`).
+- `synth` runs Yosys on loaded Verilog; on already-synthesized JSON it validates the
+  netlist and switches the active source to it. Always call it, regardless of which
+  kind of input you loaded — that keeps one command sequence that works for both.
 
-## 2. Initialize the workspace
+## 3. Run ATPG
 
-```bash
-python3 ff.py init --top c17 -c config.ofs
+```tcl
+faultflow[c17:sky130]> run_atpg -sa -target 95
 ```
 
-`init` creates `output/c17/` and its internal `.faultflow/` workspace (including the
-SQLite campaign database) and records a fingerprint of the inputs.
-
-## 3. Run ATPG + fault simulation
-
-```bash
-python3 ff.py sim --top c17 -c config.ofs
-```
-
-This enumerates SA0/SA1 faults, runs the native SAT ATPG progressive loop to generate
-test vectors, fault-simulates them with the bit-parallel engine, and stops when it
-reaches the coverage threshold (or exhausts/stalls). Results are written to the
-campaign database and to the human-readable report.
+This enumerates SA0/SA1 faults, runs the native SAT ATPG progressive loop
+(CaDiCaL) to generate test vectors, fault-simulates them with the bit-parallel
+engine, and stops once it reaches 95% coverage (or exhausts/stalls first).
 
 ## 4. Read the coverage
 
-```bash
-python3 ff.py status --top c17 -c config.ofs
+```tcl
+faultflow[c17:sky130]> status
+faultflow[c17:sky130]> report
 ```
 
 `status` prints the coverage headline (test coverage, fault coverage, detected vs.
-undetected vs. redundant, and the terminal reason). The full report is written to:
+undetected vs. redundant, and the terminal reason). `report` regenerates the
+unified report on disk. Both the shell and the CLI write into the same per-design
+workspace:
 
 ```text
 output/c17/coverage.rpt          # human-readable text report
-output/c17/patterns.test         # generated test vectors
+output/c17/report.rpt            # unified report (written by the shell `report` command)
 output/c17/.faultflow/faultflow.sqlite   # campaign database
 ```
 
 The machine-readable JSON report (validated against a schema) is at
 `output/c17/.faultflow/intermediate/coverage_report.json`. The fields are explained
-in [Outputs](../user_guide/outputs.md).
+in [Outputs & reports](../user_guide/outputs.md).
+
+Exit with `quit` (or `exit`, or Ctrl-D):
+
+```tcl
+faultflow[c17:sky130]> quit
+```
 
 ## Re-running cleanly
 
-To wipe the internal workspace and start the campaign fresh while keeping the
-deliverables in `output/c17/`:
+The shell's `clean` command removes the campaign database so you can re-run ATPG
+from scratch while keeping manifests, logs, and netlists:
 
-```bash
-python3 ff.py sim --top c17 -c config.ofs --clean
+```tcl
+faultflow[c17:sky130]> clean
 ```
 
-`--purge` is a lighter variant that only removes transient junk inside `.faultflow/`.
+`reset` instead clears the in-memory session without touching disk. See
+[The Tcl shell](../user_guide/tcl_shell.md) for the full distinction, and the
+[batch CLI's `--clean` / `--purge`](../user_guide/running_without_shell.md) if
+you're driving the same workspace non-interactively.
+
+## Scripting the same flow
+
+Everything above can be captured in a `.tcl` file and run non-interactively with
+`python3 ff.py shell -f flow.tcl` — see [The Tcl shell](../user_guide/tcl_shell.md)
+for a scripted example and the ready-to-run recipes under
+[Flow recipes](../user_guide/examples.md).
 
 ## Where to go next
 
-- [Examples](../user_guide/examples.md) — a combinational adder synthesized from
-  Verilog, a sequential design with scan, and the PicoRV32 core.
-- [CLI reference](../user_guide/cli_reference.md) — every command and flag.
-- [Concepts](concepts.md) — what stuck-at faults, ATPG, and the coverage denominator
-  actually mean.
+- [The Tcl shell](../user_guide/tcl_shell.md) — every command, grouped by category.
+- [Flow recipes](../user_guide/examples.md) — synthesizing from Verilog, scan
+  insertion, and the PicoRV32 core.
+- [Running without the shell](../user_guide/running_without_shell.md) — the same
+  operations from the batch `ff.py` CLI.
+- [Concepts](concepts.md) — what stuck-at faults, ATPG, and the coverage
+  denominator actually mean.

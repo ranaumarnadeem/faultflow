@@ -11,17 +11,23 @@ are joined by a [pybind11](https://pybind11.readthedocs.io/) module named
 The single most important design decision is that the netlist passes through **three
 distinct intermediate representations**, each with a clear job:
 
-```text
-Yosys JSON
-   │  ParsedGraph        faithful, named, debuggable (maps and strings)
-   ▼
-ParsedGraph
-   │  NormalizedGraph    semantics resolved, cell map applied, levelized
-   ▼
-NormalizedGraph
-   │  GraphCompiler      lowering rules applied
-   ▼
-CompiledSimGraph        flat arrays only, immutable, cache-friendly
+```mermaid
+flowchart TD
+    subgraph Parsed["ParsedGraph — maps, raw Yosys IDs"]
+        P1[faithful mirror of the Yosys JSON]
+    end
+    subgraph Normalized["NormalizedGraph — maps, semantics resolved"]
+        N1["cell-map lookup -> GateType"]
+        N2["const folding, alias resolution"]
+        N3["levelization, clock/reset tagging"]
+    end
+    subgraph Compiled["CompiledSimGraph — flat arrays, immutable"]
+        C1["SimNode array, exactly one output each"]
+        C2["CSR fanout, level_starts"]
+        C3["yosys_to_compiled / compiled_to_yosys maps"]
+    end
+    Parsed --> Normalized --> Compiled
+    Compiled --> Sim["SimState — the only mutable structure"]
 ```
 
 - **ParsedGraph** (`src/core/ir/parsed_graph/`) is a faithful, map-based mirror of the
@@ -51,7 +57,21 @@ The `GraphCompiler` enforces two invariants that the simulator relies on:
   flip-flop node plus an inverter.
 - **Every fanout branch is its own net.** A `BUF` node is inserted per branch so that a
   fault on a branch is an ordinary net fault. This realizes the checkpoint fault model
-  structurally.
+  (see below) structurally:
+
+```mermaid
+flowchart TD
+    subgraph Before["before lowering"]
+        S1[stem net N] --> G1[gate 1]
+        S1 --> G2[gate 2]
+        S1 --> G3[gate 3]
+    end
+    subgraph After["after lowering — each branch is its own fault site"]
+        S2[stem net N] --> B1[BUF] --> BN1[branch net N_b1] --> H1[gate 1]
+        S2 --> B2[BUF] --> BN2[branch net N_b2] --> H2[gate 2]
+        S2 --> B3[BUF] --> BN3[branch net N_b3] --> H3[gate 3]
+    end
+```
 
 ## The simulation engine
 
@@ -61,6 +81,18 @@ independent faulty universes**. A primary-input value is broadcast to all 64 lan
 faults are injected into the faulty lanes after a node evaluates (SA0 clears the bit,
 SA1 sets it); detection compares each observable lane against the golden bit.
 
+```mermaid
+flowchart LR
+    subgraph Word["one uint64_t net value"]
+        B0["bit 0: golden (fault-free)"]
+        B1["bits 1-63: up to 63 faulty universes"]
+    end
+    PI["primary input"] -->|broadcast to all 64 lanes| Word
+    Word --> Eval["gate evaluation<br/>branch-free bitwise, no virtual calls"]
+    Eval --> Inject["fault injection<br/>SA0 clears the bit, SA1 sets it"]
+    Inject --> Cmp["compare each lane vs bit 0 -> detected mask"]
+```
+
 Gate evaluation (`src/core/sim/gate_eval.cpp`) is a branch-free bitwise table with no
 virtual calls — one `uint64_t` operation evaluates 64 universes at once. The engine is
 strictly **binary**; there is no X/Z value (a deliberate design decision, with
@@ -69,8 +101,9 @@ three-valued simulation on the [roadmap](../roadmap.md)).
 Every result is cross-checked against a scalar **golden-reference simulator**
 (`src/core/sim/golden_ref/`) that simulates one fault at a time with plain maps. If the
 bit-parallel engine and the golden reference ever disagree, the bit-parallel engine has
-a bug. The same golden reference also re-verifies every SAT-generated vector before it
-is trusted.
+a bug — see [Testing & verification](../testing.md) for how this is enforced as a hard
+regression gate. The same golden reference also re-verifies every SAT-generated vector
+before it is trusted.
 
 The only mutable state during simulation is `SimState` (`src/core/sim/state/`), which
 owns the working net values, flip-flop state, and previous-cycle values for edge
@@ -88,6 +121,35 @@ Scan support (`src/core/scan/`) extracts and validates chains, then simulates th
 load/launch/capture/unload protocol with the flip-flops modeled as pseudo-primary
 inputs and outputs — which reduces scan ATPG to the combinational SAT problem.
 
+## IEEE 1500 wrapper and hierarchy
+
+The Tcl shell's `wrap` command injects wrapper boundary register (WBR) cells onto a
+synthesized netlist's boundary ports; they are ordinary lowered cells to the
+simulator, not a special-cased path. `set_testmode` then selects which side of the
+wrapper is the device under test:
+
+```mermaid
+flowchart TD
+    subgraph INTEST["INTEST — test the core"]
+        direction LR
+        I1[WBC input cells] -->|drive from FF| I2[core inputs]
+        I3[core outputs] -->|observed by FF| I4[WBC output cells]
+    end
+    subgraph EXTEST["EXTEST — test the interconnect, core blackboxed"]
+        direction LR
+        E1[assembly interconnect] -->|drives / observes| E2[WBC input cells]
+        E3[WBC output cells] -->|drives / observes| E4[assembly interconnect]
+    end
+```
+
+For a chip built from several wrapped blocks, `faultflow/project/` (`orchestrator.py`,
+`aggregate.py`, `assemble.py`) drives per-block INTEST plus one assembly EXTEST and
+aggregates the results into a single chip-level coverage number — the `project` CLI
+command and `flowscripts/hereichy_atpg.tcl` are the two ways to run it. Block-level
+scan patterns can also be retargeted onto an SoC-level scan path (`faultflow/retarget/`)
+without re-running ATPG. See [Flow recipes](../user_guide/examples.md) for worked
+examples of both.
+
 ## The fault model
 
 - **Enumeration** (`src/core/fault/enumerator/`) walks every compiled net — which
@@ -100,6 +162,11 @@ inputs and outputs — which reduces scan ATPG to the combinational SAT problem.
   [Collapsing rules](../collapsing_rules.md).
 - Faults are carried at runtime as flat `CompactFault` records, batched 63 at a time to
   match the 63 faulty lanes.
+- The observable set is primary outputs plus any net tagged as a test point (`is_tp`).
+  Test points come from an optional `tp_nodes.json` file — a JSON array of
+  `{"net": "<name>"}` and/or `{"net_id": <id>}` entries — or from the `add_tp`
+  OpenTestability flow (see [Test-point insertion](../user_guide/testpoints.md)). A
+  missing `tp_nodes.json` is silently ignored.
 
 ## Native SAT ATPG
 
@@ -115,6 +182,22 @@ The ATPG (`src/core/atpg/`) is native and built on
    **UNSAT** (the fault is redundant under the current model), or **TIMEOUT/UNKNOWN**
    (left undetected — never marked redundant).
 
+```mermaid
+flowchart TD
+    A[Random-fill vectors] --> B[Fault-simulate]
+    B --> C{coverage target met?}
+    C -- yes --> Z([done: THRESHOLD_MET])
+    C -- no --> D["Per-fault SAT — CaDiCaL<br/>cone-restricted, escalating timeout"]
+    D -- SAT --> E[Golden-ref verify] --> F[Fault-simulate vs. remaining faults]
+    D -- UNSAT --> G[mark redundant]
+    D -- TIMEOUT / UNKNOWN --> H[leave undetected]
+    F --> I{round found anything new?}
+    G --> I
+    H --> I
+    I -- yes --> A
+    I -- no --> Y([done: STALLED])
+```
+
 The progressive loop lives partly in C++ (`progressive_atpg.cpp`) and partly in the
 Python harness (`faultflow/runner/progressive_atpg.py`), which decides when the
 campaign has stalled. Redundant classifications are tagged with a
@@ -123,8 +206,8 @@ changes.
 
 ## End-to-end flow
 
-1. `python3 ff.py sim` → `faultflow/cli.py` → `faultflow/service/flow.py` →
-   `faultflow/runner/runner.py`.
+1. `python3 ff.py sim` (or the equivalent shell commands) → `faultflow/cli.py` /
+   `faultflow/shell/` → `faultflow/service/flow.py` → `faultflow/runner/runner.py`.
 2. If the input is Verilog, Yosys is run with the locked synthesis template, producing
    `<top>.json` and `<top>_gate.v`.
 3. The Python layer imports `_faultflow_core` and calls into it; the C++ core builds
@@ -133,7 +216,8 @@ changes.
 4. `faultflow/reporter/coverage.py` queries the database and emits `coverage.rpt` and
    `coverage_report.json`.
 5. Optionally, `faultflow/verify/gate.py` compiles the gate-level netlist plus the PDK
-   behavioral models with iverilog and checks the vectors against golden outputs.
+   behavioral models with iverilog and checks the vectors against golden outputs — see
+   [Testing & verification](../testing.md).
 
 ## Files worth reading first
 
@@ -147,3 +231,5 @@ changes.
 | `src/core/atpg/fault_solver.cpp` | Native SAT ATPG |
 | `src/core/bindings/python_bindings.cpp` | The exact Python ↔ C++ surface |
 | `faultflow/runner/runner.py` | Yosys invocation and orchestration |
+| `faultflow/wrap/ports.py` | IEEE 1500 WBR injection |
+| `faultflow/project/orchestrator.py` | Hierarchical block-to-SoC aggregation |

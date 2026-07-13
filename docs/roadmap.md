@@ -16,9 +16,9 @@ DFT rule check are all implemented:
 - Posedge **and** negedge D flip-flops (simulated, not just mapped), asynchronous
   set/reset, scan-chain insertion, and scan SAT ATPG (single clock).
 - Native C++ SAT ATPG on CaDiCaL, with cone-of-influence CNF restriction, escalating
-  per-fault timeouts, parallel multi-process solving, equivalence/dominance fault
-  collapsing, and both reverse-order and dynamic (sim-verified cube-packing) test-set
-  compaction.
+  per-fault timeouts, parallel multi-process solving, equivalence-only fault
+  collapsing (never dominance, so coverage is provably unchanged), and both
+  reverse-order and dynamic (sim-verified cube-packing) test-set compaction.
 - Two PDKs: SkyWater Sky130 HD (default) and OSU035, driven by JSON cell maps.
 - **Transition faults** — slow-to-rise / slow-to-fall, two-frame combinational broadside
   plus scan launch-on-capture (LOC) and launch-on-shift (LOS), with a two-frame iverilog
