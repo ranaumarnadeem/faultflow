@@ -198,17 +198,24 @@ COMMAND_HELP = {
     ),
     "check_scan": CommandHelp(
         "Scan",
-        "check_scan",
+        "check_scan [-structural]",
         "Validate current scan insertion",
-        "Runs structural and normal-mode checks and records the result.",
+        "Runs structural and normal-mode checks and records the result. "
+        "-structural runs the structural check only.",
         "A current generic scan insertion.",
         "check_scan",
     ),
     "run_atpg": CommandHelp(
         "Run",
-        "run_atpg [-sa] [-scan] [-max ROUNDS] [-target PERCENT]",
-        "Run native stuck-at ATPG",
-        "Runs combinational ATPG by default. Use -scan for scan-protocol ATPG.",
+        "run_atpg [-sa] [-scan] [-tf broadside|los] [-serial_ref] [-max ROUNDS] "
+        "[-target PERCENT] [-export-patterns PATH]",
+        "Run native SAT ATPG",
+        "Runs combinational stuck-at ATPG by default. Use -scan for scan-protocol "
+        "ATPG (needs a fresh scan check). -tf broadside|los switches to "
+        "transition-fault ATPG (los is scan-only). -serial_ref runs isolated "
+        "serial-reference diagnostics without updating production coverage. "
+        "-export-patterns PATH writes scan pattern JSON, consumed by the "
+        "retarget command.",
         "A synthesized design; scan ATPG additionally requires a fresh scan check.",
         "run_atpg -sa -scan -max 20 -target 95",
     ),
@@ -265,7 +272,8 @@ COMMAND_HELP = {
         "set_option KEY VALUE",
         "Set a persistent flow option",
         "Keys: atpg.easy_fault_reserve, atpg.incremental_sat, atpg.max_rounds,"
-        " atpg.preflight, atpg.sat_conflict_limit,"
+        " atpg.preflight, atpg.random_stop_coverage, atpg.random_vectors,"
+        " atpg.sat_conflict_limit,"
         " atpg.sat_timeout_seconds, atpg.sat_timeout_schedule, atpg.workers,"
         " fault_model.collapsing, fault_model.include_reset_faults,"
         " fault_model.include_clock_faults, report.threshold,"
@@ -278,6 +286,9 @@ COMMAND_HELP = {
         " rest tackle hard faults simultaneously. Set to 0 to disable."
         " atpg.preflight (true/false) enables OT reconvergence pre-ordering"
         " and pre-certification (default true)."
+        " atpg.random_vectors (default 64) is the random-fill budget per round;"
+        " atpg.random_stop_coverage (default 85.0) stops random-fill grading"
+        " early once coverage crosses this percent and switches to SAT."
         " fault_model.include_reset_faults (true/false, default false) grades"
         " async reset/set-tree faults via implication instead of excluding them;"
         " it is fingerprinted, so toggling it forces a fresh campaign.",

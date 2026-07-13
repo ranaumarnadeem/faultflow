@@ -1,7 +1,11 @@
 # faultflow
 
 Gate-level stuck-at and transition fault simulator with native SAT ATPG, for
-post-synthesis netlists from Yosys.
+post-synthesis netlists from Yosys. Driven from an interactive Tcl shell
+(`python3 ff.py shell`) or a batch CLI (`python3 ff.py <command>`) for scripted,
+one-shot runs.
+
+Full documentation: https://ranaumarnadeem.github.io/faultflow/
 
 ## Features
 
@@ -41,6 +45,28 @@ To reset internal workspace state (keeps deliverables in `output/<top>/`):
 ```bash
 python3 ff.py sim --top <top> --clean
 ```
+
+## More flows
+
+Beyond `init` / `sim` / `status`, the CLI also covers IEEE-1500 wrapper test
+modes, hierarchical SoC aggregation, and scan-pattern retargeting:
+
+```bash
+python3 ff.py intest   --top <top> -c config.ofs     # IEEE-1500 INTEST (core)
+python3 ff.py extest   --top <top> -c config.ofs     # IEEE-1500 EXTEST (interconnect)
+python3 ff.py project  -p project.json                # per-block INTEST + assembly EXTEST -> one chip number
+python3 ff.py retarget --patterns p.json --soc-access a.json --block blkA --out out.json
+python3 ff.py add-clock clk -c config.ofs             # declare a clock domain in config.ofs
+```
+
+Or drive any of these interactively instead:
+
+```bash
+python3 ff.py shell
+```
+
+See the [full documentation](https://ranaumarnadeem.github.io/faultflow/) for the
+complete command reference and worked examples.
 
 ## Output layout
 

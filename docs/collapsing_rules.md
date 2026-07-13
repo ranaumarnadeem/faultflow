@@ -1,4 +1,4 @@
-# Fault Collapsing Rules
+# Fault collapsing rules
 
 faultflow collapses stuck-at faults using **equivalence only** (never dominance): two faults are
 collapsed only when they have **identical** detecting-vector sets, so coverage is provably

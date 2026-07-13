@@ -38,17 +38,21 @@ A combinational example (drive strengths collapse via the `*`):
 }
 ```
 
-A flip-flop carries its sequential semantics in `ff`:
+A flip-flop carries its sequential semantics in `ff`. This Sky130 HD entry is an
+async-set (preset), positive-edge D flip-flop (`dfstp` — **D**-**F**F, **s**et,
+**t**riangle/edge, **p**ositive):
 
 ```json
-"DFFPOSX*": {
+"sky130_fd_sc_hd__dfstp_*": {
   "node_type": "FF",
-  "gate_type": "DFF",
+  "inputs": ["CLK", "D", "SET_B"],
+  "outputs": {"Q": "Q"},
   "ff": {
-    "trigger": "POSEDGE",
     "clock": "CLK",
     "data": "D",
-    "output": "Q"
+    "output": "Q",
+    "trigger": "POSEDGE",
+    "preset": {"pin": "SET_B", "level": "LOW", "value": 1}
   }
 }
 ```
@@ -68,6 +72,28 @@ Compound Sky130 cells (e.g. `a2bb2oi`, AOI/OAI families, `mux4`) are **first-cla
 `GateType` values with their own native evaluations** — faultflow does not decompose
 them into primitive sub-gates. Multi-output cells (adders, flip-flops with `QN`) are
 split into one node per output by the compiler.
+
+A representative sample of the gate-evaluation table — the full set is much larger
+(the Sky130 HD compound cell families alone run to dozens of `GateType` values):
+
+| `GateType` | Evaluation | Notes |
+|---|---|---|
+| `INV` | `~in0` | |
+| `BUF` | `in0` | |
+| `AND2` / `OR2` / `NAND2` / `NOR2` | `in0 & in1` / `in0 \| in1` / negated | 3- and 4-input forms exist too |
+| `XOR2` / `XNOR2` | `in0 ^ in1` / `~(in0 ^ in1)` | not fault-collapsible — see [Collapsing rules](../collapsing_rules.md) |
+| `AOI21` / `OAI21` | `~((in0&in1)\|in2)` / `~((in0\|in1)&in2)` | compound cells are native, not decomposed |
+| `MUX2` | `~((in2&in0)\|(~in2&in1))` | inverting mux; `in2` is select, `in2=1` selects `in0` |
+| `ADDF` (`S`/`CO`) | `in0^in1^in2` / majority(`in0,in1,in2`) | full adder; lowered to two single-output nodes |
+| `ADDH` (`S`/`CO`) | `in0^in1` / `in0&in1` | half adder; same lowering |
+| `AND2B` | `in0 & ~in1` | one bubbled input — e.g. `sky130_fd_sc_hd__and2b_*`, pins `[B, A_N]` |
+| `OR2B` | `in0 \| ~in1` | e.g. `sky130_fd_sc_hd__or2b_*`, pins `[A, B_N]` |
+| `OR4BB` | `in0 \| in1 \| ~in2 \| ~in3` | e.g. `sky130_fd_sc_hd__or4bb_*`, pins `[A, B, C_N, D_N]` |
+| `AND4BB` | `~in0 & ~in1 & in2 & in3` | e.g. `sky130_fd_sc_hd__and4bb_*`, pins `[A_N, B_N, C, D]` — first two bubbled |
+| `A2BB2O` | `(~in0&~in1) \| (in2&in3)` | e.g. `sky130_fd_sc_hd__a2bb2o_*`, pins `[A1_N, A2_N, B1, B2]` |
+
+The `JSON expression` field on each cell-map entry documents the same formula for
+humans — it is informational only, never authoritative (see the warning above).
 
 ## Unsupported and physical cells
 

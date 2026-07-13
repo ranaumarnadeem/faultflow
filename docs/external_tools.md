@@ -43,7 +43,8 @@ paths:
   ATPG on the resulting test-point-inserted netlist, and prints a Baseline / +TP / Δ
   coverage comparison. Iterations are pushed onto a version stack; `reject_tp` pops the
   last one. Driven by the `[testpoint]` config (`opentest`, `metric`, `threshold`,
-  `max_points`).
+  `max_points`). See [Test-point insertion](user_guide/testpoints.md) for the full
+  workflow, including the version-stack format and PDK TPI cell support.
 - **Oracle (`run -c <ot.ofs>`).** faultflow acts as the coverage *oracle* for an
   OpenTestability-driven optimization loop. It reads an OT-format `.ofs`, runs a stuck-at
   ATPG campaign, and writes a flat `oracle_response.json` (coverage, vector count,

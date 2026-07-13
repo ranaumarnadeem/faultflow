@@ -151,7 +151,8 @@ python3 ff.py status --top c17 -c config.ofs
 
 If `status` prints a coverage summary, the core extension, the Python layer, and the
 SQLite campaign database are all working. Continue with the
-[Quick start](quickstart.md).
+[Quick start](quickstart.md) — or jump straight into the interactive shell with
+`python3 ff.py shell`.
 
 ## Building with Nix
 

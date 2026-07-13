@@ -1,37 +1,66 @@
-# Examples
+# Flow recipes
 
 The repository ships several ready-to-run designs under `examples/` plus the
 ISCAS-85/89 benchmark circuits under `tests/benchmarks/`. This page walks through
-three representative flows and gives a reusable batch script.
+the shell-based flow for each major capability; the `flowscripts/*.tcl` recipes
+introduced in [The Tcl shell](tcl_shell.md) automate the same sequences.
 
 ```{note}
-The combinational `c17` smoke test is covered in the [Quick start](../getting_started/quickstart.md).
-The examples below add live synthesis, scan, and a large real-world core.
+The combinational `c17` smoke test is covered in the
+[Quick start](../getting_started/quickstart.md). The examples below add live
+synthesis, scan, wrapper test modes, and a large real-world core.
 ```
 
-## Combinational, synthesized from Verilog: `cla4`
+## Flat ATPG, synthesized from Verilog: `cla4`
 
 `examples/cla4.v` is a 4-bit carry-lookahead adder (9 inputs, 5 outputs, purely
-combinational). Its config, `examples/cla4.ofs`, synthesizes the Verilog with Yosys
-to the Sky130 HD library — so this example needs `yosys` on your `PATH`.
+combinational).
 
-```bash
-python3 ff.py init   --top cla4 -c examples/cla4.ofs
-python3 ff.py sim    --top cla4 -c examples/cla4.ofs
-python3 ff.py status --top cla4 -c examples/cla4.ofs
+```tcl
+faultflow> read_netlist examples/cla4.v -top cla4
+faultflow[cla4]> use_lib_cells sky130
+faultflow[cla4:sky130]> synth
+faultflow[cla4:sky130]> run_atpg -sa -target 95
+faultflow[cla4:sky130]> status
+faultflow[cla4:sky130]> report
 ```
 
-```{tip}
-`examples/cla4.ofs` ships with `[atpg] tool = quaigh`, which needs the external
-Quaigh binary. To use faultflow's built-in SAT ATPG instead — no extra tools — set
-`tool = native` in the `[atpg]` section.
+This needs `yosys` on your `PATH` — `synth` runs real synthesis on the Verilog.
+`flowscripts/flat_atpg.tcl` automates the same sequence, but expects a clock port
+(it always calls `add_clock`); since `cla4` has no clock at all, the manual
+sequence above is simpler for purely combinational designs.
+
+## Scan insertion and scan ATPG: `serial_adder`
+
+`examples/serial_adder.v` is a bit-serial adder with flip-flops — a minimal
+sequential/scan example.
+
+```mermaid
+flowchart LR
+    A[synthesized netlist] --> B["add_scan (insert + stitch)"]
+    B --> C[check_scan]
+    C --> D["run_atpg -sa -scan"]
+    D --> E["write_netlist -scan -techmap"]
 ```
 
-## Sequential with scan: `serial_adder`
+```tcl
+faultflow> read_netlist examples/serial_adder.v -top serial_adder
+faultflow[serial_adder]> use_lib_cells sky130
+faultflow[serial_adder:sky130]> add_clock clk
+faultflow[serial_adder:sky130]> synth
+faultflow[serial_adder:sky130]> add_scan -chains 4 -SI scan_in -SO scan_out -SE scan_en
+faultflow[serial_adder:sky130]> check_scan
+faultflow[serial_adder:sky130]> run_atpg -sa -scan -target 95
+faultflow[serial_adder:sky130]> status -scan
+faultflow[serial_adder:sky130]> report
+faultflow[serial_adder:sky130]> write_netlist -scan -techmap
+```
 
-`examples/serial_adder.v` is a bit-serial adder with flip-flops. Its config,
-`examples/serial_adder_sky130.ofs`, requests four scan chains and the Sky130 techmap.
-The flow is: synthesize, insert and check scan, then run scan ATPG.
+This exact sequence — plus a dry-run preview and session checkpointing — is
+automated by `flowscripts/scan.tcl` (edit its `CONFIGURATION` block, then run
+`python3 ff.py shell -f flowscripts/scan.tcl`).
+
+The batch-CLI equivalent:
 
 ```bash
 python3 ff.py init       --top serial_adder -c examples/serial_adder_sky130.ofs
@@ -41,11 +70,69 @@ python3 ff.py sim --scan --top serial_adder -c examples/serial_adder_sky130.ofs
 python3 ff.py status --scan --top serial_adder -c examples/serial_adder_sky130.ofs
 ```
 
-The combinational and scan campaigns share one database, so `status` (combinational)
-and `status --scan` report from the same `output/serial_adder/.faultflow/faultflow.sqlite`.
+The combinational and scan campaigns share one database, so `status`
+(combinational) and `status --scan` report from the same
+`output/serial_adder/.faultflow/faultflow.sqlite`.
 
-The same flow can be scripted in the [Tcl shell](tcl_shell.md) with `add_scan`,
-`check_scan`, and `run_atpg -scan`.
+## IEEE 1500 wrapper test: INTEST and EXTEST
+
+Wrapping a core with an IEEE 1500 boundary is a two-phase flow: inject the
+wrapper once with `wrap`, then scan-insert and run ATPG against the *wrapped*
+netlist. `wrap` saves the wrapped netlist and makes it the new active design in
+the same session, so you can continue straight on:
+
+```tcl
+faultflow> read_netlist examples/serial_adder.v -top serial_adder
+faultflow[serial_adder]> use_lib_cells sky130
+faultflow[serial_adder:sky130]> synth
+faultflow[serial_adder:sky130]> wrap -model scan -clock clk -o output/serial_adder/serial_adder_wrapped.json
+faultflow[serial_adder:sky130]> set_testmode intest
+faultflow[serial_adder:sky130]> add_scan -chains 4
+faultflow[serial_adder:sky130]> check_scan
+faultflow[serial_adder:sky130]> run_atpg -sa -scan -target 95
+faultflow[serial_adder:sky130]> status -scan
+```
+
+`flowscripts/core_atpg.tcl` automates the scan-insertion-plus-INTEST half against
+an already-wrapped netlist; `flowscripts/intest.tcl` resumes a saved scan session
+and runs INTEST alone. The CLI equivalent, once `[design] netlist` in
+`config.ofs` points at the wrapped, scan-inserted netlist, is
+`python3 ff.py intest --top serial_adder -c config.ofs`.
+
+**EXTEST** targets the interconnect *around* wrapped cores in a multi-block
+assembly, with each core's internals blackboxed so only the wrapper boundary
+cells and the interconnect are faultable:
+
+```tcl
+faultflow> read_netlist assembly.json -top my_soc_top
+faultflow[my_soc_top]> use_lib_cells sky130
+faultflow[my_soc_top:sky130]> add_clock clk
+faultflow[my_soc_top:sky130]> add_blackbox u_coreA
+faultflow[my_soc_top:sky130]> add_blackbox u_coreB
+faultflow[my_soc_top:sky130]> synth
+faultflow[my_soc_top:sky130]> set_testmode extest
+faultflow[my_soc_top:sky130]> run_atpg -sa -target 90
+faultflow[my_soc_top:sky130]> status
+```
+
+`flowscripts/extest.tcl` automates this — edit its `CONFIGURATION` block with
+your block instance names, assembly netlist path, and clock port. The CLI
+equivalent is `python3 ff.py extest --top my_soc_top -c config.ofs`.
+
+## Hierarchical SoC: per-block INTEST + assembly EXTEST
+
+For a chip with multiple wrapped blocks, `flowscripts/hereichy_atpg.tcl` drives
+the full flow: scan-insert and INTEST each block in turn, then run one assembly
+EXTEST, following a project manifest (`project_*.json`, schema
+`faultflow_project_v1`) that names each block and the assembly. The CLI
+equivalent is a single command once that manifest exists:
+
+```bash
+python3 ff.py project -p project.json -t 95
+```
+
+`project` aggregates the per-block INTEST results and the assembly EXTEST result
+into one chip-level coverage number.
 
 ## More designs under `examples/`
 
@@ -63,14 +150,29 @@ for the config pattern — none of these ship with a `.ofs`):
   the SystemVerilog synthesis path (`read_verilog -sv`).
 
 A pre-synthesized PicoRV32 Sky130 netlist lives under `examples/picorv32_synth/`
-and backs the benchmarking numbers (see [Benchmarking](../benchmarking.md)); it
+and backs the benchmarking numbers (see [Benchmarks](../benchmarking.md)); it
 is a generated build artifact and is not tracked in git.
 
 ## Bringing your own design
 
-To grade your own RTL, copy a config and point it at your sources. The minimum is a
-`[design]` section naming your Verilog and top module, a matched cell library, and
-`[atpg] tool = native`:
+From the shell there's no config file to write at all — just point the commands
+at your own files:
+
+```tcl
+faultflow> read_netlist path/to/my_design.v -top my_design
+faultflow[my_design]> use_lib_cells sky130
+faultflow[my_design:sky130]> synth
+faultflow[my_design:sky130]> run_atpg -sa -target 95
+faultflow[my_design:sky130]> status
+```
+
+faultflow runs the locked Yosys synthesis script automatically when the input is
+Verilog (so `yosys` must be on your `PATH`); if your netlist is already
+synthesized to standard cells, give the Yosys JSON directly and `synth` just
+validates it.
+
+For a **repeatable** run — the same design driven by the batch CLI, or preloaded
+into the shell — write a minimal `config.ofs`:
 
 ```ini
 [design]
@@ -83,18 +185,17 @@ liberty  = cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib
 tool     = native
 ```
 
-faultflow runs the locked Yosys synthesis script automatically when the input is
-Verilog (so `yosys` must be on your `PATH`), after which `init` / `sim` / `status` work
-exactly as in the [quick start](../getting_started/quickstart.md). If your netlist is
-already synthesized to standard cells, give the Yosys JSON directly and synthesis is
-skipped.
+See [Running without the shell](running_without_shell.md) for the equivalent
+batch commands.
 
 ## A reusable batch script
 
 The ISCAS-85 circuits (`c17`, `c432`, `c499`) ship as Verilog under
-`tests/benchmarks/iscas85/`. This script synthesizes and grades all three with the
-native ATPG by generating a small config per circuit. Save it as `run_iscas85.sh`
-at the repo root:
+`tests/benchmarks/iscas85/`. This kind of repeated, scripted sweep over many
+designs is exactly what the batch CLI is for — see
+[Running without the shell](running_without_shell.md). This script synthesizes
+and grades all three with the native ATPG by generating a small config per
+circuit. Save it as `run_iscas85.sh` at the repo root:
 
 ```bash
 #!/usr/bin/env bash
@@ -132,8 +233,9 @@ chmod +x run_iscas85.sh
 ./run_iscas85.sh
 ```
 
-Each circuit's deliverables land in `output/<top>/` (see [Outputs](outputs.md)). The
-sequential ISCAS-89 circuits ship as Verilog under `tests/benchmarks/iscas89/` (for
-example `s27.v`, `s298.v`), each declaring a module named `s<N>_bench`; point
-`[design] netlist` at the `.v` and set `top` to that module name (e.g. `s27_bench`),
-then follow the scan flow shown for `serial_adder`.
+Each circuit's deliverables land in `output/<top>/` (see
+[Outputs & reports](outputs.md)). The sequential ISCAS-89 circuits ship as
+Verilog under `tests/benchmarks/iscas89/` (for example `s27.v`, `s298.v`), each
+declaring a module named `s<N>_bench`; point `[design] netlist` at the `.v` and
+set `top` to that module name (e.g. `s27_bench`), then follow the scan flow shown
+for `serial_adder`.

@@ -25,9 +25,12 @@ eventually reach the right value but not within the clock period.
 - **Slow-to-fall (STF)** — a 1→0 transition is too slow.
 
 Detecting one needs a *pair* of vectors: one to set up the starting value, and one to
-launch the transition and capture the result. faultflow implements the combinational
-broadside (two-pattern) flavor with launch-on-capture (LOC). Transition faults are
-enabled with `[fault_model] model = transition`.
+launch the transition and capture the result. faultflow implements the two-pattern
+flavor two ways: combinational **broadside** capture, and — for scan designs —
+**launch-on-capture (LOC)** or **launch-on-shift (LOS)**, selected with
+`[fault_model] launch = loc | los`. Transition faults are enabled with
+`[fault_model] model = transition`, and cannot be combined with fault collapsing
+(the stuck-at equivalence rules do not hold for transition faults).
 
 ## Fault sites and the checkpoint model
 
@@ -45,8 +48,15 @@ faultflow collapses by **equivalence only** (never dominance), so coverage is pr
 unchanged: INV/BUF, the controlling-value input polarity of AND/OR/NAND/NOR, and the
 Sky130 compound AOI/OAI cells (`a21oi`, `o21ai`, `a22oi`, …) via exhaustively-derived
 classes. XOR/XNOR have no equivalent faults and are left untouched. See
-[Collapsing rules](../collapsing_rules.md) for the full table. Collapsing is off by
-default (`[fault_model] collapsing = false`).
+[Collapsing rules](../collapsing_rules.md) for the full table.
+
+```{note}
+`[fault_model] collapsing` defaults to **true** (on) when the key is omitted
+entirely. `config.ofs.example` and every shipped example config set it to
+`false` explicitly, so out-of-the-box runs have collapsing off — but if you
+delete that line rather than setting it, collapsing turns back on. See the
+[Configuration reference](../user_guide/configuration.md).
+```
 
 ## ATPG
 

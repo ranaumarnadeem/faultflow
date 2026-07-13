@@ -9,3 +9,25 @@ code.literal {
 .table-wrapper {
     overflow-x: auto;
 }
+
+/* Sidebar logo: consistent height, a little breathing room above the brand text. */
+.sidebar-logo-container {
+    margin-top: 0.5rem;
+}
+.sidebar-logo {
+    max-height: 2.75rem;
+    width: auto;
+}
+
+/* Mermaid diagrams: centered, scrollable instead of overflowing on narrow
+   viewports, with a little vertical rhythm relative to surrounding prose. */
+.mermaid {
+    display: flex;
+    justify-content: center;
+    margin: 1.75em 0;
+    overflow-x: auto;
+}
+.mermaid svg {
+    max-width: 100%;
+    height: auto;
+}

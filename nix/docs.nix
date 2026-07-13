@@ -16,6 +16,7 @@ let
       myst-parser
       sphinx-copybutton
       sphinx-design
+      sphinxcontrib-mermaid
     ]
   );
 in

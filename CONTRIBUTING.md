@@ -68,7 +68,9 @@ The project follows a test-driven workflow: behavior is specified by a failing t
 first, then implemented until the test passes. Every bit-parallel simulation result is
 cross-checked against the scalar golden-reference simulator — if they disagree, the
 bit-parallel engine is considered wrong. New simulation or ATPG features should come
-with a golden-reference comparison.
+with a golden-reference comparison. See
+[Testing & verification](https://github.com/ranaumarnadeem/faultflow/blob/main/docs/testing.md)
+for the full methodology, test organization, and how to run each suite.
 
 ## Design rules to respect
 
@@ -101,9 +103,13 @@ The docs are Sphinx + Furo + MyST-Markdown. From the repo root:
 ```bash
 source venv/bin/activate
 pip install -r docs/requirements.txt
-sphinx-build -b html docs docs/_build/html
+sphinx-build -b html -W --keep-going docs docs/_build/html
 # open docs/_build/html/index.html
 ```
+
+The `-W --keep-going` flags match `.github/workflows/docs.yml` exactly (warnings
+fail the build, but all of them are collected before it does) — building locally
+this way catches the same issues CI would.
 
 Or, from `docs/`, `make html`. The site is published to GitHub Pages automatically by
 `.github/workflows/docs.yml` on pushes to `main`.

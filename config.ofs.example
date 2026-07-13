@@ -22,6 +22,8 @@ yosys_ver = 0.61+129
 model                = stuck_at
 # launch = loc | los  (launch-on-capture, or launch-on-shift for the scan flow).
 launch               = loc
+# Defaults to true (collapsing on) when this key is omitted entirely — explicitly
+# disabled below, which is what every shipped example config does.
 collapsing           = false
 include_clock_faults = false
 include_reset_faults = false
@@ -31,7 +33,6 @@ unsupported_cells = fail
 verify            = false
 verify_tool       = iverilog
 verilog_models    = cells/sky130/sky130_fd_sc_hd.v
-tp_file           =
 # Threads for parallel fault grading (the dominant ATPG cost).
 #   1 = serial (default)   0 = auto (logical CPUs - 2, min 1)   N = N threads
 # Coverage is bit-identical for any value; only wall-clock changes.
@@ -42,6 +43,10 @@ tool               = native
 mode               = comb
 output             = patterns.test
 random_vectors       = 64
+# Stop the random-fill phase and switch straight to SAT once fault coverage reaches
+# this percent, or once the full random_vectors budget is graded, whichever comes
+# first (default 85.0). 0.0 disables the early switch.
+random_stop_coverage = 85.0
 sat_conflict_limit   = 100000
 max_rounds           = 20
 sat_timeout_seconds  = 10
@@ -51,12 +56,22 @@ sat_timeout_seconds  = 10
 # Set to empty to use the fixed sat_timeout_seconds for all faults.
 sat_timeout_schedule = 2,10,60
 # Test-set compaction after ATPG: reverse (reverse-order fault-sim static
-# compaction, coverage-preserving; default) or none.
+# compaction, coverage-preserving; default), dynamic (sim-verified cube-packing),
+# or none.
 compaction           = reverse
+# Packing orders tried during dynamic compaction (default 1; compaction=dynamic only).
+pack_orders          = 1
 # Order faults by ascending structural cone size so the quickest SAT calls run
 # first, detecting more faults incidentally early. Coverage-identical. Default on.
 # Set to false to keep enumeration order. Stuck-at only.
 order_by_cone_size   = true
+# Restrict each fault's CNF to its structural cone of influence (default true).
+cone_restrict        = true
+# Incremental-SAT (IFC) solving, one observable cone at a time (default false).
+incremental_sat      = false
+# Fault-simulate an accepted SAT vector against ALL remaining faults, not just the
+# target fault, so incidental "fallout" detections are dropped too (default true).
+fault_drop_sat       = true
 # Parallel SAT workers (default 1 = serial). N>1 forks N worker processes that
 # each run one C++ solver call; the coordinator owns all DB writes. Requires a
 # fork-capable OS (Linux/WSL); silently falls back to serial on Windows/spawn.
@@ -84,7 +99,6 @@ easy_fault_reserve   = 2
 [report]
 output    = coverage.rpt
 threshold = 95.0
-verbose   = true
 
 [scan]
 chains           = 1
@@ -93,6 +107,3 @@ scan_in          = scan_in
 scan_out         = scan_out
 scan_enable      = scan_en
 run_techmap      = true
-
-[debug]
-level = INFO
