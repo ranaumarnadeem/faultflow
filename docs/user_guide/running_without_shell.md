@@ -276,6 +276,8 @@ side.
 | Scan status | `status -scan` | `scan-status` / `status --scan` |
 | Regenerate techmap | `write_netlist -scan -techmap` | `scan-techmap` |
 | Status | `status` | `status` |
+| Inject IEEE 1500 wrapper | `wrap -model scan\|buffer` | *(CLI has no equivalent — see note below)* |
+| Select wrapper test mode | `set_testmode` / `report_testmode` | `[testmode] mode` in `config.ofs` |
 | INTEST | `set_testmode intest` + scan flow + `run_atpg -scan` | `intest` |
 | EXTEST | `add_blackbox` ... + `set_testmode extest` + `run_atpg` | `extest` |
 | Hierarchical SoC | `flowscripts/hereichy_atpg.tcl` | `project` |
@@ -285,3 +287,12 @@ side.
 | OpenTestability oracle | *(shell has no equivalent)* | `run` |
 | Test-point insertion | `add_tp` / `reject_tp` | *(CLI has no equivalent)* |
 | Regenerate report | `report` | written automatically by `sim` |
+
+```{note}
+There is no `wrap` CLI subcommand — injecting the IEEE 1500 wrapper boundary is
+shell-only. `intest` and `extest` assume `[design] netlist` already points at a
+netlist that was wrapped with the shell's `wrap` command beforehand; the CLI has
+no way to perform the wrapping step itself. See
+[IEEE 1500 wrapper test: INTEST and EXTEST](examples.md#ieee-1500-wrapper-test-intest-and-extest)
+for the two-phase workflow this implies.
+```
