@@ -14,7 +14,11 @@ from faultflow.db.candidates import (
     insert_pending_candidate,
     load_blocked_patterns,
 )
-from faultflow.runner.progressive_atpg import _should_stall, redundancy_model_id
+from faultflow.runner.progressive_atpg import (
+    _should_stall,
+    pattern_key,
+    redundancy_model_id,
+)
 from faultflow.scan.atpg_view import build_scan_atpg_view
 from faultflow.scan.detection_pipeline import (
     ScanPipelineContext,
@@ -33,13 +37,30 @@ CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 RECONVERGE = ROOT / "tests/cpp/fixtures/tiny_reconverge.json"
 
 
-def test_should_stall_accepts_protocol_no_progress_outcomes() -> None:
-    assert _should_stall(
+def test_should_stall_rejects_protocol_no_progress_outcomes() -> None:
+    """A `protocol_no_progress` outcome means the round loop's own fix already
+    added that exact pattern to the fault's `rejected_patterns` -- permanently
+    blocking it in the fault's CNF (`add_blocking_clause`). That is never a
+    sign of exhaustion the way TIMEOUT/UNKNOWN are: it always means the fault
+    has fresh, unexplored search space waiting for its very next attempt. A
+    round is genuinely stalled only when every outcome is a real per-attempt
+    exhaustion signal (TIMEOUT/UNKNOWN) or the round tried nothing at all;
+    `max_rounds` remains the honest backstop for a fault that keeps colliding
+    round after round.
+    """
+    assert not _should_stall(
         detected=1,
         redundant=0,
         prev_detected=1,
         prev_redundant=0,
         round_outcomes=["protocol_no_progress", "TIMEOUT"],
+    )
+    assert _should_stall(
+        detected=1,
+        redundant=0,
+        prev_detected=1,
+        prev_redundant=0,
+        round_outcomes=["TIMEOUT", "UNKNOWN"],
     )
     assert _should_stall(
         detected=0,
@@ -496,7 +517,7 @@ wbr_model = {wbr_model}
 
 @pytest.mark.unit
 @pytest.mark.golden
-def test_scan_stalled_when_protocol_sim_never_passes(
+def test_scan_exhausts_max_rounds_when_protocol_sim_never_passes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
 ) -> None:
     import faultflow.runner.runner as runner_mod
@@ -530,8 +551,8 @@ def test_scan_stalled_when_protocol_sim_never_passes(
         lanes = [{"outcome": "no_capture_or_unload_effect"} for _ in faults]
         return {"batches": [{"lanes": lanes}]}
 
-    # The protocol-no-progress STALL lives on the TRANSITION path. In stuck-at
-    # mode a scan-FF Q-stem fault is graded by the reduced sim plus the
+    # The protocol-no-progress rejection loop lives on the TRANSITION path. In
+    # stuck-at mode a scan-FF Q-stem fault is graded by the reduced sim plus the
     # capture-value chain-integrity credit, so it only rarely reaches the
     # protocol-sim fallback -- and a single-FF SA design can never fully stall
     # (SA0/SA1 are complementary under the capture value, so one polarity always
@@ -569,7 +590,13 @@ def test_scan_stalled_when_protocol_sim_never_passes(
         launch_mode="loc",
     )
 
-    assert stats.terminal_reason == "STALLED"
+    # This mock always returns the identical vector regardless of the growing
+    # `blocked` set (unlike real CaDiCaL, which is forced to vary once a
+    # pattern is blocked), so every attempt is a fresh protocol_no_progress
+    # rejection. Per the fix, that never counts as exhaustion on its own --
+    # the run correctly keeps trying until it genuinely runs out of round
+    # budget, landing on MAX_ROUNDS rather than a premature STALLED.
+    assert stats.terminal_reason == "MAX_ROUNDS"
     assert stats.protocol_no_progress_rounds > 0
     assert stats.rejected_candidates > 0
     assert stats.accepted_vectors == 0
@@ -875,6 +902,114 @@ def test_q_stem_unsat_sets_protocol_unresolved_not_redundant(
     assert row["status"] == "undetected"
     assert int(row["protocol_unresolved"]) == 1
     assert row["redundancy_model_id"] in ("", None)
+
+
+@pytest.mark.unit
+@pytest.mark.golden
+def test_scan_colliding_sat_witness_does_not_permanently_stall_a_fault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """Regression for the same missing-`rejected_patterns`-update bug covered
+    by test_progressive_atpg.py's
+    test_colliding_sat_witness_does_not_permanently_stall_a_fault, but in the
+    ACTUAL code path every real repro run went through: `sim --scan`
+    delegates entirely to run_progressive_scan_atpg (run_progressive_native_atpg
+    hands off whenever campaign_type==CAMPAIGN_TYPE_SCAN). See that test's
+    docstring for the full mechanism.
+
+    Two distinct faults' SAT witnesses collide (fault B's solver deterministically
+    re-derives fault A's already-accepted vector). Accept/reject is fully mocked
+    (verify_fault_candidate, simulate_tentative_preloaded, reduced_protocol_matches)
+    so the test doesn't depend on tiny_dff's specific real fault semantics --
+    only on whether the collision is correctly blocked on retry."""
+    import faultflow.runner.runner as runner_mod
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(tmp_path)
+    core = runner_mod._load_core()
+    assert core is not None
+
+    from faultflow.runner.runner import _port_names
+
+    input_order = _port_names(atpg_view, cfg.top, "input")
+    assert input_order, "tiny_dff scan view has no reduced PIs"
+    v1 = {name: (i == 0) for i, name in enumerate(input_order)}
+    v2 = {name: not val for name, val in v1.items()}
+    key1 = pattern_key(v1, input_order)
+
+    fault_a_id: list[int | None] = [None]
+    fault_b_id: list[int | None] = [None]
+
+    def colliding_sat_solve(*args: object, **kwargs: object) -> dict[str, object]:
+        del kwargs
+        fault_id = int(args[3])  # type: ignore[arg-type]
+        blocked = list(args[4])  # type: ignore[arg-type]
+        if fault_a_id[0] is None:
+            fault_a_id[0] = fault_id
+        elif fault_b_id[0] is None and fault_id != fault_a_id[0]:
+            fault_b_id[0] = fault_id
+        if fault_id == fault_a_id[0]:
+            return {"result": "SAT", "vector": dict(v1)}
+        if fault_id == fault_b_id[0]:
+            if key1 in blocked:
+                return {"result": "SAT", "vector": dict(v2)}
+            # Deterministic collision: fault A's witness, which does NOT
+            # genuinely detect fault B (simulate_tentative_preloaded is
+            # mocked below to confirm exactly that).
+            return {"result": "SAT", "vector": dict(v1)}
+        return {"result": "TIMEOUT", "vector": {}}
+
+    def tentative_by_vector(*args: object, **_kwargs: object) -> list[int]:
+        vector_arg = args[3]
+        if vector_arg == v1 and fault_a_id[0] is not None:
+            return [fault_a_id[0]]
+        if vector_arg == v2 and fault_b_id[0] is not None:
+            return [fault_b_id[0]]
+        return []
+
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(core, "solve_fault_atpg", colliding_sat_solve)
+    monkeypatch.setattr(core, "verify_fault_candidate", lambda *_a, **_k: True)
+    monkeypatch.setattr(core, "simulate_tentative_preloaded", tentative_by_vector)
+    monkeypatch.setattr(
+        "faultflow.scan.detection_pipeline.reduced_protocol_matches",
+        lambda *_a, **_k: True,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    model_id = redundancy_model_id(fp)
+    _, stats, _, _, _ = run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        model_id,
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=5,
+        target_coverage=100.0,
+    )
+
+    assert fault_a_id[0] is not None and fault_b_id[0] is not None
+    assert fault_a_id[0] != fault_b_id[0]
+    assert stats.protocol_no_progress_rounds >= 1
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        fault_b = conn.execute(
+            "SELECT status FROM faults WHERE id = ?", (fault_b_id[0],)
+        ).fetchone()
+        outcomes_b = conn.execute(
+            "SELECT COUNT(*) AS n FROM fault_sat_outcome WHERE fault_id = ?",
+            (fault_b_id[0],),
+        ).fetchone()
+    assert fault_b is not None
+    # Pre-fix: stays "undetected" forever (the collision never clears).
+    assert fault_b["status"] == "detected"
+    assert outcomes_b is not None and int(outcomes_b["n"]) == 0
 
 
 @pytest.mark.unit

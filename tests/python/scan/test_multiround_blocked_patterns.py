@@ -149,4 +149,17 @@ def test_scan_atpg_survives_multibit_top_port_across_rounds(
     message = str(result)
     assert "coverage=" in message
     metrics = getattr(result, "metrics", {})
-    assert metrics.get("detected", 0) > 0
+    detected = metrics.get("detected", 0)
+    denominator = metrics.get("effective_denominator", 0)
+    assert denominator > 0
+    # "detected > 0" alone does not catch the multi-bit-PI witness-truncation
+    # bug: plenty of OTHER faults (front-bit-only, or on add_sub/en/up_down/
+    # load/rst) still detect fine regardless, so a handful of detections was
+    # never a reliable red signal -- this integration test predates that bug's
+    # discovery and never actually caught it. Measured directly against this
+    # exact design: pre-fix 288/310 (92.90%), post-fix 306/310 (98.71%) -- an
+    # 18-fault gap from faults on `b`'s non-front bits, load-bearing
+    # throughout alu_acc's add/subtract. 0.95 sits with a symmetric ~2-point
+    # margin on both sides of that gap: high enough to fail pre-fix, low
+    # enough to tolerate minor SAT-solver nondeterminism post-fix.
+    assert detected / denominator > 0.95

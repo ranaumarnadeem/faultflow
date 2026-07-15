@@ -488,7 +488,16 @@ def _should_stall(
         return False
     if not round_outcomes:
         return True
-    allowed = {"TIMEOUT", "UNKNOWN", "protocol_no_progress"}
+    # protocol_no_progress is deliberately NOT in this set: it fires only when
+    # `rejected_patterns[fault_id]` was just updated (see the two SAT-result
+    # branches in the round loops), which permanently blocks that exact
+    # pattern in the fault's CNF. That is never an exhaustion signal the way
+    # TIMEOUT/UNKNOWN are -- it always means the fault has fresh, unexplored
+    # search space waiting for its very next attempt. Treating it as
+    # stall-eligible let a single non-progress round abandon faults that were
+    # never actually exhausted, just collision-blocked once. max_rounds is the
+    # honest backstop for a fault that keeps colliding round after round.
+    allowed = {"TIMEOUT", "UNKNOWN"}
     return all(outcome in allowed for outcome in round_outcomes)
 
 
@@ -567,7 +576,7 @@ def run_progressive_native_atpg(
     scan_ctx: Any | None = None,
     scan_pattern_out: Path | None = None,
 ) -> tuple[VectorSet, AtpgStats, int, float, float]:
-    from faultflow.runner.runner import _load_core, _port_names
+    from faultflow.runner.runner import _atpg_pi_names, _load_core
 
     if campaign_type == CAMPAIGN_TYPE_SCAN:
         if scan_ctx is None:
@@ -608,7 +617,7 @@ def run_progressive_native_atpg(
     if not 0.0 < effective_target <= 100.0:
         raise RunnerError("target coverage must be in (0, 100]")
 
-    input_order = _port_names(netlist, cfg.top, "input")
+    input_order = _atpg_pi_names(netlist, cfg.top)
     effective_db_path = str(db_path if db_path is not None else cfg.db_path)
 
     _tmpdir: tempfile.TemporaryDirectory | None = None
@@ -1068,6 +1077,7 @@ def run_progressive_native_atpg(
                 stats.generated_vectors += 1
                 key = pattern_key(candidate, input_order)
                 if key in seen_patterns:
+                    rejected_patterns.setdefault(fault_id, set()).add(key)
                     round_tracker.sat_outcomes.append("protocol_no_progress")
                     stats.protocol_no_progress_rounds += 1
                     continue
@@ -1233,7 +1243,7 @@ def run_progressive_transition_atpg(
     the two-frame core entry points. The returned VectorSet holds capture frames;
     launch frames are persisted in the vectors.launch_pattern column.
     """
-    from faultflow.runner.runner import _load_core, _port_names
+    from faultflow.runner.runner import _atpg_pi_names, _load_core
 
     core = _load_core()
     if core is None:
@@ -1251,7 +1261,7 @@ def run_progressive_transition_atpg(
     if not 0.0 < effective_target <= 100.0:
         raise RunnerError("target coverage must be in (0, 100]")
 
-    input_order = _port_names(netlist, cfg.top, "input")
+    input_order = _atpg_pi_names(netlist, cfg.top)
     effective_db_path = str(db_path if db_path is not None else cfg.db_path)
 
     _tmpdir2: tempfile.TemporaryDirectory | None = None
@@ -1454,6 +1464,7 @@ def run_progressive_transition_atpg(
                 stats.generated_vectors += 1
                 key = transition_pattern_key(launch, capture, input_order)
                 if key in seen_patterns:
+                    rejected_patterns.setdefault(fault_id, set()).add(key)
                     round_tracker.sat_outcomes.append("protocol_no_progress")
                     stats.protocol_no_progress_rounds += 1
                     continue

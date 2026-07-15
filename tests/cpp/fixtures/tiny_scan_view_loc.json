@@ -2,22 +2,26 @@
   "comment": [
     "Hand-built PRE-REDUCED scan ATPG view (what build_scan_atpg_view emits) for",
     "LOC two-frame transition tests. Two scan FFs lowered to pseudo ports:",
-    "  ff0: next-state __ppo_ff0 = A XOR __ppi_ff0  (toggles when A=1 -> Q can transition)",
+    "  ff0: next-state __ppo_ff0 = A[0] XOR __ppi_ff0  (toggles when A[0]=1 -> Q can transition)",
     "  ff1: next-state __ppo_ff1 = __ppi_ff1        (D=Q hold -> Q can NEVER transition)",
     "  Y    = __ppi_ff0 (real PO observing ff0's Q so a Q-stem fault is detectable)",
-    "Real PI: A. Pseudo-PIs: __ppi_ff0/__ppi_ff1. Pseudo-POs: __ppo_ff0/__ppo_ff1.",
+    "  Y2   = BUF(A[1]) (purely combinational, no scan FF involvement)",
+    "Real PI: A (2 bits -- regression fixture for the held_real_pis multi-bit-PI",
+    "bug: build_scan_loc_view must hold BOTH A[0] and A[1] across launch/capture,",
+    "not just A[0]). Pseudo-PIs: __ppi_ff0/__ppi_ff1. Pseudo-POs: __ppo_ff0/__ppo_ff1.",
     "A Q-stem (PPI) transition on ff0 is SAT under LOC; on ff1 it is UNSAT (redundant)."
   ],
   "modules": {
     "tiny_scan_view_loc": {
       "attributes": { "top": "00000000000000000000000000000001" },
       "ports": {
-        "A": { "direction": "input", "bits": [2] },
+        "A": { "direction": "input", "bits": [2, 8] },
         "__ppi_ff0": { "direction": "input", "bits": [3] },
         "__ppi_ff1": { "direction": "input", "bits": [4] },
         "Y": { "direction": "output", "bits": [5] },
         "__ppo_ff0": { "direction": "output", "bits": [6] },
-        "__ppo_ff1": { "direction": "output", "bits": [7] }
+        "__ppo_ff1": { "direction": "output", "bits": [7] },
+        "Y2": { "direction": "output", "bits": [9] }
       },
       "cells": {
         "g_xor": {
@@ -43,15 +47,24 @@
           "attributes": {},
           "port_directions": { "A": "input", "X": "output" },
           "connections": { "A": [4], "X": [7] }
+        },
+        "g_buf2": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__buf_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "X": "output" },
+          "connections": { "A": [8], "X": [9] }
         }
       },
       "netnames": {
-        "A": { "hide_name": 0, "bits": [2], "attributes": {} },
+        "A": { "hide_name": 0, "bits": [2, 8], "attributes": {} },
         "__ppi_ff0": { "hide_name": 0, "bits": [3], "attributes": {} },
         "__ppi_ff1": { "hide_name": 0, "bits": [4], "attributes": {} },
         "Y": { "hide_name": 0, "bits": [5], "attributes": {} },
         "__ppo_ff0": { "hide_name": 0, "bits": [6], "attributes": {} },
-        "__ppo_ff1": { "hide_name": 0, "bits": [7], "attributes": {} }
+        "__ppo_ff1": { "hide_name": 0, "bits": [7], "attributes": {} },
+        "Y2": { "hide_name": 0, "bits": [9], "attributes": {} }
       }
     }
   }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import Any
@@ -141,6 +142,45 @@ def test_pattern_key_matches_cpp_order() -> None:
     vector = {"A": True, "B": False}
     assert pattern_key(vector, ["A", "B"]) == "10"
     assert pattern_key(vector, ["B", "A"]) == "01"
+
+
+def test_atpg_pi_names_expands_multibit_ports_positionally(tmp_path: Path) -> None:
+    """_atpg_pi_names must name one PI per BIT of a multi-bit input port
+    (positionally, from the port's own `bits` array -- never dependent on
+    Yosys's `netnames` table, which this project's locked synthesis script
+    does not reliably populate per-bit for a plain bus port), matching
+    ordered_pis()'s C++ naming byte-for-byte so pattern_key/blocked_patterns
+    stay in sync between the two independently-sorted PI-name lists.
+    A single-bit port must keep its exact prior (bare-name) behavior.
+    """
+    from faultflow.runner.runner import _atpg_pi_names, _positional_bus_bits
+
+    assert _positional_bus_bits("B", 1) == ["B"]
+    assert _positional_bus_bits("A", 2) == ["A[0]", "A[1]"]
+    assert _positional_bus_bits("W", 4) == ["W[0]", "W[1]", "W[2]", "W[3]"]
+
+    netlist = tmp_path / "tiny.json"
+    netlist.write_text(
+        json.dumps(
+            {
+                "modules": {
+                    "top": {
+                        "attributes": {"top": "00000000000000000000000000000001"},
+                        "ports": {
+                            "A": {"direction": "input", "bits": [2, 3]},
+                            "B": {"direction": "input", "bits": [4]},
+                            "Y": {"direction": "output", "bits": [5]},
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Sorted globally, exactly like ordered_pis()'s single flat std::sort: the
+    # bracket-suffixed names interleave alphabetically with everything else,
+    # with no special-casing needed on either side.
+    assert _atpg_pi_names(netlist, "top") == ["A[0]", "A[1]", "B"]
 
 
 def test_redundancy_model_id_is_stable() -> None:
@@ -708,6 +748,123 @@ def test_stalled_comb_run_keeps_true_undetected_reasons(
         )
     assert undetected > 0  # the faults are still there, still re-targetable
     assert marked == 0  # ...and none were mislabeled protocol_unresolved
+
+
+@pytest.mark.unit
+def test_colliding_sat_witness_does_not_permanently_stall_a_fault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: when a fault's SAT witness collides with a pattern already
+    accepted for a DIFFERENT fault this run (`key in seen_patterns`), the loop
+    must add that pattern to `rejected_patterns[fault_id]` -- exactly like its
+    sibling verify-failure branch does -- so the fault's next solve attempt is
+    forced away from the stale witness. Without that update, `blocked` never
+    changes between attempts, CaDiCaL (no randomization seed) deterministically
+    re-derives the identical witness every round, and the fault is trapped in
+    `protocol_no_progress` forever: no `fault_sat_outcome` row is ever written
+    for it (that only happens on TIMEOUT/UNKNOWN), `prior_timeout_count` never
+    increments so `_escalation_headroom` grants no protection, and the run
+    reports STALLED while this fault -- despite being genuinely eligible and
+    repeatedly attempted -- was never actually resolved either way."""
+    cfg, netlist = _tiny_inv_cfg(tmp_path, monkeypatch)
+    cfg_path = tmp_path / "config.ofs"
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8").replace(
+            "random_vectors = 8", "random_vectors = 0"
+        ),
+        encoding="utf-8",
+    )
+    from faultflow.config import load_config
+
+    cfg = load_config(cfg_path, top="tiny_inv")
+
+    from faultflow.runner import runner as runner_mod
+
+    core = runner_mod._load_core()
+    if core is None:
+        pytest.skip("C++ extension _faultflow_core is required")
+
+    core.ensure_faults_enumerated(
+        str(netlist),
+        str(cfg.cell_lib),
+        str(cfg.db_path),
+        campaign_id_for_cfg(cfg, netlist),
+        cfg.fault_model.include_clock_faults,
+        cfg.fault_model.include_reset_faults,
+        cfg.fault_model.collapsing,
+        cfg.simulation.unsupported_cells,
+    )
+
+    # tiny_inv: Y = NOT(A). {"A": True} genuinely detects Y/sa1 (good Y=0);
+    # {"A": False} genuinely detects Y/sa0 (good Y=1) -- two real fault sites,
+    # each detected by a DIFFERENT vector, matching this file's established
+    # bad_vector={"A": False} convention for Y/sa1 in the tests above.
+    v1 = {"A": True}
+    v2 = {"A": False}
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        row_sa1 = conn.execute(
+            "SELECT id FROM faults WHERE net_name = 'Y' AND fault_type = 'sa1'"
+        ).fetchone()
+        row_sa0 = conn.execute(
+            "SELECT id FROM faults WHERE net_name = 'Y' AND fault_type = 'sa0'"
+        ).fetchone()
+    assert row_sa1 is not None and row_sa0 is not None
+    # active_ids is processed in id order -- pick whichever fault genuinely
+    # solves to v1 as the LOWER id so it is accepted first, and the other
+    # (genuinely solved by v2, but mocked to collide on v1 first) as the
+    # higher id, so the collision is exercised regardless of enumeration order.
+    id_sa1, id_sa0 = int(row_sa1["id"]), int(row_sa0["id"])
+    if id_sa1 < id_sa0:
+        fault_id_1, fault_id_2 = id_sa1, id_sa0
+        v1_for_1, v2_for_2 = v1, v2
+    else:
+        fault_id_1, fault_id_2 = id_sa0, id_sa1
+        v1_for_1, v2_for_2 = v2, v1
+
+    key_v1 = pattern_key(v1_for_1, ["A"])
+
+    def colliding_sat_solve(*args: Any, **kwargs: Any) -> dict[str, object]:
+        del kwargs
+        fault_id = int(args[3])
+        blocked = list(args[4])
+        if fault_id == fault_id_1:
+            return {"result": "SAT", "vector": dict(v1_for_1)}
+        if fault_id == fault_id_2:
+            if key_v1 in blocked:
+                return {"result": "SAT", "vector": dict(v2_for_2)}
+            # Deterministic collision: same witness as fault_id_1, which does
+            # NOT genuinely detect fault_id_2 (verify_fault_candidate is real,
+            # unmocked -- this call never reaches it, since `continue` fires
+            # first on the seen_patterns match).
+            return {"result": "SAT", "vector": dict(v1_for_1)}
+        return {"result": "TIMEOUT", "vector": {}}
+
+    monkeypatch.setattr(core, "solve_fault_atpg", colliding_sat_solve)
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+
+    _, stats, _, _, _ = _run_atpg(
+        cfg, netlist, _model_id(), max_rounds=5, target_coverage=100.0
+    )
+
+    assert stats.protocol_no_progress_rounds >= 1  # the collision path fired
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        fault2 = conn.execute(
+            "SELECT status FROM faults WHERE id = ?", (fault_id_2,)
+        ).fetchone()
+        outcomes2 = conn.execute(
+            "SELECT COUNT(*) AS n FROM fault_sat_outcome WHERE fault_id = ?",
+            (fault_id_2,),
+        ).fetchone()
+    assert fault2 is not None
+    # Pre-fix: stays "undetected" forever (the collision never clears).
+    assert fault2["status"] == "detected"
+    # protocol_no_progress correctly never writes a fault_sat_outcome row --
+    # confirms fault_id_2 escaped via a real SAT accept (v2), not a phantom
+    # TIMEOUT/UNKNOWN classification papering over the same gap.
+    assert outcomes2 is not None and int(outcomes2["n"]) == 0
 
 
 @pytest.mark.unit

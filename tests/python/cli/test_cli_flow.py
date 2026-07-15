@@ -207,6 +207,39 @@ def test_init_rejects_fingerprint_mismatch_by_field(
     assert "--clean" in err
 
 
+def test_init_rejects_stale_pi_enumeration_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A campaign fingerprinted by pre-fix code (the pipeline-version marker
+    bumped when ordered_pis()'s PI-naming scheme changed) must be rejected
+    cleanly on the next init/sim -- not silently resumed against a
+    blocked_patterns table sized for the OLD (collapsed, one-PI-per-port)
+    enumeration, which would trip the internal C++ "blocked pattern length
+    mismatch" exception mid-round instead of failing fast with a clear,
+    actionable error.
+    """
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    (tmp_path / "missing.json").write_text("{}", encoding="utf-8")
+
+    real_version = runner_mod.FAULTFLOW_PIPELINE_VERSION
+
+    # Simulate a campaign created by pre-fix code.
+    monkeypatch.setattr(runner_mod, "FAULTFLOW_PIPELINE_VERSION", "pipeline-v1")
+    assert main(["init", "--top", "demo", "-c", str(cfg)]) == 0
+
+    # Restore the real (current) version and try to init/resume the same DB.
+    monkeypatch.setattr(runner_mod, "FAULTFLOW_PIPELINE_VERSION", real_version)
+    with pytest.raises(SystemExit) as exc:
+        main(["init", "--top", "demo", "-c", str(cfg)])
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "faultflow_version" in err
+    assert "--clean" in err
+
+
 def test_sim_model_override_selects_transition(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

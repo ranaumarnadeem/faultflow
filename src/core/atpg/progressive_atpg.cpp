@@ -62,19 +62,23 @@ ScanLocView build_scan_loc_view(const ParsedGraph& parsed,
   const std::string ppo_prefix = "__ppo_";
   const ParsedModule& mod = parsed.top_module();
   ScanLocView view;
+  view.held_pis = held_real_pis(parsed, cg);
   for (const auto& [name, port] : mod.ports) {
+    // PPI/PPO ports are always genuinely single-bit by construction
+    // (build_scan_atpg_view mints exactly one pseudo-port per scan FF), so
+    // this bits.size()==1 guard is correct and untouched -- unlike
+    // held_real_pis's own (see there), it is not part of this bug.
     if (port.direction != "input" || port.bits.size() != 1) {
       continue;
+    }
+    if (name.rfind(ppi_prefix, 0) != 0) {
+      continue;  // real PI, already captured by held_real_pis() above
     }
     const auto cit = cg.yosys_to_compiled.find(port.bits.front());
     if (cit == cg.yosys_to_compiled.end()) {
       continue;
     }
     const uint32_t ppi_compiled = static_cast<uint32_t>(cit->second);
-    if (name.rfind(ppi_prefix, 0) != 0) {
-      view.held_pis.push_back(ppi_compiled);
-      continue;
-    }
     const std::string ppo_name = ppo_prefix + name.substr(ppi_prefix.size());
     const auto pit = mod.ports.find(ppo_name);
     if (pit == mod.ports.end() || pit->second.bits.size() != 1) {
@@ -329,6 +333,42 @@ std::string solve_result_name(SatSolveResult result) {
 }
 
 }  // namespace
+
+std::vector<uint32_t> held_real_pis(const ParsedGraph& parsed,
+                                    const CompiledSimGraph& cg) {
+  const std::string ppi_prefix = "__ppi_";
+  const ParsedModule& mod = parsed.top_module();
+  std::vector<uint32_t> held;
+  for (const auto& [name, port] : mod.ports) {
+    // A multi-bit real PI used to be skipped here ENTIRELY (bits.size() !=
+    // 1) -- not collapsed to one bit like ordered_pis's analogous bug, just
+    // silently absent. That left every bit of such a port completely
+    // unconstrained between the launch and capture frames of a two-frame
+    // transition test: the SAT solver was free to pick DIFFERENT values for
+    // it in V1 vs V2, a vector no real tester could ever apply (a held,
+    // non-scan-driven input cannot change value between the launch and
+    // capture edges of one at-speed capture window), and the golden-ref
+    // replay had no independent way to reject it -- a soundness gap that
+    // could inflate reported transition coverage with physically invalid
+    // patterns. Fix: hold every bit of a multi-bit real PI, not just
+    // single-bit ports. PPI ports are always genuinely single-bit by
+    // construction (build_scan_atpg_view mints exactly one pseudo-port per
+    // scan FF), so they're excluded by name below regardless of width.
+    if (port.direction != "input") {
+      continue;
+    }
+    if (name.rfind(ppi_prefix, 0) == 0) {
+      continue;
+    }
+    for (int bit : port.bits) {
+      const auto cit = cg.yosys_to_compiled.find(bit);
+      if (cit != cg.yosys_to_compiled.end()) {
+        held.push_back(static_cast<uint32_t>(cit->second));
+      }
+    }
+  }
+  return held;
+}
 
 void reset_simulation_instrumentation() {
   g_simulation_instrumentation = {};
@@ -702,20 +742,7 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
   for (const std::string& h : head_ppi_ports) {
     head_ppi.push_back(port_compiled(h));
   }
-  // Held real PIs = every single-bit input port that is not a pseudo-PI.
-  std::vector<uint32_t> held;
-  for (const auto& [name, port] : mod.ports) {
-    if (port.direction != "input" || port.bits.size() != 1) {
-      continue;
-    }
-    if (name.rfind("__ppi_", 0) == 0) {
-      continue;
-    }
-    const auto cit = ctx.cg.yosys_to_compiled.find(port.bits.front());
-    if (cit != ctx.cg.yosys_to_compiled.end()) {
-      held.push_back(static_cast<uint32_t>(cit->second));
-    }
-  }
+  const std::vector<uint32_t> held = held_real_pis(ctx.parsed, ctx.cg);
 
   CompactFault fault = fault_from_record(rec);
   fault.model = FaultModel::TRANSITION;

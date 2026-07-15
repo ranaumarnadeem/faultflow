@@ -150,27 +150,30 @@ TEST_CASE("map_cadical_result mapping is pinned", "[atpg][miter]") {
   REQUIRE(map_cadical_result(0, false) == SatSolveResult::UNKNOWN);
 }
 
-// Regression for the "blocked pattern length mismatch" crash: a multi-bit top
-// module port (A[1:0], 2 bits) was silently DROPPED from ordered_pis (it
-// required bits.size()==1), while the Python-side PI-name list used to build
-// blocked_patterns bit-strings (faultflow/runner/runner.py's `_port_names`)
-// counts the port once regardless of width, matching how
-// ParsedGraph::net_id_by_name resolves a bare port name to its FIRST bit. The
-// two enumerations then disagreed in length (Python: 1 entry for A; C++: 0),
-// and any re-solve of a fault with an already-blocked pattern threw.
-// ordered_pis must expose exactly one PI per input PORT (via its first bit,
-// the same net_id_by_name already uses elsewhere for a bus PI), never zero.
-TEST_CASE("ordered_pis includes a multi-bit input port via its first bit",
+// Regression, part 1 of this bug's history: the "blocked pattern length
+// mismatch" crash. A multi-bit top module port (A[1:0], 2 bits) was silently
+// DROPPED from ordered_pis (it required bits.size()==1), while the
+// Python-side PI-name list used to build blocked_patterns bit-strings
+// (faultflow/runner/runner.py's `_port_names`) counted the port once
+// regardless of width. The fix at the time -- "take the first bit, so every
+// port contributes exactly one PI" -- fixed the crash but left bits 1..N-1
+// permanently unaddressable: a fault detectable only via a non-front bit
+// (e.g. A[1]) could be solved correctly inside the CNF (every net gets its
+// own free variable, independent of `pis`) but the solved value could never
+// be read back into the returned candidate map, silently defaulting to 0 on
+// replay -- the `tier_a_reduced_mismatch` bug (see the two TEST_CASEs below
+// this one for the direct regression). ordered_pis now expands a multi-bit
+// port into one PI per BIT, named "<port>[<i>]"; a single-bit port keeps its
+// exact prior (bare-name) behavior unchanged.
+TEST_CASE("ordered_pis expands a multi-bit input port into one PI per bit",
           "[atpg][miter][pi-enum]") {
   const ParsedGraph pg = test::load_parsed("tiny_bus_pi.json");
   const CompiledSimGraph cg = test::load_compiled("tiny_bus_pi.json");
   const auto pis = ordered_pis(pg, cg);
 
-  // One PI per port (A, B, C) == 3 PIs. Before the fix, A was skipped
-  // entirely (bits.size() == 2 != 1), leaving only B and C (2 PIs) --
-  // desyncing this count from the Python-side PI-name list, which always
-  // counts A once regardless of width.
-  REQUIRE(pis.size() == 3);
+  // One PI per bit: A[0], A[1], B, C == 4 PIs. Before this fix, A collapsed
+  // to a single PI (its first bit only), giving 3.
+  REQUIRE(pis.size() == 4);
 
   std::vector<int> yosys_ids;
   yosys_ids.reserve(pis.size());
@@ -178,28 +181,32 @@ TEST_CASE("ordered_pis includes a multi-bit input port via its first bit",
     yosys_ids.push_back(pi.yosys_id);
   }
   std::sort(yosys_ids.begin(), yosys_ids.end());
-  // A resolves to its first bit (yosys net id 2, matching
-  // ParsedGraph::net_id_by_name("A")), plus B (4) and C (5).
-  REQUIRE(yosys_ids == std::vector<int>{2, 4, 5});
+  // A's both bits (2, 3), plus B (4) and C (5) -- every underlying net now
+  // has its own addressable PI.
+  REQUIRE(yosys_ids == std::vector<int>{2, 3, 4, 5});
+
+  std::vector<std::string> names;
+  names.reserve(pis.size());
+  for (const auto& pi : pis) {
+    names.push_back(pi.name);
+  }
+  std::sort(names.begin(), names.end());
+  REQUIRE(names == std::vector<std::string>{"A[0]", "A[1]", "B", "C"});
 }
 
-// End-to-end reproduction of the actual crash: solve a fault, block the
-// returned candidate's pattern (as the progressive-ATPG loop does on a
-// rejected/duplicate candidate), then re-solve the SAME fault with that
-// blocked pattern. Before the fix, pattern_key(...) over the (buggy, A-less)
-// `pis` produced a length-2 key while a caller sizing its blocked-pattern
-// list off the Python-side PI-name list (which counts A once, like every
-// other port) would pass a length-3 key -- exactly the "blocked pattern
-// length mismatch" crash. After the fix both sides agree on 3, so
-// re-solving with a blocked pattern sized off the full PI list must not
-// throw.
+// End-to-end reproduction of the original crash this fixture was built for:
+// solve a fault, block the returned candidate's pattern (as the
+// progressive-ATPG loop does on a rejected/duplicate candidate), then
+// re-solve the SAME fault with that blocked pattern. Both the C++ `pis` list
+// and the Python-side PI-name list must always agree on length (now 4, one
+// per bit) or this throws "blocked pattern length mismatch".
 TEST_CASE("Re-solving with a full-width blocked pattern does not throw on a "
           "multi-bit-PI design",
           "[atpg][miter][pi-enum]") {
   const ParsedGraph pg = test::load_parsed("tiny_bus_pi.json");
   const CompiledSimGraph cg = test::load_compiled("tiny_bus_pi.json");
   const auto pis = ordered_pis(pg, cg);
-  REQUIRE(pis.size() == 3);
+  REQUIRE(pis.size() == 4);
 
   CompactFault fault;
   fault.net_index = cg.yosys_to_compiled.at(pg.net_id_by_name("Y1"));
@@ -217,4 +224,102 @@ TEST_CASE("Re-solving with a full-width blocked pattern does not throw on a "
   blocked.blocked_patterns = {key};
   std::map<std::string, bool> second;
   REQUIRE_NOTHROW(solve_stuck_at_fault(cg, pis, fault, blocked, second));
+}
+
+// Regression, part 2: the actual `tier_a_reduced_mismatch` bug. Y3 = INV(A[1])
+// is stuck-at-1-detectable ONLY via A[1]=1 -- a non-front bit of the 2-bit
+// port A. Before this fix, ordered_pis() enumerated exactly one PI for "A"
+// (resolving only to A[0]/net 2), so CaDiCaL's internally-correct requirement
+// that A[1]=1 was solved inside the CNF (every net gets its own free
+// variable there, independent of `pis`) but never read back into the
+// returned candidate map. Replaying that candidate then defaulted A[1] to 0
+// (GoldenRefSim defaults any PI net absent from TestVector::inputs to
+// false) -- exactly canceling the fault's own forced value, so the replay
+// disagreed the fault was detected even though SAT had just proved it was.
+// This is the precise mechanism behind every real-world `tier_a_reduced_mismatch`
+// rejection: SAT keeps finding genuinely fresh witnesses, and every one of
+// them fails re-verification, deterministically, forever.
+TEST_CASE("Fault detectable only via a non-front PI bit survives replay",
+          "[atpg][miter][pi-enum]") {
+  const ParsedGraph pg = test::load_parsed("tiny_bus_pi.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_bus_pi.json");
+  const auto pis = ordered_pis(pg, cg);
+
+  CompactFault fault;
+  fault.net_index = cg.yosys_to_compiled.at(pg.net_id_by_name("Y3"));
+  fault.type = FaultType::SA1;
+
+  std::map<std::string, bool> candidate;
+  REQUIRE(solve_stuck_at_fault(cg, pis, fault, unlimited_solve_options(),
+                               candidate) == SatSolveResult::SAT);
+
+  GoldenRefSim golden;
+  const TestVector vec = vector_from_map(pg, candidate);
+  REQUIRE(golden.is_detected(cg, golden.simulate_fault_free(cg, vec),
+                             golden.simulate_with_fault(cg, vec, fault)));
+}
+
+// pattern_key must discriminate two candidates that differ ONLY in a
+// non-front PI bit. Before this fix, `pis` had no entry naming A[1] at all,
+// so both of these hand-built candidates collapsed to the identical key
+// (A[1]'s intended value simply had nowhere to go) -- exactly why "genuinely
+// distinct SAT witnesses, every one rejected" was observed empirically
+// rather than an ordinary duplicate-pattern collision (which the earlier
+// `rejected_patterns` fix already handles correctly).
+TEST_CASE("pattern_key discriminates candidates differing only in a "
+          "non-front PI bit",
+          "[atpg][miter][pi-enum]") {
+  const ParsedGraph pg = test::load_parsed("tiny_bus_pi.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_bus_pi.json");
+  const auto pis = ordered_pis(pg, cg);
+
+  const std::map<std::string, bool> v1{
+      {"A[0]", false}, {"A[1]", false}, {"B", false}, {"C", false}};
+  const std::map<std::string, bool> v2{
+      {"A[0]", false}, {"A[1]", true}, {"B", false}, {"C", false}};
+
+  REQUIRE(pattern_key(v1, pis) != pattern_key(v2, pis));
+}
+
+// net_id_by_name's new bracket-index resolution: additive only. Bare names
+// (including a genuinely single-bit port) resolve exactly as before;
+// "<port>[<i>]" now resolves to that specific bit; out-of-range indices and
+// unknown base ports still throw, same as any other unresolvable name.
+TEST_CASE("net_id_by_name resolves bracket-indexed multi-bit port names",
+          "[atpg][miter][pi-enum]") {
+  const ParsedGraph pg = test::load_parsed("tiny_bus_pi.json");
+
+  REQUIRE(pg.net_id_by_name("A[0]") == 2);
+  REQUIRE(pg.net_id_by_name("A[1]") == 3);
+  // Bare-name resolution is unchanged: still the first bit.
+  REQUIRE(pg.net_id_by_name("A") == 2);
+  // A genuinely single-bit port is completely unaffected.
+  REQUIRE(pg.net_id_by_name("B") == 4);
+
+  REQUIRE_THROWS(pg.net_id_by_name("A[2]"));     // out of range
+  REQUIRE_THROWS(pg.net_id_by_name("A[x]"));     // malformed index
+  REQUIRE_THROWS(pg.net_id_by_name("Nope[0]"));  // unknown base port
+}
+
+// Resume-safety companion (second line of defense, independent of the Python
+// fingerprint gate): a `blocked_patterns` entry sized for the OLD (pre-fix,
+// one-PI-per-port) enumeration must still be rejected cleanly if it ever
+// reaches this layer directly, not silently misinterpreted bit-by-bit
+// against the new (longer, one-PI-per-bit) `pis` list.
+TEST_CASE("Wrong-length blocked pattern throws cleanly, not silently",
+          "[atpg][miter][pi-enum]") {
+  const ParsedGraph pg = test::load_parsed("tiny_bus_pi.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_bus_pi.json");
+  const auto pis = ordered_pis(pg, cg);
+  REQUIRE(pis.size() == 4);
+
+  CompactFault fault;
+  fault.net_index = cg.yosys_to_compiled.at(pg.net_id_by_name("Y1"));
+  fault.type = FaultType::SA0;
+
+  SatSolveOptions stale = unlimited_solve_options();
+  // Pre-fix length: one entry per PORT (A, B, C), not per bit.
+  stale.blocked_patterns = {std::string(3, '0')};
+  std::map<std::string, bool> candidate;
+  REQUIRE_THROWS(solve_stuck_at_fault(cg, pis, fault, stale, candidate));
 }
