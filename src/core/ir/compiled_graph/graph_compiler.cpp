@@ -186,6 +186,7 @@ void wire_inputs(SimNode& sn, GateType gt,
       wire_seq({"A1", "A2", "A3", "B1", "C1"});
       break;
     case GateType::A311O:
+    case GateType::A311OI:
       wire_seq({"A1", "A2", "A3", "B1", "C1"});
       break;
     case GateType::A222OI:
@@ -220,10 +221,30 @@ void wire_inputs(SimNode& sn, GateType gt,
       wire("D_N", sn.in3);
       break;
     case GateType::NAND4BB:
+    case GateType::AND4BB:
       wire("A_N", sn.in0);
       wire("B_N", sn.in1);
       wire("C", sn.in2);
       wire("D", sn.in3);
+      break;
+    case GateType::OR2B:
+      wire("A", sn.in0);
+      wire("B_N", sn.in1);
+      break;
+    case GateType::OR4BB:
+      wire("A", sn.in0);
+      wire("B", sn.in1);
+      wire("C_N", sn.in2);
+      wire("D_N", sn.in3);
+      break;
+    case GateType::A2BB2O:
+      wire("A1_N", sn.in0);
+      wire("A2_N", sn.in1);
+      wire("B1", sn.in2);
+      wire("B2", sn.in3);
+      break;
+    case GateType::MUX4:
+      wire_seq({"A0", "A1", "A2", "A3", "S0", "S1"});
       break;
     case GateType::O2111A:
     case GateType::O2111AI:
@@ -485,8 +506,21 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
       sn.type = GateType::DFF;
       sn.in0 = map_net(node->ff_config.data_net, y2c, c2y);
       sn.in1 = map_net(node->ff_config.clock_net, y2c, c2y);
+      // clear and enable share the in2 slot: the current cell set never
+      // combines them on one FF (edfxtp has no reset variant), so this is
+      // safe today. Hard-fail rather than silently overwrite if that ever
+      // changes -- a future combined cell needs its own dedicated slot, not
+      // a silent collision here.
+      if (node->ff_config.clear.present && node->ff_config.enable.present) {
+        throw std::runtime_error(
+            "FF cannot combine clear and enable controls on the same "
+            "instance (normalized node " +
+            std::to_string(nid) + "): unsupported cell");
+      }
       if (node->ff_config.clear.present) {
         sn.in2 = map_net(node->ff_config.clear.net, y2c, c2y);
+      } else if (node->ff_config.enable.present) {
+        sn.in2 = map_net(node->ff_config.enable.net, y2c, c2y);
       }
       if (node->ff_config.preset.present) {
         sn.in3 = map_net(node->ff_config.preset.net, y2c, c2y);
@@ -508,6 +542,8 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
       cfg.preset_value = node->ff_config.preset.value;
       cfg.has_scan = node->ff_config.has_scan;
       cfg.scan_enable_polarity = node->ff_config.scan_enable_polarity;
+      cfg.has_enable = node->ff_config.enable.present;
+      cfg.enable_polarity = node->ff_config.enable.polarity;
       cfg.clear_preset_conflict_value =
           node->ff_config.clear_preset_conflict_value;
 

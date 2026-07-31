@@ -218,6 +218,119 @@ TEST_CASE("Scannable async-reset FF gates reset during shift, applies at capture
   }
 }
 
+// Regression for the edfxtp data-enable (DE) bug: the cell map declared
+// `inputs: ["CLK", "D"]` with no `enable` in the ff metadata, so DE was never
+// bound anywhere and an enable flip-flop simulated as an unconditional D-FF
+// (Q <= D on every edge, DE completely dropped). Sky130's own Liberty next_state
+// for edfxtp is "(D&DE) | (IQ&!DE)" -- a synchronous D/hold mux gated by DE,
+// active-high. These tests pin that exact behavior end to end.
+
+TEST_CASE("edfxtp FF metadata resolves the DE enable control",
+          "[sequential][enable]") {
+  const NormalizedGraph ng = test::load_normalized("tiny_edfxtp.json");
+  const auto node_it = std::find_if(
+      ng.nodes.begin(), ng.nodes.end(),
+      [](const auto& item) { return item.second.type == NodeType::FF; });
+  REQUIRE(node_it != ng.nodes.end());
+  const NormNode& node = node_it->second;
+  REQUIRE(node.ff_config.enable.present);
+  REQUIRE(node.ff_config.enable.net == 4);  // DE net id
+  REQUIRE(node.ff_config.enable.polarity == Polarity::ACTIVE_HIGH);
+  REQUIRE_FALSE(node.ff_config.clear.present);
+}
+
+TEST_CASE("Compiled graph wires DE into the FF's enable slot",
+          "[sequential][enable]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_edfxtp.json");
+  REQUIRE(cg.ff_configs.size() == 1);
+  const SimNode& ff = cg.nodes.at(cg.ff_nodes.at(0));
+  REQUIRE(cg.ff_configs.at(0).has_enable);
+  REQUIRE(cg.ff_configs.at(0).enable_polarity == Polarity::ACTIVE_HIGH);
+  REQUIRE(ff.in2 != UNUSED_INPUT);
+  REQUIRE(ff.in2 == cg.yosys_to_compiled.at(4));  // DE
+}
+
+TEST_CASE("edfxtp captures D while DE is active", "[sequential][enable]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_edfxtp.json");
+  GoldenRefSim golden;
+
+  TestVector vec;
+  vec.cycles = {
+      cycle({{2, false}, {3, true}, {4, true}}, false),  // CLK=0 D=1 DE=1
+      cycle({{2, true}, {3, true}, {4, true}}, true),    // edge: capture D=1
+  };
+  REQUIRE(sampled_q(golden.simulate_sequence_fault_free(cg, vec), 5));
+}
+
+TEST_CASE("edfxtp holds Q (does not fall to D=1) while DE is inactive",
+          "[sequential][enable]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_edfxtp.json");
+  GoldenRefSim golden;
+
+  // Q starts at 0 (default). DE=0 the whole time, D=1: a buggy "DE dropped,
+  // always capture D" implementation would set Q=1 here; the real gated
+  // behavior must hold Q at its initial 0.
+  TestVector vec;
+  vec.cycles = {
+      cycle({{2, false}, {3, true}, {4, false}}, false),  // CLK=0 D=1 DE=0
+      cycle({{2, true}, {3, true}, {4, false}}, true),    // edge, DE=0: hold
+  };
+  REQUIRE_FALSE(sampled_q(golden.simulate_sequence_fault_free(cg, vec), 5));
+}
+
+TEST_CASE("edfxtp holds Q=1 (does not fall to D=0) while DE is inactive",
+          "[sequential][enable]") {
+  // The complementary hold direction -- proves this is a genuine D/Q mux, not
+  // just "DE=0 forces 0" (which the previous test alone could not rule out).
+  const CompiledSimGraph cg = test::load_compiled("tiny_edfxtp.json");
+  GoldenRefSim golden;
+
+  TestVector vec;
+  vec.initial_ff_state[0] = true;  // Q starts at 1
+  vec.cycles = {
+      cycle({{2, false}, {3, false}, {4, false}}, false),  // CLK=0 D=0 DE=0
+      cycle({{2, true}, {3, false}, {4, false}}, true),    // edge, DE=0: hold
+  };
+  REQUIRE(sampled_q(golden.simulate_sequence_fault_free(cg, vec), 5));
+}
+
+TEST_CASE(
+    "Bit-parallel matches GoldenRefSim: a D fault is observable only when "
+    "DE is active",
+    "[sequential][enable]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_edfxtp.json");
+  GoldenRefSim golden;
+  BitParallelSim parallel;
+
+  CompactFault d_sa0;
+  d_sa0.net_index = cg.yosys_to_compiled.at(3);
+  d_sa0.type = FaultType::SA0;
+
+  // DE=1: D genuinely flows through to Q, so forcing D=0 changes the capture.
+  TestVector enabled_vec;
+  enabled_vec.cycles = {
+      cycle({{2, false}, {3, true}, {4, true}}, false),
+      cycle({{2, true}, {3, true}, {4, true}}, true),
+  };
+  const auto ff = golden.simulate_sequence_fault_free(cg, enabled_vec);
+  const auto faulty =
+      golden.simulate_sequence_with_fault(cg, enabled_vec, d_sa0);
+  REQUIRE(golden.is_sequence_detected(cg, ff, faulty));
+  REQUIRE(parallel.simulate_single_fault(cg, enabled_vec, d_sa0));
+
+  // DE=0: D is ignored (Q holds), so the same D stuck-at fault has no effect.
+  CompactFault d_sa0_disabled;
+  d_sa0_disabled.net_index = cg.yosys_to_compiled.at(3);
+  d_sa0_disabled.type = FaultType::SA0;
+  d_sa0_disabled.status = FaultStatus::UNDETECTED;
+  TestVector disabled_vec;
+  disabled_vec.cycles = {
+      cycle({{2, false}, {3, true}, {4, false}}, false),
+      cycle({{2, true}, {3, true}, {4, false}}, true),
+  };
+  REQUIRE_FALSE(parallel.simulate_single_fault(cg, disabled_vec, d_sa0_disabled));
+}
+
 TEST_CASE("Sync reset fixture resets through D-cone logic", "[sequential]") {
   const CompiledSimGraph cg = test::load_compiled("tiny_sync_reset.json");
   GoldenRefSim sim;

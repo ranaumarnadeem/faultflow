@@ -290,6 +290,17 @@ void BitParallelSim::update_ff_states(SimState& state,
     if (cfg.has_scan && sn.in4 != UNUSED_INPUT && sn.in5 != UNUSED_INPUT) {
       capture = (capture & ~scan_active) | (nv[sn.in4] & scan_active);
     }
+    // Data-enable (edfxtp DE): a synchronous D/hold mux, not an async force.
+    // Where enable is inactive, capture holds at the FF's current state
+    // instead of the (possibly faulted) D value. Scan shift takes precedence
+    // (ORed into enable_active) so a hypothetical combined enable+scan cell
+    // would still shift correctly; unreachable for the current cell set since
+    // no such cell exists today.
+    if (cfg.has_enable && sn.in2 != UNUSED_INPUT) {
+      const uint64_t enable_active =
+          active_mask(nv[sn.in2], cfg.enable_polarity) | scan_active;
+      capture = (capture & enable_active) | (next[idx] & ~enable_active);
+    }
 
     uint64_t value = next[idx];
     value = apply_value_mask(value, conflict, cfg.clear_preset_conflict_value);

@@ -155,6 +155,11 @@ struct FFConfig {
   int scan_enable_net = -1;
   FFControlConfig clear;
   FFControlConfig preset;
+  // Data-enable (sky130 edfxtp DE): synchronous D/hold mux, NOT an async
+  // force like clear/preset. `.value` is unused. Mutually exclusive with
+  // `clear` for the current cell set (no combined enable+reset cell exists);
+  // GraphCompiler hard-fails if both are ever present on the same instance.
+  FFControlConfig enable;
   Polarity scan_enable_polarity = Polarity::ACTIVE_HIGH;
   bool has_scan = false;
   uint8_t clear_preset_conflict_value = 0;
@@ -170,7 +175,9 @@ struct CompiledFFConfig {
   bool has_clear = false;
   bool has_preset = false;
   bool has_scan = false;
+  bool has_enable = false;
   Polarity scan_enable_polarity = Polarity::ACTIVE_HIGH;
+  Polarity enable_polarity = Polarity::ACTIVE_HIGH;
 };
 
 enum class FaultType : uint8_t { SA0 = 0, SA1 = 1 };

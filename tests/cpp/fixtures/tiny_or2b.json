@@ -1,0 +1,38 @@
+{
+  "creator": "faultflow hand fixture",
+  "modules": {
+    "tiny_or2b": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "A": {"direction": "input", "bits": [2]},
+        "B_N": {"direction": "input", "bits": [3]},
+        "X": {"direction": "output", "bits": [4]}
+      },
+      "cells": {
+        "u0": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__or2b_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "B_N": "input",
+            "X": "output"
+          },
+          "connections": {
+            "A": [2],
+            "B_N": [3],
+            "X": [4]
+          }
+        }
+      },
+      "netnames": {
+        "A": {"hide_name": 0, "bits": [2], "attributes": {}},
+        "B_N": {"hide_name": 0, "bits": [3], "attributes": {}},
+        "X": {"hide_name": 0, "bits": [4], "attributes": {}}
+      }
+    }
+  }
+}

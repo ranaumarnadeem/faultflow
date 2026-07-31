@@ -132,3 +132,110 @@ TEST_CASE("nand4bb wires its real ports (A_N/B_N/C/D), not a constant",
     REQUIRE(vals.at(6) == (a_n || b_n || !c || !d));  // Y net id 6
   }
 }
+
+// Regression for A311OI/MUX4/OR2B/OR4BB/AND4BB/A2BB2O: GraphCompiler::wire_inputs
+// had no case for any of these six gate types (gate_eval.cpp evaluates them
+// correctly, and they are present in the cell map, but wire_inputs fell through
+// to `default: break;`), so every input stayed UNUSED_INPUT and each cell
+// silently evaluated as a fixed constant regardless of its real inputs. Each
+// case here exercises the full parse->normalize->compile->simulate pipeline
+// against the same independent truth table already pinned above, so it fails
+// on a constant output and passes once the real ports are wired.
+
+TEST_CASE("a311oi wires its real ports (A1/A2/A3/B1/C1), not a constant",
+          "[sky130][a311oi][compiled]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_a311oi.json");
+  const GoldenRefSim ref;
+  for (int mask = 0; mask < 32; ++mask) {
+    const bool a1 = (mask & 1) != 0;
+    const bool a2 = (mask & 2) != 0;
+    const bool a3 = (mask & 4) != 0;
+    const bool b1 = (mask & 8) != 0;
+    const bool c1 = (mask & 16) != 0;
+    TestVector vec;
+    vec.inputs = {{2, a1}, {3, a2}, {4, a3}, {5, b1}, {6, c1}};
+    const std::map<int, bool> vals = ref.simulate_fault_free(cg, vec);
+    REQUIRE(vals.at(7) == !((a1 && a2 && a3) || b1 || c1));  // Y net id 7
+  }
+}
+
+TEST_CASE("mux4 wires its real ports (A0-A3/S0/S1), not a constant",
+          "[sky130][mux4][compiled]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_mux4_gate.json");
+  const GoldenRefSim ref;
+  for (int mask = 0; mask < 64; ++mask) {
+    const bool a0 = (mask & 1) != 0;
+    const bool a1 = (mask & 2) != 0;
+    const bool a2 = (mask & 4) != 0;
+    const bool a3 = (mask & 8) != 0;
+    const bool s0 = (mask & 16) != 0;
+    const bool s1 = (mask & 32) != 0;
+    TestVector vec;
+    vec.inputs = {{2, a0}, {3, a1}, {4, a2}, {5, a3}, {6, s0}, {7, s1}};
+    const std::map<int, bool> vals = ref.simulate_fault_free(cg, vec);
+    const bool expected = s1 ? (s0 ? a3 : a2) : (s0 ? a1 : a0);
+    REQUIRE(vals.at(8) == expected);  // X net id 8
+  }
+}
+
+TEST_CASE("or2b wires its real ports (A/B_N), not a constant",
+          "[sky130][or2b][compiled]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_or2b.json");
+  const GoldenRefSim ref;
+  for (int mask = 0; mask < 4; ++mask) {
+    const bool a = (mask & 1) != 0;
+    const bool b_n = (mask & 2) != 0;
+    TestVector vec;
+    vec.inputs = {{2, a}, {3, b_n}};
+    const std::map<int, bool> vals = ref.simulate_fault_free(cg, vec);
+    REQUIRE(vals.at(4) == (a || !b_n));  // X net id 4
+  }
+}
+
+TEST_CASE("or4bb wires its real ports (A/B/C_N/D_N), not a constant",
+          "[sky130][or4bb][compiled]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_or4bb.json");
+  const GoldenRefSim ref;
+  for (int mask = 0; mask < 16; ++mask) {
+    const bool a = (mask & 1) != 0;
+    const bool b = (mask & 2) != 0;
+    const bool c_n = (mask & 4) != 0;
+    const bool d_n = (mask & 8) != 0;
+    TestVector vec;
+    vec.inputs = {{2, a}, {3, b}, {4, c_n}, {5, d_n}};
+    const std::map<int, bool> vals = ref.simulate_fault_free(cg, vec);
+    REQUIRE(vals.at(6) == (a || b || !c_n || !d_n));  // X net id 6
+  }
+}
+
+TEST_CASE("and4bb wires its real ports (A_N/B_N/C/D), not a constant",
+          "[sky130][and4bb][compiled]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_and4bb.json");
+  const GoldenRefSim ref;
+  for (int mask = 0; mask < 16; ++mask) {
+    const bool a_n = (mask & 1) != 0;
+    const bool b_n = (mask & 2) != 0;
+    const bool c = (mask & 4) != 0;
+    const bool d = (mask & 8) != 0;
+    TestVector vec;
+    vec.inputs = {{2, a_n}, {3, b_n}, {4, c}, {5, d}};
+    const std::map<int, bool> vals = ref.simulate_fault_free(cg, vec);
+    REQUIRE(vals.at(6) == (!a_n && !b_n && c && d));  // X net id 6
+  }
+}
+
+TEST_CASE("a2bb2o wires its real ports (A1_N/A2_N/B1/B2), not a constant",
+          "[sky130][a2bb2o][compiled]") {
+  const CompiledSimGraph cg = test::load_compiled("tiny_a2bb2o.json");
+  const GoldenRefSim ref;
+  for (int mask = 0; mask < 16; ++mask) {
+    const bool a1_n = (mask & 1) != 0;
+    const bool a2_n = (mask & 2) != 0;
+    const bool b1 = (mask & 4) != 0;
+    const bool b2 = (mask & 8) != 0;
+    TestVector vec;
+    vec.inputs = {{2, a1_n}, {3, a2_n}, {4, b1}, {5, b2}};
+    const std::map<int, bool> vals = ref.simulate_fault_free(cg, vec);
+    REQUIRE(vals.at(6) == ((!a1_n && !a2_n) || (b1 && b2)));  // X net id 6
+  }
+}
