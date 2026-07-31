@@ -762,7 +762,7 @@ def _process_scan_candidate(
     # active_rows may contain stale (already-detected) faults between random vectors;
     # mark_fault_detected guards against overwrites with AND status='undetected'.
     _preloaded = [
-        (row.fault_id, row.net_index, 1 if row.fault_type == "SA1" else 0)
+        (row.fault_id, row.net_index, fault_type_to_sa_code(row.fault_type))
         for row in active_rows
     ]
     sim_threads = resolve_sim_threads(scan_ctx.cfg.simulation.sim_threads)
@@ -858,7 +858,11 @@ def _process_scan_candidate(
                 if ppo_port is None:
                     continue
                 cap_val = bool(reduced_expectation.get(ppo_port, False))
-                detected = cap_val if row.fault_type == "SA0" else not cap_val
+                detected = (
+                    cap_val
+                    if fault_type_to_sa_code(row.fault_type) == 0
+                    else not cap_val
+                )
                 if detected:
                     passed_fault_ids.append(fault_id)
                 elif source == "sat" and fault_id == sat_target_fault_id:
