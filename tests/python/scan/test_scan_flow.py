@@ -225,6 +225,85 @@ def module_scan_in_bits(data: dict[str, Any], top: str) -> list[int]:
     return data["modules"][top]["ports"]["scan_in"]["bits"]
 
 
+def _tiny_edfxtp_json() -> dict[str, object]:
+    return {
+        "modules": {
+            "tiny_edfxtp": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "CLK": {"direction": "input", "bits": [2]},
+                    "D": {"direction": "input", "bits": [3]},
+                    "DE": {"direction": "input", "bits": [4]},
+                    "Q": {"direction": "output", "bits": [5]},
+                },
+                "cells": {
+                    "u0": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__edfxtp_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {
+                            "CLK": "input",
+                            "D": "input",
+                            "DE": "input",
+                            "Q": "output",
+                        },
+                        "connections": {"CLK": [2], "D": [3], "DE": [4], "Q": [5]},
+                    }
+                },
+                "netnames": {
+                    "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+                    "D": {"hide_name": 0, "bits": [3], "attributes": {}},
+                    "DE": {"hide_name": 0, "bits": [4], "attributes": {}},
+                    "Q": {"hide_name": 0, "bits": [5], "attributes": {}},
+                },
+            }
+        }
+    }
+
+
+@pytest.mark.golden
+def test_stitch_scan_json_preserves_enable_hold_behavior(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """A scan-inserted edfxtp (enable D-FF) must still honor DE in normal
+    (scan_en=0) mode: DE=0 holds Q, DE=1 loads D. The generic scan cell
+    ($scanff_faultflow) has no DE pin at all -- only CLK/D/SDI/SE/Q (see
+    cells/sky130/sky130_fd_sc_hd.json) -- so stitching must synthesize a
+    hold-mux ahead of its D pin. Silently dropping DE turns every
+    scan-inserted enable FF into a plain D-FF, which scan-check's
+    normal-mode equivalence catches on any design with edfxtp cells
+    (confirmed on picorv32a/boxcar in real sweeps)."""
+    import _faultflow_core as core  # type: ignore[import-not-found]
+
+    source = _write_json(tmp_path / "tiny_edfxtp.json", _tiny_edfxtp_json())
+    output = tmp_path / "tiny_edfxtp_scan_generic.json"
+    stitch_scan_json(source, CELL_MAP, "tiny_edfxtp", output)
+
+    def pulse(d: bool, de: bool) -> list[dict[str, object]]:
+        return [
+            {"CLK": False, "D": d, "DE": de, "scan_en": False, "scan_in": False},
+            {"CLK": True, "D": d, "DE": de, "scan_en": False, "scan_in": False},
+        ]
+
+    load_only = pulse(True, True)
+    load_then_hold = pulse(True, True) + pulse(False, False)
+
+    results = core.fault_free_sequence_outputs(
+        str(output),
+        str(CELL_MAP),
+        [load_only, load_then_hold],
+        ["CLK", "D", "DE", "scan_en", "scan_in"],
+        ["Q"],
+        "fail",
+    )
+
+    assert results[0] == {"Q": True}, "load pulse (DE=1) must set Q=D"
+    assert results[1] == {
+        "Q": True
+    }, "hold pulse (DE=0) must preserve Q -- DE dropped during scan stitching"
+
+
 def test_async_reset_scan_atpg_end_to_end(tmp_path: Path) -> None:
     # The autoMBIST scenario: an async-reset controller (always_ff @(posedge clk
     # or negedge rst_n)) must scan-insert and grade. The reset is held inactive

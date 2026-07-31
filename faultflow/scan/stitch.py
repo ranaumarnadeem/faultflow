@@ -20,6 +20,15 @@ YOSYS_SCAN_RESET_CELL_TYPE = "\\$scanff_r_faultflow"
 SCAN_SET_CELL_TYPE = "$scanff_s_faultflow"
 YOSYS_SCAN_SET_CELL_TYPE = "\\$scanff_s_faultflow"
 
+# Generic gate cells used to synthesize a clock-enable hold-mux ahead of a
+# scan-replacement FF's D pin (see _add_enable_hold_mux). The generic scan
+# cell ($scanff_faultflow) has no DE pin of its own -- only CLK/D/SDI/SE/Q --
+# so an FF's enable behavior must be folded into its D input structurally.
+# Reuses the same synthetic gate types atpg_view.py's async-control mux uses.
+YOSYS_CAPTURE_AND_CELL = "\\$faultflow_capture_and"
+YOSYS_CAPTURE_OR_CELL = "\\$faultflow_capture_or"
+YOSYS_CAPTURE_INV_CELL = "\\$faultflow_capture_inv"
+
 # Every faultflow generic scan-cell type (plain + async reset/set), in both the
 # bare and Yosys-escaped spellings. Use this wherever scan cells are identified
 # so the async-reset/set variants are recognized alongside the plain cell.
@@ -129,6 +138,13 @@ class _EligibleFF:
     async_kind: str = "none"
     async_net: int = -1
     async_pin: str | None = None
+    # Clock-enable (e.g. sky130 edfxtp's DE) to preserve through scan stitching.
+    # enable_net is the control net (-1 if none); enable_level is "HIGH" or "LOW"
+    # (which value of the enable net means "load D", per the cell-map ff.enable
+    # spec). The generic scan cell has no enable pin, so stitch_scan_json
+    # synthesizes a hold-mux ahead of D instead of wiring this directly.
+    enable_net: int = -1
+    enable_level: str = "HIGH"
 
 
 @dataclass(frozen=True)
@@ -249,6 +265,21 @@ def _async_control(ff_meta: dict[str, Any]) -> tuple[str, str | None]:
     return "none", None
 
 
+def _enable_control(ff_meta: dict[str, Any]) -> tuple[str | None, str]:
+    """The clock-enable of an FF as (pin, level): reads the cell-map `ff:`
+    enable metadata ({"pin": "DE", "level": "HIGH"|"LOW"}, e.g. sky130
+    edfxtp). Returns (None, "HIGH") if the FF has no enable. `level` is which
+    value of the enable net means "load D" (HIGH if unspecified)."""
+    spec = ff_meta.get("enable")
+    if not isinstance(spec, dict):
+        return None, "HIGH"
+    pin = spec.get("pin")
+    if not isinstance(pin, str) or not pin:
+        return None, "HIGH"
+    level = spec.get("level")
+    return pin, level if level in ("HIGH", "LOW") else "HIGH"
+
+
 def _all_int_bits(value: object) -> list[int]:
     if not isinstance(value, list):
         return []
@@ -330,6 +361,10 @@ def _reason_for_ff(
         _, pin = _async_control(ff_meta)
         if pin is None or _maybe_one_bit(conns.get(pin)) is None:
             return "unsupported_ff_shape"
+    if "enable" in ff_meta:
+        enable_pin, _ = _enable_control(ff_meta)
+        if enable_pin is None or _maybe_one_bit(conns.get(enable_pin)) is None:
+            return "unsupported_ff_shape"
     if ff_meta.get("trigger") == "NEGEDGE":
         return "negedge_clock"
     if ff_meta.get("trigger") != "POSEDGE":
@@ -402,6 +437,12 @@ def _collect_ffs(
             if async_kind != "none" and async_pin is not None
             else -1
         )
+        enable_pin, enable_level = _enable_control(ff_meta)
+        enable_net = (
+            _one_bit(conns.get(enable_pin), f"{instance}.{enable_pin}")
+            if enable_pin is not None
+            else -1
+        )
         eligible.append(
             _EligibleFF(
                 instance=str(instance),
@@ -414,6 +455,8 @@ def _collect_ffs(
                 async_kind=async_kind,
                 async_net=async_net,
                 async_pin=async_pin,
+                enable_net=enable_net,
+                enable_level=enable_level,
             )
         )
     return eligible, ineligible
@@ -719,6 +762,100 @@ def plan_scan_json(
     return dataclasses.replace(plan, wrapper_chains=wrapper_chains)
 
 
+def _add_internal_buf1_cell(
+    cells: dict[str, Any], instance: str, cell_type: str, in_bit: int, out_bit: int
+) -> None:
+    cells[instance] = {
+        "hide_name": 0,
+        "type": cell_type,
+        "parameters": {},
+        "attributes": {"faultflow_internal": "1"},
+        "port_directions": {"A": "input", "Y": "output"},
+        "connections": {"A": [in_bit], "Y": [out_bit]},
+    }
+
+
+def _add_internal_gate2_cell(
+    cells: dict[str, Any],
+    instance: str,
+    cell_type: str,
+    a_bit: int,
+    b_bit: int,
+    out_bit: int,
+) -> None:
+    cells[instance] = {
+        "hide_name": 0,
+        "type": cell_type,
+        "parameters": {},
+        "attributes": {"faultflow_internal": "1"},
+        "port_directions": {"A": "input", "B": "input", "Y": "output"},
+        "connections": {"A": [a_bit], "B": [b_bit], "Y": [out_bit]},
+    }
+
+
+def _add_enable_hold_mux(
+    cells: dict[str, Any],
+    instance: str,
+    d_net: int,
+    q_net: int,
+    enable_net: int,
+    enable_level: str,
+    next_id: int,
+) -> tuple[int, int]:
+    """Synthesize muxed_d = (enable active) ? D : Q ahead of a scan-replacement
+    FF's D pin, since the generic scan cell has no enable pin of its own (see
+    cells/sky130/sky130_fd_sc_hd.json's $scanff_faultflow: only CLK/D/SDI/SE).
+    Decomposed into INV/AND2/OR2 -- the same synthetic gate types
+    atpg_view.py's async-control mux uses -- rather than a Sky130 mux2 cell,
+    to keep this on the most foundational, extensively-tested gate types.
+
+    Returns (muxed_d_net, next_id).
+    """
+    not_enable_net = next_id
+    next_id += 1
+    _add_internal_buf1_cell(
+        cells,
+        f"$ffenmux_inv_{instance}",
+        YOSYS_CAPTURE_INV_CELL,
+        enable_net,
+        not_enable_net,
+    )
+    d_gate_signal = enable_net if enable_level == "HIGH" else not_enable_net
+    q_gate_signal = not_enable_net if enable_level == "HIGH" else enable_net
+
+    d_gated = next_id
+    next_id += 1
+    _add_internal_gate2_cell(
+        cells,
+        f"$ffenmux_d_{instance}",
+        YOSYS_CAPTURE_AND_CELL,
+        d_net,
+        d_gate_signal,
+        d_gated,
+    )
+    q_gated = next_id
+    next_id += 1
+    _add_internal_gate2_cell(
+        cells,
+        f"$ffenmux_q_{instance}",
+        YOSYS_CAPTURE_AND_CELL,
+        q_net,
+        q_gate_signal,
+        q_gated,
+    )
+    muxed_d = next_id
+    next_id += 1
+    _add_internal_gate2_cell(
+        cells,
+        f"$ffenmux_or_{instance}",
+        YOSYS_CAPTURE_OR_CELL,
+        d_gated,
+        q_gated,
+        muxed_d,
+    )
+    return muxed_d, next_id
+
+
 def stitch_scan_json(
     netlist_json: Path,
     cell_map_json: Path,
@@ -767,6 +904,10 @@ def stitch_scan_json(
 
     cells = stitched_module["cells"]
     by_instance = {ff.instance: ff for ff in eligible}
+    # Running counter for enable-hold-mux nets (see _add_enable_hold_mux) --
+    # NOT re-scanned per FF (_next_net_id is O(module size); this loop can
+    # touch thousands of FFs on real designs).
+    mux_next_id = scan_enable_bit + 1
     for record in plan.cells:
         ff = by_instance[record.instance]
         attrs = dict(ff.cell.get("attributes", {}))
@@ -785,9 +926,22 @@ def stitch_scan_json(
             "SE": "input",
             "Q": "output",
         }
+        data_net = record.data_net
+        if ff.enable_net != -1:
+            # Generic scan cell has no enable pin -- synthesize the hold-mux
+            # ahead of D instead of dropping the enable behavior entirely.
+            data_net, mux_next_id = _add_enable_hold_mux(
+                cells,
+                record.instance,
+                record.data_net,
+                record.q_net,
+                ff.enable_net,
+                ff.enable_level,
+                mux_next_id,
+            )
         connections = {
             "CLK": [record.clock_net],
-            "D": [record.data_net],
+            "D": [data_net],
             "SDI": [record.scan_in_net],
             "SE": [record.scan_enable_net],
             "Q": [record.q_net],
