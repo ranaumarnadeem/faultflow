@@ -139,12 +139,18 @@ class _EligibleFF:
     async_net: int = -1
     async_pin: str | None = None
     # Clock-enable (e.g. sky130 edfxtp's DE) to preserve through scan stitching.
-    # enable_net is the control net (-1 if none); enable_level is "HIGH" or "LOW"
-    # (which value of the enable net means "load D", per the cell-map ff.enable
-    # spec). The generic scan cell has no enable pin, so stitch_scan_json
-    # synthesizes a hold-mux ahead of D instead of wiring this directly.
+    # enable_net is the control net (-1 if none/constant-tied); enable_level is
+    # "HIGH" or "LOW" (which value of the enable net means "load D", per the
+    # cell-map ff.enable spec). The generic scan cell has no enable pin, so
+    # stitch_scan_json synthesizes a hold-mux ahead of D instead of wiring
+    # this directly. enable_const is set instead of enable_net when the
+    # enable pin is tied to a compile-time constant ("0"/"1") rather than a
+    # real net -- no mux is needed then, D is wired straight to either the
+    # original data net (always-active) or the FF's own Q (always-inactive,
+    # permanent hold).
     enable_net: int = -1
     enable_level: str = "HIGH"
+    enable_const: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -236,6 +242,27 @@ def _maybe_one_bit(value: Any) -> int | None:
         return None
     bit = value[0]
     return bit if isinstance(bit, int) else None
+
+
+def _resolve_enable_bit(
+    conns: dict[str, Any], pin: str
+) -> tuple[int | None, bool | None]:
+    """Resolve an FF's enable-pin connection.
+
+    Returns (net_id, None) for a real net, (None, const_value) if the pin is
+    tied to a Yosys constant bit (the literal strings "0"/"1", not a net --
+    e.g. one bit of a wider enable-gated register that synthesis proved is
+    never/always written), or (None, None) if the connection is missing or
+    malformed (multi-bit, "x"/"z", etc.)."""
+    value = conns.get(pin)
+    if not isinstance(value, list) or len(value) != 1:
+        return None, None
+    bit = value[0]
+    if isinstance(bit, int):
+        return bit, None
+    if bit in ("0", "1"):
+        return None, bit == "1"
+    return None, None
 
 
 def _ff_pin(ff_meta: dict[str, Any], key: str) -> str | None:
@@ -363,7 +390,10 @@ def _reason_for_ff(
             return "unsupported_ff_shape"
     if "enable" in ff_meta:
         enable_pin, _ = _enable_control(ff_meta)
-        if enable_pin is None or _maybe_one_bit(conns.get(enable_pin)) is None:
+        if enable_pin is None:
+            return "unsupported_ff_shape"
+        enable_net, enable_const = _resolve_enable_bit(conns, enable_pin)
+        if enable_net is None and enable_const is None:
             return "unsupported_ff_shape"
     if ff_meta.get("trigger") == "NEGEDGE":
         return "negedge_clock"
@@ -438,11 +468,11 @@ def _collect_ffs(
             else -1
         )
         enable_pin, enable_level = _enable_control(ff_meta)
-        enable_net = (
-            _one_bit(conns.get(enable_pin), f"{instance}.{enable_pin}")
-            if enable_pin is not None
-            else -1
-        )
+        if enable_pin is not None:
+            enable_net_resolved, enable_const = _resolve_enable_bit(conns, enable_pin)
+            enable_net = enable_net_resolved if enable_net_resolved is not None else -1
+        else:
+            enable_net, enable_const = -1, None
         eligible.append(
             _EligibleFF(
                 instance=str(instance),
@@ -457,6 +487,7 @@ def _collect_ffs(
                 async_pin=async_pin,
                 enable_net=enable_net,
                 enable_level=enable_level,
+                enable_const=enable_const,
             )
         )
     return eligible, ineligible
@@ -939,6 +970,14 @@ def stitch_scan_json(
                 ff.enable_level,
                 mux_next_id,
             )
+        elif ff.enable_const is not None:
+            # Enable tied to a compile-time constant -- no mux needed: always
+            # active behaves like a plain FF (D straight through); always
+            # inactive holds forever (D wired to the FF's own Q).
+            active = (
+                ff.enable_const if ff.enable_level == "HIGH" else not ff.enable_const
+            )
+            data_net = record.data_net if active else record.q_net
         connections = {
             "CLK": [record.clock_net],
             "D": [data_net],

@@ -1281,13 +1281,21 @@ class Runner:
             raise RunnerError("Quaigh ATPG input must be .bench")
         output = self.cfg.patterns_path
         self.cfg.ensure_workspace()
-        proc = subprocess.run(
-            ["quaigh", "atpg", str(sidecar), "-o", str(output)],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
+        try:
+            proc = subprocess.run(
+                ["quaigh", "atpg", str(sidecar), "-o", str(output)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+        except OSError as exc:
+            # Quaigh is an optional external tool (see CLAUDE.md); a missing
+            # binary must surface as a RunnerError so callers that catch
+            # (PatternError, RunnerError) around a vector-source search --
+            # e.g. _scan_vector_source's fall-through to deterministic smoke
+            # vectors -- see it and can fall back instead of hard-failing.
+            raise RunnerError(f"Quaigh not available: {exc}") from exc
         (self.cfg.logs_dir / "quaigh.log").write_text(proc.stdout, encoding="utf-8")
         if proc.returncode != 0:
             raise RunnerError(f"Quaigh failed; see {self.cfg.logs_dir / 'quaigh.log'}")

@@ -386,6 +386,37 @@ def test_quaigh_receives_bench_only(
     assert all(not arg.endswith(".blif") for arg in seen["cmd"])
 
 
+def test_run_quaigh_missing_binary_raises_runner_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing quaigh binary (optional external tool, per CLAUDE.md) must
+    surface as a RunnerError, not a raw FileNotFoundError. _scan_vector_source
+    catches exactly (PatternError, RunnerError) around _find_vectors() to fall
+    through to its deterministic smoke-vector fallback when no vector source
+    is available; an uncaught FileNotFoundError bypasses that fallback and
+    hard-fails scan-check outright on any fresh workspace with no prior
+    patterns.test and no quaigh installed (confirmed: this exact scenario
+    broke scan-check for boxcar/genericfir in a real rerun)."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    out = tmp_path / "output" / "demo"
+    out.mkdir(parents=True)
+    intermediate = out / ".faultflow" / "intermediate"
+    intermediate.mkdir(parents=True)
+    (intermediate / "demo.bench").write_text(
+        "INPUT(a)\nOUTPUT(y)\ny = BUFF(a)\n", encoding="utf-8"
+    )
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+        raise FileNotFoundError(2, "No such file or directory", "quaigh")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
+
+    with pytest.raises(RunnerError, match="[Qq]uaigh"):
+        Runner(load_config(cfg, "demo"))._run_quaigh()
+
+
 def test_verilog_netlist_runs_yosys_instead_of_simulating_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
