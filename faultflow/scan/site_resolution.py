@@ -19,7 +19,11 @@ def build_site_key_index(
 
 
 def fault_type_to_sa_code(fault_type: str) -> int:
-    return 0 if fault_type == "sa0" else 1
+    if fault_type == "sa0":
+        return 0
+    if fault_type == "sa1":
+        return 1
+    raise ValueError(f"unexpected fault_type {fault_type!r}; expected 'sa0' or 'sa1'")
 
 
 def _rows_by_key(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -202,7 +206,10 @@ def apply_scan_execution_map(
         SET atpg_compiled_net_index = ?
         WHERE campaign_id = ? AND fault_site_key = ?
         """,
-        [(compiled_index, campaign_id, key) for key, compiled_index in execution.items()],
+        [
+            (compiled_index, campaign_id, key)
+            for key, compiled_index in execution.items()
+        ],
     )
     conn.executemany(
         """
@@ -211,7 +218,10 @@ def apply_scan_execution_map(
             atpg_compiled_net_index = NULL
         WHERE campaign_id = ? AND fault_site_key = ?
         """,
-        [(exclusion, exclusion, campaign_id, key) for key, exclusion in exclusions.items()],
+        [
+            (exclusion, exclusion, campaign_id, key)
+            for key, exclusion in exclusions.items()
+        ],
     )
     missing = conn.execute(
         """
