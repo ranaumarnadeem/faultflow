@@ -67,6 +67,7 @@ def _fake_core(result: str = "SAT", **extras: Any) -> MagicMock:
     m.solve_fault_atpg.return_value = payload
     m.solve_scan_transition_fault_atpg.return_value = payload
     m.solve_scan_los_transition_fault_atpg.return_value = payload
+    m.solve_transition_fault_atpg.return_value = payload
     return m
 
 
@@ -123,6 +124,35 @@ class TestWorkerRouting:
         # native_stuck_at passes bb_instances (list) and test_mode at positions 8,9
         assert ["blackbox_inst"] in pos_args
         assert "intest" in pos_args
+
+    def test_native_transition_calls_solve_transition_fault_atpg(self):
+        """Regression: run_progressive_transition_atpg's SAT loop never had a
+        wave-dispatch path at all (unlike native_stuck_at/broadside/los), so
+        cfg.atpg.workers was silently ignored for native combinational
+        transition ATPG. This is the routing half of that fix -- the wave-
+        dispatch plumbing in progressive_atpg.py is covered end-to-end by
+        test_transition_atpg.py::
+        test_transition_parallel_workers_match_serial_coverage."""
+        core = _fake_core(result="SAT", launch={"a": True}, capture={"a": False})
+        with patch.dict("sys.modules", {"_faultflow_core": core}):
+            fault_id, result, solved = solve_fault_worker(
+                _args_tuple(
+                    "native_transition",
+                    bb_instances=["blackbox_inst"],
+                    cone_restrict=True,
+                )
+            )
+        assert fault_id == 42
+        assert result == "SAT"
+        core.solve_transition_fault_atpg.assert_called_once()
+        # only the transition (combinational) solver is touched
+        core.solve_fault_atpg.assert_not_called()
+        core.solve_scan_transition_fault_atpg.assert_not_called()
+        core.solve_scan_los_transition_fault_atpg.assert_not_called()
+        pos_args = core.solve_transition_fault_atpg.call_args[0]
+        # 10-arg signature: ..., unsupported, bb_instances, cone_restrict
+        assert ["blackbox_inst"] in pos_args
+        assert True in pos_args
 
     def test_worker_exception_returns_unknown(self):
         core = MagicMock()

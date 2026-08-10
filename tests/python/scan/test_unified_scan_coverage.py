@@ -517,6 +517,51 @@ wbr_model = {wbr_model}
 
 @pytest.mark.unit
 @pytest.mark.golden
+def test_scan_random_only_stops_before_sat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """random_only=true on the SCAN path must grade the random-fill batch and
+    stop -- never dispatch SAT for the remainder. run_progressive_scan_atpg
+    (faultflow/scan/detection_pipeline.py) is a SEPARATE round-loop
+    implementation from the plain/non-scan run_progressive_native_atpg
+    (faultflow/runner/progressive_atpg.py, covered by
+    test_random_only_stops_before_sat in test_progressive_atpg.py) -- every
+    real `ff.py sim --scan` invocation goes through this one, so the flag
+    must be honored here independently."""
+    import dataclasses
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(tmp_path)
+    cfg = dataclasses.replace(
+        cfg,
+        atpg=dataclasses.replace(cfg.atpg, random_vectors=1, random_only=True),
+    )
+    assert cfg.atpg.random_only is True
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    model_id = redundancy_model_id(fp)
+    _, stats, _run_id, _atpg_s, _sim_s = run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        model_id,
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=3,
+        target_coverage=100.0,
+    )
+    assert stats.terminal_reason == "RANDOM_ONLY"
+    assert stats.rounds == 1
+    assert stats.sat == 0
+    assert stats.unsat == 0
+
+
+@pytest.mark.unit
+@pytest.mark.golden
 def test_scan_exhausts_max_rounds_when_protocol_sim_never_passes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
 ) -> None:

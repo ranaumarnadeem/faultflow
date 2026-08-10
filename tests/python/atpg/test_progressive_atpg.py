@@ -392,6 +392,65 @@ threshold = 95.0
 
 
 @pytest.mark.integration
+def test_random_only_stops_before_sat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """random_only=true must grade the random-fill batch and stop -- never
+    dispatch SAT for the remainder, regardless of how far short of the report
+    threshold random sampling lands. This is the paper's "pure random,
+    Fault-comparable" baseline mode: a handful of random vectors on c432 can't
+    plausibly reach the 100% target here, so if random_only were silently
+    ignored the run would fall through to real SAT solving (sat/unsat > 0,
+    more than one round) instead of stopping flat after round 1."""
+    root = Path(__file__).resolve().parents[3]
+    netlist = root / "tests/benchmarks/iscas85/synth_sky130/c432.json"
+    if not netlist.exists():
+        pytest.skip("c432 netlist missing")
+
+    cfg_path = tmp_path / "config.ofs"
+    cfg_path.write_text(
+        f"""
+[design]
+netlist = {netlist}
+cell_lib = {root / "cells/sky130/sky130_fd_sc_hd.json"}
+
+[fault_model]
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+random_vectors = 4
+random_only = true
+max_rounds = 20
+sat_timeout_seconds = 10
+
+[report]
+threshold = 100.0
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    from faultflow.config import load_config
+
+    cfg = load_config(cfg_path, top="c432")
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    assert cfg.atpg.random_only is True
+
+    _, stats, _, _, _ = _run_atpg(cfg, netlist, _model_id(), target_coverage=100.0)
+    assert stats.terminal_reason == "RANDOM_ONLY"
+    assert stats.rounds == 1
+    assert stats.sat == 0
+    assert stats.unsat == 0
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        data = summary(conn)
+    assert data["undetected"] > 0
+    assert float(data["coverage_percent"] or 0.0) < 100.0
+
+
+@pytest.mark.integration
 def test_fault_drop_sat_preserves_coverage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

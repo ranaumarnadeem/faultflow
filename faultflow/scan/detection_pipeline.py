@@ -1409,6 +1409,12 @@ def run_progressive_scan_atpg(
                     _k = _k + "0" * len(los_head_ports)
                 seen_patterns.discard(_k)
             switched_to_sat = True
+            if cfg.atpg.random_only:
+                # Deliberately incomplete "pure random" terminal mode for
+                # methodology comparisons -- never dispatch SAT for whatever
+                # random sampling left undetected.
+                terminal = "RANDOM_ONLY"
+                break
 
         with connect(effective_db_path) as conn:
             init_schema(conn)

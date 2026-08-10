@@ -510,3 +510,99 @@ def test_ff_to_ff_d_observe_follows_rewired_pin() -> None:
     assert port_map["ff_b"]["boundary"]["d_observe_net_id"] == ppi_a_bit
     # The stale data_net (10) must not be what B observes.
     assert port_map["ff_b"]["boundary"]["d_observe_net_id"] != 10
+
+
+def _self_loop_fixture() -> tuple[dict[str, Any], dict[str, Any]]:
+    """A permanently-held FF: D wired directly to its own Q net (stitch.py's
+    constant-tied-enable-inactive case -- e.g. edfxtp with DE tied to a Yosys
+    constant "0", so stitch_scan_json wires D straight to the FF's own Q with
+    no mux, per _add_enable_hold_mux's sibling branch in stitch_scan_json).
+    """
+    generic = {
+        "modules": {
+            "tiny_self_loop": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "CLK": {"direction": "input", "bits": [2]},
+                    "scan_in": {"direction": "input", "bits": [3]},
+                    "scan_en": {"direction": "input", "bits": [4]},
+                    "scan_out": {"direction": "output", "bits": [10]},
+                },
+                "cells": {
+                    "ff_self": {
+                        "type": "$scanff_faultflow",
+                        "parameters": {},
+                        "attributes": {},
+                        # D wired directly to its own Q (net 10) -- permanent hold.
+                        "connections": {
+                            "CLK": [2],
+                            "D": [10],
+                            "SDI": [3],
+                            "SE": [4],
+                            "Q": [10],
+                        },
+                    },
+                },
+                "netnames": {
+                    "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+                    "n10": {"hide_name": 0, "bits": [10], "attributes": {}},
+                },
+            }
+        }
+    }
+    manifest = {
+        "top": "tiny_self_loop",
+        "clock_net": 2,
+        "scan_enable": "scan_en",
+        "scan_inputs": ["scan_in"],
+        "scan_outputs": ["scan_out"],
+        "cells": [
+            {
+                "instance": "ff_self",
+                "chain_index": 0,
+                "chain_position": 0,
+                "q_net": 10,
+                "data_net": 10,
+            },
+        ],
+    }
+    return generic, manifest
+
+
+def test_self_referencing_ff_d_observe_follows_own_rewired_pin() -> None:
+    """Regression: an FF whose D pin is wired to its own Q net (permanent hold)
+    must have its D-observe PPO track its OWN PPI, not the stale pre-rewire net.
+
+    d_net was captured once at the top of the per-record loop, BEFORE this same
+    record's own Q->PPI rewrite -- for a self-referencing FF (D net == Q net on
+    the SAME instance) that rewrite invalidates its own just-captured d_net
+    within the same iteration, so the D-observe boundary tapped an orphaned net
+    (the scan cell gets popped moments later) instead of the PPI. Confirmed root
+    cause of a real PicoRV32a golden-sequence mismatch: chain 54 position 6,
+    instance $auto$ff.cc:337:slice$8660 (DE tied to constant "0", D wired to
+    its own Q) -- PPI was True, PPO read False (the orphaned net's default).
+    """
+    generic, manifest = _self_loop_fixture()
+    view, port_map = build_scan_atpg_view(generic, manifest)
+    module = view["modules"]["tiny_self_loop"]
+    ppi_bit = module["ports"][port_map["ff_self"]["ppi_port"]]["bits"][0]
+    cells = module["cells"]
+
+    # net 11 (PPI) has >1 consumer here (the port declaration + the scan cell's
+    # own rewritten D pin), so a $ffbranch buffer is inserted -- observe reads
+    # PPI through that one hop, not directly. Either way, the stale net 10 must
+    # not appear anywhere in the chain.
+    branch = cells["$ffbranch_ff_self"]
+    assert branch["connections"]["A"] == [ppi_bit]
+    observe = cells["$ffobserve_ff_self"]
+    assert observe["connections"]["A"] == branch["connections"]["Y"]
+    assert (
+        port_map["ff_self"]["boundary"]["d_observe_net_id"]
+        == branch["connections"]["Y"][0]
+    )
+    assert port_map["ff_self"]["boundary"]["d_observe_net_id"] != 10
+    assert not any(
+        10 in c.get("connections", {}).get(pin, [])
+        for c in cells.values()
+        for pin in c.get("connections", {})
+    ), "stale net 10 must not be referenced anywhere in the reduced view"

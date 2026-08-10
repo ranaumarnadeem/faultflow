@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from faultflow.config import ConfigError, load_config
-from faultflow.db import connect, init_schema
+from faultflow.db import connect, init_schema, summary
 from faultflow.runner import Runner
 from faultflow.runner.progressive_atpg import (
     redundancy_model_id,
@@ -322,6 +322,202 @@ def test_transition_colliding_sat_witness_does_not_permanently_stall_a_fault(
     assert fault2 is not None
     assert fault2["status"] == "detected"  # pre-fix: stuck "undetected" forever
     assert outcomes2 is not None and int(outcomes2["n"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Random-only terminal mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_transition_random_only_stops_before_sat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """random_only=true must grade the random launch/capture batch and stop --
+    never dispatch SAT -- mirroring
+    test_progressive_atpg.py::test_random_only_stops_before_sat. Unlike the
+    stuck-at loop, the transition round loop has no `switched_to_sat` guard:
+    random-fill is attempted fresh every round, so the RANDOM_ONLY
+    short-circuit is a distinct code path that needs its own check. It was
+    silently missing: a transition campaign with random_only=true fell
+    straight through to full SAT after round 1's random grading instead of
+    stopping, silently corrupting the pure-random baseline the flag exists to
+    produce."""
+    if not C17_JSON.exists():
+        pytest.skip("c17 netlist missing")
+    monkeypatch.chdir(tmp_path)
+
+    cfg_path = _write_cfg(
+        tmp_path,
+        netlist=C17_JSON,
+        fault_model_lines="model = transition\ncollapsing = false",
+        threshold=100.0,
+    )
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8")
+        .replace("random_vectors = 64", "random_vectors = 4")
+        .replace("compaction = none", "compaction = none\nrandom_only = true"),
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_path, "c17")
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    assert cfg.atpg.random_only is True
+
+    fp = {
+        "netlist_hash": "n",
+        "cell_lib_hash": "c",
+        "collapsing": 0,
+        "unsupported_cells": "fail",
+        "include_clock_faults": 0,
+        "include_reset_faults": 0,
+        "fault_model": "transition",
+    }
+    _, stats, _, _, _ = _run_transition_atpg(
+        cfg, C17_JSON, redundancy_model_id(fp), target_coverage=100.0
+    )
+    assert stats.terminal_reason == "RANDOM_ONLY"
+    assert stats.rounds == 1
+    assert stats.sat == 0
+    assert stats.unsat == 0
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        data = summary(conn)
+    assert data["undetected"] > 0
+    assert float(data["coverage_percent"] or 0.0) < 100.0
+
+
+# ---------------------------------------------------------------------------
+# Parallel SAT dispatch (workers)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_transition_broken_worker_pool_fails_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """Regression: run_progressive_transition_atpg never touched
+    ProcessPoolExecutor at all, so cfg.atpg.workers was silently ignored for
+    transition SAT (unlike the stuck-at and scan paths, which both
+    parallelize) -- a large, uncontested wall-clock multiplier on any
+    multi-core transition campaign. Proven the same way
+    test_progressive_atpg.py::test_broken_worker_pool_fails_loudly_not_silent_unknowns
+    proves it for stuck-at: monkeypatch ProcessPoolExecutor.map to explode
+    and require the transition loop to actually route through it (and fail
+    loudly, not silently degrade to UNKNOWN) when workers > 1. Pre-fix this
+    monkeypatch has no effect -- the run proceeds fully serial and never
+    raises, so this test fails to fail (i.e. fails to raise) before the fix."""
+    if not TINY_INV_JSON.exists():
+        pytest.skip("tiny_inv fixture missing")
+    monkeypatch.chdir(tmp_path)
+
+    cfg_path = _write_cfg(
+        tmp_path,
+        netlist=TINY_INV_JSON,
+        fault_model_lines="model = transition\nlaunch = loc\ncollapsing = false",
+    )
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8")
+        .replace("random_vectors = 64", "random_vectors = 0")
+        .replace("compaction = none", "compaction = none\nworkers = 2"),
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_path, "tiny_inv")
+    assert cfg.atpg.workers == 2
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    netlist = cfg.output_dir / "tiny_inv.json"
+    shutil.copy(TINY_INV_JSON, netlist)
+
+    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+
+    from faultflow.runner import RunnerError
+
+    def dead_pool_map(_self: object, *_args: Any, **_kwargs: Any) -> Any:
+        raise BrokenProcessPool("A child process terminated abruptly")
+
+    monkeypatch.setattr(ProcessPoolExecutor, "map", dead_pool_map)
+
+    fp = {
+        "netlist_hash": "n",
+        "cell_lib_hash": "c",
+        "collapsing": 0,
+        "unsupported_cells": "fail",
+        "include_clock_faults": 0,
+        "include_reset_faults": 0,
+        "fault_model": "transition",
+    }
+    with pytest.raises(RunnerError, match="worker"):
+        _run_transition_atpg(
+            cfg,
+            netlist,
+            redundancy_model_id(fp),
+            max_rounds=3,
+            target_coverage=100.0,
+        )
+
+
+@pytest.mark.integration
+def test_transition_parallel_workers_match_serial_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """A real (unmocked) parallel run (workers=2) must reach the same final
+    coverage as the serial default (workers=1) on the same design. SAT
+    verdicts are exact and every SAT candidate is simulator-verified before
+    being credited, so wave-dispatch order must not change which faults end
+    up detected/redundant -- this guards against an argument-order mistake in
+    the new native_transition wave args silently producing wrong-but-not-
+    crashing results."""
+    if not C17_JSON.exists():
+        pytest.skip("c17 netlist missing")
+    monkeypatch.chdir(tmp_path)
+
+    fp = {
+        "netlist_hash": "n",
+        "cell_lib_hash": "c",
+        "collapsing": 0,
+        "unsupported_cells": "fail",
+        "include_clock_faults": 0,
+        "include_reset_faults": 0,
+        "fault_model": "transition",
+    }
+
+    def _run(workers: int):
+        sub = tmp_path / f"w{workers}"
+        sub.mkdir()
+        cfg_path = _write_cfg(
+            sub,
+            netlist=C17_JSON,
+            fault_model_lines="model = transition\ncollapsing = false",
+            threshold=100.0,
+        )
+        if workers != 1:
+            cfg_path.write_text(
+                cfg_path.read_text(encoding="utf-8").replace(
+                    "compaction = none", f"compaction = none\nworkers = {workers}"
+                ),
+                encoding="utf-8",
+            )
+        cfg = load_config(cfg_path, "c17")
+        cfg.output_dir.mkdir(parents=True, exist_ok=True)
+        assert cfg.atpg.workers == workers
+        _, stats, _, _, _ = _run_transition_atpg(
+            cfg, C17_JSON, redundancy_model_id(fp), target_coverage=100.0
+        )
+        with connect(cfg.db_path) as conn:
+            init_schema(conn)
+            data = summary(conn)
+        return stats, data
+
+    serial_stats, serial_data = _run(1)
+    parallel_stats, parallel_data = _run(2)
+
+    assert serial_stats.terminal_reason in {"COMPLETE", "THRESHOLD_MET"}
+    assert parallel_stats.terminal_reason in {"COMPLETE", "THRESHOLD_MET"}
+    assert parallel_data["detected"] == serial_data["detected"]
+    assert parallel_data["denominator"] == serial_data["denominator"]
+    assert float(parallel_data["coverage_percent"] or 0.0) == pytest.approx(
+        float(serial_data["coverage_percent"] or 0.0)
+    )
 
 
 # ---------------------------------------------------------------------------
