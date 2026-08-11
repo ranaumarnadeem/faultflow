@@ -446,6 +446,114 @@ shrink by roughly a third and the SAT call count would drop proportionally.
 
 ---
 
+## Hierarchical SoC composition — chip-level EXTEST/INTEST aggregation (Sky130 HD)
+
+Four real multi-block SoCs, built by composing previously-benchmarked blocks (from the
+tables above) through faultflow's `assemble_soc`/`aggregate_project` pipeline. This is
+the first end-to-end exercise of IEEE-1500 WBR INTEST/EXTEST, hierarchical SoC
+aggregation, and scan-pattern retargeting against real multi-block RTL rather than the
+synthetic two-port fixtures the unit tests use — all three mechanisms were already
+implemented and unit-tested, but had never been demonstrated on a composed chip before
+this run.
+
+| SoC | Blocks | Composed top |
+|---|---|---|
+| SoC1 | picorv32a + uart | `soc1_glue` |
+| SoC2 | serv + uart | `soc2_glue` |
+| SoC3 | tiny_aes + uart + soc3_controller | `soc3_glue` |
+| SoC4 | iiravg + boxcar + genericfir_small | `soc4_glue` |
+
+**Method.** Each block is wrapped (IEEE-1500 WBR) and run through native SAT ATPG under
+INTEST individually, exactly as in its standalone entry above. The SoC glue instantiates
+each wrapped block and daisy-chains `wbr_so → wbr_si` into one boundary scan ring; the
+composed chip is then run under EXTEST to grade the interconnect-only logic (glue-level
+muxes/wiring outside any wrapped block). `aggregate_project` combines each block's own
+INTEST-scope coverage with the chip's EXTEST-scope coverage into one chip-level number,
+via a disjoint union over four guards — `tops_disjoint`, `no_double_count`,
+`partition_total`, `handoff_complete` — all of which passed on all four SoCs.
+
+### Chip-level aggregate stuck-at coverage
+
+| SoC | Chip denominator | Chip detected | **Chip coverage** | Guards |
+|---|---:|---:|---:|---|
+| SoC1 (picorv32a+uart) | 70,713 | 70,507 | **99.71%** | 4/4 pass |
+| SoC2 (serv+uart) | 8,768 | 8,732 | **99.59%** | 4/4 pass |
+| SoC3 (tiny_aes+uart+controller) | 191,263 | 191,203 | **99.97%** | 4/4 pass |
+| SoC4 (iiravg+boxcar+genericfir_small) | 40,643 | 40,643 | **100.00%** | 4/4 pass |
+
+### Per-scope breakdown
+
+Each block's own INTEST coverage (already reported standalone above) carries through to
+the chip unchanged; the new number each SoC contributes is its EXTEST-scope
+interconnect coverage, shown below.
+
+| SoC | Scope | Kind | Denominator | Detected | Coverage |
+|---|---|---|---:|---:|---:|
+| SoC1 | picorv32a | block (INTEST) | 65,986 | 65,945 | 99.94% |
+| SoC1 | uart | block (INTEST) | 3,774 | 3,774 | 100.00% |
+| SoC1 | soc1_extest | interconnect (EXTEST) | 953 | 788 | 82.69% |
+| SoC2 | serv | block (INTEST) | 4,217 | 4,217 | 100.00% |
+| SoC2 | uart | block (INTEST) | 3,774 | 3,774 | 100.00% |
+| SoC2 | soc2_extest | interconnect (EXTEST) | 777 | 741 | 95.37% |
+| SoC3 | tiny_aes | block (INTEST) | 179,354 | 179,354 | 100.00% |
+| SoC3 | uart | block (INTEST) | 3,774 | 3,774 | 100.00% |
+| SoC3 | controller | block (INTEST) | 7,157 | 7,157 | 100.00% |
+| SoC3 | soc3_extest | interconnect (EXTEST) | 978 | 918 | 93.87% |
+| SoC4 | iiravg | block (INTEST) | 924 | 924 | 100.00% |
+| SoC4 | boxcar | block (INTEST) | 18,148 | 18,148 | 100.00% |
+| SoC4 | genericfir_small | block (INTEST) | 21,409 | 21,409 | 100.00% |
+| SoC4 | soc4_extest | interconnect (EXTEST) | 162 | 162 | 100.00% |
+
+The interconnect (EXTEST) rows are consistently the weakest scope on every SoC except
+SoC4 — expected, since boundary wiring/mux logic gets far fewer, far less targeted
+vectors than a block's own dedicated SAT-ATPG campaign. SoC1's 82.69% is the lowest,
+consistent with picorv32a's glue having the most interconnect logic (bus muxing) of the
+four compositions.
+
+### Scan-pattern retargeting validation
+
+Each block's own INTEST patterns (SAT-ATPG-generated, exported via
+`--export-patterns`) were retargeted through the composed chip's physical scan
+chains — both the block's native functional scan chain and its IEEE-1500 WBR boundary
+ring, driven simultaneously — and re-verified against the full SoC netlist.
+
+| Block | SoC context | Chain length | Patterns verified |
+|---|---|---:|---:|
+| iiravg | SoC4 | 16 (2 chains) | **78/78** (exhaustive) |
+| boxcar | SoC4 | 1,130 (113 chains) | **30/30** |
+| genericfir_small | SoC4 | 471 (48 chains) | **30/30** |
+| picorv32a | SoC1 | 1,613 (162 chains) | **2/2** |
+| uart | SoC1 | 131 (2 chains) | **5/5** |
+| uart | SoC2 | 131 (2 chains) | **5/5** |
+| uart | SoC3 | 131 (2 chains) | **5/5** |
+| serv | SoC2 | 164 (20 chains) | **10/10** |
+| soc3_controller | SoC3 | 411 (45 chains) | **5/5** |
+| tiny_aes | SoC3 | 5,568 (600 chains) — largest simulation run this session | **1/1** |
+
+**Result: every sampled/exhaustive pattern verified across all 7 unique blocks and all
+4 SoCs, zero failures.** Getting here required finding and fixing two real product bugs
+in `faultflow/retarget/transform.py`, both invisible to the pre-existing unit test
+(whose single-chain fixture happens to have chain length exactly equal to
+`max_chain_length`, so neither bug's failure mode was reachable):
+
+1. **Load-side padding direction.** When a shared shift protocol combines physical
+   chains of different lengths under one `max_chain_length`, a register shorter than
+   the shift count only retains the *last* N bits shifted into it — so padding on the
+   load side has to precede the real payload, not follow it. It was being appended
+   after, silently evicting real stimulus before the capture edge.
+2. **Unstripped block-level padding.** A block's own exported pattern is already padded
+   to *that block's own* manifest `max_chain_length` whenever its chains aren't
+   uniform length (e.g. genericfir_small's last 9 of 48 chains are length 9, not 10).
+   Retargeting assumed the exported array length always equalled the true chain
+   length, silently misreading the pre-padded array.
+
+Both were root-caused with an independent from-scratch Python reference simulator
+(reproducing the C++ core's exact gate-evaluation formulas) cross-checked against
+per-net C++ debug traces, then fixed and re-verified against every block/SoC pair
+above.
+
+---
+
 ## Reference baseline: Fault v0.9.4
 
 [Fault](https://github.com/AUCOHL/Fault) is an open-source fault simulator for combinational
