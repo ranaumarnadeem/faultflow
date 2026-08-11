@@ -15,7 +15,12 @@ module soc2_glue (
 
 	input  wire soc_wbr_se,
 	input  wire soc_wbr_si,
-	output wire soc_wbr_so
+	output wire soc_wbr_so,
+
+	input  wire serv_scan_in,
+	output wire serv_scan_out,
+	input  wire uart_scan_in,
+	output wire uart_scan_out
 );
 
 	wire [31:0] wb_mem_adr, wb_mem_dat, wb_mem_rdt;
@@ -37,47 +42,27 @@ module soc2_glue (
 	wire        mux_reg_dat_we, mux_reg_dat_re, mux_reg_dat_wait;
 	wire [31:0] mux_reg_dat_di, mux_reg_dat_do;
 
-	wire n_sv_scan_en;
-	wire n_sv_scan_in_0;
-	wire n_sv_scan_in_1;
-	wire n_sv_scan_in_10;
-	wire n_sv_scan_in_11;
-	wire n_sv_scan_in_12;
-	wire n_sv_scan_in_13;
-	wire n_sv_scan_in_14;
-	wire n_sv_scan_in_15;
-	wire n_sv_scan_in_16;
-	wire n_sv_scan_in_17;
-	wire n_sv_scan_in_18;
-	wire n_sv_scan_in_19;
-	wire n_sv_scan_in_2;
-	wire n_sv_scan_in_3;
-	wire n_sv_scan_in_4;
-	wire n_sv_scan_in_5;
-	wire n_sv_scan_in_6;
-	wire n_sv_scan_in_7;
-	wire n_sv_scan_in_8;
-	wire n_sv_scan_in_9;
-	wire n_sv_scan_out_0;
-	wire n_sv_scan_out_1;
-	wire n_sv_scan_out_10;
-	wire n_sv_scan_out_11;
-	wire n_sv_scan_out_12;
-	wire n_sv_scan_out_13;
-	wire n_sv_scan_out_14;
-	wire n_sv_scan_out_15;
-	wire n_sv_scan_out_16;
-	wire n_sv_scan_out_17;
-	wire n_sv_scan_out_18;
-	wire n_sv_scan_out_19;
-	wire n_sv_scan_out_2;
-	wire n_sv_scan_out_3;
-	wire n_sv_scan_out_4;
-	wire n_sv_scan_out_5;
-	wire n_sv_scan_out_6;
-	wire n_sv_scan_out_7;
-	wire n_sv_scan_out_8;
-	wire n_sv_scan_out_9;
+
+	wire serv_scan_en_tie = soc_wbr_se;
+	wire serv_scanlink_1;
+	wire serv_scanlink_2;
+	wire serv_scanlink_3;
+	wire serv_scanlink_4;
+	wire serv_scanlink_5;
+	wire serv_scanlink_6;
+	wire serv_scanlink_7;
+	wire serv_scanlink_8;
+	wire serv_scanlink_9;
+	wire serv_scanlink_10;
+	wire serv_scanlink_11;
+	wire serv_scanlink_12;
+	wire serv_scanlink_13;
+	wire serv_scanlink_14;
+	wire serv_scanlink_15;
+	wire serv_scanlink_16;
+	wire serv_scanlink_17;
+	wire serv_scanlink_18;
+	wire serv_scanlink_19;
 
 	servile cpu (
 		.i_clk (clk),
@@ -103,57 +88,55 @@ module soc2_glue (
 		.o_wb_mem_sel (wb_mem_sel),
 		.o_wb_mem_stb (wb_mem_stb),
 		.o_wb_mem_we (wb_mem_we),
-		.scan_en (n_sv_scan_en),
-		.scan_in_0 (n_sv_scan_in_0),
-		.scan_in_1 (n_sv_scan_in_1),
-		.scan_in_10 (n_sv_scan_in_10),
-		.scan_in_11 (n_sv_scan_in_11),
-		.scan_in_12 (n_sv_scan_in_12),
-		.scan_in_13 (n_sv_scan_in_13),
-		.scan_in_14 (n_sv_scan_in_14),
-		.scan_in_15 (n_sv_scan_in_15),
-		.scan_in_16 (n_sv_scan_in_16),
-		.scan_in_17 (n_sv_scan_in_17),
-		.scan_in_18 (n_sv_scan_in_18),
-		.scan_in_19 (n_sv_scan_in_19),
-		.scan_in_2 (n_sv_scan_in_2),
-		.scan_in_3 (n_sv_scan_in_3),
-		.scan_in_4 (n_sv_scan_in_4),
-		.scan_in_5 (n_sv_scan_in_5),
-		.scan_in_6 (n_sv_scan_in_6),
-		.scan_in_7 (n_sv_scan_in_7),
-		.scan_in_8 (n_sv_scan_in_8),
-		.scan_in_9 (n_sv_scan_in_9),
-		.scan_out_0 (n_sv_scan_out_0),
-		.scan_out_1 (n_sv_scan_out_1),
-		.scan_out_10 (n_sv_scan_out_10),
-		.scan_out_11 (n_sv_scan_out_11),
-		.scan_out_12 (n_sv_scan_out_12),
-		.scan_out_13 (n_sv_scan_out_13),
-		.scan_out_14 (n_sv_scan_out_14),
-		.scan_out_15 (n_sv_scan_out_15),
-		.scan_out_16 (n_sv_scan_out_16),
-		.scan_out_17 (n_sv_scan_out_17),
-		.scan_out_18 (n_sv_scan_out_18),
-		.scan_out_19 (n_sv_scan_out_19),
-		.scan_out_2 (n_sv_scan_out_2),
-		.scan_out_3 (n_sv_scan_out_3),
-		.scan_out_4 (n_sv_scan_out_4),
-		.scan_out_5 (n_sv_scan_out_5),
-		.scan_out_6 (n_sv_scan_out_6),
-		.scan_out_7 (n_sv_scan_out_7),
-		.scan_out_8 (n_sv_scan_out_8),
-		.scan_out_9 (n_sv_scan_out_9),
+		.scan_en (serv_scan_en_tie),
+		.scan_in_0 (serv_scan_in),
+		.scan_out_0 (serv_scanlink_1),
+		.scan_in_1 (serv_scanlink_1),
+		.scan_out_1 (serv_scanlink_2),
+		.scan_in_2 (serv_scanlink_2),
+		.scan_out_2 (serv_scanlink_3),
+		.scan_in_3 (serv_scanlink_3),
+		.scan_out_3 (serv_scanlink_4),
+		.scan_in_4 (serv_scanlink_4),
+		.scan_out_4 (serv_scanlink_5),
+		.scan_in_5 (serv_scanlink_5),
+		.scan_out_5 (serv_scanlink_6),
+		.scan_in_6 (serv_scanlink_6),
+		.scan_out_6 (serv_scanlink_7),
+		.scan_in_7 (serv_scanlink_7),
+		.scan_out_7 (serv_scanlink_8),
+		.scan_in_8 (serv_scanlink_8),
+		.scan_out_8 (serv_scanlink_9),
+		.scan_in_9 (serv_scanlink_9),
+		.scan_out_9 (serv_scanlink_10),
+		.scan_in_10 (serv_scanlink_10),
+		.scan_out_10 (serv_scanlink_11),
+		.scan_in_11 (serv_scanlink_11),
+		.scan_out_11 (serv_scanlink_12),
+		.scan_in_12 (serv_scanlink_12),
+		.scan_out_12 (serv_scanlink_13),
+		.scan_in_13 (serv_scanlink_13),
+		.scan_out_13 (serv_scanlink_14),
+		.scan_in_14 (serv_scanlink_14),
+		.scan_out_14 (serv_scanlink_15),
+		.scan_in_15 (serv_scanlink_15),
+		.scan_out_15 (serv_scanlink_16),
+		.scan_in_16 (serv_scanlink_16),
+		.scan_out_16 (serv_scanlink_17),
+		.scan_in_17 (serv_scanlink_17),
+		.scan_out_17 (serv_scanlink_18),
+		.scan_in_18 (serv_scanlink_18),
+		.scan_out_18 (serv_scanlink_19),
+		.scan_in_19 (serv_scanlink_19),
+		.scan_out_19 (serv_scan_out),
 		.wbr_se (soc_wbr_se),
 		.wbr_si (soc_wbr_si),
 		.wbr_so (wbr_mid)
 	);
 
-	wire n_ua2_scan_en;
-	wire n_ua2_scan_in_0;
-	wire n_ua2_scan_in_1;
-	wire n_ua2_scan_out_0;
-	wire n_ua2_scan_out_1;
+
+	wire uart2_scan_en_tie = soc_wbr_se;
+	wire uart2_scanlink_1;
 
 	simpleuart u_simpleuart (
 		.clk (clk),
@@ -166,13 +149,13 @@ module soc2_glue (
 		.reg_div_do (mux_reg_div_do),
 		.reg_div_we (mux_reg_div_we),
 		.resetn (!rst),
-		.scan_en (n_ua2_scan_en),
-		.scan_in_0 (n_ua2_scan_in_0),
-		.scan_in_1 (n_ua2_scan_in_1),
-		.scan_out_0 (n_ua2_scan_out_0),
-		.scan_out_1 (n_ua2_scan_out_1),
 		.ser_rx (ser_rx),
 		.ser_tx (ser_tx),
+		.scan_en (uart2_scan_en_tie),
+		.scan_in_0 (uart_scan_in),
+		.scan_out_0 (uart2_scanlink_1),
+		.scan_in_1 (uart2_scanlink_1),
+		.scan_out_1 (uart_scan_out),
 		.wbr_se (soc_wbr_se),
 		.wbr_si (wbr_mid),
 		.wbr_so (soc_wbr_so)
