@@ -152,19 +152,53 @@ recovered from the campaign DB.
 ³ `s15850`: killed mid-round-1 (9,742/9,926 faults into that round's SAT wave) at the
 1,200 s budget — an in-flight snapshot, not a final result.
 
-### 2026-08 re-validation run (single-tier SAT timeout, `random_vectors=64`)
+### 2026-08 full rerun — single-tier SAT timeout (supersedes the sweep above)
 
-Spot-check with faultflow's current default single-tier per-fault SAT timeout (vs. the
-2 s→10 s escalating schedule above) and a smaller vector budget.
+Same 30-design corpus, same ≤10 FF/chain scan, same 4 workers / `max_rounds=6` /
+collapsing off — the only changed variable is `sat_timeout_schedule` forced to a single
+fixed 10 s tier instead of the 2 s→10 s escalating schedule above.
 
-| Design | FFs | Chains | Coverage | Redundant | Wall | Terminal |
-|---|---:|---:|---:|---:|---:|---|
-| c17 | — | — | 100.00% | 0 | 7.5 s | COMPLETE |
-| c432 | — | — | 100.00% | 4 | 16.0 s | COMPLETE |
-| c499 | — | — | 100.00% | 0 | 26.8 s | COMPLETE |
-| s27 | 3 | 1 | 100.00% | 40 | 12.5 s | COMPLETE |
-| s15850 | 559 | 56 | 99.05% | 4,837 | 7,041.9 s | COMPLETE |
-| iiravg | 16 | 2 | 100.00% | 256 | 175.3 s | COMPLETE |
+| Design | Cells | FFs | Chains | Coverage | Fault cov. | Redundant | Wall | Terminal |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| s15850 | 2,644 | 559 | 56 | 99.05% | 65.41% | 4,837 | 1.43 h | COMPLETE |
+| s13207 | 1,886 | 452 | 46 | — | — | — | — | rejected¹ |
+| s5378 | 845 | 162 | 17 | 100.00% | 71.52% | 1,323 | 954.1 s | COMPLETE |
+| s9234_1 | 715 | 135 | 14 | 99.91% | 86.06% | 549 | 604.4 s | COMPLETE |
+| s1423 | 435 | 74 | 8 | 100.00% | 74.82% | 613 | 181.4 s | COMPLETE |
+| s1494 | 332 | 6 | 1 | 100.00% | 81.24% | 416 | 117.7 s | COMPLETE |
+| s1238 | 320 | 18 | 2 | 100.00% | 20.19% | 1,668 | 114.8 s | COMPLETE |
+| s1488 | 319 | 6 | 1 | 100.00% | 80.78% | 412 | 104.2 s | COMPLETE |
+| s1196 | 309 | 18 | 2 | 100.00% | 20.41% | 1,560 | 103.5 s | COMPLETE |
+| s838_1 | 207 | 32 | 4 | 100.00% | 74.83% | 289 | 91.9 s | COMPLETE |
+| s832 | 165 | 5 | 1 | 100.00% | 60.15% | 432 | 57.5 s | COMPLETE |
+| s820 | 156 | 5 | 1 | 100.00% | 58.72% | 440 | 61.6 s | COMPLETE |
+| s510 | 139 | 6 | 1 | 100.00% | 76.00% | 216 | 40.9 s | COMPLETE |
+| s641 | 121 | 17 | 2 | 99.75% | 53.49% | 346 | 53.0 s | COMPLETE |
+| s526n | 113 | 21 | 3 | 100.00% | 61.13% | 248 | 38.6 s | COMPLETE |
+| s526 | 112 | 21 | 3 | 100.00% | 61.76% | 244 | 38.7 s | COMPLETE |
+| s713 | 109 | 17 | 2 | 99.74% | 53.38% | 330 | 51.0 s | COMPLETE |
+| s444 | 105 | 21 | 3 | 100.00% | 67.87% | 196 | 37.9 s | COMPLETE |
+| s420_1 | 105 | 16 | 2 | 100.00% | 73.84% | 147 | 44.1 s | COMPLETE |
+| s400 | 102 | 21 | 3 | 100.00% | 67.61% | 195 | 39.1 s | COMPLETE |
+| s382 | 102 | 21 | 3 | 100.00% | 68.05% | 193 | 37.9 s | COMPLETE |
+| s349 | 97 | 15 | 2 | 100.00% | 85.26% | 74 | 31.1 s | COMPLETE |
+| s344 | 97 | 15 | 2 | 100.00% | 85.26% | 74 | 31.2 s | COMPLETE |
+| s386 | 87 | 6 | 1 | 100.00% | 58.02% | 225 | 34.5 s | COMPLETE |
+| s298 | 76 | 14 | 2 | 100.00% | 74.28% | 107 | 26.0 s | COMPLETE |
+| s208_1 | 45 | 8 | 1 | 100.00% | 73.97% | 63 | 22.9 s | COMPLETE |
+| s27 | 12 | 3 | 1 | 100.00% | 37.50% | 40 | 14.2 s | COMPLETE |
+| c499 | 160 | — | — | 100.00% | 100.00% | 0 | 41.8 s | COMPLETE |
+| c432 | 65 | — | — | 100.00% | 99.30% | 4 | 22.0 s | COMPLETE |
+| c17 | 3 | — | — | 100.00% | 100.00% | 0 | 5.6 s | COMPLETE |
+
+**30/30 designs run, zero crashes, 28 clean COMPLETE, 1 known rejection, 0 STALLED** —
+every design that STALLED or was INCOMPLETE under the escalating schedule above now
+converges cleanly; single-tier's only material regression is s641/s713 landing at
+~99.7% instead of a clean 100% (1 undetected fault each). Combinational designs
+(c17/c432/c499) and s27 land on identical fault-coverage percentages in both sweeps —
+timeout schedule only matters once a design has genuinely hard-to-resolve faults.
+
+¹ `s13207`: same scan-eligibility rejection as both sweeps above (bit-sliced FF).
 
 ---
 
