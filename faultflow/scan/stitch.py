@@ -24,7 +24,9 @@ YOSYS_SCAN_SET_CELL_TYPE = "\\$scanff_s_faultflow"
 # scan-replacement FF's D pin (see _add_enable_hold_mux). The generic scan
 # cell ($scanff_faultflow) has no DE pin of its own -- only CLK/D/SDI/SE/Q --
 # so an FF's enable behavior must be folded into its D input structurally.
-# Reuses the same synthetic gate types atpg_view.py's async-control mux uses.
+# Canonical (escaped) spelling of these synthetic gate types; atpg_view.py's
+# async-control mux derives its own bare-spelling constants from these rather
+# than re-declaring them, so the two producers can't drift apart.
 YOSYS_CAPTURE_AND_CELL = "\\$faultflow_capture_and"
 YOSYS_CAPTURE_OR_CELL = "\\$faultflow_capture_or"
 YOSYS_CAPTURE_INV_CELL = "\\$faultflow_capture_inv"

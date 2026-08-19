@@ -226,9 +226,10 @@ def _wbc_pin_index_extest(
     # mutates `data` in place (splicing in the fused pseudo-ports over the originals),
     # so `cells` would no longer hold these entries once it returns.
     cell_pins = {
-        cell_name: _cell_boundary_pin(cell, cell_name)
+        cell_name: pin
         for cell_name, cell in cells.items()
         if isinstance(cell, dict)
+        and (pin := _cell_boundary_pin(cell, cell_name)) is not None
     }
     fused, port_map = fuse_wbr_into_view(data, top, "extest")
     fused_module = fused.get("modules", {}).get(top, {})
