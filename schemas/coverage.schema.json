@@ -117,7 +117,7 @@
         "coverage": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
         "atpg_terminal_reason": {
           "type": ["string", "null"],
-          "enum": ["COMPLETE", "THRESHOLD_MET", "STALLED", "MAX_ROUNDS", null]
+          "enum": ["COMPLETE", "THRESHOLD_MET", "STALLED", "MAX_ROUNDS", "RANDOM_ONLY", null]
         },
         "atpg_rounds": { "type": "integer", "minimum": 0 },
         "atpg_sat": { "type": "integer", "minimum": 0 },

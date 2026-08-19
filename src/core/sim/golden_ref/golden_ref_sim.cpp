@@ -270,6 +270,11 @@ void update_ff_states(const CompiledSimGraph& cg,
       bool capture = values[sn.in0];
       if (scan_active) {
         capture = values[sn.in4];
+      } else if (cfg.has_enable && sn.in2 != UNUSED_INPUT &&
+                 !control_active(values[sn.in2], cfg.enable_polarity)) {
+        // Data-enable (edfxtp DE) inactive: hold at the current state instead
+        // of capturing D. Scan shift takes precedence (the `else` above).
+        capture = next[idx];
       }
       next[idx] = capture;
     }

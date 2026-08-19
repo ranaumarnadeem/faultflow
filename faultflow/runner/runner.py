@@ -76,6 +76,16 @@ class FingerprintMismatchError(RunnerError):
     pass
 
 
+# Internal pipeline-generation marker (distinct from the faultflow package
+# version) -- part of the Policy 2 resume fingerprint. Bump this whenever a
+# change alters the meaning of persisted per-fault artifacts (blocked_patterns/
+# pattern_key layout, redundancy semantics, etc.), even when nothing in the DB
+# schema itself changes: bumped for the multi-bit-PI witness-truncation fix,
+# since ordered_pis()'s PI-naming/cardinality change makes any blocked_patterns
+# row persisted by pre-fix code the wrong length for a post-fix re-solve.
+FAULTFLOW_PIPELINE_VERSION = "pipeline-v2"
+
+
 TRANSIENT_NAMES = {
     "__pycache__",
     ".pytest_cache",
@@ -204,6 +214,50 @@ def _port_names(
                 out.extend(_expand_bus_bits(str(name), int_bits, netnames))
             else:
                 out.append(str(name))
+    return sorted(out)
+
+
+def _positional_bus_bits(port_name: str, bit_count: int) -> list[str]:
+    """Positionally expand a multi-bit port: f"{port_name}[{i}]" per bit
+    index, independent of Yosys's `netnames` table.
+
+    Unlike `_expand_bus_bits` (netname-driven, silently collapses to
+    `[port_name]` if any bit isn't resolvable there -- fine for its own
+    output-port use, but this project's locked synthesis script does not
+    reliably populate a per-bit netname for a plain bus port), this is
+    unconditionally correct: `bits[i]` is always the i-th entry of a port's
+    stable, ordered Yosys net-id list. Must match `ordered_pis()`'s per-bit
+    naming in src/core/atpg/fault_solver.cpp byte-for-byte -- both sides use
+    this exact "<port>[<i>]" convention and a single flat sort, so a
+    multi-bit PI's bits line up between the two independently-built lists
+    with no special-casing needed on either side.
+    """
+    if bit_count <= 1:
+        return [port_name]
+    return [f"{port_name}[{i}]" for i in range(bit_count)]
+
+
+def _atpg_pi_names(path: Path, top: str) -> list[str]:
+    """Native SAT-ATPG PI name list: one entry per PI bit, positionally
+    expanded for multi-bit ports.
+
+    Distinct from `_port_names(..., "input", expand_buses=True)` (which
+    nothing calls for this purpose): ATPG `input_order` construction must use
+    this, not `_port_names`, so pattern_key()/blocked_patterns stay in sync
+    with the C++ side's `ordered_pis()`.
+    """
+    _, module = _json_top_module(path, top)
+    ports = module.get("ports")
+    if not isinstance(ports, dict):
+        raise RunnerError(f"module {top} ports must be an object")
+    out: list[str] = []
+    for name, port in ports.items():
+        if not isinstance(port, dict) or port.get("direction") != "input":
+            continue
+        bits = port.get("bits")
+        if not isinstance(bits, list) or not any(isinstance(b, int) for b in bits):
+            continue
+        out.extend(_positional_bus_bits(str(name), len(bits)))
     return sorted(out)
 
 
@@ -346,7 +400,7 @@ class Runner:
             "config_hash": config_hash,
             "template_hash": _hash_text(self._rendered_yosys_script()),
             "yosys_version": self._extract_yosys_version(),
-            "faultflow_version": "pipeline-v1",
+            "faultflow_version": FAULTFLOW_PIPELINE_VERSION,
             "collapsing": int(self.cfg.fault_model.collapsing),
             "unsupported_cells": self.cfg.simulation.unsupported_cells,
             "include_clock_faults": int(self.cfg.fault_model.include_clock_faults),
@@ -1227,13 +1281,21 @@ class Runner:
             raise RunnerError("Quaigh ATPG input must be .bench")
         output = self.cfg.patterns_path
         self.cfg.ensure_workspace()
-        proc = subprocess.run(
-            ["quaigh", "atpg", str(sidecar), "-o", str(output)],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
+        try:
+            proc = subprocess.run(
+                ["quaigh", "atpg", str(sidecar), "-o", str(output)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+        except OSError as exc:
+            # Quaigh is an optional external tool (see CLAUDE.md); a missing
+            # binary must surface as a RunnerError so callers that catch
+            # (PatternError, RunnerError) around a vector-source search --
+            # e.g. _scan_vector_source's fall-through to deterministic smoke
+            # vectors -- see it and can fall back instead of hard-failing.
+            raise RunnerError(f"Quaigh not available: {exc}") from exc
         (self.cfg.logs_dir / "quaigh.log").write_text(proc.stdout, encoding="utf-8")
         if proc.returncode != 0:
             raise RunnerError(f"Quaigh failed; see {self.cfg.logs_dir / 'quaigh.log'}")

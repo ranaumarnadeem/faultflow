@@ -581,9 +581,6 @@ def build_scan_atpg_view(
             raise ScanError(f"{instance}: expected scan FF cell type")
 
         q_net = int(record["q_net"])
-        # Read D from the live cell connection, not the manifest: a prior FF's
-        # Q->PPI rewrite may have already rewired this D pin (FF-to-FF stage).
-        d_net = _current_data_net(cell, int(record["data_net"]))
         record_clock_net = int(record.get("clock_net", -1))
         # An async control forces the FF asynchronously, so it overrides BOTH the
         # FF output (current state, drives logic + POs) and the captured value.
@@ -618,6 +615,15 @@ def build_scan_atpg_view(
                 index=bit_index,
             )
         bit_index.rewire(q_net, q_drive, scan_port_names)
+
+        # Read D from the live cell connection, AFTER this record's own Q->PPI
+        # rewrite above: a prior FF's rewrite may already have rewired this D pin
+        # (FF-to-FF stage), but a self-referencing FF -- D wired directly to its
+        # own Q (e.g. stitch.py's constant-tied-enable-inactive "permanent hold"
+        # case: no mux, D == Q) -- has its OWN just-completed rewrite invalidate
+        # d_net within this same iteration. Reading it only once, before that
+        # rewrite, would tap the stale (soon-orphaned) net instead of the PPI.
+        d_net = _current_data_net(cell, int(record["data_net"]))
 
         # Create PPO only for FFs in the active domain (or always when single-domain).
         ppo_is_active = active_clock_net is None or record_clock_net == active_clock_net

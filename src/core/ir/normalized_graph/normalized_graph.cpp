@@ -91,6 +91,11 @@ FFConfig build_ff_config(const CellMapEntry& entry, const ParsedCell& cell) {
     cfg.preset.polarity = entry.ff.preset.polarity;
     cfg.preset.value = entry.ff.preset.value;
   }
+  if (entry.ff.enable.present) {
+    cfg.enable.present = true;
+    cfg.enable.net = first_conn_or_throw(cell, entry.ff.enable.pin, cell.type);
+    cfg.enable.polarity = entry.ff.enable.polarity;
+  }
   if (entry.ff.has_scan) {
     cfg.has_scan = true;
     cfg.scan_in_net = first_conn_or_throw(cell, entry.ff.scan_in, cell.type);

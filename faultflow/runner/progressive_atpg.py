@@ -488,7 +488,16 @@ def _should_stall(
         return False
     if not round_outcomes:
         return True
-    allowed = {"TIMEOUT", "UNKNOWN", "protocol_no_progress"}
+    # protocol_no_progress is deliberately NOT in this set: it fires only when
+    # `rejected_patterns[fault_id]` was just updated (see the two SAT-result
+    # branches in the round loops), which permanently blocks that exact
+    # pattern in the fault's CNF. That is never an exhaustion signal the way
+    # TIMEOUT/UNKNOWN are -- it always means the fault has fresh, unexplored
+    # search space waiting for its very next attempt. Treating it as
+    # stall-eligible let a single non-progress round abandon faults that were
+    # never actually exhausted, just collision-blocked once. max_rounds is the
+    # honest backstop for a fault that keeps colliding round after round.
+    allowed = {"TIMEOUT", "UNKNOWN"}
     return all(outcome in allowed for outcome in round_outcomes)
 
 
@@ -567,7 +576,7 @@ def run_progressive_native_atpg(
     scan_ctx: Any | None = None,
     scan_pattern_out: Path | None = None,
 ) -> tuple[VectorSet, AtpgStats, int, float, float]:
-    from faultflow.runner.runner import _load_core, _port_names
+    from faultflow.runner.runner import _atpg_pi_names, _load_core
 
     if campaign_type == CAMPAIGN_TYPE_SCAN:
         if scan_ctx is None:
@@ -608,7 +617,7 @@ def run_progressive_native_atpg(
     if not 0.0 < effective_target <= 100.0:
         raise RunnerError("target coverage must be in (0, 100]")
 
-    input_order = _port_names(netlist, cfg.top, "input")
+    input_order = _atpg_pi_names(netlist, cfg.top)
     effective_db_path = str(db_path if db_path is not None else cfg.db_path)
 
     _tmpdir: tempfile.TemporaryDirectory | None = None
@@ -884,6 +893,12 @@ def run_progressive_native_atpg(
                 stats.generated_vectors += graded
                 stats.accepted_vectors += graded
             switched_to_sat = True
+            if cfg.atpg.random_only:
+                # Deliberately incomplete "pure random" terminal mode for
+                # methodology comparisons -- never dispatch SAT for whatever
+                # random sampling left undetected.
+                terminal = "RANDOM_ONLY"
+                break
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
@@ -1068,6 +1083,7 @@ def run_progressive_native_atpg(
                 stats.generated_vectors += 1
                 key = pattern_key(candidate, input_order)
                 if key in seen_patterns:
+                    rejected_patterns.setdefault(fault_id, set()).add(key)
                     round_tracker.sat_outcomes.append("protocol_no_progress")
                     stats.protocol_no_progress_rounds += 1
                     continue
@@ -1233,7 +1249,7 @@ def run_progressive_transition_atpg(
     the two-frame core entry points. The returned VectorSet holds capture frames;
     launch frames are persisted in the vectors.launch_pattern column.
     """
-    from faultflow.runner.runner import _load_core, _port_names
+    from faultflow.runner.runner import _atpg_pi_names, _load_core
 
     core = _load_core()
     if core is None:
@@ -1251,7 +1267,7 @@ def run_progressive_transition_atpg(
     if not 0.0 < effective_target <= 100.0:
         raise RunnerError("target coverage must be in (0, 100]")
 
-    input_order = _port_names(netlist, cfg.top, "input")
+    input_order = _atpg_pi_names(netlist, cfg.top)
     effective_db_path = str(db_path if db_path is not None else cfg.db_path)
 
     _tmpdir2: tempfile.TemporaryDirectory | None = None
@@ -1343,6 +1359,34 @@ def run_progressive_transition_atpg(
             "using enumeration order"
         )
 
+    # Parallel SAT solving -- same fork+copy-on-write scheme as
+    # run_progressive_native_atpg. Transition SAT is 4-6x more expensive
+    # per-fault than stuck-at (see docs/benchmarking.md), so leaving this
+    # path serial was a large, silent multiplier on wall-clock for any
+    # campaign with workers > 1 configured; cfg.atpg.workers was accepted but
+    # had no effect here.
+    _parallel = cfg.atpg.workers > 1
+    _executor: ProcessPoolExecutor | None = None
+    if _parallel:
+        log.info(
+            "atpg   warming graph cache before forking %d worker processes",
+            cfg.atpg.workers,
+        )
+        core.compute_fault_cone_sizes(
+            json_path, effective_cell_map, [], [], unsupported
+        )
+        try:
+            _executor = ProcessPoolExecutor(
+                max_workers=cfg.atpg.workers,
+                mp_context=get_context("fork"),
+            )
+        except Exception as _fork_exc:
+            log.warning(
+                "atpg   fork-based worker pool unavailable (%s); serial fallback",
+                _fork_exc,
+            )
+            _parallel = False
+
     terminal = "MAX_ROUNDS"
     for round_idx in range(1, effective_max_rounds + 1):
         stats.rounds = round_idx
@@ -1401,6 +1445,18 @@ def run_progressive_transition_atpg(
                 fault_sim_seconds += time.perf_counter() - sim_started
                 heartbeat.tick(offset + 1)
 
+        if cfg.atpg.random_only:
+            # Deliberately incomplete "pure random" terminal mode for
+            # methodology comparisons -- never dispatch SAT for whatever
+            # random sampling left undetected. Unlike the stuck-at loop,
+            # random-fill here has no switched_to_sat guard (it is attempted
+            # fresh every round), so this check must be unconditional on
+            # new_random and re-evaluated every round; in practice it only
+            # ever fires on round 1 since active_ids is non-empty and the
+            # config value never changes mid-run.
+            terminal = "RANDOM_ONLY"
+            break
+
         with connect(effective_db_path) as conn:
             init_schema(conn)
             active_rows = _active_fault_rows(conn, campaign_id)
@@ -1411,7 +1467,16 @@ def run_progressive_transition_atpg(
         # faults instead of re-solving them. Mirrors the random branch.
         drop_sat = cfg.atpg.fault_drop_sat
         remaining = set(active_ids)
-        # Heartbeat for the silent serial transition-solve phase (no parallel wave).
+
+        # Parallel SAT dispatched lazily in waves of survivors, mirroring
+        # run_progressive_native_atpg. No cone-size ordering or easy/hard
+        # interleave here -- transition faults deliberately use enumeration
+        # order (logged above). workers==1 leaves _parallel_results empty and
+        # each survivor is solved serially in the body below (unchanged from
+        # before this fix).
+        _parallel_results: dict[int, tuple[str, dict]] = {}
+        wave_size = max(cfg.atpg.workers, 1) * SAT_WAVE_FACTOR
+        _wave_pos = 0
         _solve_hb = SolveHeartbeat(
             log,
             round_idx,
@@ -1424,29 +1489,103 @@ def run_progressive_transition_atpg(
         for fault_id in active_ids:
             if drop_sat and fault_id not in remaining:
                 continue
+            if (
+                _parallel
+                and _executor is not None
+                and fault_id not in _parallel_results
+            ):
+                # Build the next wave from survivors only, in active_ids
+                # (enumeration) order.
+                _wave_ids: list[int] = []
+                while _wave_pos < len(active_ids) and len(_wave_ids) < wave_size:
+                    _wfid = active_ids[_wave_pos]
+                    _wave_pos += 1
+                    if (not drop_sat) or (_wfid in remaining):
+                        _wave_ids.append(_wfid)
+                if _wave_ids:
+                    _wave_args: list[Any] = [
+                        (
+                            "native_transition",
+                            json_path,
+                            effective_cell_map,
+                            effective_db_path,
+                            fid,
+                            sorted(rejected_patterns.get(fid, set())),
+                            cfg.atpg.sat_conflict_limit,
+                            timeout_tiers[
+                                min(
+                                    prior_timeout_count.get(fid, 0),
+                                    len(timeout_tiers) - 1,
+                                )
+                            ],
+                            unsupported,
+                            cfg.atpg.cone_restrict,
+                            [],  # los_couple_ports: unused by native_transition
+                            [],  # los_head_ports: unused by native_transition
+                            list(bb_instances),
+                            False,  # test_mode: unused by native_transition
+                            False,  # incremental: unused by native_transition
+                        )
+                        for fid in _wave_ids
+                    ]
+                    _wave_started = time.perf_counter()
+                    try:
+                        for _fid, _res, _slv in _executor.map(
+                            solve_fault_worker, _wave_args
+                        ):
+                            _parallel_results[int(_fid)] = (_res, dict(_slv))
+                            _solved_count += 1
+                            _solve_hb.tick(_solved_count)
+                    except BrokenProcessPool as _exc:
+                        # A worker process DIED (typically OOM-killed). Fail
+                        # loudly with the remedy rather than silently turning
+                        # every remaining fault into UNKNOWN (see the
+                        # matching guard in run_progressive_native_atpg). DB
+                        # state written so far (detections, vectors) is kept.
+                        _executor.shutdown(wait=False, cancel_futures=True)
+                        raise RunnerError(
+                            "parallel SAT worker process died mid-wave (likely "
+                            "out-of-memory). Progress so far is saved; re-run "
+                            "with fewer workers (atpg.workers) to cut "
+                            "per-worker memory."
+                        ) from _exc
+                    except Exception as _exc:
+                        log.warning(
+                            "atpg   parallel wave error (%s); faults absent "
+                            "from results will be treated as UNKNOWN",
+                            _exc,
+                        )
+                    atpg_seconds += time.perf_counter() - _wave_started
             blocked = sorted(rejected_patterns.get(fault_id, set()))
             tier_timeout = timeout_tiers[
                 min(prior_timeout_count.get(fault_id, 0), len(timeout_tiers) - 1)
             ]
-            atpg_started = time.perf_counter()
-            solved = dict(
-                core.solve_transition_fault_atpg(
-                    json_path,
-                    effective_cell_map,
-                    effective_db_path,
-                    fault_id,
-                    blocked,
-                    cfg.atpg.sat_conflict_limit,
-                    tier_timeout,
-                    unsupported,
-                    bb_instances,
-                    cfg.atpg.cone_restrict,
+            if _parallel_results:
+                _pre_res, _pre_slv = _parallel_results.get(
+                    fault_id, ("UNKNOWN", {"result": "UNKNOWN"})
                 )
-            )
-            atpg_seconds += time.perf_counter() - atpg_started
-            result = str(solved["result"])
-            _solved_count += 1
-            _solve_hb.tick(_solved_count)
+                solved = dict(_pre_slv)
+                result = _pre_res
+            else:
+                atpg_started = time.perf_counter()
+                solved = dict(
+                    core.solve_transition_fault_atpg(
+                        json_path,
+                        effective_cell_map,
+                        effective_db_path,
+                        fault_id,
+                        blocked,
+                        cfg.atpg.sat_conflict_limit,
+                        tier_timeout,
+                        unsupported,
+                        bb_instances,
+                        cfg.atpg.cone_restrict,
+                    )
+                )
+                atpg_seconds += time.perf_counter() - atpg_started
+                result = str(solved["result"])
+                _solved_count += 1
+                _solve_hb.tick(_solved_count)
             if result == "SAT":
                 stats.sat += 1
                 launch = dict(solved["launch"])
@@ -1454,6 +1593,7 @@ def run_progressive_transition_atpg(
                 stats.generated_vectors += 1
                 key = transition_pattern_key(launch, capture, input_order)
                 if key in seen_patterns:
+                    rejected_patterns.setdefault(fault_id, set()).add(key)
                     round_tracker.sat_outcomes.append("protocol_no_progress")
                     stats.protocol_no_progress_rounds += 1
                     continue
@@ -1563,6 +1703,9 @@ def run_progressive_transition_atpg(
         ):
             terminal = "STALLED"
             break
+
+    if _executor is not None:
+        _executor.shutdown(wait=False)
 
     log.info("atpg   transition terminated: %s", terminal)
 

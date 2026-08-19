@@ -207,6 +207,39 @@ def test_init_rejects_fingerprint_mismatch_by_field(
     assert "--clean" in err
 
 
+def test_init_rejects_stale_pi_enumeration_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A campaign fingerprinted by pre-fix code (the pipeline-version marker
+    bumped when ordered_pis()'s PI-naming scheme changed) must be rejected
+    cleanly on the next init/sim -- not silently resumed against a
+    blocked_patterns table sized for the OLD (collapsed, one-PI-per-port)
+    enumeration, which would trip the internal C++ "blocked pattern length
+    mismatch" exception mid-round instead of failing fast with a clear,
+    actionable error.
+    """
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    (tmp_path / "missing.json").write_text("{}", encoding="utf-8")
+
+    real_version = runner_mod.FAULTFLOW_PIPELINE_VERSION
+
+    # Simulate a campaign created by pre-fix code.
+    monkeypatch.setattr(runner_mod, "FAULTFLOW_PIPELINE_VERSION", "pipeline-v1")
+    assert main(["init", "--top", "demo", "-c", str(cfg)]) == 0
+
+    # Restore the real (current) version and try to init/resume the same DB.
+    monkeypatch.setattr(runner_mod, "FAULTFLOW_PIPELINE_VERSION", real_version)
+    with pytest.raises(SystemExit) as exc:
+        main(["init", "--top", "demo", "-c", str(cfg)])
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "faultflow_version" in err
+    assert "--clean" in err
+
+
 def test_sim_model_override_selects_transition(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -351,6 +384,37 @@ def test_quaigh_receives_bench_only(
     assert vector_path == Path("output/demo/patterns.test")
     assert seen["cmd"][2].endswith(".bench")
     assert all(not arg.endswith(".blif") for arg in seen["cmd"])
+
+
+def test_run_quaigh_missing_binary_raises_runner_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing quaigh binary (optional external tool, per CLAUDE.md) must
+    surface as a RunnerError, not a raw FileNotFoundError. _scan_vector_source
+    catches exactly (PatternError, RunnerError) around _find_vectors() to fall
+    through to its deterministic smoke-vector fallback when no vector source
+    is available; an uncaught FileNotFoundError bypasses that fallback and
+    hard-fails scan-check outright on any fresh workspace with no prior
+    patterns.test and no quaigh installed (confirmed: this exact scenario
+    broke scan-check for boxcar/genericfir in a real rerun)."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    out = tmp_path / "output" / "demo"
+    out.mkdir(parents=True)
+    intermediate = out / ".faultflow" / "intermediate"
+    intermediate.mkdir(parents=True)
+    (intermediate / "demo.bench").write_text(
+        "INPUT(a)\nOUTPUT(y)\ny = BUFF(a)\n", encoding="utf-8"
+    )
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+        raise FileNotFoundError(2, "No such file or directory", "quaigh")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
+
+    with pytest.raises(RunnerError, match="[Qq]uaigh"):
+        Runner(load_config(cfg, "demo"))._run_quaigh()
 
 
 def test_verilog_netlist_runs_yosys_instead_of_simulating_source(

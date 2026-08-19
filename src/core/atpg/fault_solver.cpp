@@ -156,30 +156,50 @@ std::vector<AtpgPiInfo> ordered_pis(const ParsedGraph& parsed,
   for (const auto& [name, port] : mod.ports) {
     // A multi-bit top-level port (the locked synth script never runs
     // `splitnets`, so Yosys JSON keeps e.g. `input [3:0] b` as ONE port entry
-    // with 4 bits) used to be skipped here entirely, silently dropping it
-    // from the SAT PI set. That desynced this PI enumeration from the
-    // Python-side PI-name list used to size/persist `blocked_patterns`
-    // bit-strings (faultflow/runner/runner.py's `_port_names`, which counts
-    // a bus port once regardless of width, matching how
-    // ParsedGraph::net_id_by_name resolves a bare port name to its first
-    // bit) -- the two disagreed in length, and a later re-solve with an
-    // already-persisted blocked pattern hit the length-mismatch guard below.
-    // Worse than the crash: a dropped PI is UNCONSTRAINED in the CNF, so the
-    // good/faulty miter could pick different values for it, an actual
-    // soundness gap, not just a cosmetic count mismatch. Fix: take the same
-    // first-bit net (bits.front()) the rest of the codebase already uses for
-    // a bus PI's stimulus/name resolution, so every port -- single- or
-    // multi-bit -- contributes exactly one PI, keeping this enumeration and
-    // the Python-side one in lockstep.
+    // with 4 bits) used to be collapsed to a single PI at its first bit
+    // (bits.front()) regardless of width -- a deliberate prior fix for an
+    // even worse bug (a dropped PI is UNCONSTRAINED in the CNF, an actual
+    // soundness gap), but one that left bits 1..N-1 permanently
+    // unaddressable: CaDiCaL still allocates and solves a genuine, independent
+    // CNF variable for every one of those bits (CnfVarMap covers every
+    // compiled net, not just `pis`), but any value it required for them was
+    // silently discarded at witness extraction (below) and re-defaulted to 0
+    // on replay -- the fault could be provably SAT internally yet fail every
+    // Tier-A re-verification, deterministically, forever (the
+    // `tier_a_reduced_mismatch` symptom). Fix: one PI per BIT for a
+    // multi-bit port, named "<port>[<i>]" (a single-bit port keeps its exact
+    // prior bare-name behavior, unchanged). This must stay byte-for-byte in
+    // lockstep with the Python-side PI-name list
+    // (faultflow/runner/runner.py's `_atpg_pi_names`, NOT `_port_names`) used
+    // to size/persist `blocked_patterns` bit-strings -- a length or ordering
+    // mismatch between the two independently-sorted lists throws the
+    // length-mismatch guard below (or, worse, silently misreads a stale
+    // pattern), which is exactly why the two sides share this positional
+    // "<port>[<i>]" naming convention rather than depending on Yosys's
+    // `netnames` table (this project's locked synthesis script does not
+    // reliably populate a per-bit netname for a plain bus port -- confirmed
+    // empirically against a real synthesized design).
     if (port.direction != "input" || port.bits.empty()) {
       continue;
     }
-    const int yid = port.bits.front();
-    auto it = cg.yosys_to_compiled.find(yid);
-    if (it == cg.yosys_to_compiled.end()) {
+    if (port.bits.size() == 1) {
+      const int yid = port.bits.front();
+      auto it = cg.yosys_to_compiled.find(yid);
+      if (it == cg.yosys_to_compiled.end()) {
+        continue;
+      }
+      pis.push_back({name, yid, static_cast<uint32_t>(it->second)});
       continue;
     }
-    pis.push_back({name, yid, static_cast<uint32_t>(it->second)});
+    for (size_t i = 0; i < port.bits.size(); ++i) {
+      const int yid = port.bits[i];
+      auto it = cg.yosys_to_compiled.find(yid);
+      if (it == cg.yosys_to_compiled.end()) {
+        continue;
+      }
+      pis.push_back({name + "[" + std::to_string(i) + "]", yid,
+                     static_cast<uint32_t>(it->second)});
+    }
   }
   std::sort(pis.begin(), pis.end(),
             [](const AtpgPiInfo& a, const AtpgPiInfo& b) { return a.name < b.name; });

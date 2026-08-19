@@ -149,6 +149,21 @@ def test_validate_report_resolves_schema_independent_of_cwd(
     _validate_report(_minimal_valid_report())  # must not raise
 
 
+def test_validate_report_accepts_random_only_terminal_reason() -> None:
+    """Found via a real bug: the schema's atpg_terminal_reason enum was never
+    updated when the RANDOM_ONLY terminal mode (faultflow/runner/progressive_atpg.py
+    and faultflow/scan/detection_pipeline.py, cfg.atpg.random_only) was added, so
+    EVERY random_only=true run crashed at the final report-writing step -- after
+    the campaign itself had already completed successfully. Caught mid-sweep: 15
+    designs in a random-only comparison batch all failed with the same
+    jsonschema.ValidationError before this was added."""
+    from faultflow.reporter.coverage import _validate_report
+
+    report = _minimal_valid_report()
+    report["run"]["atpg_terminal_reason"] = "RANDOM_ONLY"
+    _validate_report(report)  # must not raise
+
+
 def test_validate_report_rejects_malformed_from_any_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

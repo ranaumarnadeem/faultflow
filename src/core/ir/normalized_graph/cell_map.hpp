@@ -27,6 +27,7 @@ struct CellFFMetadata {
   Polarity scan_enable_polarity = Polarity::ACTIVE_HIGH;
   CellFFControl clear;
   CellFFControl preset;
+  CellFFControl enable;  // sky130 edfxtp DE: synchronous D/hold mux
   uint8_t clear_preset_conflict_value = 0;
   bool present = false;
   bool has_scan = false;

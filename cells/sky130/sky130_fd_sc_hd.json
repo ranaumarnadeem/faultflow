@@ -1480,7 +1480,8 @@
     "node_type": "FF",
     "inputs": [
       "CLK",
-      "D"
+      "D",
+      "DE"
     ],
     "outputs": {
       "Q": "Q"
@@ -1489,7 +1490,11 @@
       "clock": "CLK",
       "data": "D",
       "output": "Q",
-      "trigger": "POSEDGE"
+      "trigger": "POSEDGE",
+      "enable": {
+        "pin": "DE",
+        "level": "HIGH"
+      }
     }
   },
   "sky130_fd_sc_hd__fa_*": {

@@ -14,6 +14,7 @@ Solve kinds
 "broadside_transition"  core.solve_scan_transition_fault_atpg
 "los_transition"        core.solve_scan_los_transition_fault_atpg
 "native_stuck_at"       core.solve_fault_atpg (full signature with bb/test_mode)
+"native_transition"     core.solve_transition_fault_atpg (combinational broadside)
 """
 
 from __future__ import annotations
@@ -116,6 +117,21 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
                     test_mode,
                     cone_restrict,
                     incremental,
+                )
+            )
+        elif solve_kind == "native_transition":
+            solved = dict(
+                _core.solve_transition_fault_atpg(
+                    json_path,
+                    cell_map_path,
+                    db_path,
+                    fault_id,
+                    blocked,
+                    conflict_limit,
+                    timeout,
+                    unsupported,
+                    bb_instances,
+                    cone_restrict,
                 )
             )
         else:  # "scan_stuck_at" (fused view; stays on the baseline solver for now)

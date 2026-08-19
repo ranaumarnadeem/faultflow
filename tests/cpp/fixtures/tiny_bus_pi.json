@@ -36,6 +36,12 @@
           "bits": [
             7
           ]
+        },
+        "Y3": {
+          "direction": "output",
+          "bits": [
+            8
+          ]
         }
       },
       "cells": {
@@ -82,6 +88,24 @@
               7
             ]
           }
+        },
+        "u2": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__inv_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [
+              3
+            ],
+            "Y": [
+              8
+            ]
+          }
         }
       },
       "netnames": {
@@ -118,6 +142,13 @@
           "hide_name": 0,
           "bits": [
             7
+          ],
+          "attributes": {}
+        },
+        "Y3": {
+          "hide_name": 0,
+          "bits": [
+            8
           ],
           "attributes": {}
         }

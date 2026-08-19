@@ -44,6 +44,25 @@ def _block_value_at(seq: list[bool], length: int, block_pos: int) -> bool:
     return bool(seq[shift_idx]) if 0 <= shift_idx < len(seq) else False
 
 
+def _strip_block_level_padding(
+    seq: list[bool], real_length: int, *, pad_at_front: bool
+) -> list[bool]:
+    """A block's own exported `load_seqs`/`expected_unload` are already padded to
+    THAT block's own manifest max_chain_length (`serialize_vector`,
+    faultflow/scan/protocol.py) whenever the block itself has chains of differing
+    lengths (e.g. genericfir_small: 39 chains of length 10, 9 of length 9, all
+    exported padded to the block's own max_chain_length=10). `_block_value_at`
+    expects an UNPADDED sequence of exactly `real_length` elements, so any such
+    pre-existing padding must be stripped before it's called, mirroring
+    serialize_vector's own convention: load_seqs pads BEFORE the real payload,
+    expected_unload/unload pads AFTER. A block chain that already equals that
+    block's own max_chain_length has zero padding, so this is a no-op there
+    (which is why iiravg/boxcar's uniform-length chains never exposed this)."""
+    if len(seq) <= real_length:
+        return seq
+    return seq[len(seq) - real_length :] if pad_at_front else seq[:real_length]
+
+
 def retarget_block_pattern(
     block_pattern: Any,
     soc_access: SocAccess,
@@ -71,8 +90,12 @@ def retarget_block_pattern(
                 continue  # sibling block or BYPASS fill -> leave don't-care/masked
             bc = seg.block_chain
             placed_block_chains.add(bc)
-            bload = list(bp_load.get(bc, []))
-            bunload = list(bp_unload.get(bc, []))
+            bload = _strip_block_level_padding(
+                list(bp_load.get(bc, [])), seg.length, pad_at_front=True
+            )
+            bunload = _strip_block_level_padding(
+                list(bp_unload.get(bc, [])), seg.length, pad_at_front=False
+            )
             for p in range(seg.length):
                 soc_pos = seg.soc_offset + p
                 if soc_pos >= length:
@@ -85,15 +108,30 @@ def retarget_block_pattern(
                 mask_v[soc_pos] = True
 
         # Re-encode position-indexed values to descending-position shift order, then
-        # pad (after) up to the SoC max chain length, mirroring serialize_vector.
+        # pad up to the SoC max chain length -- LOAD and UNLOAD pad on OPPOSITE
+        # ends, because a chain shorter than max_chain_length is driven under the
+        # same shared cycle count as the longest declared chain (one shift-enable,
+        # simulate_scan_pattern always runs exactly max_chain_length shift-in
+        # cycles for every scan_input_port). A physical register only holds its
+        # LAST `length` fed bits -- anything shifted in earlier is pushed out
+        # through scan_out before the capture edge. So on LOAD, padding must come
+        # BEFORE the real payload (the real bits are fed during the FINAL `length`
+        # cycles and are what the register still holds at capture time); appending
+        # padding after the payload -- as this used to do -- shifts the intended
+        # bits straight out and leaves the register holding the padding (all
+        # False) instead, silently corrupting every combined-chain retarget with
+        # pad > 0 while returning as normal for the single-chain (pad == 0) case.
+        # UNLOAD is the mirror: the real `length` bits drain out during the FIRST
+        # `length` unload cycles, so expected_unload/unload_mask correctly keep
+        # padding AFTER (unaffected by this fix).
         pad = soc_access.max_chain_length - length
         if pad < 0:
             raise SocAccessError(
                 f"SoC chain {chain.index} length {length} exceeds max_chain_length"
             )
-        load_seqs[chain.index] = [load_v[length - 1 - k] for k in range(length)] + [
-            False
-        ] * pad
+        load_seqs[chain.index] = [False] * pad + [
+            load_v[length - 1 - k] for k in range(length)
+        ]
         expected_unload[chain.index] = [
             unload_v[length - 1 - k] for k in range(length)
         ] + [False] * pad

@@ -225,6 +225,171 @@ def module_scan_in_bits(data: dict[str, Any], top: str) -> list[int]:
     return data["modules"][top]["ports"]["scan_in"]["bits"]
 
 
+def _tiny_edfxtp_json() -> dict[str, object]:
+    return {
+        "modules": {
+            "tiny_edfxtp": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "CLK": {"direction": "input", "bits": [2]},
+                    "D": {"direction": "input", "bits": [3]},
+                    "DE": {"direction": "input", "bits": [4]},
+                    "Q": {"direction": "output", "bits": [5]},
+                },
+                "cells": {
+                    "u0": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__edfxtp_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {
+                            "CLK": "input",
+                            "D": "input",
+                            "DE": "input",
+                            "Q": "output",
+                        },
+                        "connections": {"CLK": [2], "D": [3], "DE": [4], "Q": [5]},
+                    }
+                },
+                "netnames": {
+                    "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+                    "D": {"hide_name": 0, "bits": [3], "attributes": {}},
+                    "DE": {"hide_name": 0, "bits": [4], "attributes": {}},
+                    "Q": {"hide_name": 0, "bits": [5], "attributes": {}},
+                },
+            }
+        }
+    }
+
+
+@pytest.mark.golden
+def test_stitch_scan_json_preserves_enable_hold_behavior(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """A scan-inserted edfxtp (enable D-FF) must still honor DE in normal
+    (scan_en=0) mode: DE=0 holds Q, DE=1 loads D. The generic scan cell
+    ($scanff_faultflow) has no DE pin at all -- only CLK/D/SDI/SE/Q (see
+    cells/sky130/sky130_fd_sc_hd.json) -- so stitching must synthesize a
+    hold-mux ahead of its D pin. Silently dropping DE turns every
+    scan-inserted enable FF into a plain D-FF, which scan-check's
+    normal-mode equivalence catches on any design with edfxtp cells
+    (confirmed on picorv32a/boxcar in real sweeps)."""
+    import _faultflow_core as core  # type: ignore[import-not-found]
+
+    source = _write_json(tmp_path / "tiny_edfxtp.json", _tiny_edfxtp_json())
+    output = tmp_path / "tiny_edfxtp_scan_generic.json"
+    stitch_scan_json(source, CELL_MAP, "tiny_edfxtp", output)
+
+    def pulse(d: bool, de: bool) -> list[dict[str, object]]:
+        return [
+            {"CLK": False, "D": d, "DE": de, "scan_en": False, "scan_in": False},
+            {"CLK": True, "D": d, "DE": de, "scan_en": False, "scan_in": False},
+        ]
+
+    load_only = pulse(True, True)
+    load_then_hold = pulse(True, True) + pulse(False, False)
+
+    results = core.fault_free_sequence_outputs(
+        str(output),
+        str(CELL_MAP),
+        [load_only, load_then_hold],
+        ["CLK", "D", "DE", "scan_en", "scan_in"],
+        ["Q"],
+        "fail",
+    )
+
+    assert results[0] == {"Q": True}, "load pulse (DE=1) must set Q=D"
+    assert results[1] == {
+        "Q": True
+    }, "hold pulse (DE=0) must preserve Q -- DE dropped during scan stitching"
+
+
+def _tiny_edfxtp_const_de_json(const: str) -> dict[str, object]:
+    return {
+        "modules": {
+            "tiny_edfxtp_const": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "CLK": {"direction": "input", "bits": [2]},
+                    "D": {"direction": "input", "bits": [3]},
+                    "Q": {"direction": "output", "bits": [5]},
+                },
+                "cells": {
+                    "u0": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__edfxtp_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {
+                            "CLK": "input",
+                            "D": "input",
+                            "DE": "input",
+                            "Q": "output",
+                        },
+                        "connections": {"CLK": [2], "D": [3], "DE": [const], "Q": [5]},
+                    }
+                },
+                "netnames": {
+                    "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+                    "D": {"hide_name": 0, "bits": [3], "attributes": {}},
+                    "Q": {"hide_name": 0, "bits": [5], "attributes": {}},
+                },
+            }
+        }
+    }
+
+
+def test_stitch_scan_json_eligible_with_de_tied_to_constant_0(tmp_path: Path) -> None:
+    """Yosys can tie an edfxtp's DE to a constant bit ("0"/"1" string literals,
+    not a real net) when synthesis proves one bit of a wider enable-gated
+    register is never/always written (observed on picorv32a as
+    $auto$ff.cc:337:slice$NNNN instances). A constant is not a resolvable
+    single-bit net, so it must not be treated the same as a malformed/missing
+    enable pin: rejecting it makes the FF ineligible, and sim --scan requires
+    FULL scan (every FF must be scannable), so a single such FF hard-blocks
+    the whole design. DE tied to constant 0 (permanently disabled, given
+    edfxtp's level=HIGH) means the FF holds forever -- stitching must wire
+    the scan cell's D pin straight to its own Q (no mux needed, no enable
+    net exists to mux on)."""
+    source = _write_json(
+        tmp_path / "tiny_edfxtp_const0.json", _tiny_edfxtp_const_de_json("0")
+    )
+    output = tmp_path / "tiny_edfxtp_const0_scan_generic.json"
+
+    result = stitch_scan_json(source, CELL_MAP, "tiny_edfxtp_const", output)
+
+    assert result.ineligible_ffs == []
+    assert result.cell_count == 1
+    data = json.loads(output.read_text(encoding="utf-8"))
+    cell = data["modules"]["tiny_edfxtp_const"]["cells"]["u0"]
+    assert cell["connections"]["D"] == cell["connections"]["Q"], (
+        "DE tied to constant 0 must hold forever: D must be wired to the "
+        "FF's own Q (self-loop hold), not left at the original data net"
+    )
+
+
+def test_stitch_scan_json_eligible_with_de_tied_to_constant_1(tmp_path: Path) -> None:
+    """DE tied to constant 1 (permanently enabled, given edfxtp's level=HIGH)
+    means the FF always loads D -- functionally a plain D-FF. Stitching must
+    wire D straight through to the original data net, matching the no-enable
+    case exactly (no mux synthesized for a compile-time-constant enable)."""
+    source = _write_json(
+        tmp_path / "tiny_edfxtp_const1.json", _tiny_edfxtp_const_de_json("1")
+    )
+    output = tmp_path / "tiny_edfxtp_const1_scan_generic.json"
+
+    result = stitch_scan_json(source, CELL_MAP, "tiny_edfxtp_const", output)
+
+    assert result.ineligible_ffs == []
+    assert result.cell_count == 1
+    data = json.loads(output.read_text(encoding="utf-8"))
+    cell = data["modules"]["tiny_edfxtp_const"]["cells"]["u0"]
+    assert cell["connections"]["D"] == [3], (
+        "DE tied to constant 1 must always load: D must be wired straight "
+        "to the original data net, like a plain (no-enable) FF"
+    )
+
+
 def test_async_reset_scan_atpg_end_to_end(tmp_path: Path) -> None:
     # The autoMBIST scenario: an async-reset controller (always_ff @(posedge clk
     # or negedge rst_n)) must scan-insert and grade. The reset is held inactive

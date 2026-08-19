@@ -1,0 +1,46 @@
+{
+  "creator": "faultflow hand fixture",
+  "modules": {
+    "tiny_or4bb": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "A": {"direction": "input", "bits": [2]},
+        "B": {"direction": "input", "bits": [3]},
+        "C_N": {"direction": "input", "bits": [4]},
+        "D_N": {"direction": "input", "bits": [5]},
+        "X": {"direction": "output", "bits": [6]}
+      },
+      "cells": {
+        "u0": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__or4bb_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "C_N": "input",
+            "D_N": "input",
+            "X": "output"
+          },
+          "connections": {
+            "A": [2],
+            "B": [3],
+            "C_N": [4],
+            "D_N": [5],
+            "X": [6]
+          }
+        }
+      },
+      "netnames": {
+        "A": {"hide_name": 0, "bits": [2], "attributes": {}},
+        "B": {"hide_name": 0, "bits": [3], "attributes": {}},
+        "C_N": {"hide_name": 0, "bits": [4], "attributes": {}},
+        "D_N": {"hide_name": 0, "bits": [5], "attributes": {}},
+        "X": {"hide_name": 0, "bits": [6], "attributes": {}}
+      }
+    }
+  }
+}

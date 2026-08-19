@@ -132,6 +132,9 @@ CellFFMetadata parse_ff_metadata(const nlohmann::json& node) {
   if (node.contains("preset")) {
     ff.preset = parse_ff_control(node.at("preset"));
   }
+  if (node.contains("enable")) {
+    ff.enable = parse_ff_control(node.at("enable"));
+  }
   if (node.contains("scan")) {
     const auto& scan = node.at("scan");
     ff.has_scan = true;

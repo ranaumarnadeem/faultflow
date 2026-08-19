@@ -164,6 +164,33 @@ def _wbc_pin_index(
     return index
 
 
+def _cell_boundary_pin(
+    cell: dict[str, Any], inst: str
+) -> tuple[str | None, str, str, str] | None:
+    """Resolve a single WBC cell's own (boundary_block, boundary_wbc, pin, side)
+    from its `type` + `attributes`, independent of any net id.
+
+    Used instead of a net-id-keyed reverse lookup because a system-side net can be
+    shared by more than one WBC cell (a genuinely shared control net like `resetn`
+    fanning out to several blocks, or nets aliased together by glue-level
+    optimization) -- a net-id index can only remember the last cell that claimed
+    that id, silently misattributing every earlier one.
+    """
+    ctype = cell.get("type")
+    if ctype in _WBR_IN_TYPES or ctype in _WBR_SCAN_IN_TYPES:
+        side, pin = "in", "FROM_SYS"
+    elif ctype in _WBR_OUT_TYPES or ctype in _WBR_SCAN_OUT_TYPES:
+        side, pin = "out", "TO_SYS"
+    else:
+        return None
+    attrs = cell.get("attributes", {})
+    attrs = attrs if isinstance(attrs, dict) else {}
+    block = attrs.get("faultflow_block")
+    boundary_wbc = str(attrs.get("faultflow_wbc", inst))
+    boundary_block = str(block) if isinstance(block, str) and block else None
+    return (boundary_block, boundary_wbc, pin, side)
+
+
 def _wbc_pin_index_extest(
     netlist: Path, top: str
 ) -> dict[int, tuple[str | None, str, str, str]]:
@@ -177,19 +204,32 @@ def _wbc_pin_index_extest(
     graybox can never match a `scan_extest` scope's real fault net ids.
 
     Fusion is pure and deterministic, so re-run it here and bridge through its
-    returned `port_map` (keyed by the ORIGINAL cell name, carrying the ORIGINAL
-    sys-side net in `sys_net` -- which DOES match the graybox) back to the graybox's
-    own pin index. Only the OUTWARD (sys-facing) pins are covered: Guard 3's handoff
-    check only needs those (`FROM_SYS`/`TO_SYS` -- what a block excludes as
-    `wbr_decoupled` and the assembly must own); the core-facing pins are
-    block-owned regardless and, post-fusion, safed/dangling with no live fault site.
+    returned `port_map`, which is keyed by the ORIGINAL graybox cell name -- resolve
+    each entry's boundary identity directly from that cell's own attributes
+    (`_cell_boundary_pin`) rather than through `sys_net`: `sys_net` is shared
+    whenever more than one WBC cell's system-side pin lands on the same graybox net
+    (a broadcast control net, or nets merged by glue-level optimization), and a
+    net-id-keyed lookup can only resolve to one of them. Only the OUTWARD
+    (sys-facing) pins are covered: Guard 3's handoff check only needs those
+    (`FROM_SYS`/`TO_SYS` -- what a block excludes as `wbr_decoupled` and the
+    assembly must own); the core-facing pins are block-owned regardless and,
+    post-fusion, safed/dangling with no live fault site.
     """
     from faultflow.scan.wbr_view import fuse_wbr_into_view
 
-    graybox_pins = _wbc_pin_index(netlist, top)
-    if not graybox_pins:
-        return {}
     data = json.loads(netlist.read_text(encoding="utf-8"))
+    module = data.get("modules", {}).get(top)
+    cells = module.get("cells", {}) if isinstance(module, dict) else {}
+    if not isinstance(cells, dict) or not cells:
+        return {}
+    # Snapshot each WBC cell's own boundary identity BEFORE fusion: fuse_wbr_into_view
+    # mutates `data` in place (splicing in the fused pseudo-ports over the originals),
+    # so `cells` would no longer hold these entries once it returns.
+    cell_pins = {
+        cell_name: _cell_boundary_pin(cell, cell_name)
+        for cell_name, cell in cells.items()
+        if isinstance(cell, dict)
+    }
     fused, port_map = fuse_wbr_into_view(data, top, "extest")
     fused_module = fused.get("modules", {}).get(top, {})
     fused_ports = (
@@ -197,11 +237,10 @@ def _wbc_pin_index_extest(
     )
 
     index: dict[int, tuple[str | None, str, str, str]] = {}
-    for info in port_map.values():
+    for cell_name, info in port_map.items():
         if not isinstance(info, dict):
             continue
-        sys_net = info.get("sys_net")
-        pin_info = graybox_pins.get(sys_net) if isinstance(sys_net, int) else None
+        pin_info = cell_pins.get(cell_name)
         if pin_info is None:
             continue
         port = fused_ports.get(info.get("port"))

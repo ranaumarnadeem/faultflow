@@ -45,7 +45,10 @@ struct ParsedGraph {
 
   const ParsedModule& top_module() const;
 
-  // Resolve a port or netname in the top module to its Yosys net ID (first bit).
+  // Resolve a port or netname in the top module to its Yosys net ID.
+  // A bare name resolves to its first bit; "<port>[<i>]" resolves to that
+  // specific bit of a multi-bit port (positionally, from the port's own
+  // `bits` array -- not dependent on Yosys's `netnames` table).
   int net_id_by_name(const std::string& name) const;
 };
 

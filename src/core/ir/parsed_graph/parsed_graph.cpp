@@ -2,7 +2,9 @@
 
 #include <exception>
 #include <fstream>
+#include <optional>
 #include <string>
+#include <utility>
 
 #include "common/errors.hpp"
 #include "common/types.hpp"
@@ -209,6 +211,40 @@ namespace {
 constexpr char kBlackboxPiPrefix[] = "__bbpi_";
 constexpr char kWbrStimulusPrefix[] = "__wbrstim_";
 
+// Parses a trailing "<base>[<i>]" positional suffix (e.g. "A[1]" -> {"A",
+// 1}). Requires a non-empty base and a non-empty all-digit index; anything
+// else (no brackets, empty base, empty/non-numeric index) returns nullopt so
+// the caller falls through to its own "not this kind of name" handling.
+// Deliberately positional (indexes straight into a port's own `bits` array)
+// rather than driven by Yosys's `netnames` table, which this project's
+// locked synthesis script (no `splitnets`) does not reliably populate
+// per-bit for a plain bus port.
+std::optional<std::pair<std::string, size_t>> split_bracket_index(
+    const std::string& name) {
+  if (name.size() < 3 || name.back() != ']') {
+    return std::nullopt;
+  }
+  const auto open = name.rfind('[');
+  if (open == std::string::npos || open == 0) {
+    return std::nullopt;
+  }
+  const std::string idx_str = name.substr(open + 1, name.size() - open - 2);
+  if (idx_str.empty()) {
+    return std::nullopt;
+  }
+  for (char c : idx_str) {
+    if (c < '0' || c > '9') {
+      return std::nullopt;
+    }
+  }
+  try {
+    return std::make_pair(name.substr(0, open),
+                          static_cast<size_t>(std::stoul(idx_str)));
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 }  // namespace
 
 int ParsedGraph::net_id_by_name(const std::string& name) const {
@@ -233,6 +269,12 @@ int ParsedGraph::net_id_by_name(const std::string& name) const {
       return std::stoi(name.substr(sizeof(kWbrStimulusPrefix) - 1));
     } catch (const std::exception&) {
       // Fall through to the generic error below for a malformed suffix.
+    }
+  }
+  if (const auto idx = split_bracket_index(name)) {
+    const auto bp = mod.ports.find(idx->first);
+    if (bp != mod.ports.end() && idx->second < bp->second.bits.size()) {
+      return bp->second.bits[idx->second];
     }
   }
   throw ParseError("Unknown net or port name in top module: " + name);

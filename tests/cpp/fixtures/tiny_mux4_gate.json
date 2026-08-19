@@ -1,0 +1,54 @@
+{
+  "creator": "faultflow hand fixture",
+  "modules": {
+    "tiny_mux4_gate": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "A0": {"direction": "input", "bits": [2]},
+        "A1": {"direction": "input", "bits": [3]},
+        "A2": {"direction": "input", "bits": [4]},
+        "A3": {"direction": "input", "bits": [5]},
+        "S0": {"direction": "input", "bits": [6]},
+        "S1": {"direction": "input", "bits": [7]},
+        "X": {"direction": "output", "bits": [8]}
+      },
+      "cells": {
+        "u0": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__mux4_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A0": "input",
+            "A1": "input",
+            "A2": "input",
+            "A3": "input",
+            "S0": "input",
+            "S1": "input",
+            "X": "output"
+          },
+          "connections": {
+            "A0": [2],
+            "A1": [3],
+            "A2": [4],
+            "A3": [5],
+            "S0": [6],
+            "S1": [7],
+            "X": [8]
+          }
+        }
+      },
+      "netnames": {
+        "A0": {"hide_name": 0, "bits": [2], "attributes": {}},
+        "A1": {"hide_name": 0, "bits": [3], "attributes": {}},
+        "A2": {"hide_name": 0, "bits": [4], "attributes": {}},
+        "A3": {"hide_name": 0, "bits": [5], "attributes": {}},
+        "S0": {"hide_name": 0, "bits": [6], "attributes": {}},
+        "S1": {"hide_name": 0, "bits": [7], "attributes": {}},
+        "X": {"hide_name": 0, "bits": [8], "attributes": {}}
+      }
+    }
+  }
+}

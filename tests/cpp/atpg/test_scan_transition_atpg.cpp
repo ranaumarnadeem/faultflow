@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "atpg/fault_solver.hpp"
+#include "atpg/progressive_atpg.hpp"
 #include "atpg/sat_atpg.hpp"
 #include "fault/enumerator/fault_enumerator.hpp"
 #include "helpers/test_helpers.hpp"
@@ -104,8 +105,15 @@ void require_scan_solved_and_verified(const ParsedGraph& pg,
   for (const auto& [ppi_name, ppo_name] : couple_names) {
     REQUIRE(v2.at(ppi_name) == launch_ff.at(pg.net_id_by_name(ppo_name)));
   }
-  // Real PIs held: V2 == V1 on A.
-  REQUIRE(v2.at("A") == v1.at("A"));
+  // Real PIs held: V2 == V1 on every PI this fixture's `held` list covers.
+  // Matched by compiled index (not a hardcoded name) so this stays correct
+  // whether a real PI is exposed as one bare-name PI (single-bit port) or
+  // several bracket-indexed ones (multi-bit port).
+  for (const auto& pi : pis) {
+    if (std::find(held.begin(), held.end(), pi.compiled) != held.end()) {
+      REQUIRE(v2.at(pi.name) == v1.at(pi.name));
+    }
+  }
 }
 
 }  // namespace
@@ -195,4 +203,37 @@ TEST_CASE("scan LOC: every SAT vector verifies (bit-parallel == golden)",
     REQUIRE(parallel.simulate_transition_single_fault(cg, tv1, tv2, fault));
   }
   REQUIRE(sat_count > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Regression: held_real_pis must hold every BIT of a multi-bit real PI
+// ---------------------------------------------------------------------------
+
+// Before this fix, a >1-bit top-level input port was skipped from the held
+// set entirely (`bits.size() != 1`) -- not collapsed to its first bit like
+// ordered_pis's analogous bug, just silently absent. That left every bit of
+// such a port completely unconstrained between the launch and capture frames
+// of a two-frame transition test: the SAT solver was free to pick DIFFERENT
+// values for e.g. A[1] in V1 vs V2, a vector no real tester could ever apply
+// (a held, non-scan-driven input cannot change value between the launch and
+// capture edges of one at-speed capture window), and the golden-ref replay
+// had no independent way to reject it -- a soundness gap that could inflate
+// reported transition coverage with physically invalid patterns. This same
+// helper is shared by both the LOC (build_scan_loc_view) and LOS
+// (solve_scan_los_transition_fault_for_db) views, so one test covers both.
+TEST_CASE("held_real_pis holds every bit of a multi-bit real PI",
+          "[scan_transition][atpg][pi-enum]") {
+  const ParsedGraph pg = test::load_parsed("tiny_scan_view_loc.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_scan_view_loc.json");
+  const auto held = held_real_pis(pg, cg);
+
+  std::vector<int> held_yosys_ids;
+  held_yosys_ids.reserve(held.size());
+  for (uint32_t compiled : held) {
+    held_yosys_ids.push_back(cg.compiled_to_yosys.at(compiled));
+  }
+  std::sort(held_yosys_ids.begin(), held_yosys_ids.end());
+  // Both bits of A (yosys net ids 2 and 8) must be held. Before the fix,
+  // held_real_pis returned {} for A entirely -- the whole port was skipped.
+  REQUIRE(held_yosys_ids == std::vector<int>{2, 8});
 }

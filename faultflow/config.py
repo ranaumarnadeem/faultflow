@@ -208,6 +208,11 @@ class AtpgConfig:
     # disables the early switch (always grade the full random_vectors budget);
     # 100.0 only switches at full coverage (effectively the same).
     random_stop_coverage: float = 85.0
+    # When true, stop after grading the random-fill batch (or hitting
+    # random_stop_coverage early) and never dispatch SAT for the remainder --
+    # a deliberately incomplete "pure random" terminal mode for methodology
+    # comparisons against tools that only ever do random simulation.
+    random_only: bool = False
     sat_conflict_limit: int = 100000
     max_rounds: int = 20
     sat_timeout_seconds: int = 10
@@ -664,6 +669,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             output=_path(parser, "atpg", "output", "patterns.test"),
             random_vectors=_int(parser, "atpg", "random_vectors", 64),
             random_stop_coverage=_float(parser, "atpg", "random_stop_coverage", 85.0),
+            random_only=_bool(parser, "atpg", "random_only", False),
             sat_conflict_limit=_int(parser, "atpg", "sat_conflict_limit", 100000),
             max_rounds=_int(parser, "atpg", "max_rounds", 20),
             sat_timeout_seconds=_int(parser, "atpg", "sat_timeout_seconds", 10),

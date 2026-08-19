@@ -762,7 +762,7 @@ def _process_scan_candidate(
     # active_rows may contain stale (already-detected) faults between random vectors;
     # mark_fault_detected guards against overwrites with AND status='undetected'.
     _preloaded = [
-        (row.fault_id, row.net_index, 1 if row.fault_type == "SA1" else 0)
+        (row.fault_id, row.net_index, fault_type_to_sa_code(row.fault_type))
         for row in active_rows
     ]
     sim_threads = resolve_sim_threads(scan_ctx.cfg.simulation.sim_threads)
@@ -858,7 +858,11 @@ def _process_scan_candidate(
                 if ppo_port is None:
                     continue
                 cap_val = bool(reduced_expectation.get(ppo_port, False))
-                detected = cap_val if row.fault_type == "SA0" else not cap_val
+                detected = (
+                    cap_val
+                    if fault_type_to_sa_code(row.fault_type) == 0
+                    else not cap_val
+                )
                 if detected:
                     passed_fault_ids.append(fault_id)
                 elif source == "sat" and fault_id == sat_target_fault_id:
@@ -1042,7 +1046,7 @@ def run_progressive_scan_atpg(
     launch_mode: str = "loc",
     scan_pattern_out: Path | None = None,
 ) -> tuple[VectorSet, AtpgStats, int, float, float]:
-    from faultflow.runner.runner import _load_core, _port_names
+    from faultflow.runner.runner import _atpg_pi_names, _load_core
 
     # Accepted block-level scan patterns, collected for export when
     # scan_pattern_out is set (used by SoC retargeting). One per accepted vector.
@@ -1077,7 +1081,7 @@ def run_progressive_scan_atpg(
     if not 0.0 < effective_target <= 100.0:
         raise RunnerError("target coverage must be in (0, 100]")
 
-    input_order = _port_names(netlist, cfg.top, "input")
+    input_order = _atpg_pi_names(netlist, cfg.top)
     effective_db_path = str(db_path if db_path is not None else cfg.db_path)
     reduced_json_path = str(netlist)
     scan_cell_map = resolve_scan_cell_map(cfg)
@@ -1405,6 +1409,12 @@ def run_progressive_scan_atpg(
                     _k = _k + "0" * len(los_head_ports)
                 seen_patterns.discard(_k)
             switched_to_sat = True
+            if cfg.atpg.random_only:
+                # Deliberately incomplete "pure random" terminal mode for
+                # methodology comparisons -- never dispatch SAT for whatever
+                # random sampling left undetected.
+                terminal = "RANDOM_ONLY"
+                break
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
@@ -1616,6 +1626,7 @@ def run_progressive_scan_atpg(
                 else:
                     key = pattern_key(candidate, input_order)
                 if key in seen_patterns:
+                    rejected_patterns.setdefault(fault_id, set()).add(key)
                     round_tracker.sat_outcomes.append("protocol_no_progress")
                     stats.protocol_no_progress_rounds += 1
                     continue

@@ -7,6 +7,9 @@
 #include <utility>
 #include <vector>
 
+#include "ir/compiled_graph/compiled_graph.hpp"
+#include "ir/parsed_graph/parsed_graph.hpp"
+
 namespace faultflow::atpg {
 
 struct ProgressiveDetection {
@@ -159,6 +162,18 @@ std::vector<int64_t> simulate_transition_tentative_from_preloaded(
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {},
     int sim_threads = 1);
+
+// Real (non-pseudo-PI) top-level input PIs that must be held constant across
+// the launch/capture frames of a single scan two-frame transition test --
+// shared by both the LOC (build_scan_loc_view, this file) and LOS
+// (solve_scan_los_transition_fault_for_db, this file) views, since a held
+// input is held for the exact same physical reason (a tester cannot change a
+// non-scan-driven input's value between the launch and capture edges of one
+// at-speed capture window) regardless of which scan protocol drives capture.
+// Exposed (not file-local) so its per-bit handling of a multi-bit port is
+// directly unit-testable.
+std::vector<uint32_t> held_real_pis(const ParsedGraph& parsed,
+                                    const CompiledSimGraph& cg);
 
 // ---- Transition model (scan launch-on-capture) -----------------------------
 // SAT on the reduced scan ATPG view: the LOC couples (capture PPI == launch PPO)
