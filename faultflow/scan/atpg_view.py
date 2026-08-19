@@ -11,15 +11,24 @@ from faultflow.coverage.site_key import (
 )
 from faultflow.scan.errors import ScanError
 from faultflow.scan.manifest import manifest_clock_net_ids
-from faultflow.scan.stitch import SCAN_CELL_TYPES, _load_json, _top_module
+from faultflow.scan.stitch import (
+    SCAN_CELL_TYPES,
+    YOSYS_CAPTURE_AND_CELL,
+    YOSYS_CAPTURE_INV_CELL,
+    YOSYS_CAPTURE_OR_CELL,
+    _load_json,
+    _top_module,
+)
 
 PPI_PREFIX = "__ppi_"
 PPO_PREFIX = "__ppo_"
 OBSERVE_BUF_CELL = "$faultflow_observe_buf"
 D_BRANCH_BUF_CELL = "$faultflow_d_branch_buf"
-CAPTURE_AND_CELL = "$faultflow_capture_and"
-CAPTURE_OR_CELL = "$faultflow_capture_or"
-CAPTURE_INV_CELL = "$faultflow_capture_inv"
+# Bare (unescaped) spelling of stitch.py's YOSYS_CAPTURE_*_CELL constants --
+# derived, not re-typed, so the two producers of these cell types can't drift.
+CAPTURE_AND_CELL = YOSYS_CAPTURE_AND_CELL.lstrip("\\")
+CAPTURE_OR_CELL = YOSYS_CAPTURE_OR_CELL.lstrip("\\")
+CAPTURE_INV_CELL = YOSYS_CAPTURE_INV_CELL.lstrip("\\")
 DATA_PIN = "D"
 # Generic scan-cell types carry their async control on these pins (active-low):
 #   reset variant ($scanff_r): RESET_B, captured value 0 when active.

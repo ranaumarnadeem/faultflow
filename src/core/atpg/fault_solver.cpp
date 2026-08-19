@@ -290,7 +290,12 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
 
   for (const std::string& blocked : options.blocked_patterns) {
     if (blocked.size() != pis.size()) {
-      throw std::runtime_error("blocked pattern length mismatch");
+      throw std::runtime_error(
+          "blocked pattern length mismatch: pattern has " +
+          std::to_string(blocked.size()) + " bits, expected " +
+          std::to_string(pis.size()) +
+          " PIs (C++/Python PI-list divergence -- check for an unmapped "
+          "multi-bit-port bit)");
     }
     add_blocking_clause(solver, pi_literals, assignment_from_pattern(blocked));
   }
@@ -392,7 +397,12 @@ SatSolveResult solve_stuck_at_fault_incremental(
     }
     for (const std::string& blocked : options.blocked_patterns) {
       if (blocked.size() != pis.size()) {
-        throw std::runtime_error("blocked pattern length mismatch");
+        throw std::runtime_error(
+            "blocked pattern length mismatch: pattern has " +
+            std::to_string(blocked.size()) + " bits, expected " +
+            std::to_string(pis.size()) +
+            " PIs (C++/Python PI-list divergence -- check for an unmapped "
+            "multi-bit-port bit)");
       }
       add_blocking_clause(solver, pi_literals, assignment_from_pattern(blocked));
     }
@@ -665,7 +675,12 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
 
   for (const std::string& blocked : options.blocked_patterns) {
     if (blocked.size() != pis.size()) {
-      throw std::runtime_error("blocked pattern length mismatch");
+      throw std::runtime_error(
+          "blocked pattern length mismatch: pattern has " +
+          std::to_string(blocked.size()) + " bits, expected " +
+          std::to_string(pis.size()) +
+          " PIs (C++/Python PI-list divergence -- check for an unmapped "
+          "multi-bit-port bit)");
     }
     add_blocking_clause(solver, pi_literals, assignment_from_pattern(blocked));
   }
@@ -826,7 +841,12 @@ SatSolveResult solve_two_frame_transition(
   }
   for (const std::string& blocked : options.blocked_patterns) {
     if (blocked.size() != block_literals.size()) {
-      throw std::runtime_error("blocked pattern length mismatch");
+      throw std::runtime_error(
+          "blocked pattern length mismatch: pattern has " +
+          std::to_string(blocked.size()) + " bits, expected " +
+          std::to_string(block_literals.size()) +
+          " PI/PPI literals (C++/Python PI-list divergence -- check for an "
+          "unmapped multi-bit-port bit)");
     }
     add_blocking_clause(solver, block_literals,
                         assignment_from_pattern(blocked));

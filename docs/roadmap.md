@@ -1,6 +1,7 @@
 # Roadmap
 
-This is faultflow's forward plan: what is implemented today, and what is planned next.
+This is faultflow's forward plan: what is implemented today, and the permanent scope
+boundaries beyond which no further core-engine work is planned.
 
 ## Done
 
@@ -33,27 +34,27 @@ DFT rule check are all implemented:
 
 ## Planned
 
-Two pieces of work remain, sequenced deliberately so the second builds on the first.
-
-| Work | Scope | Touches the sim core? |
-|---|---|---|
-| **X-state** | Three-valued simulation core (initialization, unknowns, masking) | yes — the most invasive change |
-| **Latches** | A general level-sensitive latch model, built on X-state | yes |
-| **TBUF / tristate** | Deferred indefinitely; remains a hard error by policy | — |
-
-### Why this order
-
-- **X-state before latches — a hard ordering.** A general latch model needs X for its
-  uninitialized hold state and transparent-phase behavior, so X is done first and the
-  latch model is written once, completely. X-state is also the most invasive change,
-  because the gate-evaluation table, the bit-parallel word layout, and the fault records
-  were all built two-valued on purpose.
-- **TBUF/tristate skipped** — high-Z is itself an X-like third value; deferring it keeps
-  the X-state scope smaller. It stays hard-failing, consistent with the unsupported-cell
-  policy.
+No further core-simulation-engine features are planned. faultflow's scope is now considered
+complete for flip-flop-only synchronous designs with no tristate — see Scope boundaries
+below for what's permanently excluded and why. Smaller, non-core items remain open (STIL/WGL
+pattern export, techmap-verify) — see `feature.md` for that shorter list.
 
 ## Scope boundaries
 
+The following are permanent, deliberate exclusions — decided against, not deferred pending
+future capacity. Revisiting any of these would be a scope change, not a backlog item.
+
+- **X-state (three-valued simulation) — decided against.** Would have been the most
+  invasive possible change: the gate-evaluation table, the bit-parallel word layout, and the
+  fault records were all built two-valued on purpose. The deciding factor: even mature tools
+  with far larger contributor bases (Verilator, for one) took years to get X-state right
+  despite heavy investment — the cost/risk wasn't judged worth it for this project's scope.
+- **General level-sensitive latch model — excluded as a consequence of the X-state
+  decision.** A correct latch model needs X-state for its uninitialized hold state and
+  transparent-phase behavior, so excluding X-state excludes latches with it, not as a
+  separate call.
+- **TBUF / tristate — deferred indefinitely; remains a hard error by policy.** High-Z is
+  itself an X-like third value, so this was already downstream of the X-state decision.
 - **Clock-domain-crossing (CDC) verification is out of scope.** Metastability and
   synchronizer checking are a separate signoff concern, not a fault-testing one. Multi-
   clock *fault testing* (modeling more than one clock so flip-flops clock correctly
@@ -61,6 +62,10 @@ Two pieces of work remain, sequenced deliberately so the second builds on the fi
 - **OpenSTA is an optional, later timing source only** — real path delays for the
   at-speed capture window — never a CDC provider. Transition testing ships on metadata
   timing first.
+
+**Net effect**: faultflow's permanent scope is flip-flop-only synchronous designs, no
+tristate. This is the tool's intended, final scope for its core simulation/ATPG engine, not
+an interim state.
 
 See [External tools](external_tools.md) for the planned autoMBIST and OpenSTA
 directions.
