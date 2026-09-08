@@ -271,13 +271,16 @@ COMMAND_HELP = {
         "Options",
         "set_option KEY VALUE",
         "Set a persistent flow option",
-        "Keys: atpg.easy_fault_reserve, atpg.incremental_sat, atpg.max_rounds,"
-        " atpg.preflight, atpg.random_stop_coverage, atpg.random_vectors,"
+        "Keys: atpg.compaction, atpg.cone_restrict, atpg.easy_fault_reserve,"
+        " atpg.fault_drop_sat, atpg.incremental_sat, atpg.max_rounds,"
+        " atpg.order_by_cone_size, atpg.pack_orders, atpg.preflight,"
+        " atpg.preflight_tech, atpg.random_stop_coverage, atpg.random_vectors,"
         " atpg.sat_conflict_limit,"
         " atpg.sat_timeout_seconds, atpg.sat_timeout_schedule, atpg.workers,"
         " fault_model.collapsing, fault_model.include_reset_faults,"
-        " fault_model.include_clock_faults, report.threshold,"
-        " simulation.sim_threads, simulation.unsupported_cells, wrap.wbr_model."
+        " fault_model.include_clock_faults, report.output, report.threshold,"
+        " simulation.sim_threads, simulation.tie_xz, simulation.unsupported_cells,"
+        " simulation.verify, simulation.verify_use_power_pins, wrap.wbr_model."
         " atpg.sat_timeout_schedule is a comma list like 2,10,60 that"
         " escalates a fault's SAT timeout only when it times out."
         " atpg.workers sets parallel workers (1=serial); prefer WORKERS."
@@ -285,15 +288,44 @@ COMMAND_HELP = {
         " this many slots per wave for easy (small-cone) faults while the"
         " rest tackle hard faults simultaneously. Set to 0 to disable."
         " atpg.preflight (true/false) enables OT reconvergence pre-ordering"
-        " and pre-certification (default true)."
+        " and pre-certification (default true); atpg.preflight_tech overrides"
+        " the auto-detected PDK tech tag (sky130/osu035) passed to it."
         " atpg.random_vectors (default 64) is the random-fill budget per round;"
         " atpg.random_stop_coverage (default 85.0) stops random-fill grading"
         " early once coverage crosses this percent and switches to SAT."
+        " atpg.compaction (none/reverse/dynamic, default reverse) selects the"
+        " post-ATPG test-set compaction strategy; atpg.pack_orders (default 1)"
+        " is the number of packing orders tried under compaction=dynamic."
+        " atpg.order_by_cone_size / atpg.cone_restrict / atpg.fault_drop_sat"
+        " (true/false, all default true) are ATPG solve-shape toggles: ascending"
+        " cone-size fault ordering, restricting each fault's CNF to its"
+        " structural cone, and dropping incidental fallout detections when an"
+        " accepted SAT vector is fault-simulated against the remaining faults."
         " fault_model.include_reset_faults (true/false, default false) grades"
         " async reset/set-tree faults via implication instead of excluding them;"
-        " it is fingerprinted, so toggling it forces a fresh campaign.",
+        " it is fingerprinted, so toggling it forces a fresh campaign."
+        " report.output overrides where the coverage report is written"
+        " (default coverage.rpt)."
+        " simulation.verify (true/false, default false) enables the external"
+        " iverilog verification gate; simulation.verify_use_power_pins drives"
+        " VPWR/VGND and -DUSE_POWER_PINS for behavioral models that need it;"
+        " simulation.tie_xz ties Yosys x/z constant bits to 0 pre-simulation"
+        " (needed for a netlist with genuinely unconnected inputs)."
+        " NOT settable here, on purpose: fault_model.model/launch are chosen"
+        " via `run_atpg -tf broadside|los` instead of set_option, so there is"
+        " one mechanism for switching to transition-fault ATPG, not two."
+        " atpg.tool is validated on load but nothing in the runner currently"
+        " branches on its value (native SAT always runs) -- exposing it here"
+        " would imply a control that does not exist yet."
+        " atpg.mode and simulation.verify_tool each currently accept exactly"
+        " one value (comb; iverilog -- Verilator is explicitly not supported),"
+        " so there is no real choice to make."
+        " atpg.output is a rarely-produced internal fallback path, not a"
+        " normal ATPG deliverable.",
         "",
-        "set_option atpg.sat_timeout_schedule 2,10,60",
+        "set_option atpg.sat_timeout_schedule 2,10,60\n"
+        "set_option atpg.compaction dynamic\n"
+        "set_option simulation.verify true",
     ),
     "unset_option": CommandHelp(
         "Options",

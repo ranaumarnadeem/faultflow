@@ -40,6 +40,99 @@
 | genericfir_small | — | 471 | 48 | 100.00% | 17 | 344 | 338.7 s |
 | picorv32a | — | — | 162 | 99.976% | 918 | 1,784 | 13,913.8 s |
 
+### Hybrid ATPG — Re-run (current build, `collapsing = false`, same methodology as above)
+
+Re-run of the same corpus against the current build. `s5378`/`s15850` were not re-run this
+pass (Yosys sliced some flip-flops into `$auto$ff.cc:337:slice$...` cells that don't fit
+faultflow's scan-insertion shape requirements on this build — a genuine per-design gap, not a
+methodology change). Coverage is 100.000% on every design except `picorv32a`; both figures are
+within noise of the original 99.976%.
+
+| Design | Coverage | Vectors | Wall |
+|---|---:|---:|---:|
+| s9234_1 | 100.00% | 154 | 203.7 s |
+| picorv32a | 99.956% | 2,160 | 9,971.6 s |
+| s1423 | 100.00% | 74 | 61.1 s |
+| s1494 | 100.00% | 98 | 87.0 s |
+| s1238 | 100.00% | 74 | 33.6 s |
+| s1488 | 100.00% | 25 | 9.8 s |
+| s1196 | 100.00% | 161 | 117.1 s |
+| s838_1 | 100.00% | 91 | 57.1 s |
+| s832 | 100.00% | 80 | 54.3 s |
+| s820 | 100.00% | 81 | 51.0 s |
+| s510 | 100.00% | 57 | 32.3 s |
+| s641 | 100.00% | 57 | 35.6 s |
+| s526n | 100.00% | 30 | 20.6 s |
+| s526 | 100.00% | 31 | 19.8 s |
+| s713 | 100.00% | 54 | 35.4 s |
+| s444 | 100.00% | 22 | 16.9 s |
+| s420_1 | 100.00% | 46 | 30.2 s |
+| s400 | 100.00% | 24 | 17.0 s |
+| s382 | 100.00% | 29 | 17.2 s |
+| s349 | 100.00% | 30 | 21.5 s |
+| s344 | 100.00% | 30 | 21.6 s |
+| s386 | 100.00% | 40 | 26.7 s |
+| s298 | 100.00% | 25 | 10.4 s |
+| s208_1 | 100.00% | 26 | 20.0 s |
+| s27 | 100.00% | 9 | 4.9 s |
+| c499 | 100.00% | 63 | 8.8 s |
+| c432 | 100.00% | 49 | 6.0 s |
+| c17 | 100.00% | 7 | 0.9 s |
+| iiravg | 100.00% | 37 | 32.3 s |
+| boxcar | 100.00% | 2,151 | 4,087.0 s |
+| genericfir_small | 100.00% | 404 | 1,606.5 s |
+
+Most designs converge in noticeably fewer vectors and less wall-clock than the original table
+(e.g. `s1488` 369→25 vectors, 18x faster; `s1238` 448→74 vectors, 5.8x faster) — plausible given
+ATPG/compaction improvements landed on this build since the original run, but not verified
+against a specific changelog entry. Three designs went the other way (`boxcar`, `genericfir_small`,
+`iiravg` all got slower with more vectors, not fewer) — worth a closer look if a performance
+regression matters here; not investigated further in this pass.
+
+### Hybrid ATPG — Re-run (current build, `collapsing = true`)
+
+Same corpus and current build as the re-run above, with fault collapsing enabled this time
+(primitive-gate equivalence plus the exhaustively-derived Sky130 compound-cell classes — see
+`docs/collapsing_rules.md`). `s5378`/`s15850` excluded for the same reason as above. Coverage is
+100.000% everywhere except `picorv32a` (99.969%, consistent with the other two runs). The
+`Collapsed / Raw faults` column makes the effect concrete: collapsing is folding a real, sizable
+fraction of the enumerated fault set away before ATPG ever runs on every design, not just a
+handful of trivial cases.
+
+| Design | Coverage | Vectors | Wall | Collapsed / Raw faults |
+|---|---:|---:|---:|---:|
+| s9234_1 | 100.00% | 146 | 128.4 s | 642 / 4,638 |
+| picorv32a | 99.969% | 2,441 | 13,044.3 s | 21,461 / 97,346 |
+| s1423 | 100.00% | 71 | 40.8 s | 503 / 2,802 |
+| s1494 | 100.00% | 96 | 64.1 s | 522 / 2,192 |
+| s1238 | 100.00% | 187 | 93.1 s | 483 / 2,240 |
+| s1488 | 100.00% | 104 | 50.8 s | 471 / 2,188 |
+| s1196 | 100.00% | 161 | 82.1 s | 468 / 2,076 |
+| s838_1 | 100.00% | 81 | 39.7 s | 227 / 1,240 |
+| s832 | 100.00% | 80 | 39.1 s | 240 / 1,096 |
+| s820 | 100.00% | 81 | 37.9 s | 250 / 1,046 |
+| s510 | 100.00% | 56 | 22.7 s | 186 / 908 |
+| s641 | 100.00% | 57 | 26.4 s | 186 / 896 |
+| s526n | 100.00% | 29 | 14.5 s | 98 / 746 |
+| s526 | 100.00% | 28 | 14.5 s | 101 / 734 |
+| s713 | 100.00% | 54 | 27.6 s | 170 / 876 |
+| s444 | 100.00% | 23 | 17.8 s | 93 / 692 |
+| s420_1 | 100.00% | 40 | 25.6 s | 101 / 606 |
+| s400 | 100.00% | 24 | 15.2 s | 99 / 696 |
+| s382 | 100.00% | 29 | 11.6 s | 94 / 692 |
+| s349 | 100.00% | 28 | 13.9 s | 100 / 574 |
+| s344 | 100.00% | 28 | 13.7 s | 100 / 574 |
+| s386 | 100.00% | 40 | 17.2 s | 94 / 554 |
+| s298 | 100.00% | 24 | 6.2 s | 60 / 484 |
+| s208_1 | 100.00% | 22 | 15.9 s | 32 / 290 |
+| s27 | 100.00% | 9 | 3.8 s | 10 / 96 |
+| c499 | 100.00% | 61 | 12.6 s | 164 / 1,022 |
+| c432 | 100.00% | 47 | 10.2 s | 64 / 574 |
+| c17 | 100.00% | 7 | 1.3 s | 6 / 28 |
+| iiravg | 100.00% | 37 | 31.5 s | 150 / 1,174 |
+| boxcar | 100.00% | 2,150 | 3,777.7 s | 9,932 / 34,842 |
+| genericfir_small | 100.00% | 413 | 1,536.1 s | 4,484 / 29,458 |
+
 ### Random ATPG
 
 Random ATPG never invokes SAT, so it has no meaningful redundant-fault count to

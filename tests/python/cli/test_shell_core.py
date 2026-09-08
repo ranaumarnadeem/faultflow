@@ -121,6 +121,86 @@ def test_set_option_materializes_into_config(tmp_path: Path) -> None:
     assert cfg.atpg.random_stop_coverage == 85.0
 
 
+def test_set_option_materializes_new_atpg_report_simulation_options(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "demo.json"
+    _tiny_json(source)
+    session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
+    session.read_netlist(source, "demo")
+    session.use_lib_cells("sky130")
+
+    session.set_option("atpg.compaction", "dynamic")
+    session.set_option("atpg.pack_orders", "3")
+    session.set_option("atpg.order_by_cone_size", "false")
+    session.set_option("atpg.cone_restrict", "false")
+    session.set_option("atpg.fault_drop_sat", "false")
+    session.set_option("atpg.preflight_tech", "osu035")
+    session.set_option("report.output", "custom_coverage.rpt")
+    session.set_option("simulation.verify", "true")
+    session.set_option("simulation.verify_use_power_pins", "true")
+    session.set_option("simulation.tie_xz", "true")
+
+    cfg = session.materialize_config()
+    assert cfg.atpg.compaction == "dynamic"
+    assert cfg.atpg.pack_orders == 3
+    assert cfg.atpg.order_by_cone_size is False
+    assert cfg.atpg.cone_restrict is False
+    assert cfg.atpg.fault_drop_sat is False
+    assert cfg.atpg.preflight_tech == "osu035"
+    assert cfg.report.output == Path("custom_coverage.rpt")
+    assert cfg.simulation.verify is True
+    assert cfg.simulation.verify_use_power_pins is True
+    assert cfg.simulation.tie_xz is True
+
+
+def test_set_option_rejects_bad_new_atpg_options(tmp_path: Path) -> None:
+    session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
+    with pytest.raises(ShellError, match="none.*reverse.*dynamic"):
+        session.set_option("atpg.compaction", "bogus")
+    with pytest.raises(ShellError, match="positive integer"):
+        session.set_option("atpg.pack_orders", "0")
+    with pytest.raises(ShellError, match="positive integer"):
+        session.set_option("atpg.pack_orders", "-1")
+    with pytest.raises(ShellError, match="must be one of true/false"):
+        session.set_option("atpg.order_by_cone_size", "not-a-bool")
+    with pytest.raises(ShellError, match="must be one of true/false"):
+        session.set_option("atpg.cone_restrict", "not-a-bool")
+    with pytest.raises(ShellError, match="must be one of true/false"):
+        session.set_option("atpg.fault_drop_sat", "not-a-bool")
+    with pytest.raises(ShellError, match="must be one of true/false"):
+        session.set_option("simulation.verify", "not-a-bool")
+    with pytest.raises(ShellError, match="must be one of true/false"):
+        session.set_option("simulation.verify_use_power_pins", "not-a-bool")
+    with pytest.raises(ShellError, match="must be one of true/false"):
+        session.set_option("simulation.tie_xz", "not-a-bool")
+    # Valid boundary/enum values are accepted.
+    session.set_option("atpg.compaction", "none")
+    session.set_option("atpg.compaction", "reverse")
+    session.set_option("atpg.pack_orders", "1")
+
+
+def test_set_option_rejects_still_unsupported_options(tmp_path: Path) -> None:
+    # fault_model.model/launch are deliberately NOT settable via set_option --
+    # they are controlled by `run_atpg -tf broadside|los` instead (see
+    # test_shell_transition_atpg.py). atpg.tool is validated-but-inert in the
+    # runner (nothing branches on it besides fingerprint recording), atpg.mode
+    # and simulation.verify_tool each have exactly one currently-valid value,
+    # and atpg.output is a rarely-produced internal fallback path -- none of
+    # these are exposed as live-settable options.
+    session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
+    for key in (
+        "fault_model.model",
+        "fault_model.launch",
+        "atpg.tool",
+        "atpg.mode",
+        "atpg.output",
+        "simulation.verify_tool",
+    ):
+        with pytest.raises(ShellError, match="unsupported option"):
+            session.set_option(key, "x")
+
+
 def test_set_option_validates_random_switch_knobs(tmp_path: Path) -> None:
     session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
     # random_stop_coverage is a percent in [0, 100]; random_vectors is a

@@ -486,6 +486,53 @@ class ProjectSession:
                 )
             elif key == "wrap.wbr_model":
                 cfg = replace(cfg, wbr_model=value)
+            elif key == "atpg.compaction":
+                cfg = replace(cfg, atpg=replace(cfg.atpg, compaction=value))
+            elif key == "atpg.pack_orders":
+                cfg = replace(cfg, atpg=replace(cfg.atpg, pack_orders=int(value)))
+            elif key == "atpg.order_by_cone_size":
+                cfg = replace(
+                    cfg,
+                    atpg=replace(
+                        cfg.atpg, order_by_cone_size=parse_bool_value(value, key)
+                    ),
+                )
+            elif key == "atpg.cone_restrict":
+                cfg = replace(
+                    cfg,
+                    atpg=replace(cfg.atpg, cone_restrict=parse_bool_value(value, key)),
+                )
+            elif key == "atpg.fault_drop_sat":
+                cfg = replace(
+                    cfg,
+                    atpg=replace(cfg.atpg, fault_drop_sat=parse_bool_value(value, key)),
+                )
+            elif key == "atpg.preflight_tech":
+                cfg = replace(cfg, atpg=replace(cfg.atpg, preflight_tech=value))
+            elif key == "report.output":
+                cfg = replace(cfg, report=replace(cfg.report, output=Path(value)))
+            elif key == "simulation.verify":
+                cfg = replace(
+                    cfg,
+                    simulation=replace(
+                        cfg.simulation, verify=parse_bool_value(value, key)
+                    ),
+                )
+            elif key == "simulation.verify_use_power_pins":
+                cfg = replace(
+                    cfg,
+                    simulation=replace(
+                        cfg.simulation,
+                        verify_use_power_pins=parse_bool_value(value, key),
+                    ),
+                )
+            elif key == "simulation.tie_xz":
+                cfg = replace(
+                    cfg,
+                    simulation=replace(
+                        cfg.simulation, tie_xz=parse_bool_value(value, key)
+                    ),
+                )
         return cfg
 
     def synthesize(self) -> OperationResult:
@@ -783,6 +830,27 @@ class ProjectSession:
             "simulation.sim_threads",
             "simulation.unsupported_cells",
             "wrap.wbr_model",
+            # Deliberately NOT here, even though config.ofs has them:
+            #   fault_model.model / fault_model.launch -- controlled by
+            #     `run_atpg -tf broadside|los` instead; a second path via
+            #     set_option would duplicate/conflict with that mechanism.
+            #   atpg.tool -- validated but inert (nothing branches on it besides
+            #     fingerprint recording); exposing it here would imply a control
+            #     that does not exist.
+            #   atpg.mode, simulation.verify_tool -- each has exactly one
+            #     currently-valid value, so there is no real choice to make.
+            #   atpg.output -- a rarely-produced internal fallback path, not a
+            #     normal ATPG deliverable; minimal practical effect if set.
+            "atpg.compaction",
+            "atpg.pack_orders",
+            "atpg.order_by_cone_size",
+            "atpg.cone_restrict",
+            "atpg.fault_drop_sat",
+            "atpg.preflight_tech",
+            "report.output",
+            "simulation.verify",
+            "simulation.verify_use_power_pins",
+            "simulation.tie_xz",
         }
         if key not in allowed:
             raise ShellError(f"unsupported option: {key}", "CONFIG", "INVALID_OPTION")
@@ -801,6 +869,7 @@ class ProjectSession:
             "atpg.sat_conflict_limit",
             "atpg.sat_timeout_seconds",
             "atpg.workers",
+            "atpg.pack_orders",
         }:
             try:
                 if int(value) < 1:
@@ -852,11 +921,24 @@ class ProjectSession:
             "fault_model.collapsing",
             "fault_model.include_reset_faults",
             "fault_model.include_clock_faults",
+            "atpg.order_by_cone_size",
+            "atpg.cone_restrict",
+            "atpg.fault_drop_sat",
+            "simulation.verify",
+            "simulation.verify_use_power_pins",
+            "simulation.tie_xz",
         }:
             try:
                 parse_bool_value(value, key)
             except ConfigError as exc:
                 raise ShellError(str(exc), "CONFIG", "INVALID_VALUE")
+        if key == "atpg.compaction":
+            if value not in {"none", "reverse", "dynamic"}:
+                raise ShellError(
+                    "atpg.compaction must be 'none', 'reverse', or 'dynamic'",
+                    "CONFIG",
+                    "INVALID_VALUE",
+                )
         if key == "wrap.wbr_model":
             if value not in {"buffer", "scan"}:
                 raise ShellError(
