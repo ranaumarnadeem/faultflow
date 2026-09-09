@@ -176,7 +176,10 @@ def check_compression_structure(
     manifest: dict[str, Any],
 ) -> CompressionStructuralCheckResult:
     """Re-derive each ``scan_in`` wire's phase-shifter taps from the
-    synthesized netlist and require them to match
+    synthesized, COMPOSED netlist (``manifest["compression"]["composed_json"]``
+    -- never ``manifest["generic_json"]``, which must stay pointed at the
+    pre-compression, plain scan-stitched netlist so ATPG keeps working; see
+    the compression CLI-wiring plan) and require them to match
     ``manifest["compression"]["phase_shifter_taps"]`` exactly.
 
     A no-op (no errors, no warnings) when compression is absent/disabled in
@@ -190,9 +193,9 @@ def check_compression_structure(
         if not isinstance(compression, dict) or not compression.get("enabled"):
             return CompressionStructuralCheckResult(warnings=[], errors=[])
 
-        generic_json = Path(str(manifest["generic_json"]))
-        data = _load_json(generic_json)
-        top = str(manifest["top"])
+        composed_json = Path(str(compression["composed_json"]))
+        data = _load_json(composed_json)
+        top = str(compression.get("composed_top") or f"{manifest['top']}_compressed")
         _, module = _top_module(data, top)
         netnames = module.get("netnames", {})
         if not isinstance(netnames, dict):

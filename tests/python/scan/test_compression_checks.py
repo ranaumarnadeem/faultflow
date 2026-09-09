@@ -47,13 +47,20 @@ def _mux2_cell(a0: int, a1: int, s: int, y: int, name: str = "u_mux") -> dict:
 
 
 def _manifest(tmp_path: Path, module: dict, compression: dict) -> dict:
-    generic_json = tmp_path / "generic.json"
-    generic_json.write_text(
+    composed_json = tmp_path / "composed.json"
+    composed_json.write_text(
         json.dumps({"modules": {"core_top_compressed": module}}), encoding="utf-8"
     )
+    compression = dict(compression)
+    if compression.get("enabled"):
+        compression.setdefault("composed_json", str(composed_json))
+        compression.setdefault("composed_top", "core_top_compressed")
     return {
-        "generic_json": str(generic_json),
-        "top": "core_top_compressed",
+        # The manifest's own "top" is the PRE-compression design name --
+        # check_compression_structure never reads generic_json/this file at
+        # all, only compression["composed_json"]/["composed_top"] (see the
+        # compression CLI-wiring plan's "required fix" section).
+        "top": "core_top",
         "compression": compression,
     }
 

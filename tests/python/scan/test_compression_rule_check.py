@@ -10,13 +10,16 @@ from faultflow.rule_check.rules import rules_compression
 
 
 def _manifest(tmp_path: Path, module: dict, compression: dict) -> dict:
-    generic_json = tmp_path / "generic.json"
-    generic_json.write_text(
+    composed_json = tmp_path / "composed.json"
+    composed_json.write_text(
         json.dumps({"modules": {"core_top_compressed": module}}), encoding="utf-8"
     )
+    compression = dict(compression)
+    if compression.get("enabled"):
+        compression.setdefault("composed_json", str(composed_json))
+        compression.setdefault("composed_top", "core_top_compressed")
     return {
-        "generic_json": str(generic_json),
-        "top": "core_top_compressed",
+        "top": "core_top",
         "compression": compression,
     }
 

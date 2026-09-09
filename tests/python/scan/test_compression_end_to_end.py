@@ -5,15 +5,15 @@ all against the actual Yosys-synthesized, CaDiCaL/GoldenRefSim-simulated
 composed netlist (no stubs) -- proving every piece built in increments 1-9
 actually functions together, not just in isolation.
 
-Scope note (honest, not silently glossed over): there is currently no `ff.py`
-CLI command or pipeline step that takes a plain scan-stitched design plus
-`[compression]` config and produces a compressed netlist + a written manifest
-+ a ready-to-run ATPG campaign as one flow -- `insert_compression` is a
-library function today, and nothing writes a `"compression"` manifest
-section automatically yet. That CLI/pipeline wiring is real follow-up work,
-not part of this increment. This test proves the mechanism (insertion,
-structural verification, care-bit extraction, solving) is correct and
-composes correctly; it is not a `ff.py scan ...` campaign smoke test.
+This test proves the underlying MECHANISM (insertion, structural
+verification, care-bit extraction, solving) is correct and composes
+correctly, using a hand-assembled manifest dict -- it is not a `ff.py`
+campaign smoke test. The real, production writer of this manifest shape is
+`Runner.scan_compress()` (`faultflow/runner/runner.py`, the `ff.py
+scan-compress` CLI subcommand); see
+`tests/python/scan/test_scan_compress_cli.py` for that real, CLI-driven
+end-to-end coverage (real `ff.py scan` -> `scan-check` -> `scan-compress` ->
+`rule_check`).
 """
 
 from __future__ import annotations
@@ -104,20 +104,22 @@ def test_compression_insertion_manifest_check_and_solve_end_to_end(
     )
     assert result_path == output_json
 
-    # 2. Build the manifest a real writer would produce (increment 9's
-    #    check_compression_structure schema) -- no automatic writer exists
-    #    yet (see module docstring), so this is hand-assembled from
-    #    insert_compression's own return value, exactly as a future writer
-    #    would derive it.
+    # 2. Build the manifest the real ff.py scan-compress writer produces
+    #    (Runner.scan_compress()): "top" stays the PRE-compression design
+    #    name (generic_json, omitted here since this test never calls
+    #    check_scan_structure, would point at core_json_path) -- the composed
+    #    netlist's own path/top name live under compression.composed_json/
+    #    composed_top, never under the top-level generic_json key.
     manifest = {
-        "generic_json": str(output_json),
-        "top": "core_top_compressed",
+        "top": "core_top",
         "compression": {
             "enabled": True,
             "num_channels": compression_map.num_channels,
             "tap_source_net": "effective_state",
             "scan_in_ports": ["scan_in_0", "scan_in_1"],
             "phase_shifter_taps": compression_map.phase_shifter_taps,
+            "composed_json": str(output_json),
+            "composed_top": "core_top_compressed",
         },
     }
 
