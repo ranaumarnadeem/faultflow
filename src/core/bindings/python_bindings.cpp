@@ -23,6 +23,7 @@
 #include "sim/engine/bit_parallel_sim.hpp"
 #include "sim/golden_ref/golden_ref_sim.hpp"
 #include "sim/state/test_vector.hpp"
+#include "scan/compression.hpp"
 #include "scan/scan_pattern_sim.hpp"
 
 namespace py = pybind11;
@@ -776,6 +777,33 @@ py::dict simulate_scan_protocol_faults_py(
   return out;
 }
 
+// Adapter for scan::solve_xor_broadcast (src/core/scan/compression.hpp) -- a
+// fixed GF(2) linear solve: given a fanout map (each row = the set of
+// channel/register-bit indices XORed into one internal position) and a sparse
+// set of required (index, value) care bits, find a channel assignment
+// satisfying all of them, or report none exists. Reused unmodified for both
+// the static broadcast case and the sequential ring-generator case (see
+// faultflow/scan/ring_generator.py::care_bit_rows) -- the solver only ever
+// sees rows of coefficients, never anything about where they came from.
+py::dict solve_xor_broadcast_py(
+    int num_channels, const std::vector<std::vector<int>>& fanout,
+    const std::vector<std::pair<int, bool>>& care_bits) {
+  scan::XorBroadcastMap map;
+  map.num_channels = num_channels;
+  map.fanout = fanout;
+  std::vector<scan::CareBit> cbs;
+  cbs.reserve(care_bits.size());
+  for (const auto& [idx, val] : care_bits) {
+    cbs.push_back({idx, val});
+  }
+  std::vector<bool> out_channels;
+  const bool ok = scan::solve_xor_broadcast(map, cbs, out_channels);
+  py::dict out;
+  out["ok"] = ok;
+  out["channels"] = out_channels;
+  return out;
+}
+
 py::list list_site_keys_py(const std::string& json_path,
                            const std::string& cell_map_path,
                            const std::string& unsupported_policy) {
@@ -1110,4 +1138,6 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("reconvergent_yosys_ids") = std::vector<int64_t>{});
+  m.def("solve_xor_broadcast", &faultflow::solve_xor_broadcast_py,
+        py::arg("num_channels"), py::arg("fanout"), py::arg("care_bits"));
 }

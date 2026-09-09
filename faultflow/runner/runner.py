@@ -352,6 +352,11 @@ class Runner:
             # chain (new control/observe points + fault sites), so buffer<->scan is
             # a distinct campaign.
             "wbr_model": self.cfg.wbr_model,
+            # Enabling/disabling compression, or resizing its channel count,
+            # changes the synthesized netlist (new ring-generator/phase-shifter
+            # gates = new fault sites), so it's part of the fingerprint too.
+            "compression_enabled": self.cfg.compression.enabled,
+            "compression_channels": self.cfg.compression.channels,
         }
 
     def _rendered_yosys_script(self, source: Path | None = None) -> str:

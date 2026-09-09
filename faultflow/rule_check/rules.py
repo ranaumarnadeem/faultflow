@@ -286,6 +286,38 @@ def rules_scan(manifest: dict[str, Any]) -> list[Violation]:
     return out
 
 
+# --- COMP001: scan compression phase-shifter structural check ---
+def rules_compression(manifest: dict[str, Any]) -> list[Violation]:
+    """Re-derives the ring-generator phase-shifter's XOR structure from the
+    synthesized netlist and diffs it against the manifest -- see
+    faultflow.scan.compression_checks.check_compression_structure for the
+    algorithm and its documented scope (phase-shifter only; the ring
+    generator's own feedback-tap structure is not yet checked here).
+    No-op (returns []) when compression is absent/disabled in the manifest.
+    """
+    from faultflow.scan.compression_checks import check_compression_structure
+
+    try:
+        result = check_compression_structure(manifest)
+    except Exception as exc:  # defensive: a malformed manifest is itself a finding
+        return [
+            Violation(
+                "COMP001",
+                Severity.ERROR,
+                "compression structure",
+                f"compression structural check failed: {exc}",
+            )
+        ]
+    out: list[Violation] = []
+    for err in result.errors:
+        out.append(Violation("COMP001", Severity.ERROR, "compression structure", err))
+    for warn in result.warnings:
+        out.append(
+            Violation("COMP001", Severity.WARNING, "compression structure", warn)
+        )
+    return out
+
+
 def run_rule_check(
     netlist_json: Path,
     cell_map_json: Path,
@@ -302,4 +334,5 @@ def run_rule_check(
     report.violations.extend(rule_combinational_feedback(facts))
     if manifest is not None:
         report.violations.extend(rules_scan(manifest))
+        report.violations.extend(rules_compression(manifest))
     return report

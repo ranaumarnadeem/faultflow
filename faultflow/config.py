@@ -6,6 +6,8 @@ from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
 
+from faultflow.scan.ring_generator import lookup_polynomial
+
 FAULTFLOW_WORKSPACE = ".faultflow"
 
 SKY130_CELL_LIB = Path("cells/sky130/sky130_fd_sc_hd.json")
@@ -151,6 +153,21 @@ def _optional_int(parser: ConfigParser, section: str, key: str) -> int | None:
     return int(value) if value else None
 
 
+def _compression_config(parser: ConfigParser) -> "CompressionConfig":
+    cfg = CompressionConfig(
+        enabled=_bool(parser, "compression", "enabled", False),
+        channels=_int(parser, "compression", "channels", 8),
+        scan_enable=parser.get("compression", "scan_enable", fallback=""),
+        clock=parser.get("compression", "clock", fallback=""),
+    )
+    if cfg.enabled:
+        try:
+            lookup_polynomial(cfg.channels)
+        except ValueError as exc:
+            raise ConfigError(f"[compression] channels: {exc}") from exc
+    return cfg
+
+
 @dataclass(frozen=True)
 class FaultModelConfig:
     model: str = "stuck_at"
@@ -283,6 +300,23 @@ class ScanConfig:
 
 
 @dataclass(frozen=True)
+class CompressionConfig:
+    """Scan test-pattern compression (sequential ring-generator + phase-shifter
+    decompressor, ``faultflow.scan.compression``). ``channels`` is the LFSR
+    register width -- must be one of the curated widths in
+    ``faultflow.scan.ring_generator.PRIMITIVE_POLYNOMIALS`` (validated at
+    config-load time, not deferred to insertion). ``scan_enable``/``clock``
+    empty means "reuse the design's existing scan-enable/clock port names"
+    (``ScanConfig.scan_enable`` / the design's declared ``ClockSpec.port``).
+    """
+
+    enabled: bool = False
+    channels: int = 8
+    scan_enable: str = ""
+    clock: str = ""
+
+
+@dataclass(frozen=True)
 class ClockSpec:
     """A declared clock domain (Phase 6, `add_clock` / `[clocks]`).
 
@@ -317,6 +351,7 @@ class FaultflowConfig:
     atpg: AtpgConfig
     report: ReportConfig
     scan: ScanConfig
+    compression: CompressionConfig = CompressionConfig()
     output_root: Path = Path("output")
     clocks: tuple[ClockSpec, ...] = ()
     blackbox_instances: tuple[str, ...] = ()
@@ -697,6 +732,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             scan_enable=parser.get("scan", "scan_enable", fallback="scan_en"),
             run_techmap=_bool(parser, "scan", "run_techmap", True),
         ),
+        compression=_compression_config(parser),
         clocks=clocks,
         blackbox_instances=blackbox_instances,
         testpoint=TestpointConfig(

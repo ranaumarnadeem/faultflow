@@ -59,7 +59,14 @@ from faultflow.scan.site_resolution import (
     build_site_key_index,
     fault_type_to_sa_code,
 )
+from faultflow.scan.care_bits import extract_scan_care_bits
+from faultflow.scan.compression import CompressionMap, build_broadcast_fanout
 from faultflow.scan.errors import ScanError
+from faultflow.scan.ring_generator import (
+    bitmask_to_index_list,
+    care_bit_rows,
+    lookup_polynomial,
+)
 from faultflow.scan.verify import reduced_protocol_matches
 from faultflow.testpoint.preflight import PreflightData, run_preflight
 
@@ -90,6 +97,16 @@ class ScanPipelineContext:
     # scan protocol (which applies it at capture). Empty unless the design has
     # scannable async-reset/set FFs whose control pin is a primary input.
     reset_pi_holds: dict[str, bool] = field(default_factory=dict)
+    # Scan compression (faultflow.scan.compression): None unless
+    # [compression] enabled = true. compression_map.phase_shifter_taps and
+    # compression_care_bit_rows are both reconstructed deterministically from
+    # cfg.compression.channels + the manifest's chain count -- pure functions
+    # of the same inputs insert_compression used, so no persisted manifest
+    # section is needed to rebuild them (see build_scan_pipeline_context).
+    # care_bit_rows is precomputed ONCE per campaign (O(max_chain_length *
+    # channels)), not per-candidate.
+    compression_map: CompressionMap | None = None
+    compression_care_bit_rows: list[list[int]] | None = None
 
 
 @dataclass
@@ -170,6 +187,18 @@ def build_scan_pipeline_context(
     reset_pi_holds = _scan_reset_pi_holds(
         generic_json, str(manifest.get("top", cfg.top)), cell_map
     )
+    compression_map: CompressionMap | None = None
+    compression_care_bit_rows: list[list[int]] | None = None
+    if cfg.compression.enabled:
+        num_chains = len(manifest.get("scan_inputs", []))
+        polynomial = lookup_polynomial(cfg.compression.channels)
+        phase_shifter_taps = build_broadcast_fanout(cfg.compression.channels, num_chains)
+        compression_map = CompressionMap(
+            cfg.compression.channels, polynomial, phase_shifter_taps
+        )
+        compression_care_bit_rows = care_bit_rows(
+            polynomial, phase_shifter_taps, int(manifest.get("max_chain_length", 0))
+        )
     return ScanPipelineContext(
         cfg=cfg,
         manifest=manifest,
@@ -184,6 +213,8 @@ def build_scan_pipeline_context(
             wbr_decoupled_bits if wbr_decoupled_bits is not None else frozenset()
         ),
         reset_pi_holds=reset_pi_holds,
+        compression_map=compression_map,
+        compression_care_bit_rows=compression_care_bit_rows,
     )
 
 
@@ -379,6 +410,99 @@ def _protocol_fault_sim_kwargs(
         "load_seqs": pattern.load_seqs,
         "capture_pi_values": gate_pi_values,
     }
+
+
+def _reject_compression_unsatisfiable(
+    fault_ids: list[int],
+    track_key: str,
+    protocol_sim_rejections: list[CandidateRejection],
+    blocked: list[tuple[int, str]],
+) -> None:
+    for fault_id in fault_ids:
+        protocol_sim_rejections.append(
+            CandidateRejection(fault_id, "compression_unsatisfiable")
+        )
+        blocked.append((fault_id, track_key))
+
+
+def _check_compression_satisfiable(
+    core: Any,
+    scan_ctx: ScanPipelineContext,
+    scan_pattern: ScanPattern,
+    generic_cell_map: str,
+    unsupported: str,
+    is_loc: bool,
+    is_los: bool,
+    head_bits: dict[int, bool],
+    active_clock_ports: list[str] | None,
+    active_rows: list[_FaultRow],
+    generic_site_index: dict[str, int],
+    passed_fault_ids: list[int],
+) -> bool:
+    """True iff every one of ``passed_fault_ids``'s required scan-chain-input
+    care bits is jointly satisfiable through the compression decompressor
+    (``solve_xor_broadcast``, reused unmodified for the sequential
+    ring-generator case -- see ring_generator.py::care_bit_rows).
+
+    Extraction (``extract_scan_care_bits``) is a real cost (2 protocol-fault-
+    sim calls per specified (chain, cycle) position) -- callers must scope
+    this to sparse, SAT-targeted candidates only, never random-fill patterns
+    (any random seed is trivially satisfiable -- nothing to check).
+    """
+    assert scan_ctx.compression_map is not None
+    assert scan_ctx.compression_care_bit_rows is not None
+    row_by_id = {row.fault_id: row for row in active_rows}
+    max_chain_length = int(scan_ctx.manifest.get("max_chain_length", 0))
+    base_kwargs = _protocol_fault_sim_kwargs(scan_ctx, scan_pattern)
+
+    def detect(trial_load_seqs: dict[int, list[bool]], want: set[int]) -> set[int]:
+        ids: list[int] = []
+        specs: list[tuple[int, int]] = []
+        for fault_id in want:
+            row = row_by_id.get(fault_id)
+            if row is None:
+                continue
+            cidx = generic_site_index.get(row.fault_site_key)
+            if cidx is None:
+                continue
+            ids.append(fault_id)
+            specs.append((cidx, fault_type_to_sa_code(row.fault_type)))
+        kwargs = dict(base_kwargs)
+        kwargs["load_seqs"] = trial_load_seqs
+        result = dict(
+            core.simulate_scan_protocol_faults(
+                str(scan_ctx.generic_json),
+                generic_cell_map,
+                faults=specs,
+                unsupported_policy=unsupported,
+                loc_two_capture=is_loc,
+                los_two_capture=is_los,
+                los_launch_scan_in=head_bits,
+                active_clock_ports=active_clock_ports or [],
+                **kwargs,
+            )
+        )
+        passed: set[int] = set()
+        for batch in result.get("batches", []):
+            for lane in batch.get("lanes", []):
+                lane_dict = dict(lane)
+                idx = lane_dict.get("fault_index")
+                if idx is None or not (0 <= int(idx) < len(ids)):
+                    continue
+                if str(lane_dict.get("outcome")) == "pass":
+                    passed.add(ids[int(idx)])
+        return passed
+
+    care = extract_scan_care_bits(
+        detect, scan_pattern.load_seqs, max_chain_length, set(passed_fault_ids)
+    )
+    rows = scan_ctx.compression_care_bit_rows
+    fanout = [bitmask_to_index_list(rows[cycle][chain_id]) for chain_id, cycle, _ in care]
+    care_bits = [(i, value) for i, (_, _, value) in enumerate(care)]
+    solved = core.solve_xor_broadcast(
+        scan_ctx.compression_map.num_channels, fanout, care_bits
+    )
+    return bool(solved["ok"])
 
 
 def _materialize_reduced_outputs(
@@ -955,6 +1079,30 @@ def _process_scan_candidate(
                         CandidateRejection(fault_id, "no_capture_or_unload_effect")
                     )
                     blocked.append((fault_id, track_key))
+
+    if (
+        scan_ctx.compression_map is not None
+        and source == "sat"
+        and passed_fault_ids
+        and not _check_compression_satisfiable(
+            core,
+            scan_ctx,
+            scan_pattern,
+            generic_cell_map,
+            unsupported,
+            is_loc,
+            is_los,
+            head_bits,
+            active_clock_ports,
+            active_rows,
+            generic_site_index,
+            passed_fault_ids,
+        )
+    ):
+        _reject_compression_unsatisfiable(
+            passed_fault_ids, track_key, protocol_sim_rejections, blocked
+        )
+        passed_fault_ids = []
 
     if not passed_fault_ids:
         commit = CandidateCommit(
