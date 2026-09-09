@@ -183,6 +183,11 @@ class FlowService:
         message = str(self._runner(cfg).scan_techmap())
         return OperationResult("scan-techmap", cfg.top, message)
 
+    def scan_compress(self, cfg: FaultflowConfig) -> OperationResult:
+        log.info("compress start  top=%s", cfg.top)
+        message = str(self._runner(cfg).scan_compress())
+        return OperationResult("scan-compress", cfg.top, message)
+
     def run_atpg(self, cfg: FaultflowConfig, **options: object) -> AtpgResult:
         log.info("sim    start  top=%s", cfg.top)
         message = str(self._runner(cfg).sim(**options))

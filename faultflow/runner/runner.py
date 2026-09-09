@@ -54,6 +54,8 @@ from faultflow.rule_check.model import RuleCheckReport
 from faultflow.scan.checks import check_scan_structure
 from faultflow.scan.atpg_view import build_scan_atpg_view
 from faultflow.scan.cell_map import resolve_scan_cell_map
+from faultflow.scan.compression import insert_compression
+from faultflow.scan.compression_checks import check_compression_structure
 from faultflow.scan.manifest import manifest_clock_net_ids
 from faultflow.scan.reports import (
     format_dry_run,
@@ -715,6 +717,122 @@ class Runner:
             manifest,
         )
         return f"scan techmap complete top={manifest['top']} sky130={techmapped}"
+
+    def _default_clock_port(self, manifest: dict[str, object], generic_json: Path) -> str:
+        """Resolve the design's declared scan clock to a port name, for
+        ``[compression] clock``'s documented "empty = reuse the design's
+        existing clock" fallback. Raises if the manifest declares zero or
+        more than one clock net -- ambiguous, must be configured explicitly
+        via ``[compression] clock`` in that case."""
+        clock_nets = manifest_clock_net_ids(manifest, error_cls=RunnerError)
+        if len(clock_nets) != 1:
+            raise RunnerError(
+                "[compression] clock must be set explicitly: the scan manifest "
+                f"declares {len(clock_nets)} clock net(s), not exactly one"
+            )
+        port = _port_name_for_net(generic_json, str(manifest["top"]), clock_nets[0], "input")
+        if port is None:
+            raise RunnerError(f"cannot map scan clock net {clock_nets[0]} to a port")
+        return port
+
+    def scan_compress(self) -> str:
+        """Insert the sequential ring-generator + phase-shifter scan
+        compression decompressor (``faultflow.scan.compression.
+        insert_compression``) around the already scan-stitched, scan-check-
+        PASSed netlist, producing a new composed netlist artifact and
+        recording it in a ``manifest["compression"]`` section.
+
+        ``manifest["generic_json"]`` is left UNCHANGED -- it must keep
+        pointing at the plain, pre-compression scan-stitched netlist,
+        permanently, since ATPG's scan protocol needs independently
+        addressable ``scan_in_N`` ports that only exist there (the composed
+        netlist's scan inputs become internal wires driven by the phase
+        shifter). See the compression CLI-wiring plan for the full rationale.
+        """
+        manifest_path = self._scan_manifest_path()
+        if not manifest_path.exists():
+            raise RunnerError(f"scan manifest not found: {manifest_path}")
+        manifest = load_manifest(manifest_path)
+        if not self.cfg.compression.enabled:
+            raise RunnerError(
+                "[compression] enabled = true is required for scan-compress"
+            )
+        generic_json = Path(str(manifest["generic_json"]))
+        if _hash_file(generic_json) != str(manifest.get("generic_json_hash", "")):
+            raise RunnerError("generic scan JSON hash does not match manifest")
+        latest = manifest.get("latest_check")
+        if not isinstance(latest, dict) or latest.get("status") != "PASS":
+            raise RunnerError("run scan-check successfully before scan-compress")
+
+        scan_in_ports = [str(p) for p in manifest.get("scan_inputs", [])]
+        clock_port = self.cfg.compression.clock or self._default_clock_port(
+            manifest, generic_json
+        )
+        scan_enable_port = self.cfg.compression.scan_enable or str(
+            manifest["scan_enable"]
+        )
+
+        core_top = str(manifest["top"])
+        output_json = self.cfg.output_dir / f"{self.cfg.top}_compressed.json"
+        workdir = self.cfg.intermediate_dir / "compression"
+        t0 = time.perf_counter()
+        log.info(
+            "compress running (top=%s, channels=%d) ...",
+            core_top,
+            self.cfg.compression.channels,
+        )
+        try:
+            _, compression_map = insert_compression(
+                generic_json,
+                core_top,
+                scan_in_ports,
+                self.cfg.compression.channels,
+                self.cfg.liberty,
+                output_json,
+                workdir=workdir,
+                clock_port=clock_port,
+                scan_enable_port=scan_enable_port,
+            )
+        except (ScanError, ValueError) as exc:
+            raise RunnerError(str(exc)) from exc
+        log.info(
+            "compress complete  channels=%d composed=%s  %.1fs",
+            compression_map.num_channels,
+            output_json,
+            time.perf_counter() - t0,
+        )
+
+        manifest["compression"] = {
+            "enabled": True,
+            "num_channels": compression_map.num_channels,
+            "tap_source_net": "effective_state",
+            "scan_in_ports": scan_in_ports,
+            "phase_shifter_taps": compression_map.phase_shifter_taps,
+            "composed_json": str(output_json),
+            "composed_top": f"{core_top}_compressed",
+            "composed_json_hash": _hash_file(output_json),
+            "clock_port": clock_port,
+            "scan_enable_port": scan_enable_port,
+        }
+        structural = check_compression_structure(manifest)
+        manifest["compression"]["structural_check"] = {
+            "status": "PASS" if structural.passed else "FAIL",
+            "errors": structural.errors,
+        }
+        write_scan_artifacts(
+            self.cfg.manifests_dir,
+            self.cfg.scan_report_path,
+            manifest,
+        )
+        if not structural.passed:
+            raise RunnerError(
+                "compression structural check failed: "
+                + "; ".join(structural.errors)
+            )
+        return (
+            f"scan compress complete top={core_top} "
+            f"channels={compression_map.num_channels} composed={output_json}"
+        )
 
     def _scan_vector_source(
         self,

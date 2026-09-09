@@ -255,6 +255,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     add_common(scan_techmap)
 
+    scan_compress = sub.add_parser(
+        "scan-compress",
+        help="Insert scan test-pattern compression (ring generator + phase shifter)",
+    )
+    add_common(scan_compress)
+
     rule_check = sub.add_parser(
         "rule_check",
         help="Run DFT structural rules (DRC) on the synthesized netlist",
@@ -447,6 +453,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "scan-techmap":
             print(service.regenerate_scan_techmap(cfg).message)
+        elif args.command == "scan-compress":
+            print(service.scan_compress(cfg).message)
         elif args.command == "rule_check":
             result = service.rule_check(cfg, strict=args.strict)
             print(result.message)
