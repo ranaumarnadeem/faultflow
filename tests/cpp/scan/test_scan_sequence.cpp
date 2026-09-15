@@ -217,6 +217,68 @@ TEST_CASE(
           ScanProtocolFaultOutcome::NO_CAPTURE_OR_UNLOAD_EFFECT);
 }
 
+TEST_CASE("capture_diffs defaults to false and leaves diff_unload_seqs empty",
+          "[scan]") {
+  ScanProtocolFaultRequest request;
+  request.pattern = tiny_scan_chain_request();
+  const uint32_t d0 = compiled_index_for_yosys_net("tiny_scan_chain.json", 5);
+  request.faults.push_back({d0, 0});  // SA0 on D0 while capture drives true
+
+  const auto result = simulate_scan_protocol_faults(
+      test::fixture_path("tiny_scan_chain.json"), test::cell_map_path(),
+      request, "fail");
+
+  REQUIRE(result.batches.front().lanes.front().outcome ==
+          ScanProtocolFaultOutcome::PASS);
+  REQUIRE(result.batches.front().lanes.front().diff_unload_seqs.empty());
+}
+
+TEST_CASE("capture_diffs=true captures the real per-cycle unload diff",
+          "[scan]") {
+  ScanProtocolFaultRequest request;
+  request.pattern = tiny_scan_chain_request();
+  request.capture_diffs = true;
+  const uint32_t d0 = compiled_index_for_yosys_net("tiny_scan_chain.json", 5);
+  request.faults.push_back({d0, 0});  // SA0 on D0 while capture drives true
+
+  const auto result = simulate_scan_protocol_faults(
+      test::fixture_path("tiny_scan_chain.json"), test::cell_map_path(),
+      request, "fail");
+
+  const auto& lane = result.batches.front().lanes.front();
+  REQUIRE(lane.outcome == ScanProtocolFaultOutcome::PASS);
+  // Unload order is [D2_captured, D1_captured, D0_captured] (ff2/scan_out_0
+  // unloads first, ff0 last after two shifts) -- only the D0 position
+  // (index 2) differs from golden ({true, false, true} vs faulty
+  // {true, false, false}).
+  REQUIRE(lane.diff_unload_seqs.at(0) == std::vector<bool>{false, false, true});
+}
+
+TEST_CASE(
+    "capture_diffs=true on an undetected fault still returns an all-false "
+    "diff map, not an omitted one",
+    "[scan]") {
+  // D1 SA0 while capture already drives D1 false -- no observable effect
+  // anywhere (mirrors "simulate_scan_protocol_faults inactive capture fault
+  // has no unload effect" above). The diff map must still be present (not
+  // omitted) so a caller can tell "no scan-chain diff exists" apart from "a
+  // scan-chain diff exists but folds to zero through some fanout map".
+  ScanProtocolFaultRequest request;
+  request.pattern = tiny_scan_chain_request();
+  request.pattern.capture_pi_values["D1"] = false;
+  request.capture_diffs = true;
+  const uint32_t d1 = compiled_index_for_yosys_net("tiny_scan_chain.json", 6);
+  request.faults.push_back({d1, 0});  // SA0 on D1 while capture drives false
+
+  const auto result = simulate_scan_protocol_faults(
+      test::fixture_path("tiny_scan_chain.json"), test::cell_map_path(),
+      request, "fail");
+
+  const auto& lane = result.batches.front().lanes.front();
+  REQUIRE(lane.outcome == ScanProtocolFaultOutcome::NO_CAPTURE_OR_UNLOAD_EFFECT);
+  REQUIRE(lane.diff_unload_seqs.at(0) == std::vector<bool>{false, false, false});
+}
+
 TEST_CASE("scan protocol faults are inactive during shift-in", "[scan]") {
   ScanProtocolFaultRequest request;
   request.pattern = asymmetric_scan_chain_request();
