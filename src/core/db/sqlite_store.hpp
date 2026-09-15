@@ -11,7 +11,7 @@
 
 namespace faultflow::db {
 
-constexpr int kSchemaUserVersion = 7;
+constexpr int kSchemaUserVersion = 8;
 
 struct CoverageSummary {
   int64_t total_raw_faults = 0;
@@ -121,6 +121,22 @@ void mark_fault_protocol_unresolved(const std::string& db_path,
 // the coverage denominator, same character as protocol_unresolved.
 void mark_fault_compression_unresolved(const std::string& db_path,
                                        int64_t fault_id);
+
+// A fault whose EVERY candidate_rejections entry (this campaign) is reason
+// "compaction_indistinguishable" -- every witness SAT found detects it
+// through the real, uncompacted scan-out ports, but its diff aliases to zero
+// at every compacted output bit, every cycle, so no witness is
+// distinguishable through the real (compacted) tester -- reaches here
+// instead of mark_fault_redundant when SAT eventually reports UNSAT purely
+// as an artifact of blocking every compaction-rejected witness. Leaves
+// `status` untouched (same guard as mark_fault_protocol_unresolved /
+// mark_fault_compression_unresolved: does not overwrite a detected fault) --
+// this fires only at candidate-generation time, strictly before a fault is
+// ever committed detected, never as a post-hoc audit of an already-detected
+// fault. Not an exclusion -- the fault stays in the coverage denominator,
+// same character as protocol_unresolved/compression_unresolved.
+void mark_fault_compaction_unresolved(const std::string& db_path,
+                                      int64_t fault_id);
 
 void invalidate_stale_redundant(const std::string& db_path,
                                 int64_t campaign_id,

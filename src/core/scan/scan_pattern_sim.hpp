@@ -73,12 +73,28 @@ struct ScanProtocolFaultSpec {
 struct ScanProtocolFaultRequest {
   ScanPatternRequest pattern;
   std::vector<ScanProtocolFaultSpec> faults;
+  // Opt-in, default false, fully backward-compatible with every existing
+  // caller. When true, each lane's per-chain, per-cycle faulty-vs-golden
+  // unload diff is additionally retained in ScanProtocolFaultLaneResult
+  // (reuses the per-lane observation already computed to decide `outcome` --
+  // no new simulation pass). Used by the scan compactor's post-hoc
+  // observability check (faultflow.scan.detection_pipeline), which needs the
+  // real diff to fold through the compactor's XOR fanout map.
+  bool capture_diffs = false;
 };
 
 struct ScanProtocolFaultLaneResult {
   size_t fault_index = 0;
   ScanProtocolFaultOutcome outcome =
       ScanProtocolFaultOutcome::NO_CAPTURE_OR_UNLOAD_EFFECT;
+  // Populated iff the request's capture_diffs is true (else left empty).
+  // chain_id -> per-cycle bool, true where this lane's faulty unload bit
+  // differs from the golden unload at that (chain, cycle). Computed
+  // unconditionally of `outcome`/detected -- a lane detected solely via a
+  // functional-PO diff (no scan-chain diff at all) still needs an all-false
+  // map here so a caller can tell "no scan-chain diff exists" apart from "a
+  // scan-chain diff exists but folds to zero through some fanout map".
+  std::map<int, std::vector<bool>> diff_unload_seqs;
 };
 
 struct ScanProtocolFaultBatchResult {

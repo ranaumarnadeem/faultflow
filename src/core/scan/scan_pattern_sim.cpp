@@ -426,6 +426,17 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
           parsed, cg, request.pattern, batch_samples, lane_bit_index);
       bool detected = !scan_observations_equal(result.golden, faulty_obs);
 
+      if (request.capture_diffs) {
+        for (const auto& [chain_id, faulty_bits] : faulty_obs.unload_seqs) {
+          const auto& golden_bits = result.golden.unload_seqs.at(chain_id);
+          std::vector<bool> diff(faulty_bits.size());
+          for (size_t t = 0; t < faulty_bits.size(); ++t) {
+            diff[t] = (faulty_bits[t] != golden_bits[t]);
+          }
+          lane.diff_unload_seqs[chain_id] = std::move(diff);
+        }
+      }
+
       // LOC transition qualifier: a stuck-at observation difference only counts
       // as a transition fault if the GOOD machine actually made the required
       // edge at the fault net between the launch (frame 0) and capture (frame 1)

@@ -642,6 +642,11 @@ void mark_fault_compression_unresolved_py(const std::string& db_path,
   db::mark_fault_compression_unresolved(db_path, fault_id);
 }
 
+void mark_fault_compaction_unresolved_py(const std::string& db_path,
+                                         int64_t fault_id) {
+  db::mark_fault_compaction_unresolved(db_path, fault_id);
+}
+
 void complete_run_with_atpg_py(const std::string& db_path, int64_t run_id,
                                double coverage_percent,
                                const std::string& terminal_reason, int rounds,
@@ -723,8 +728,10 @@ py::dict simulate_scan_protocol_faults_py(
     const std::string& unsupported_policy, bool loc_two_capture,
     bool los_two_capture, const std::map<int, bool>& los_launch_scan_in,
     const std::vector<std::string>& active_clock_ports,
-    const std::string& test_mode = "", int sim_threads = 1) {
+    const std::string& test_mode = "", int sim_threads = 1,
+    bool capture_diffs = false) {
   scan::ScanProtocolFaultRequest request;
+  request.capture_diffs = capture_diffs;
   request.pattern.clock_ports = clock_ports;
   request.pattern.clock_off_states = clock_off_states;
   request.pattern.scan_enable_port = scan_enable_port;
@@ -773,6 +780,11 @@ py::dict simulate_scan_protocol_faults_py(
           lane.outcome == scan::ScanProtocolFaultOutcome::PASS
               ? "pass"
               : "no_capture_or_unload_effect";
+      py::dict diff_unload;
+      for (const auto& [chain_id, bits] : lane.diff_unload_seqs) {
+        diff_unload[py::int_(chain_id)] = bits;
+      }
+      lane_dict["diff_unload_seqs"] = diff_unload;
       lanes.append(lane_dict);
     }
     batch_dict["lanes"] = lanes;
@@ -1101,6 +1113,9 @@ PYBIND11_MODULE(_faultflow_core, m) {
   m.def("mark_fault_compression_unresolved",
         &faultflow::mark_fault_compression_unresolved_py, py::arg("db_path"),
         py::arg("fault_id"));
+  m.def("mark_fault_compaction_unresolved",
+        &faultflow::mark_fault_compaction_unresolved_py, py::arg("db_path"),
+        py::arg("fault_id"));
   m.def("complete_run_with_atpg", &faultflow::complete_run_with_atpg_py,
         py::arg("db_path"), py::arg("run_id"), py::arg("coverage_percent"),
         py::arg("terminal_reason"), py::arg("rounds"), py::arg("sat"),
@@ -1133,7 +1148,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
         py::arg("los_launch_scan_in") = std::map<int, bool>{},
         py::arg("active_clock_ports") = std::vector<std::string>{},
-        py::arg("test_mode") = "", py::arg("sim_threads") = 1);
+        py::arg("test_mode") = "", py::arg("sim_threads") = 1,
+        py::arg("capture_diffs") = false);
   m.def("list_site_keys", &faultflow::list_site_keys_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail");
   m.def("compute_fault_cone_sizes", &faultflow::compute_fault_cone_sizes,
