@@ -68,6 +68,7 @@
         "excluded_cross_domain",
         "excluded_wbr_decoupled",
         "protocol_unresolved",
+        "compression_unresolved",
         "fault_coverage_percent",
         "test_coverage_percent",
         "coverage_percent"
@@ -90,6 +91,7 @@
         "excluded_cross_domain": { "type": "integer", "minimum": 0 },
         "excluded_wbr_decoupled": { "type": "integer", "minimum": 0 },
         "protocol_unresolved": { "type": "integer", "minimum": 0 },
+        "compression_unresolved": { "type": "integer", "minimum": 0 },
         "fault_coverage_percent": { "type": "number", "minimum": 0, "maximum": 100 },
         "test_coverage_percent": { "type": "number", "minimum": 0, "maximum": 100 },
         "coverage_percent": { "type": "number", "minimum": 0, "maximum": 100 },
@@ -169,7 +171,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "net_id", "net_name", "fault_type", "fault_site_key", "protocol_unresolved", "reason"],
+        "required": ["id", "net_id", "net_name", "fault_type", "fault_site_key", "protocol_unresolved", "compression_unresolved", "reason"],
         "additionalProperties": false,
         "properties": {
           "id": { "type": "integer", "minimum": 1 },
@@ -178,9 +180,11 @@
           "fault_type": { "enum": ["sa0", "sa1", "str", "stf"] },
           "fault_site_key": { "type": "string" },
           "protocol_unresolved": { "type": "boolean" },
+          "compression_unresolved": { "type": "boolean" },
           "reason": {
             "enum": [
               "structurally_unresolved",
+              "compression_unresolved",
               "structurally_uncontrollable",
               "sat_hard",
               "sat_timeout",

@@ -2418,6 +2418,7 @@ class Runner:
                 f"detected={data['detected']} denominator={data['denominator']} "
                 f"undetected={data['undetected']} redundant={data.get('redundant', 0)} "
                 f"protocol_unresolved={data.get('protocol_unresolved', 0)} "
+                f"compression_unresolved={data.get('compression_unresolved', 0)} "
                 f"collapsed={data['collapsed']} "
                 f"excluded_blackbox={data['excluded_blackbox']} "
                 f"excluded_clock={data['excluded_clock']} "
