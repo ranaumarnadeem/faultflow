@@ -56,6 +56,8 @@ from faultflow.scan.atpg_view import build_scan_atpg_view
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.compression import insert_compression
 from faultflow.scan.compression_checks import check_compression_structure
+from faultflow.scan.compaction import insert_compaction
+from faultflow.scan.compaction_checks import check_compaction_structure
 from faultflow.scan.manifest import manifest_clock_net_ids
 from faultflow.scan.reports import (
     format_dry_run,
@@ -718,7 +720,9 @@ class Runner:
         )
         return f"scan techmap complete top={manifest['top']} sky130={techmapped}"
 
-    def _default_clock_port(self, manifest: dict[str, object], generic_json: Path) -> str:
+    def _default_clock_port(
+        self, manifest: dict[str, object], generic_json: Path
+    ) -> str:
         """Resolve the design's declared scan clock to a port name, for
         ``[compression] clock``'s documented "empty = reuse the design's
         existing clock" fallback. Raises if the manifest declares zero or
@@ -730,7 +734,9 @@ class Runner:
                 "[compression] clock must be set explicitly: the scan manifest "
                 f"declares {len(clock_nets)} clock net(s), not exactly one"
             )
-        port = _port_name_for_net(generic_json, str(manifest["top"]), clock_nets[0], "input")
+        port = _port_name_for_net(
+            generic_json, str(manifest["top"]), clock_nets[0], "input"
+        )
         if port is None:
             raise RunnerError(f"cannot map scan clock net {clock_nets[0]} to a port")
         return port
@@ -826,12 +832,98 @@ class Runner:
         )
         if not structural.passed:
             raise RunnerError(
-                "compression structural check failed: "
-                + "; ".join(structural.errors)
+                "compression structural check failed: " + "; ".join(structural.errors)
             )
         return (
             f"scan compress complete top={core_top} "
             f"channels={compression_map.num_channels} composed={output_json}"
+        )
+
+    def scan_compact(self) -> str:
+        """Insert the static XOR-tree space compactor
+        (``faultflow.scan.compaction.insert_compaction``) around the already
+        scan-stitched, scan-check-PASSed netlist, producing a new composed
+        netlist artifact and recording it in a ``manifest["compaction"]``
+        section.
+
+        ``manifest["generic_json"]`` is left UNCHANGED -- exactly the same
+        rule as ``scan_compress``: ATPG's fault grading stays pinned to the
+        raw, uncompacted scan-out ports; the composed netlist here is only a
+        manufacturing artifact plus a structural self-check
+        (``check_compaction_structure``), never simulated for per-fault
+        pass/fail. See the compactor plan for the full rationale.
+        """
+        manifest_path = self._scan_manifest_path()
+        if not manifest_path.exists():
+            raise RunnerError(f"scan manifest not found: {manifest_path}")
+        manifest = load_manifest(manifest_path)
+        if not self.cfg.compaction.enabled:
+            raise RunnerError(
+                "[compaction] enabled = true is required for scan-compact"
+            )
+        generic_json = Path(str(manifest["generic_json"]))
+        if _hash_file(generic_json) != str(manifest.get("generic_json_hash", "")):
+            raise RunnerError("generic scan JSON hash does not match manifest")
+        latest = manifest.get("latest_check")
+        if not isinstance(latest, dict) or latest.get("status") != "PASS":
+            raise RunnerError("run scan-check successfully before scan-compact")
+
+        scan_out_ports = [str(p) for p in manifest.get("scan_outputs", [])]
+        core_top = str(manifest["top"])
+        output_json = self.cfg.output_dir / f"{self.cfg.top}_compacted.json"
+        workdir = self.cfg.intermediate_dir / "compaction"
+        t0 = time.perf_counter()
+        log.info(
+            "compact  running (top=%s, channels=%d) ...",
+            core_top,
+            self.cfg.compaction.channels,
+        )
+        try:
+            _, compaction_map = insert_compaction(
+                generic_json,
+                core_top,
+                scan_out_ports,
+                self.cfg.compaction.channels,
+                self.cfg.liberty,
+                output_json,
+                workdir=workdir,
+            )
+        except (ScanError, ValueError) as exc:
+            raise RunnerError(str(exc)) from exc
+        log.info(
+            "compact  complete  channels=%d composed=%s  %.1fs",
+            compaction_map.num_outputs,
+            output_json,
+            time.perf_counter() - t0,
+        )
+
+        manifest["compaction"] = {
+            "enabled": True,
+            "num_outputs": compaction_map.num_outputs,
+            "scan_out_ports": scan_out_ports,
+            "channel_port": "tdo",
+            "fanout": compaction_map.fanout,
+            "composed_json": str(output_json),
+            "composed_top": f"{core_top}_compacted",
+            "composed_json_hash": _hash_file(output_json),
+        }
+        structural = check_compaction_structure(manifest)
+        manifest["compaction"]["structural_check"] = {
+            "status": "PASS" if structural.passed else "FAIL",
+            "errors": structural.errors,
+        }
+        write_scan_artifacts(
+            self.cfg.manifests_dir,
+            self.cfg.scan_report_path,
+            manifest,
+        )
+        if not structural.passed:
+            raise RunnerError(
+                "compaction structural check failed: " + "; ".join(structural.errors)
+            )
+        return (
+            f"scan compact complete top={core_top} "
+            f"channels={compaction_map.num_outputs} composed={output_json}"
         )
 
     def _scan_vector_source(

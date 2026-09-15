@@ -318,6 +318,36 @@ def rules_compression(manifest: dict[str, Any]) -> list[Violation]:
     return out
 
 
+# --- COMP002: scan compaction (space compactor) structural check ---
+def rules_compaction(manifest: dict[str, Any]) -> list[Violation]:
+    """Re-derives the static XOR-tree compactor's fanout structure from the
+    synthesized netlist and diffs it against the manifest -- see
+    faultflow.scan.compaction_checks.check_compaction_structure for the
+    algorithm. Unlike COMP001, this check covers the compactor completely
+    (no register/feedback structure to defer). No-op (returns []) when
+    compaction is absent/disabled in the manifest.
+    """
+    from faultflow.scan.compaction_checks import check_compaction_structure
+
+    try:
+        result = check_compaction_structure(manifest)
+    except Exception as exc:  # defensive: a malformed manifest is itself a finding
+        return [
+            Violation(
+                "COMP002",
+                Severity.ERROR,
+                "compaction structure",
+                f"compaction structural check failed: {exc}",
+            )
+        ]
+    out: list[Violation] = []
+    for err in result.errors:
+        out.append(Violation("COMP002", Severity.ERROR, "compaction structure", err))
+    for warn in result.warnings:
+        out.append(Violation("COMP002", Severity.WARNING, "compaction structure", warn))
+    return out
+
+
 def run_rule_check(
     netlist_json: Path,
     cell_map_json: Path,
@@ -335,4 +365,5 @@ def run_rule_check(
     if manifest is not None:
         report.violations.extend(rules_scan(manifest))
         report.violations.extend(rules_compression(manifest))
+        report.violations.extend(rules_compaction(manifest))
     return report

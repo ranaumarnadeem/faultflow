@@ -168,6 +168,16 @@ def _compression_config(parser: ConfigParser) -> "CompressionConfig":
     return cfg
 
 
+def _compaction_config(parser: ConfigParser) -> "CompactionConfig":
+    cfg = CompactionConfig(
+        enabled=_bool(parser, "compaction", "enabled", False),
+        channels=_int(parser, "compaction", "channels", 8),
+    )
+    if cfg.enabled and cfg.channels <= 0:
+        raise ConfigError("[compaction] channels must be positive")
+    return cfg
+
+
 @dataclass(frozen=True)
 class FaultModelConfig:
     model: str = "stuck_at"
@@ -317,6 +327,19 @@ class CompressionConfig:
 
 
 @dataclass(frozen=True)
+class CompactionConfig:
+    """Scan test-response compaction (static XOR-tree space compactor,
+    ``faultflow.scan.compaction``). ``channels`` is the number of external
+    compacted output channels -- independent of ``[compression]``'s channel
+    count, since a design can decompress its inputs without compacting its
+    outputs, or vice versa.
+    """
+
+    enabled: bool = False
+    channels: int = 8
+
+
+@dataclass(frozen=True)
 class ClockSpec:
     """A declared clock domain (Phase 6, `add_clock` / `[clocks]`).
 
@@ -352,6 +375,7 @@ class FaultflowConfig:
     report: ReportConfig
     scan: ScanConfig
     compression: CompressionConfig = CompressionConfig()
+    compaction: CompactionConfig = CompactionConfig()
     output_root: Path = Path("output")
     clocks: tuple[ClockSpec, ...] = ()
     blackbox_instances: tuple[str, ...] = ()
@@ -733,6 +757,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             run_techmap=_bool(parser, "scan", "run_techmap", True),
         ),
         compression=_compression_config(parser),
+        compaction=_compaction_config(parser),
         clocks=clocks,
         blackbox_instances=blackbox_instances,
         testpoint=TestpointConfig(

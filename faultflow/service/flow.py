@@ -188,6 +188,11 @@ class FlowService:
         message = str(self._runner(cfg).scan_compress())
         return OperationResult("scan-compress", cfg.top, message)
 
+    def scan_compact(self, cfg: FaultflowConfig) -> OperationResult:
+        log.info("compact  start  top=%s", cfg.top)
+        message = str(self._runner(cfg).scan_compact())
+        return OperationResult("scan-compact", cfg.top, message)
+
     def run_atpg(self, cfg: FaultflowConfig, **options: object) -> AtpgResult:
         log.info("sim    start  top=%s", cfg.top)
         message = str(self._runner(cfg).sim(**options))

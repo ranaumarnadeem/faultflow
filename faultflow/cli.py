@@ -261,6 +261,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     add_common(scan_compress)
 
+    scan_compact = sub.add_parser(
+        "scan-compact",
+        help="Insert scan test-response compaction (static XOR-tree space compactor)",
+    )
+    add_common(scan_compact)
+
     rule_check = sub.add_parser(
         "rule_check",
         help="Run DFT structural rules (DRC) on the synthesized netlist",
@@ -455,6 +461,8 @@ def main(argv: list[str] | None = None) -> int:
             print(service.regenerate_scan_techmap(cfg).message)
         elif args.command == "scan-compress":
             print(service.scan_compress(cfg).message)
+        elif args.command == "scan-compact":
+            print(service.scan_compact(cfg).message)
         elif args.command == "rule_check":
             result = service.rule_check(cfg, strict=args.strict)
             print(result.message)
