@@ -637,6 +637,11 @@ void mark_fault_protocol_unresolved_py(const std::string& db_path,
   db::mark_fault_protocol_unresolved(db_path, fault_id);
 }
 
+void mark_fault_compression_unresolved_py(const std::string& db_path,
+                                          int64_t fault_id) {
+  db::mark_fault_compression_unresolved(db_path, fault_id);
+}
+
 void complete_run_with_atpg_py(const std::string& db_path, int64_t run_id,
                                double coverage_percent,
                                const std::string& terminal_reason, int rounds,
@@ -1092,6 +1097,9 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("db_path"), py::arg("fault_id"), py::arg("redundancy_model_id"));
   m.def("mark_fault_protocol_unresolved",
         &faultflow::mark_fault_protocol_unresolved_py, py::arg("db_path"),
+        py::arg("fault_id"));
+  m.def("mark_fault_compression_unresolved",
+        &faultflow::mark_fault_compression_unresolved_py, py::arg("db_path"),
         py::arg("fault_id"));
   m.def("complete_run_with_atpg", &faultflow::complete_run_with_atpg_py,
         py::arg("db_path"), py::arg("run_id"), py::arg("coverage_percent"),

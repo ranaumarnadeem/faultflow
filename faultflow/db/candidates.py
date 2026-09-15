@@ -39,6 +39,32 @@ def load_blocked_patterns(
     return dict(blocked)
 
 
+def load_rejection_reasons(
+    conn: sqlite3.Connection, campaign_id: int
+) -> dict[int, set[str]]:
+    """fault_id -> the set of distinct candidate_rejections.reason_code values
+    recorded against it, this campaign, across every round so far.
+
+    Used to decide whether a fault's UNSAT verdict is unambiguously
+    attributable to scan compression (every rejection reason is
+    "compression_unsatisfiable") rather than a mix that could also include a
+    genuine functional/verification failure -- see
+    faultflow.scan.detection_pipeline._is_compression_only_rejected.
+    """
+    rows = conn.execute(
+        """
+        SELECT fault_id, reason_code
+        FROM candidate_rejections
+        WHERE campaign_id = ?
+        """,
+        (campaign_id,),
+    ).fetchall()
+    reasons: dict[int, set[str]] = defaultdict(set)
+    for row in rows:
+        reasons[int(row["fault_id"])].add(str(row["reason_code"]))
+    return dict(reasons)
+
+
 def insert_pending_candidate(
     conn: sqlite3.Connection,
     *,
@@ -72,7 +98,8 @@ def _apply_candidate_commit(
         conn.execute(
             """
             UPDATE faults
-            SET status = 'detected', protocol_unresolved = 0
+            SET status = 'detected', protocol_unresolved = 0,
+                compression_unresolved = 0
             WHERE id = ? AND campaign_id = ?
             """,
             (fault_id, campaign_id),

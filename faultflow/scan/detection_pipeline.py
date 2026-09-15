@@ -27,6 +27,7 @@ from faultflow.db.candidates import (
     commit_candidate,
     insert_pending_candidate,
     load_blocked_patterns,
+    load_rejection_reasons,
 )
 from faultflow.runner.parallel_solve import solve_fault_worker
 from faultflow.runner.progressive_atpg import (
@@ -229,6 +230,7 @@ def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_Faul
           AND exclusion = 'none'
           AND collapsed_into IS NULL
           AND protocol_unresolved = 0
+          AND compression_unresolved = 0
         ORDER BY id
         """,
         (campaign_id,),
@@ -423,6 +425,25 @@ def _reject_compression_unsatisfiable(
             CandidateRejection(fault_id, "compression_unsatisfiable")
         )
         blocked.append((fault_id, track_key))
+
+
+def _is_compression_only_rejected(reasons: set[str] | None) -> bool:
+    """True iff this fault has been rejected at least once, and EVERY
+    rejection reason recorded against it (this campaign, all rounds so far)
+    is "compression_unsatisfiable" -- i.e. every blocked witness was blocked
+    specifically because its care bits weren't compressor-deliverable, never
+    because it was functionally/verification wrong.
+
+    Used to decide, at the round loop's UNSAT branch, whether a fault whose
+    entire blocked-pattern history is compression-driven should be tagged
+    compression_unresolved instead of mark_fault_redundant -- SAT returning
+    UNSAT there is an artifact of blocking every witness that WAS found, not
+    proof the fault is functionally untestable. A MIXED history (some
+    compression, some other reason) deliberately falls through to the
+    existing mark_fault_redundant behavior unchanged: a mix cannot prove the
+    UNSAT is solely attributable to compression.
+    """
+    return bool(reasons) and reasons == {"compression_unsatisfiable"}
 
 
 def _check_compression_satisfiable(
@@ -1568,6 +1589,11 @@ def run_progressive_scan_atpg(
             init_schema(conn)
             active_rows = _active_fault_rows(conn, campaign_id)
             db_blocked = load_blocked_patterns(conn, campaign_id)
+            rejection_reasons = (
+                load_rejection_reasons(conn, campaign_id)
+                if scan_ctx.compression_map is not None
+                else {}
+            )
 
         # Phase A: seed a tier-skip for reconvergent-site faults so they start at
         # the second timeout tier (skipping the short 2 s attempt). This is done
@@ -1835,6 +1861,10 @@ def run_progressive_scan_atpg(
                 stats.unsat += 1
                 if row.fault_site_key in scan_ctx.q_stem_site_keys:
                     core.mark_fault_protocol_unresolved(effective_db_path, fault_id)
+                elif _is_compression_only_rejected(rejection_reasons.get(fault_id)):
+                    core.mark_fault_compression_unresolved(
+                        effective_db_path, fault_id
+                    )
                 else:
                     core.mark_fault_redundant(
                         effective_db_path, fault_id, redundancy_model
