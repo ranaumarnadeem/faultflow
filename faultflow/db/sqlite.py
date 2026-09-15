@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS faults (
     redundancy_model_id TEXT,
     protocol_unresolved INTEGER NOT NULL DEFAULT 0,
     compression_unresolved INTEGER NOT NULL DEFAULT 0,
+    compaction_unresolved INTEGER NOT NULL DEFAULT 0,
     UNIQUE (campaign_id, fault_site_key, fault_type),
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
 );
@@ -398,6 +399,7 @@ def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[st
                 "excluded_wbr_decoupled": 0,
                 "protocol_unresolved": 0,
                 "compression_unresolved": 0,
+                "compaction_unresolved": 0,
                 "coverage_percent": None,
                 "fault_coverage_percent": None,
                 "test_coverage_percent": None,
@@ -437,7 +439,10 @@ def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[st
                     THEN 1 ELSE 0 END) AS protocol_unresolved,
           SUM(CASE WHEN compression_unresolved = 1 AND exclusion = 'none'
                     AND collapsed_into IS NULL AND status != 'detected'
-                    THEN 1 ELSE 0 END) AS compression_unresolved
+                    THEN 1 ELSE 0 END) AS compression_unresolved,
+          SUM(CASE WHEN compaction_unresolved = 1 AND exclusion = 'none'
+                    AND collapsed_into IS NULL AND status != 'detected'
+                    THEN 1 ELSE 0 END) AS compaction_unresolved
         FROM faults
         WHERE campaign_id = ?
         """,

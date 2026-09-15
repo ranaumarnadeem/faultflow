@@ -99,7 +99,7 @@ def _apply_candidate_commit(
             """
             UPDATE faults
             SET status = 'detected', protocol_unresolved = 0,
-                compression_unresolved = 0
+                compression_unresolved = 0, compaction_unresolved = 0
             WHERE id = ? AND campaign_id = ?
             """,
             (fault_id, campaign_id),

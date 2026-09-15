@@ -361,6 +361,12 @@ class Runner:
             # gates = new fault sites), so it's part of the fingerprint too.
             "compression_enabled": self.cfg.compression.enabled,
             "compression_channels": self.cfg.compression.channels,
+            # Enabling/disabling compaction, or resizing its channel count,
+            # changes fault classification outcomes -- a fault can flip
+            # between compaction_unresolved and detected purely as a function
+            # of channel count -- so it's part of the fingerprint too.
+            "compaction_enabled": self.cfg.compaction.enabled,
+            "compaction_channels": self.cfg.compaction.channels,
         }
 
     def _rendered_yosys_script(self, source: Path | None = None) -> str:

@@ -61,6 +61,7 @@ from faultflow.scan.site_resolution import (
     fault_type_to_sa_code,
 )
 from faultflow.scan.care_bits import extract_scan_care_bits
+from faultflow.scan.compaction import CompactionMap, build_compactor_fanout
 from faultflow.scan.compression import CompressionMap, build_broadcast_fanout
 from faultflow.scan.errors import ScanError
 from faultflow.scan.ring_generator import (
@@ -108,6 +109,16 @@ class ScanPipelineContext:
     # channels)), not per-candidate.
     compression_map: CompressionMap | None = None
     compression_care_bit_rows: list[list[int]] | None = None
+    # Scan compaction (faultflow.scan.compaction): None unless
+    # [compaction] enabled = true. Reconstructed deterministically from
+    # cfg.compaction.channels + the manifest's chain count -- the same
+    # pure-function-of-inputs shape insert_compaction used, so no persisted
+    # manifest section is needed to rebuild it. Simpler than compression_map:
+    # no algebra to precompute ahead of time, just the fanout map itself.
+    # Relies on manifest["scan_outputs"]'s order matching the order
+    # insert_compaction used to build the real compactor's fanout -- true
+    # today by construction (a static artifact written once).
+    compaction_map: CompactionMap | None = None
 
 
 @dataclass
@@ -193,12 +204,21 @@ def build_scan_pipeline_context(
     if cfg.compression.enabled:
         num_chains = len(manifest.get("scan_inputs", []))
         polynomial = lookup_polynomial(cfg.compression.channels)
-        phase_shifter_taps = build_broadcast_fanout(cfg.compression.channels, num_chains)
+        phase_shifter_taps = build_broadcast_fanout(
+            cfg.compression.channels, num_chains
+        )
         compression_map = CompressionMap(
             cfg.compression.channels, polynomial, phase_shifter_taps
         )
         compression_care_bit_rows = care_bit_rows(
             polynomial, phase_shifter_taps, int(manifest.get("max_chain_length", 0))
+        )
+    compaction_map: CompactionMap | None = None
+    if cfg.compaction.enabled:
+        num_scan_out_chains = len(manifest.get("scan_outputs", []))
+        compaction_map = CompactionMap(
+            cfg.compaction.channels,
+            build_compactor_fanout(cfg.compaction.channels, num_scan_out_chains),
         )
     return ScanPipelineContext(
         cfg=cfg,
@@ -216,6 +236,7 @@ def build_scan_pipeline_context(
         reset_pi_holds=reset_pi_holds,
         compression_map=compression_map,
         compression_care_bit_rows=compression_care_bit_rows,
+        compaction_map=compaction_map,
     )
 
 
@@ -231,6 +252,7 @@ def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_Faul
           AND collapsed_into IS NULL
           AND protocol_unresolved = 0
           AND compression_unresolved = 0
+          AND compaction_unresolved = 0
         ORDER BY id
         """,
         (campaign_id,),
@@ -446,6 +468,63 @@ def _is_compression_only_rejected(reasons: set[str] | None) -> bool:
     return bool(reasons) and reasons == {"compression_unsatisfiable"}
 
 
+def _reject_compaction_indistinguishable(
+    fault_ids: list[int],
+    track_key: str,
+    protocol_sim_rejections: list[CandidateRejection],
+    blocked: list[tuple[int, str]],
+) -> None:
+    for fault_id in fault_ids:
+        protocol_sim_rejections.append(
+            CandidateRejection(fault_id, "compaction_indistinguishable")
+        )
+        blocked.append((fault_id, track_key))
+
+
+def _is_compaction_only_rejected(reasons: set[str] | None) -> bool:
+    """True iff this fault has been rejected at least once, and EVERY
+    rejection reason recorded against it (this campaign, all rounds so far)
+    is "compaction_indistinguishable" -- i.e. every witness detected it
+    through the real, uncompacted scan-out ports, but its diff aliased to
+    zero at every compacted output bit, every cycle. A MIXED history (some
+    compaction, some other reason -- including compression) deliberately
+    falls through to the existing mark_fault_redundant behavior unchanged,
+    mirroring _is_compression_only_rejected exactly.
+    """
+    return bool(reasons) and reasons == {"compaction_indistinguishable"}
+
+
+def _fault_has_raw_scan_diff(diff_unload_seqs: dict[int, list[bool]]) -> bool:
+    """True iff a fault's faulty/golden unload sequences differ at ANY
+    (chain, cycle) at all -- i.e. it was actually observed via the real
+    scan-chain unload path, not solely via a functional PO the compactor
+    never touches. A PO-only detection is always compaction-safe regardless
+    of what _compaction_diff_observable's fold would compute on an all-zero
+    map -- there is nothing to fold, so it should never be flagged."""
+    return any(any(bits) for bits in diff_unload_seqs.values())
+
+
+def _compaction_diff_observable(
+    diff_unload_seqs: dict[int, list[bool]],
+    fanout: list[list[int]],
+    max_chain_length: int,
+) -> bool:
+    """Pure GF(2) evaluation, no simulation, no C++ call, no solve (there is
+    nothing to search for -- the diff is already known). True iff at least
+    one compacted output bit (fanout[o] = chain indices XORed into output o)
+    differs from golden at at least one cycle."""
+    for cycle in range(max_chain_length):
+        for row in fanout:
+            bit = False
+            for chain_id in row:
+                bits = diff_unload_seqs.get(chain_id)
+                if bits and cycle < len(bits) and bits[cycle]:
+                    bit = not bit
+            if bit:
+                return True
+    return False
+
+
 def _check_compression_satisfiable(
     core: Any,
     scan_ctx: ScanPipelineContext,
@@ -518,12 +597,114 @@ def _check_compression_satisfiable(
         detect, scan_pattern.load_seqs, max_chain_length, set(passed_fault_ids)
     )
     rows = scan_ctx.compression_care_bit_rows
-    fanout = [bitmask_to_index_list(rows[cycle][chain_id]) for chain_id, cycle, _ in care]
+    fanout = [
+        bitmask_to_index_list(rows[cycle][chain_id]) for chain_id, cycle, _ in care
+    ]
     care_bits = [(i, value) for i, (_, _, value) in enumerate(care)]
     solved = core.solve_xor_broadcast(
         scan_ctx.compression_map.num_channels, fanout, care_bits
     )
     return bool(solved["ok"])
+
+
+def _check_compaction_distinguishable(
+    core: Any,
+    scan_ctx: ScanPipelineContext,
+    scan_pattern: ScanPattern,
+    generic_cell_map: str,
+    unsupported: str,
+    is_loc: bool,
+    is_los: bool,
+    head_bits: dict[int, bool],
+    active_clock_ports: list[str] | None,
+    active_rows: list[_FaultRow],
+    generic_site_index: dict[str, int],
+    passed_fault_ids: list[int],
+) -> set[int]:
+    """Return the subset of ``passed_fault_ids`` that remain observable
+    through ``scan_ctx.compaction_map``'s static XOR-tree compactor -- i.e.
+    NOT compaction-indistinguishable.
+
+    Unlike ``_check_compression_satisfiable``'s joint GF(2) solve (one
+    physical decompressor state feeds every chain from a single seed, so
+    satisfiability is genuinely all-or-nothing per candidate), compaction
+    distinguishability is a per-fault property: the compactor only affects
+    what a tester can observe at read-out, never what gets loaded/captured,
+    so the candidate vector stays perfectly valid regardless -- only the
+    specific faults whose diff happens to alias to zero lose credit from this
+    witness. Unlike the compression check, this one is NOT scoped to
+    ``source == "sat"`` -- a random-fill candidate's incidental detections
+    are exactly as subject to real compacted-output aliasing as a
+    SAT-targeted candidate's, so skipping random-fill here would silently
+    over-credit coverage a real compacted tester could never see.
+
+    One batched ``simulate_scan_protocol_faults(..., capture_diffs=True)``
+    call over ALL of ``passed_fault_ids`` -- required even for
+    reduced-trusted-graded faults, which never call the protocol simulator on
+    their own path, so their diff data doesn't exist yet from any earlier
+    call in this candidate's processing. A ``fault_site_key`` missing from
+    ``generic_site_index`` passes through as observable (mirrors
+    ``_check_compression_satisfiable``'s own ``detect()``-skip-if-missing
+    precedent: under-flag, never false-exclude).
+    """
+    assert scan_ctx.compaction_map is not None
+    row_by_id = {row.fault_id: row for row in active_rows}
+    max_chain_length = int(scan_ctx.manifest.get("max_chain_length", 0))
+    base_kwargs = _protocol_fault_sim_kwargs(scan_ctx, scan_pattern)
+
+    ids: list[int] = []
+    specs: list[tuple[int, int]] = []
+    for fault_id in passed_fault_ids:
+        row = row_by_id.get(fault_id)
+        if row is None:
+            continue
+        cidx = generic_site_index.get(row.fault_site_key)
+        if cidx is None:
+            continue
+        ids.append(fault_id)
+        specs.append((cidx, fault_type_to_sa_code(row.fault_type)))
+
+    result = dict(
+        core.simulate_scan_protocol_faults(
+            str(scan_ctx.generic_json),
+            generic_cell_map,
+            faults=specs,
+            unsupported_policy=unsupported,
+            loc_two_capture=is_loc,
+            los_two_capture=is_los,
+            los_launch_scan_in=head_bits,
+            active_clock_ports=active_clock_ports or [],
+            capture_diffs=True,
+            **base_kwargs,
+        )
+    )
+
+    covered: set[int] = set()
+    observable: set[int] = set()
+    fanout = scan_ctx.compaction_map.fanout
+    for batch in result.get("batches", []):
+        for lane in batch.get("lanes", []):
+            lane_dict = dict(lane)
+            idx = lane_dict.get("fault_index")
+            if idx is None or not (0 <= int(idx) < len(ids)):
+                continue
+            fault_id = ids[int(idx)]
+            covered.add(fault_id)
+            diff_unload_seqs = {
+                int(chain_id): list(bits)
+                for chain_id, bits in dict(
+                    lane_dict.get("diff_unload_seqs", {})
+                ).items()
+            }
+            if not _fault_has_raw_scan_diff(diff_unload_seqs) or (
+                _compaction_diff_observable(diff_unload_seqs, fanout, max_chain_length)
+            ):
+                observable.add(fault_id)
+
+    # A fault_site_key with no generic_site_index entry never entered `ids`,
+    # so it never appears in `covered` either -- pass it through as
+    # observable (under-flag, never false-exclude).
+    return observable | (set(passed_fault_ids) - covered)
 
 
 def _materialize_reduced_outputs(
@@ -1125,6 +1306,32 @@ def _process_scan_candidate(
         )
         passed_fault_ids = []
 
+    if scan_ctx.compaction_map is not None and passed_fault_ids:
+        observable_ids = _check_compaction_distinguishable(
+            core,
+            scan_ctx,
+            scan_pattern,
+            generic_cell_map,
+            unsupported,
+            is_loc,
+            is_los,
+            head_bits,
+            active_clock_ports,
+            active_rows,
+            generic_site_index,
+            passed_fault_ids,
+        )
+        indistinguishable = [
+            fid for fid in passed_fault_ids if fid not in observable_ids
+        ]
+        if indistinguishable:
+            _reject_compaction_indistinguishable(
+                indistinguishable, track_key, protocol_sim_rejections, blocked
+            )
+            passed_fault_ids = [
+                fid for fid in passed_fault_ids if fid in observable_ids
+            ]
+
     if not passed_fault_ids:
         commit = CandidateCommit(
             status="rejected",
@@ -1592,6 +1799,7 @@ def run_progressive_scan_atpg(
             rejection_reasons = (
                 load_rejection_reasons(conn, campaign_id)
                 if scan_ctx.compression_map is not None
+                or scan_ctx.compaction_map is not None
                 else {}
             )
 
@@ -1862,9 +2070,9 @@ def run_progressive_scan_atpg(
                 if row.fault_site_key in scan_ctx.q_stem_site_keys:
                     core.mark_fault_protocol_unresolved(effective_db_path, fault_id)
                 elif _is_compression_only_rejected(rejection_reasons.get(fault_id)):
-                    core.mark_fault_compression_unresolved(
-                        effective_db_path, fault_id
-                    )
+                    core.mark_fault_compression_unresolved(effective_db_path, fault_id)
+                elif _is_compaction_only_rejected(rejection_reasons.get(fault_id)):
+                    core.mark_fault_compaction_unresolved(effective_db_path, fault_id)
                 else:
                     core.mark_fault_redundant(
                         effective_db_path, fault_id, redundancy_model
