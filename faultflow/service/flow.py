@@ -300,6 +300,7 @@ class FlowService:
             "redundant": data.get("redundant", 0),
             "protocol_unresolved": data.get("protocol_unresolved", 0),
             "compression_unresolved": data.get("compression_unresolved", 0),
+            "compaction_unresolved": data.get("compaction_unresolved", 0),
             "fault_coverage_percent": data["fault_coverage_percent"],
             "test_coverage_percent": data["test_coverage_percent"],
             "vectors": run.get("vector_count", 0),
