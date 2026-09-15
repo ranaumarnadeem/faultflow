@@ -8,6 +8,7 @@ from faultflow.db.candidates import (
     commit_candidate,
     insert_pending_candidate,
     load_blocked_patterns,
+    load_rejection_reasons,
 )
 from db_v3_helpers import insert_campaign, insert_fault_row, insert_run
 
@@ -169,3 +170,128 @@ def test_rejected_candidate_records_protocol_sim_rejections(tmp_path) -> None:
         blocked = load_blocked_patterns(conn, campaign_id)
     assert [row["reason_code"] for row in rows] == ["no_capture_or_unload_effect"]
     assert blocked[fault_id] == {"00"}
+
+
+def test_load_rejection_reasons_groups_by_fault(tmp_path) -> None:
+    db = tmp_path / "reasons.sqlite"
+    with connect(db) as conn:
+        init_schema(conn)
+        campaign_id = insert_campaign(conn, campaign_type="scan", top="scan_top")
+        run_id = insert_run(conn, campaign_id, vector_source="scan_native_sat_atpg")
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=1,
+            net_name="a",
+            compiled_net_index=1,
+            fault_type="sa0",
+            status="undetected",
+        )
+        pure_id = int(conn.execute("SELECT id FROM faults").fetchone()[0])
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=2,
+            net_name="b",
+            compiled_net_index=2,
+            fault_type="sa0",
+            status="undetected",
+        )
+        mixed_id = int(
+            conn.execute("SELECT id FROM faults WHERE net_id = 2").fetchone()[0]
+        )
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=3,
+            net_name="c",
+            compiled_net_index=3,
+            fault_type="sa0",
+            status="undetected",
+        )
+        untried_id = int(
+            conn.execute("SELECT id FROM faults WHERE net_id = 3").fetchone()[0]
+        )
+
+        # pure_id: two separate rejected candidates, both compression_unsatisfiable.
+        for candidate_id, pattern in ((1, "00"), (2, "01")):
+            insert_pending_candidate(
+                conn,
+                campaign_id=campaign_id,
+                run_id=run_id,
+                candidate_id=candidate_id,
+                pattern=pattern,
+                source="sat",
+                sat_target_fault_id=pure_id,
+            )
+            commit_candidate(
+                conn,
+                campaign_id=campaign_id,
+                run_id=run_id,
+                candidate_id=candidate_id,
+                commit=CandidateCommit(
+                    status="rejected",
+                    vector_index=candidate_id,
+                    protocol_sim_rejections=[
+                        CandidateRejection(pure_id, "compression_unsatisfiable")
+                    ],
+                    blocked_patterns=[(pure_id, pattern)],
+                ),
+            )
+
+        # mixed_id: one compression rejection, one unrelated rejection reason.
+        insert_pending_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            candidate_id=3,
+            pattern="10",
+            source="sat",
+            sat_target_fault_id=mixed_id,
+        )
+        commit_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            candidate_id=3,
+            commit=CandidateCommit(
+                status="rejected",
+                vector_index=3,
+                protocol_sim_rejections=[
+                    CandidateRejection(mixed_id, "compression_unsatisfiable")
+                ],
+                blocked_patterns=[(mixed_id, "10")],
+            ),
+        )
+        insert_pending_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            candidate_id=4,
+            pattern="11",
+            source="sat",
+            sat_target_fault_id=mixed_id,
+        )
+        commit_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            candidate_id=4,
+            commit=CandidateCommit(
+                status="rejected",
+                vector_index=4,
+                protocol_sim_rejections=[
+                    CandidateRejection(mixed_id, "no_capture_or_unload_effect")
+                ],
+                blocked_patterns=[(mixed_id, "11")],
+            ),
+        )
+
+        reasons = load_rejection_reasons(conn, campaign_id)
+
+    assert reasons[pure_id] == {"compression_unsatisfiable"}
+    assert reasons[mixed_id] == {
+        "compression_unsatisfiable",
+        "no_capture_or_unload_effect",
+    }
+    assert untried_id not in reasons

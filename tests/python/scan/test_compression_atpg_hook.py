@@ -13,6 +13,7 @@ from faultflow.scan.detection_pipeline import (
     ScanPipelineContext,
     _FaultRow,
     _check_compression_satisfiable,
+    _is_compression_only_rejected,
     _reject_compression_unsatisfiable,
 )
 from faultflow.scan.ring_generator import care_bit_rows, lookup_polynomial
@@ -164,3 +165,28 @@ def test_reject_compression_unsatisfiable_appends_rejection_and_block_for_every_
         r.reason_code == "compression_unsatisfiable" for r in protocol_sim_rejections
     )
     assert blocked == [(1, "trackkey"), (2, "trackkey"), (3, "trackkey")]
+
+
+@pytest.mark.unit
+def test_is_compression_only_rejected_true_for_pure_compression_history() -> None:
+    assert _is_compression_only_rejected({"compression_unsatisfiable"}) is True
+
+
+@pytest.mark.unit
+def test_is_compression_only_rejected_false_for_mixed_history() -> None:
+    # The regression-safety case: a mix must NOT be classified compression-only
+    # -- it must keep falling back to mark_fault_redundant, since a mixed
+    # history can't prove the eventual UNSAT is solely attributable to
+    # compression rejections.
+    assert (
+        _is_compression_only_rejected(
+            {"compression_unsatisfiable", "tier_a_reduced_mismatch"}
+        )
+        is False
+    )
+
+
+@pytest.mark.unit
+def test_is_compression_only_rejected_false_for_no_history() -> None:
+    assert _is_compression_only_rejected(None) is False
+    assert _is_compression_only_rejected(set()) is False

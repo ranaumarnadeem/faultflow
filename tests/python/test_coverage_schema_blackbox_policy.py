@@ -108,6 +108,7 @@ def _minimal_valid_report() -> dict[str, Any]:
             "excluded_cross_domain": 0,
             "excluded_wbr_decoupled": 0,
             "protocol_unresolved": 0,
+            "compression_unresolved": 0,
             "fault_coverage_percent": 100.0,
             "test_coverage_percent": 100.0,
             "coverage_percent": 100.0,
