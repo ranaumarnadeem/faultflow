@@ -295,3 +295,105 @@ def test_load_rejection_reasons_groups_by_fault(tmp_path) -> None:
         "no_capture_or_unload_effect",
     }
     assert untried_id not in reasons
+
+
+def test_apply_candidate_commit_resets_compaction_unresolved_on_detection(
+    tmp_path,
+) -> None:
+    db = tmp_path / "compaction_reset.sqlite"
+    with connect(db) as conn:
+        init_schema(conn)
+        campaign_id = insert_campaign(conn, campaign_type="scan", top="scan_top")
+        run_id = insert_run(conn, campaign_id, vector_source="scan_native_sat_atpg")
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=10,
+            net_name="n10",
+            compiled_net_index=3,
+            fault_type="sa0",
+            status="undetected",
+        )
+        fault_id = int(conn.execute("SELECT id FROM faults").fetchone()[0])
+        conn.execute(
+            "UPDATE faults SET compaction_unresolved = 1 WHERE id = ?", (fault_id,)
+        )
+        insert_pending_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            candidate_id=1,
+            pattern="01",
+            source="sat",
+            sat_target_fault_id=fault_id,
+        )
+        vector_index = 1
+        vector_id = append_vector_row(
+            conn,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            source="scan_native_sat_atpg",
+            vector_index=vector_index,
+            pattern="01",
+        )
+        commit_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            candidate_id=1,
+            commit=CandidateCommit(
+                status="accepted",
+                vector_index=vector_index,
+                accepted_vector_id=vector_id,
+                detections=[fault_id],
+            ),
+        )
+        row = conn.execute(
+            "SELECT status, compaction_unresolved FROM faults WHERE id = ?",
+            (fault_id,),
+        ).fetchone()
+
+    assert row["status"] == "detected"
+    assert int(row["compaction_unresolved"]) == 0
+
+
+def test_active_fault_rows_excludes_compaction_unresolved(tmp_path) -> None:
+    from faultflow.scan.detection_pipeline import _active_fault_rows
+
+    db = tmp_path / "compaction_active_rows.sqlite"
+    with connect(db) as conn:
+        init_schema(conn)
+        campaign_id = insert_campaign(conn, campaign_type="scan", top="scan_top")
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=5,
+            net_name="n5",
+            compiled_net_index=5,
+            fault_type="sa0",
+            status="undetected",
+            fault_site_key="net:5:stem",
+        )
+        insert_fault_row(
+            conn,
+            campaign_id,
+            net_id=6,
+            net_name="n6",
+            compiled_net_index=6,
+            fault_type="sa0",
+            status="undetected",
+            fault_site_key="net:6:stem",
+        )
+        flagged_id = int(
+            conn.execute("SELECT id FROM faults WHERE net_id = 6").fetchone()[0]
+        )
+        conn.execute(
+            "UPDATE faults SET compaction_unresolved = 1 WHERE id = ?",
+            (flagged_id,),
+        )
+        conn.commit()
+
+        active = _active_fault_rows(conn, campaign_id)
+
+    assert flagged_id not in {row.fault_id for row in active}
+    assert len(active) == 1

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from faultflow.config import ConfigError, load_config
+from faultflow.runner import Runner
 
 
 def _cfg(tmp_path: Path, body: str) -> Path:
@@ -79,3 +80,26 @@ def test_compaction_independent_of_compression(tmp_path: Path) -> None:
     assert cfg.compression.channels == 8
     assert cfg.compaction.enabled is True
     assert cfg.compaction.channels == 4
+
+
+@pytest.mark.unit
+def test_compaction_settings_are_part_of_the_config_fingerprint(
+    tmp_path: Path,
+) -> None:
+    base = load_config(
+        _cfg(tmp_path, "[design]\nnetlist = n.json\ncell_lib = c.json\n"), "top"
+    )
+    enabled = load_config(
+        _cfg(
+            tmp_path,
+            "[design]\nnetlist = n.json\ncell_lib = c.json\n"
+            "[compaction]\nenabled = true\nchannels = 2\n",
+        ),
+        "top",
+    )
+    payload_base = Runner(base)._config_fingerprint_payload()
+    payload_enabled = Runner(enabled)._config_fingerprint_payload()
+
+    assert payload_base["compaction_enabled"] is False
+    assert payload_enabled["compaction_enabled"] is True
+    assert payload_base != payload_enabled
