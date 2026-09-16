@@ -1454,6 +1454,332 @@ def test_mixed_compaction_rejection_history_unsat_still_marks_redundant(
     assert row["redundancy_model_id"] == model_id
 
 
+def _with_fake_compression_and_compaction(
+    scan_ctx: ScanPipelineContext,
+) -> ScanPipelineContext:
+    """Attach BOTH a CompressionMap and a CompactionMap to one
+    ScanPipelineContext -- unlike _with_fake_compression/_with_fake_compaction
+    (each attaches exactly one), this exercises the round loop with BOTH
+    post-hoc filters simultaneously active on the same campaign, proving the
+    combination composes correctly rather than just each classification
+    predicate in isolation (see the "Combined Compression + Compaction"
+    plan)."""
+    polynomial = lookup_polynomial(8)
+    phase_shifter_taps = [[0]]
+    return dataclasses.replace(
+        scan_ctx,
+        compression_map=CompressionMap(8, polynomial, phase_shifter_taps),
+        compression_care_bit_rows=care_bit_rows(polynomial, phase_shifter_taps, 1),
+        compaction_map=CompactionMap(1, [[0]]),
+    )
+
+
+@pytest.mark.unit
+def test_compression_only_rejected_with_compaction_also_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """A fault whose entire rejection history is compression-only must still
+    land compression_unresolved (not compaction_unresolved, not redundant)
+    when compaction_map is ALSO simultaneously active on the same context --
+    the two post-hoc filters must not interfere with each other's
+    classification."""
+    import faultflow.runner.runner as runner_mod
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, generic, scan_ctx_base, fp = _tiny_dff_scan_workspace(tmp_path)
+    scan_ctx = _with_fake_compression_and_compaction(scan_ctx_base)
+    core = runner_mod._load_core()
+    assert core is not None
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    target_id = _non_q_stem_fault_id(cfg, generic, campaign_id, scan_ctx)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        seed_run_id = insert_run(conn, campaign_id)
+        insert_pending_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            pattern="seed",
+            source="sat",
+            sat_target_fault_id=target_id,
+        )
+        commit_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            commit=CandidateCommit(
+                status="rejected",
+                protocol_sim_rejections=[
+                    CandidateRejection(target_id, "compression_unsatisfiable")
+                ],
+                blocked_patterns=[(target_id, "seed")],
+            ),
+        )
+        conn.commit()
+
+    def unsat_solve(
+        _json: str,
+        _cell: str,
+        _db: str,
+        fault_id: int,
+        *_rest: object,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        if fault_id == target_id:
+            return {"result": "UNSAT", "vector": {}}
+        return {"result": "TIMEOUT", "vector": {}}
+
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(core, "solve_fault_atpg", unsat_solve)
+
+    model_id = redundancy_model_id(fp)
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        model_id,
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=1,
+        target_coverage=100.0,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        row = conn.execute(
+            """
+            SELECT status, compression_unresolved, compaction_unresolved,
+                   redundancy_model_id
+            FROM faults WHERE id = ?
+            """,
+            (target_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "undetected"
+    assert int(row["compression_unresolved"]) == 1
+    assert int(row["compaction_unresolved"]) == 0
+    assert row["redundancy_model_id"] in ("", None)
+
+
+@pytest.mark.unit
+def test_compaction_only_rejected_with_compression_also_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """Mirror of the above with the roles reversed: a fault whose entire
+    rejection history is compaction-only must land compaction_unresolved
+    (not compression_unresolved, not redundant) when compression_map is
+    ALSO simultaneously active."""
+    import faultflow.runner.runner as runner_mod
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, generic, scan_ctx_base, fp = _tiny_dff_scan_workspace(tmp_path)
+    scan_ctx = _with_fake_compression_and_compaction(scan_ctx_base)
+    core = runner_mod._load_core()
+    assert core is not None
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    target_id = _non_q_stem_fault_id(cfg, generic, campaign_id, scan_ctx)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        seed_run_id = insert_run(conn, campaign_id)
+        insert_pending_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            pattern="seed",
+            source="sat",
+            sat_target_fault_id=target_id,
+        )
+        commit_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            commit=CandidateCommit(
+                status="rejected",
+                protocol_sim_rejections=[
+                    CandidateRejection(target_id, "compaction_indistinguishable")
+                ],
+                blocked_patterns=[(target_id, "seed")],
+            ),
+        )
+        conn.commit()
+
+    def unsat_solve(
+        _json: str,
+        _cell: str,
+        _db: str,
+        fault_id: int,
+        *_rest: object,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        if fault_id == target_id:
+            return {"result": "UNSAT", "vector": {}}
+        return {"result": "TIMEOUT", "vector": {}}
+
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(core, "solve_fault_atpg", unsat_solve)
+
+    model_id = redundancy_model_id(fp)
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        model_id,
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=1,
+        target_coverage=100.0,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        row = conn.execute(
+            """
+            SELECT status, compression_unresolved, compaction_unresolved,
+                   redundancy_model_id
+            FROM faults WHERE id = ?
+            """,
+            (target_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "undetected"
+    assert int(row["compression_unresolved"]) == 0
+    assert int(row["compaction_unresolved"]) == 1
+    assert row["redundancy_model_id"] in ("", None)
+
+
+@pytest.mark.unit
+def test_mixed_compression_and_compaction_history_both_active_marks_redundant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """A fault rejected by compression in one round and compaction in
+    another (both mechanisms simultaneously active) must fall through to
+    mark_fault_redundant -- neither _is_compression_only_rejected nor
+    _is_compaction_only_rejected can match a mixed reason set, and neither
+    predicate should accidentally OR together when both maps are present."""
+    import faultflow.runner.runner as runner_mod
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, generic, scan_ctx_base, fp = _tiny_dff_scan_workspace(tmp_path)
+    scan_ctx = _with_fake_compression_and_compaction(scan_ctx_base)
+    core = runner_mod._load_core()
+    assert core is not None
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    target_id = _non_q_stem_fault_id(cfg, generic, campaign_id, scan_ctx)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        seed_run_id = insert_run(conn, campaign_id)
+        insert_pending_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            pattern="seed1",
+            source="sat",
+            sat_target_fault_id=target_id,
+        )
+        commit_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            commit=CandidateCommit(
+                status="rejected",
+                protocol_sim_rejections=[
+                    CandidateRejection(target_id, "compression_unsatisfiable")
+                ],
+                blocked_patterns=[(target_id, "seed1")],
+            ),
+        )
+        insert_pending_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=2,
+            pattern="seed2",
+            source="sat",
+            sat_target_fault_id=target_id,
+        )
+        commit_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=2,
+            commit=CandidateCommit(
+                status="rejected",
+                protocol_sim_rejections=[
+                    CandidateRejection(target_id, "compaction_indistinguishable")
+                ],
+                blocked_patterns=[(target_id, "seed2")],
+            ),
+        )
+        conn.commit()
+
+    def unsat_solve(
+        _json: str,
+        _cell: str,
+        _db: str,
+        fault_id: int,
+        *_rest: object,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        if fault_id == target_id:
+            return {"result": "UNSAT", "vector": {}}
+        return {"result": "TIMEOUT", "vector": {}}
+
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(core, "solve_fault_atpg", unsat_solve)
+
+    model_id = redundancy_model_id(fp)
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        model_id,
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=1,
+        target_coverage=100.0,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        row = conn.execute(
+            """
+            SELECT status, compression_unresolved, compaction_unresolved,
+                   redundancy_model_id
+            FROM faults WHERE id = ?
+            """,
+            (target_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "redundant"
+    assert int(row["compression_unresolved"]) == 0
+    assert int(row["compaction_unresolved"]) == 0
+    assert row["redundancy_model_id"] == model_id
+
+
 @pytest.mark.unit
 @pytest.mark.golden
 def test_scan_colliding_sat_witness_does_not_permanently_stall_a_fault(
