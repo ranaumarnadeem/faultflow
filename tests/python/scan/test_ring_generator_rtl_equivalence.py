@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -67,40 +68,30 @@ def _real_two_chain_core_fixture() -> dict:
     }
 
 
-@pytest.mark.integration
-def test_ring_generator_rtl_matches_python_model_across_full_cycle(
-    tmp_path: Path, require_cpp_core: None
-) -> None:
-    if shutil.which("yosys") is None:
-        pytest.skip("yosys is not available")
-    import _faultflow_core as core  # type: ignore[import-not-found]
+_CELL_MAP = "cells/sky130/sky130_fd_sc_hd.json"
+_SCAN_OUT_PORTS = ["scan_out_0", "scan_out_1"]
 
-    core_json_path = tmp_path / "core.json"
-    core_json_path.write_text(
-        json.dumps(_real_two_chain_core_fixture()), encoding="utf-8"
-    )
-    liberty = Path("cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib")
-    workdir = tmp_path / "work"
-    output_json = tmp_path / "compressed.json"
 
-    _, compression_map = insert_compression(
-        core_json_path,
-        "core_top",
-        ["scan_in_0", "scan_in_1"],
-        num_channels=8,
-        liberty=liberty,
-        output_json=output_json,
-        workdir=workdir,
-        clock_port="CLK",
-        scan_enable_port="scan_en",
-    )
-
-    max_chain_length = 16
-    seed = 0b10110010  # arbitrary fixed 8-bit seed
+def _simulate_and_verify_seed(
+    core: Any,
+    output_json: Path,
+    compression_map: Any,
+    seed: int,
+    max_chain_length: int,
+) -> dict[int, list[bool]]:
+    """Run one independent simulate_scan_pattern call per chain for `seed`
+    (fresh FF state each call -- no state carried in, matching today's
+    actual production behavior: every pattern is simulated independently),
+    asserting each chain's observed trajectory against care_bit_rows'
+    prediction for THIS seed, and returning the observed trajectories keyed
+    by chain id -- so a caller can additionally compare trajectories ACROSS
+    different seeds (see test_ring_generator_reseed_mux_discriminates_
+    between_distinct_seeds)."""
     capture_pi_values = {f"tdi[{k}]": bool((seed >> k) & 1) for k in range(8)}
 
     predicted_rows = care_bit_rows(
-        compression_map.polynomial, compression_map.phase_shifter_taps,
+        compression_map.polynomial,
+        compression_map.phase_shifter_taps,
         max_chain_length,
     )
 
@@ -108,11 +99,11 @@ def test_ring_generator_rtl_matches_python_model_across_full_cycle(
         row = predicted_rows[cycle][chain]
         return bin(row & seed).count("1") % 2 == 1
 
-    cell_map = "cells/sky130/sky130_fd_sc_hd.json"
-    for chain_id, scan_out in enumerate(["scan_out_0", "scan_out_1"]):
+    observed_by_chain: dict[int, list[bool]] = {}
+    for chain_id, scan_out in enumerate(_SCAN_OUT_PORTS):
         result = core.simulate_scan_pattern(
             json_path=str(output_json),
-            cell_map_path=cell_map,
+            cell_map_path=_CELL_MAP,
             clock_ports=["CLK"],
             clock_off_states=[False],
             scan_enable_port="scan_en",
@@ -130,7 +121,7 @@ def test_ring_generator_rtl_matches_python_model_across_full_cycle(
             capture_pi_values=capture_pi_values,
             active_clock_ports=["CLK"],
         )
-        observed = result["unload_seqs"][0]
+        observed = [bool(b) for b in result["unload_seqs"][0]]
         assert len(observed) == max_chain_length
         # Reseed fires (combinationally, before the first unload clock edge)
         # because scan_en rises 0->1 coming out of the single capture cycle,
@@ -152,9 +143,96 @@ def test_ring_generator_rtl_matches_python_model_across_full_cycle(
         # seeds and three different max_chain_length values).
         for k in range(1, max_chain_length):
             assert observed[k] == predicted_bit(k - 1, chain_id), (
-                f"chain {chain_id} cycle {k}: RTL simulation observed "
-                f"{observed[k]}, but the Python ring-generator model "
-                f"predicted {predicted_bit(k - 1, chain_id)} -- the "
-                "synthesized hardware and care_bit_rows have drifted out "
-                "of sync"
+                f"seed={seed:#010b} chain {chain_id} cycle {k}: RTL "
+                f"simulation observed {observed[k]}, but the Python "
+                f"ring-generator model predicted {predicted_bit(k - 1, chain_id)}"
+                " -- the synthesized hardware and care_bit_rows have "
+                "drifted out of sync"
             )
+        observed_by_chain[chain_id] = observed
+    return observed_by_chain
+
+
+def _insert_compression_fixture(tmp_path: Path) -> tuple[Path, Any]:
+    core_json_path = tmp_path / "core.json"
+    core_json_path.write_text(
+        json.dumps(_real_two_chain_core_fixture()), encoding="utf-8"
+    )
+    liberty = Path("cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib")
+    workdir = tmp_path / "work"
+    output_json = tmp_path / "compressed.json"
+
+    _, compression_map = insert_compression(
+        core_json_path,
+        "core_top",
+        ["scan_in_0", "scan_in_1"],
+        num_channels=8,
+        liberty=liberty,
+        output_json=output_json,
+        workdir=workdir,
+        clock_port="CLK",
+        scan_enable_port="scan_en",
+    )
+    return output_json, compression_map
+
+
+@pytest.mark.integration
+def test_ring_generator_rtl_matches_python_model_across_full_cycle(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+    import _faultflow_core as core  # type: ignore[import-not-found]
+
+    output_json, compression_map = _insert_compression_fixture(tmp_path)
+
+    _simulate_and_verify_seed(
+        core, output_json, compression_map, seed=0b10110010, max_chain_length=16
+    )
+
+
+@pytest.mark.integration
+def test_ring_generator_reseed_mux_discriminates_between_distinct_seeds(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """Two INDEPENDENT simulate_scan_pattern calls (no shared FF state --
+    today's actual production behavior: every pattern is simulated
+    independently, per ring_generator_wrapper_verilog's own documented
+    invariant), two DIFFERENT seeds. A reseed mux stuck at 0
+    (effective_state always = lfsr_reg, tdi never read) would make BOTH
+    calls step from the FF's default-zero state regardless of the requested
+    seed -- both would diverge from their own seed's prediction identically,
+    already caught by _simulate_and_verify_seed's own per-seed assertions
+    above. A reseed mux stuck at 1 would show no natural stepping at all,
+    contradicting the sibling test's already-proven multi-cycle trajectory.
+    What's UNIQUELY checked here: the two seeds' trajectories are genuinely
+    DIFFERENT from each other, not just individually "correct" -- ruling out
+    a bug where the mux happens to satisfy each per-seed check in isolation
+    but never actually varies its output with the input (impossible in
+    practice given the per-seed checks above, but asserting it directly
+    costs nothing and makes the property this test is named for explicit
+    rather than implied)."""
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+    import _faultflow_core as core  # type: ignore[import-not-found]
+
+    output_json, compression_map = _insert_compression_fixture(tmp_path)
+
+    # Chosen to differ in >= half their bits so a stuck-mux bug can't
+    # coincidentally alias the two trajectories.
+    seed_a = 0b10110010
+    seed_b = 0b01001101
+
+    trajectories_a = _simulate_and_verify_seed(
+        core, output_json, compression_map, seed=seed_a, max_chain_length=16
+    )
+    trajectories_b = _simulate_and_verify_seed(
+        core, output_json, compression_map, seed=seed_b, max_chain_length=16
+    )
+
+    for chain_id in trajectories_a:
+        assert trajectories_a[chain_id] != trajectories_b[chain_id], (
+            f"chain {chain_id}: seeds {seed_a:#010b} and {seed_b:#010b} "
+            "produced IDENTICAL trajectories -- the reseed mux does not "
+            "appear to be discriminating between distinct tdi values"
+        )
