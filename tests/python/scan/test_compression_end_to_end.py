@@ -120,6 +120,7 @@ def test_compression_insertion_manifest_check_and_solve_end_to_end(
             "phase_shifter_taps": compression_map.phase_shifter_taps,
             "composed_json": str(output_json),
             "composed_top": "core_top_compressed",
+            "scan_enable_port": "scan_en",
         },
     }
 
@@ -182,14 +183,13 @@ def test_compression_insertion_manifest_check_and_solve_end_to_end(
     assert care, "extraction found no care bits at all -- oracle wiring is broken"
 
     rows = care_bit_rows(
-        compression_map.polynomial, compression_map.phase_shifter_taps,
+        compression_map.polynomial,
+        compression_map.phase_shifter_taps,
         max_chain_length,
     )
     fanout = [bitmask_to_index_list(rows[cycle][chain]) for chain, cycle, _ in care]
     care_bits = [(i, value) for i, (_, _, value) in enumerate(care)]
-    solved = core.solve_xor_broadcast(
-        compression_map.num_channels, fanout, care_bits
-    )
+    solved = core.solve_xor_broadcast(compression_map.num_channels, fanout, care_bits)
     # 8 channels vs. this tiny 2-chain/4-cycle design's handful of care bits
     # is comfortably within the compressor's capacity -- expected satisfiable.
     assert solved["ok"] is True
