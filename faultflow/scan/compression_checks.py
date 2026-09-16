@@ -403,38 +403,15 @@ def check_compression_structure(
         net_index = _build_net_index(module)
         cache: dict[int, tuple[int, bool]] = {}
 
-        for port, expected_taps in zip(scan_in_ports, phase_shifter_taps):
-            if port not in netnames:
-                errors.append(f"{port}: scan-in wire not found in netlist")
-                continue
-            bits = netnames[port].get("bits", [])
-            if not isinstance(bits, list) or len(bits) != 1:
-                errors.append(f"{port}: scan-in wire must be exactly one bit")
-                continue
-            try:
-                mask, inverted = _linear_cone(
-                    int(bits[0]), net_index, leaf_index, cache
-                )
-            except ScanError as exc:
-                errors.append(f"{port}: {exc}")
-                continue
-            if inverted:
-                errors.append(
-                    f"{port}: phase-shifter cone is inverted, expected a "
-                    "non-inverting XOR tree"
-                )
-                continue
-            expected_mask = 0
-            for tap in expected_taps:
-                expected_mask ^= 1 << int(tap)
-            if mask != expected_mask:
-                errors.append(
-                    f"{port}: synthesized phase-shifter taps "
-                    f"{bitmask_to_index_list(mask)} do not match "
-                    f"manifest-declared taps {sorted(int(t) for t in expected_taps)}"
-                )
-
-        # --- the ring generator's OWN feedback-tap/reseed-mux cone ---
+        # --- the ring generator's OWN feedback-tap/reseed-mux cone: set up
+        # FIRST, not after the phase-shifter loop below. A "ghost" effective_
+        # state bit (finding 7 -- e.g. i-1 for i in polynomial.taps) is only
+        # reachable via the SAME reseed-mux-driven net the register cone
+        # uses; if the phase-shifter's OWN fan-out happens to XOR a ghost
+        # bit (confirmed empirically: happens with >2 real scan chains,
+        # where build_broadcast_fanout's tap assignment can land on a ghost
+        # index), its _linear_cone walk needs mux_resolver too, or it
+        # wrongly reports "non-linear gate" for a perfectly valid netlist.
         polynomial = lookup_polynomial(num_channels)
         cells = module.get("cells", {})
         if not isinstance(cells, dict):
@@ -491,6 +468,38 @@ def check_compression_structure(
         mux_resolver = _reseed_mux_resolver(
             net_index, tdi_index, lfsr_reg_index, reseed_select_net
         )
+
+        for port, expected_taps in zip(scan_in_ports, phase_shifter_taps):
+            if port not in netnames:
+                errors.append(f"{port}: scan-in wire not found in netlist")
+                continue
+            bits = netnames[port].get("bits", [])
+            if not isinstance(bits, list) or len(bits) != 1:
+                errors.append(f"{port}: scan-in wire must be exactly one bit")
+                continue
+            try:
+                mask, inverted = _linear_cone(
+                    int(bits[0]), net_index, leaf_index, cache, mux_resolver
+                )
+            except ScanError as exc:
+                errors.append(f"{port}: {exc}")
+                continue
+            if inverted:
+                errors.append(
+                    f"{port}: phase-shifter cone is inverted, expected a "
+                    "non-inverting XOR tree"
+                )
+                continue
+            expected_mask = 0
+            for tap in expected_taps:
+                expected_mask ^= 1 << int(tap)
+            if mask != expected_mask:
+                errors.append(
+                    f"{port}: synthesized phase-shifter taps "
+                    f"{bitmask_to_index_list(mask)} do not match "
+                    f"manifest-declared taps {sorted(int(t) for t in expected_taps)}"
+                )
+
         # Verify each effective_state[k]'s OWN construction (the reseed mux
         # itself), for every bit that has a real, directly-named driver.
         # This must NOT reuse `leaf_index` (which maps these same nets to
