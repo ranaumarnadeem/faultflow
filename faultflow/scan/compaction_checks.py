@@ -4,11 +4,11 @@ connectivity and diffs it against what the manifest declares -- the same
 "structural re-derivation, not SAT-based LEC" discipline as
 ``check_scan_structure``/``check_compression_structure``.
 
-Unlike the decompressor's structural check (which deliberately only covers
-the phase-shifter half, since the ring generator's own feedback-tap cone
-needs reseed-mux recognition that isn't built yet), the compactor has NO
-register/feedback structure at all -- it's purely combinational, a single
-static XOR tree, so this check covers it COMPLETELY, not partially.
+The compactor has NO register/feedback structure at all -- it's purely
+combinational, a single static XOR tree -- so, unlike the decompressor's
+structural check (which needs separate recognition for the phase-shifter's
+fan-out and the ring generator's own feedback-tap/reseed-mux cone), this
+check covers the compactor completely in one pass.
 
 Reuses the exact same GF(2)-linear-cone-walk primitives as
 ``compression_checks.py`` (duplicated, not imported, to keep the

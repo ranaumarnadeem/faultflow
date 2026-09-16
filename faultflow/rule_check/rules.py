@@ -286,14 +286,14 @@ def rules_scan(manifest: dict[str, Any]) -> list[Violation]:
     return out
 
 
-# --- COMP001: scan compression phase-shifter structural check ---
+# --- COMP001: scan compression structural check ---
 def rules_compression(manifest: dict[str, Any]) -> list[Violation]:
-    """Re-derives the ring-generator phase-shifter's XOR structure from the
-    synthesized netlist and diffs it against the manifest -- see
+    """Re-derives the ring generator's XOR structure from the synthesized
+    netlist and diffs it against the manifest -- see
     faultflow.scan.compression_checks.check_compression_structure for the
-    algorithm and its documented scope (phase-shifter only; the ring
-    generator's own feedback-tap structure is not yet checked here).
-    No-op (returns []) when compression is absent/disabled in the manifest.
+    algorithm (covers both the phase-shifter's fan-out AND the register's
+    own feedback-tap/reseed-mux cone). No-op (returns []) when compression
+    is absent/disabled in the manifest.
     """
     from faultflow.scan.compression_checks import check_compression_structure
 

@@ -37,24 +37,65 @@ re-verifying against a real synthesized netlist first):
    pure net alias (no gate at all) -- the walker's leaf check must run
    BEFORE looking for a driving cell, not after.
 
-The ring generator's OWN feedback-tap structure (the register's D-input
-cone, which first requires recognizing and stripping the reseed-mux/DFFE-
-enable pattern -- real synthesized output for this design mixes
-``mux2``/``mux2i``/``nand2b`` cells into that cone) is explicitly NOT checked
-here. Building that recognition reliably needs its own empirical spike
-against real sky130-synthesized shapes before it can be trusted -- this is
-flagged as follow-up work, not silently skipped (see the compression plan).
+The ring generator's OWN feedback-tap/reseed-mux cone (the register's
+D-input logic, ``next_state``) IS also checked here, as of a later empirical
+spike against real sky130-synthesized shapes (two curated widths, 8 and 16,
+both confirmed). Findings from that spike, load-bearing for the design below
+-- do not "fix" this file to trust anything about this cone again without
+re-verifying against a real synthesized netlist first:
+
+5. ``reseed`` (``wire reseed = scan_en & ~prev_scan_en;`` in the RTL) does
+   NOT survive synthesis as a named net, unlike ``lfsr_reg``/``tdi``/
+   ``effective_state``/``next_state``/``prev_scan_en``. ABC instead computes
+   its COMPLEMENT directly: a ``nand2b(A_N=prev_scan_en, B=scan_en)`` cell,
+   whose output (De Morgan: ``prev_scan_en | ~scan_en`` == ``~reseed``) is
+   shared as the ``S`` operand by every reseed-mux in the cone. ``prev_scan_en``
+   itself is a plain, un-enabled ``dfxtp`` fed directly by the scan-enable
+   port (matching the RTL's unconditional ``prev_scan_en <= scan_en;``).
+6. Most ``effective_state`` bits get one clean ``mux2``/``mux2i`` cell
+   (``A0``=reseed-active branch, ``A1``=natural-feedback branch, given this
+   design's specific ``S == ~reseed`` polarity -- ``mux2``: non-inverting,
+   ``X = S ? A1 : A0``; ``mux2i``: inverting, ``Y = ~(S ? A1 : A0)``). The
+   widest-fanout bit (the feedback bit ``fb``, i.e. ``effective_state[width-1]``)
+   instead gets ``mux2i`` + a separate ``clkinv`` (ABC's fanout-driven choice,
+   functionally equivalent, two gates not one).
+7. For every TAP bit (``i in polynomial.taps``), ABC exploits
+   ``XOR(~A,~B) == XOR(A,B)``: it computes BOTH XOR operands in already-
+   INVERTED form via ``mux2i`` (reusing the already-inverted ``fb``) and feeds
+   them straight into ``xor2`` -- the plain, non-inverted
+   ``effective_state[i-1]`` is never built as its own net at all. Its
+   ``netnames`` entry is a real but GHOST name: listed, but undriven by any
+   cell in the actual optimized netlist. Confirmed empirically: the set of
+   ghost ``effective_state`` bits is always exactly ``{t - 1 for t in
+   polynomial.taps}``.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from faultflow.scan.errors import ScanError
-from faultflow.scan.ring_generator import bitmask_to_index_list
+from faultflow.scan.ring_generator import bitmask_to_index_list, lookup_polynomial
 from faultflow.scan.stitch import _load_json, _top_module
+
+# Fixed RTL-declared net names from ring_generator_wrapper_verilog -- never
+# parameterized in that function, so hardcoding them here mirrors how
+# "effective_state" (manifest key tap_source_net) is itself always a hardcoded
+# constant in Runner.scan_compress(), just accessed via a level of manifest
+# indirection that these three don't need.
+_LFSR_REG_NET_NAME = "lfsr_reg"
+_NEXT_STATE_NET_NAME = "next_state"
+_PREV_SCAN_EN_NET_NAME = "prev_scan_en"
+_TDI_NET_NAME = "tdi"
+
+# (output_pin, (A0, A1, S) pin names, is_inverting) for the Sky130 mux
+# variants used as the reseed-select mux, per finding 6 above.
+_MUX_GATE_PINS: dict[str, tuple[str, tuple[str, str, str], bool]] = {
+    "sky130_fd_sc_hd__mux2_": ("X", ("A0", "A1", "S"), False),
+    "sky130_fd_sc_hd__mux2i_": ("Y", ("A0", "A1", "S"), True),
+}
 
 # (output_pin, input_pins) for the Sky130 HD gate-type prefixes the walker
 # treats as GF(2)-linear (a pure XOR/XNOR/NOT/wire-buffer) -- see
@@ -123,11 +164,21 @@ def _linear_cone(
     net_index: dict[int, list[tuple[str, str, dict]]],
     leaf_index: dict[int, int],
     cache: dict[int, tuple[int, bool]],
+    mux_leaf_resolver: Callable[[int], tuple[int, bool] | None] | None = None,
 ) -> tuple[int, bool]:
     """(coefficient bitmask over leaf_index's leaves, inverted) for net_id's
     driving cone. Raises ScanError on a non-linear gate, a fan-in count that
     doesn't match the gate's arity, or an undriven net that isn't a declared
-    leaf."""
+    leaf.
+
+    ``mux_leaf_resolver``, when given, is tried as a fallback leaf case right
+    before giving up on net_id: used by the register feedback-tap cone (see
+    ``_reseed_mux_resolver``) to recognize a reseed-mux-driven net as an
+    ``effective_state[k]`` leaf, without teaching this function anything
+    about mux2/mux2i (MUX is not itself a linear GF(2) operation, unlike
+    every gate in ``_LINEAR_GATE_PINS``) -- disabled (``None``) for the
+    phase-shifter's own calls, which is unaffected either way.
+    """
     if net_id in leaf_index:
         return (1 << leaf_index[net_id], False)
     if net_id in cache:
@@ -148,15 +199,26 @@ def _linear_cone(
                 f"found {len(input_nets)}"
             )
         if len(in_pins) == 2:
-            a_mask, a_inv = _linear_cone(input_nets[0], net_index, leaf_index, cache)
-            b_mask, b_inv = _linear_cone(input_nets[1], net_index, leaf_index, cache)
+            a_mask, a_inv = _linear_cone(
+                input_nets[0], net_index, leaf_index, cache, mux_leaf_resolver
+            )
+            b_mask, b_inv = _linear_cone(
+                input_nets[1], net_index, leaf_index, cache, mux_leaf_resolver
+            )
             mask = a_mask ^ b_mask
             inverted = (a_inv != b_inv) != ctype.startswith("sky130_fd_sc_hd__xnor2_")
         else:
-            mask, inv0 = _linear_cone(input_nets[0], net_index, leaf_index, cache)
+            mask, inv0 = _linear_cone(
+                input_nets[0], net_index, leaf_index, cache, mux_leaf_resolver
+            )
             inverted = inv0 != ctype.startswith(_INVERTING_PREFIXES)
         cache[net_id] = (mask, inverted)
         return (mask, inverted)
+    if mux_leaf_resolver is not None:
+        resolved = mux_leaf_resolver(net_id)
+        if resolved is not None:
+            cache[net_id] = resolved
+            return resolved
     # No recognized linear gate drives net_id as its declared output. A
     # candidate of an UNRECOGNIZED type touching net_id is presumed to be its
     # (non-linear) driver -- flag it by name. A candidate of a RECOGNIZED
@@ -170,6 +232,120 @@ def _linear_cone(
                 f"decompressor cone feeding net {net_id}"
             )
     raise ScanError(f"net {net_id} has no driver and is not a declared leaf")
+
+
+def _find_reseed_select_net(
+    cells: dict[str, Any], prev_scan_en_net: int, scan_enable_net: int
+) -> int:
+    """Find the nand2b-family cell computing ``prev_scan_en | ~scan_en`` (De
+    Morgan's complement of ``reseed = scan_en & ~prev_scan_en``) and return
+    its output net. Real Yosys/abc synthesis does not preserve ``reseed`` as
+    a named net (finding 5) -- it computes the complement directly, and
+    every reseed-mux in the cone shares this one net as its select input."""
+    for name, cell in cells.items():
+        if not isinstance(cell, dict):
+            continue
+        ctype = str(cell.get("type", ""))
+        if not ctype.startswith("sky130_fd_sc_hd__nand2b_"):
+            continue
+        conns = cell.get("connections", {})
+        a_n = conns.get("A_N", [])
+        b = conns.get("B", [])
+        y = conns.get("Y", [])
+        if (
+            len(a_n) == 1
+            and int(a_n[0]) == prev_scan_en_net
+            and len(b) == 1
+            and int(b[0]) == scan_enable_net
+            and len(y) == 1
+        ):
+            return int(y[0])
+    raise ScanError(
+        "could not find the reseed-select nand2b(prev_scan_en, scan_enable) cell"
+    )
+
+
+def _verify_prev_scan_en_register(
+    cells: dict[str, Any], prev_scan_en_net: int, scan_enable_net: int
+) -> None:
+    """prev_scan_en must be a plain, un-enabled dfxtp-family FF fed directly
+    by the scan-enable port -- matching the RTL's unconditional
+    ``prev_scan_en <= scan_en;`` (no ``if`` guard, unlike ``lfsr_reg``)."""
+    for name, cell in cells.items():
+        if not isinstance(cell, dict):
+            continue
+        ctype = str(cell.get("type", ""))
+        if not ctype.startswith("sky130_fd_sc_hd__dfxtp_"):
+            continue
+        conns = cell.get("connections", {})
+        q = conns.get("Q", [])
+        if len(q) == 1 and int(q[0]) == prev_scan_en_net:
+            d = conns.get("D", [])
+            if len(d) == 1 and int(d[0]) == scan_enable_net:
+                return
+            raise ScanError(
+                f"{name} ({ctype}): prev_scan_en register's D input is not "
+                "directly the scan-enable port"
+            )
+    raise ScanError("could not find prev_scan_en's own driving register")
+
+
+def _reseed_mux_resolver(
+    net_index: dict[int, list[tuple[str, str, dict]]],
+    tdi_index: dict[int, int],
+    lfsr_reg_index: dict[int, int],
+    reseed_select_net: int,
+) -> Callable[[int], tuple[int, bool] | None]:
+    """Leaf resolver for ``_linear_cone``: recognizes a net driven by a
+    mux2/mux2i cell whose S operand is ``reseed_select_net`` (== ``~reseed``,
+    per this design's derived polarity -- finding 5) and whose A0/A1 operands
+    are ``tdi[k]``/``lfsr_reg[k]`` for a CONSISTENT k (A0 = the reseed-active
+    branch given S == ~reseed, A1 = the natural-feedback branch), returning
+    ``(1 << k, mux_is_inverting)`` -- the same leaf shape ``_linear_cone``
+    already uses for any other leaf, since a correctly reseed-selected net IS
+    leaf k (``effective_state[k]``) for the outer feedback-tap cone walk.
+
+    Raises ScanError (not None) for a mux2/mux2i cell whose S matches but
+    whose A0/A1 wiring doesn't resolve to a consistent tdi/lfsr_reg pair --
+    that is a real defect, not "this isn't a reseed mux"."""
+
+    def resolve(net_id: int) -> tuple[int, bool] | None:
+        for name, ctype, conns in net_index.get(net_id, []):
+            spec = None
+            for prefix, mux_spec in _MUX_GATE_PINS.items():
+                if ctype.startswith(prefix):
+                    spec = mux_spec
+                    break
+            if spec is None:
+                continue
+            out_pin, (a0_pin, a1_pin, s_pin) = spec[0], spec[1]
+            inverting = spec[2]
+            if net_id not in conns.get(out_pin, []):
+                continue
+            s_nets = conns.get(s_pin, [])
+            if len(s_nets) != 1 or int(s_nets[0]) != reseed_select_net:
+                continue
+            a0_nets = conns.get(a0_pin, [])
+            a1_nets = conns.get(a1_pin, [])
+            if len(a0_nets) != 1 or len(a1_nets) != 1:
+                raise ScanError(
+                    f"{name} ({ctype}): expected exactly one net on each of "
+                    f"{a0_pin}/{a1_pin}"
+                )
+            a0_net, a1_net = int(a0_nets[0]), int(a1_nets[0])
+            a0_k = tdi_index.get(a0_net)
+            a1_k = lfsr_reg_index.get(a1_net)
+            if a0_k is None or a1_k is None or a0_k != a1_k:
+                raise ScanError(
+                    f"{name} ({ctype}): reseed mux operands do not form a "
+                    f"consistent tdi[k]/lfsr_reg[k] pair (A0 net {a0_net} -> "
+                    f"tdi index {a0_k}, A1 net {a1_net} -> lfsr_reg index "
+                    f"{a1_k})"
+                )
+            return (1 << a0_k, inverting)
+        return None
+
+    return resolve
 
 
 def check_compression_structure(
@@ -256,6 +432,135 @@ def check_compression_structure(
                     f"{port}: synthesized phase-shifter taps "
                     f"{bitmask_to_index_list(mask)} do not match "
                     f"manifest-declared taps {sorted(int(t) for t in expected_taps)}"
+                )
+
+        # --- the ring generator's OWN feedback-tap/reseed-mux cone ---
+        polynomial = lookup_polynomial(num_channels)
+        cells = module.get("cells", {})
+        if not isinstance(cells, dict):
+            raise ScanError("module cells must be an object")
+
+        for required in (
+            _LFSR_REG_NET_NAME,
+            _NEXT_STATE_NET_NAME,
+            _PREV_SCAN_EN_NET_NAME,
+            _TDI_NET_NAME,
+        ):
+            if required not in netnames:
+                raise ScanError(f"declared {required!r} net not found in netlist")
+        lfsr_reg_bits = netnames[_LFSR_REG_NET_NAME].get("bits", [])
+        next_state_bits = netnames[_NEXT_STATE_NET_NAME].get("bits", [])
+        tdi_bits = netnames[_TDI_NET_NAME].get("bits", [])
+        prev_scan_en_bits = netnames[_PREV_SCAN_EN_NET_NAME].get("bits", [])
+        if not (
+            isinstance(lfsr_reg_bits, list)
+            and len(lfsr_reg_bits) == num_channels
+            and isinstance(next_state_bits, list)
+            and len(next_state_bits) == num_channels
+            and isinstance(tdi_bits, list)
+            and len(tdi_bits) == num_channels
+        ):
+            raise ScanError(
+                f"{_LFSR_REG_NET_NAME!r}/{_NEXT_STATE_NET_NAME!r}/"
+                f"{_TDI_NET_NAME!r} net widths do not all match "
+                f"num_channels={num_channels}"
+            )
+        if not isinstance(prev_scan_en_bits, list) or len(prev_scan_en_bits) != 1:
+            raise ScanError(f"{_PREV_SCAN_EN_NET_NAME!r} must be exactly one bit")
+
+        scan_enable_port = str(compression["scan_enable_port"])
+        if scan_enable_port not in netnames:
+            raise ScanError(
+                f"scan_enable_port {scan_enable_port!r} not found in netlist"
+            )
+        scan_enable_bits = netnames[scan_enable_port].get("bits", [])
+        if not isinstance(scan_enable_bits, list) or len(scan_enable_bits) != 1:
+            raise ScanError(
+                f"scan_enable_port {scan_enable_port!r} must be exactly one bit"
+            )
+
+        reseed_select_net = _find_reseed_select_net(
+            cells, int(prev_scan_en_bits[0]), int(scan_enable_bits[0])
+        )
+        _verify_prev_scan_en_register(
+            cells, int(prev_scan_en_bits[0]), int(scan_enable_bits[0])
+        )
+
+        tdi_index = {int(bit): i for i, bit in enumerate(tdi_bits)}
+        lfsr_reg_index = {int(bit): i for i, bit in enumerate(lfsr_reg_bits)}
+        mux_resolver = _reseed_mux_resolver(
+            net_index, tdi_index, lfsr_reg_index, reseed_select_net
+        )
+        # Verify each effective_state[k]'s OWN construction (the reseed mux
+        # itself), for every bit that has a real, directly-named driver.
+        # This must NOT reuse `leaf_index` (which maps these same nets to
+        # themselves as trivial leaves for the phase-shifter/tap-formula
+        # walks below) -- doing so would short-circuit before ever reaching
+        # the mux, silently accepting ANY wiring at all for these bits
+        # (confirmed empirically: swapping a "clean" bit's mux A0/A1 went
+        # undetected before this loop was added). An EMPTY leaf_index here
+        # forces every bit through mux_resolver. GHOST bits (finding 7 --
+        # undriven, e.g. i-1 for i in polynomial.taps) have no entry in
+        # net_index at all and are skipped here, not silently: their reseed
+        # correctness is still verified below, indirectly, via the
+        # tap-formula loop, since that's the only place their value is ever
+        # actually consumed in the real netlist.
+        for k, bit in enumerate(tap_bits):
+            net_id = int(bit)
+            if net_id not in net_index:
+                continue  # ghost bit -- verified indirectly via tap formula
+            try:
+                mask, inverted = _linear_cone(net_id, net_index, {}, {}, mux_resolver)
+            except ScanError as exc:
+                errors.append(f"{tap_source_net}[{k}]: {exc}")
+                continue
+            if inverted or mask != (1 << k):
+                errors.append(
+                    f"{tap_source_net}[{k}]: does not resolve to a "
+                    f"non-inverted reseed-mux select of tdi[{k}]/"
+                    f"lfsr_reg[{k}] (got mask="
+                    f"{bitmask_to_index_list(mask)}, inverted={inverted})"
+                )
+
+        # effective_state[k] (leaf_index, already built above for the
+        # phase-shifter) is leaf k for this walk too -- the SAME live value,
+        # reused exactly as the real design shares it. A separate cache: no
+        # net actually overlaps between the two cones (disjoint fan-out from
+        # effective_state), but a fresh cache keeps that provable rather than
+        # assumed.
+        register_cache: dict[int, tuple[int, bool]] = {}
+
+        for i in range(num_channels):
+            try:
+                mask, inverted = _linear_cone(
+                    int(next_state_bits[i]),
+                    net_index,
+                    leaf_index,
+                    register_cache,
+                    mux_resolver,
+                )
+            except ScanError as exc:
+                errors.append(f"next_state[{i}]: {exc}")
+                continue
+            if inverted:
+                errors.append(
+                    f"next_state[{i}]: feedback cone is inverted, expected a "
+                    "non-inverting XOR"
+                )
+                continue
+            fb_mask = 1 << (num_channels - 1)
+            if i == 0:
+                expected_mask = fb_mask
+            else:
+                expected_mask = (1 << (i - 1)) ^ (
+                    fb_mask if i in polynomial.taps else 0
+                )
+            if mask != expected_mask:
+                errors.append(
+                    f"next_state[{i}]: synthesized feedback cone "
+                    f"{bitmask_to_index_list(mask)} does not match expected "
+                    f"{bitmask_to_index_list(expected_mask)} (polynomial "
+                    f"taps={sorted(polynomial.taps)})"
                 )
     except (KeyError, ScanError, OSError) as exc:
         errors.append(str(exc))
