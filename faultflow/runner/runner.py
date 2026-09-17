@@ -826,6 +826,10 @@ class Runner:
             "clock_port": clock_port,
             "scan_enable_port": scan_enable_port,
             "channel_port": "tdi",
+            "polynomial": {
+                "width": compression_map.polynomial.width,
+                "taps": sorted(compression_map.polynomial.taps),
+            },
         }
         structural = check_compression_structure(manifest)
         manifest["compression"]["structural_check"] = {

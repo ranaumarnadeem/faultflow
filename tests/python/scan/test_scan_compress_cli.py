@@ -121,6 +121,13 @@ def test_scan_compress_cli_end_to_end(
     assert compression["enabled"] is True
     assert compression["num_channels"] == 8
     assert compression["scan_in_ports"] == ["scan_in"]
+    from faultflow.scan.ring_generator import lookup_polynomial
+
+    polynomial = lookup_polynomial(8)
+    assert compression["polynomial"] == {
+        "width": polynomial.width,
+        "taps": sorted(polynomial.taps),
+    }
     assert compression["structural_check"]["status"] == "PASS", compression[
         "structural_check"
     ]["errors"]
