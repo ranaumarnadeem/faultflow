@@ -341,6 +341,45 @@ def test_check_compression_structure_accepts_valid_register_cone(
 
 
 @pytest.mark.unit
+def test_check_compression_structure_accepts_custom_channel_port_from_manifest(
+    tmp_path: Path,
+) -> None:
+    """channel_port is read from the manifest (falling back to "tdi" only
+    when absent), not hardcoded -- confirmed real: ring_generator_wrapper_
+    verilog's own channel_port parameter defaults to "tdi" but is genuinely
+    overridable, unlike lfsr_reg/next_state/prev_scan_en, which never are."""
+    module = _passing_module()
+    module["netnames"]["custom_tdi"] = module["netnames"].pop("tdi")
+    compression = _base_compression(
+        scan_in_ports=[], phase_shifter_taps=[], channel_port="custom_tdi"
+    )
+    manifest = _manifest(tmp_path, module, compression)
+
+    result = check_compression_structure(manifest)
+
+    assert result.passed, result.errors
+
+
+@pytest.mark.unit
+def test_check_compression_structure_rejects_declared_channel_port_not_in_netlist(
+    tmp_path: Path,
+) -> None:
+    """A manifest declaring channel_port="custom_tdi" must make the check
+    look for THAT name -- not silently fall back to "tdi" (which is still
+    present here, unrenamed) and pass anyway."""
+    module = _passing_module()
+    compression = _base_compression(
+        scan_in_ports=[], phase_shifter_taps=[], channel_port="custom_tdi"
+    )
+    manifest = _manifest(tmp_path, module, compression)
+
+    result = check_compression_structure(manifest)
+
+    assert not result.passed
+    assert any("custom_tdi" in err for err in result.errors)
+
+
+@pytest.mark.unit
 def test_check_compression_structure_rejects_missing_lfsr_reg_net(
     tmp_path: Path,
 ) -> None:

@@ -88,7 +88,16 @@ from faultflow.scan.stitch import _load_json, _top_module
 _LFSR_REG_NET_NAME = "lfsr_reg"
 _NEXT_STATE_NET_NAME = "next_state"
 _PREV_SCAN_EN_NET_NAME = "prev_scan_en"
-_TDI_NET_NAME = "tdi"
+
+# UNLIKE the three names above, the channel port genuinely IS a parameter of
+# ring_generator_wrapper_verilog (``channel_port: str = "tdi"``) -- Runner.
+# scan_compress() never overrides it today, but hardcoding it here (as a prior
+# version of this file did) would silently check the wrong net the moment it
+# ever is overridden. Read from the manifest instead, mirroring
+# check_compaction_structure's identical `compaction.get("channel_port",
+# "tdo")` pattern; this constant now serves only as the fallback default for a
+# manifest that predates this field.
+_DEFAULT_TDI_NET_NAME = "tdi"
 
 # (output_pin, (A0, A1, S) pin names, is_inverting) for the Sky130 mux
 # variants used as the reseed-select mux, per finding 6 above.
@@ -292,14 +301,14 @@ def _verify_prev_scan_en_register(
 
 def _reseed_mux_resolver(
     net_index: dict[int, list[tuple[str, str, dict]]],
-    tdi_index: dict[int, int],
+    channel_index: dict[int, int],
     lfsr_reg_index: dict[int, int],
     reseed_select_net: int,
 ) -> Callable[[int], tuple[int, bool] | None]:
     """Leaf resolver for ``_linear_cone``: recognizes a net driven by a
     mux2/mux2i cell whose S operand is ``reseed_select_net`` (== ``~reseed``,
     per this design's derived polarity -- finding 5) and whose A0/A1 operands
-    are ``tdi[k]``/``lfsr_reg[k]`` for a CONSISTENT k (A0 = the reseed-active
+    are ``channel[k]``/``lfsr_reg[k]`` for a CONSISTENT k (A0 = the reseed-active
     branch given S == ~reseed, A1 = the natural-feedback branch), returning
     ``(1 << k, mux_is_inverting)`` -- the same leaf shape ``_linear_cone``
     already uses for any other leaf, since a correctly reseed-selected net IS
@@ -333,7 +342,7 @@ def _reseed_mux_resolver(
                     f"{a0_pin}/{a1_pin}"
                 )
             a0_net, a1_net = int(a0_nets[0]), int(a1_nets[0])
-            a0_k = tdi_index.get(a0_net)
+            a0_k = channel_index.get(a0_net)
             a1_k = lfsr_reg_index.get(a1_net)
             if a0_k is None or a1_k is None or a0_k != a1_k:
                 raise ScanError(
@@ -381,6 +390,7 @@ def check_compression_structure(
         tap_source_net = str(compression["tap_source_net"])
         scan_in_ports = [str(p) for p in compression["scan_in_ports"]]
         phase_shifter_taps = compression["phase_shifter_taps"]
+        channel_port_net = str(compression.get("channel_port", _DEFAULT_TDI_NET_NAME))
         if len(scan_in_ports) != len(phase_shifter_taps):
             raise ScanError(
                 "manifest compression.scan_in_ports/phase_shifter_taps length "
@@ -421,25 +431,25 @@ def check_compression_structure(
             _LFSR_REG_NET_NAME,
             _NEXT_STATE_NET_NAME,
             _PREV_SCAN_EN_NET_NAME,
-            _TDI_NET_NAME,
+            channel_port_net,
         ):
             if required not in netnames:
                 raise ScanError(f"declared {required!r} net not found in netlist")
         lfsr_reg_bits = netnames[_LFSR_REG_NET_NAME].get("bits", [])
         next_state_bits = netnames[_NEXT_STATE_NET_NAME].get("bits", [])
-        tdi_bits = netnames[_TDI_NET_NAME].get("bits", [])
+        channel_bits = netnames[channel_port_net].get("bits", [])
         prev_scan_en_bits = netnames[_PREV_SCAN_EN_NET_NAME].get("bits", [])
         if not (
             isinstance(lfsr_reg_bits, list)
             and len(lfsr_reg_bits) == num_channels
             and isinstance(next_state_bits, list)
             and len(next_state_bits) == num_channels
-            and isinstance(tdi_bits, list)
-            and len(tdi_bits) == num_channels
+            and isinstance(channel_bits, list)
+            and len(channel_bits) == num_channels
         ):
             raise ScanError(
                 f"{_LFSR_REG_NET_NAME!r}/{_NEXT_STATE_NET_NAME!r}/"
-                f"{_TDI_NET_NAME!r} net widths do not all match "
+                f"{channel_port_net!r} net widths do not all match "
                 f"num_channels={num_channels}"
             )
         if not isinstance(prev_scan_en_bits, list) or len(prev_scan_en_bits) != 1:
@@ -463,10 +473,10 @@ def check_compression_structure(
             cells, int(prev_scan_en_bits[0]), int(scan_enable_bits[0])
         )
 
-        tdi_index = {int(bit): i for i, bit in enumerate(tdi_bits)}
+        channel_index = {int(bit): i for i, bit in enumerate(channel_bits)}
         lfsr_reg_index = {int(bit): i for i, bit in enumerate(lfsr_reg_bits)}
         mux_resolver = _reseed_mux_resolver(
-            net_index, tdi_index, lfsr_reg_index, reseed_select_net
+            net_index, channel_index, lfsr_reg_index, reseed_select_net
         )
 
         for port, expected_taps in zip(scan_in_ports, phase_shifter_taps):

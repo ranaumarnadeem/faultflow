@@ -825,6 +825,7 @@ class Runner:
             "composed_json_hash": _hash_file(output_json),
             "clock_port": clock_port,
             "scan_enable_port": scan_enable_port,
+            "channel_port": "tdi",
         }
         structural = check_compression_structure(manifest)
         manifest["compression"]["structural_check"] = {
