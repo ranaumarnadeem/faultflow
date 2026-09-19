@@ -149,6 +149,11 @@ class ScanPattern:
     load_seqs: dict[int, list[bool]]
     capture_pi_values: dict[str, bool]
     expected_unload: dict[int, list[bool]]
+    # (chain_id, cycle) positions of load_seqs that a compression-satisfiability
+    # check (detection_pipeline.py's _check_compression_satisfiable) proved are
+    # actually required for detection, as opposed to don't-care fill -- None
+    # when that check never ran (no compression, or a random-fill candidate).
+    load_care: tuple[tuple[int, int], ...] | None = None
 
 
 def _chain_lengths(manifest: dict[str, Any]) -> dict[int, int]:

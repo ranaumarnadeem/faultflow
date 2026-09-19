@@ -57,3 +57,29 @@ def test_bool_values_are_preserved() -> None:
     for seq in restored.load_seqs.values():
         assert all(isinstance(b, bool) for b in seq)
     assert all(isinstance(v, bool) for v in restored.capture_pi_values.values())
+
+
+def test_load_care_defaults_to_none_and_roundtrips_as_null() -> None:
+    d = scan_pattern_to_dict(_sample_pattern())
+    assert d["load_care"] is None
+    back = json.loads(json.dumps(d))
+    assert back["load_care"] is None
+    restored = scan_pattern_from_dict(back)
+    assert restored.load_care is None
+
+
+def test_load_care_roundtrips_exactly_when_present() -> None:
+    p = ScanPattern(
+        load_seqs={0: [True, False], 1: [False, True]},
+        capture_pi_values={},
+        expected_unload={0: [False, True], 1: [True, False]},
+        load_care=((0, 1), (1, 0)),
+    )
+    d = scan_pattern_to_dict(p)
+    assert d["load_care"] == [[0, 1], [1, 0]]
+    restored = scan_pattern_from_dict(json.loads(json.dumps(d)))
+    assert restored.load_care == ((0, 1), (1, 0))
+    assert all(
+        isinstance(chain, int) and isinstance(cycle, int)
+        for chain, cycle in restored.load_care
+    )

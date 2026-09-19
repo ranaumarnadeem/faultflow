@@ -7,7 +7,7 @@ import sqlite3
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
@@ -538,11 +538,15 @@ def _check_compression_satisfiable(
     active_rows: list[_FaultRow],
     generic_site_index: dict[str, int],
     passed_fault_ids: list[int],
-) -> bool:
-    """True iff every one of ``passed_fault_ids``'s required scan-chain-input
-    care bits is jointly satisfiable through the compression decompressor
-    (``solve_xor_broadcast``, reused unmodified for the sequential
-    ring-generator case -- see ring_generator.py::care_bit_rows).
+) -> tuple[bool, list[tuple[int, int, bool]]]:
+    """Returns ``(satisfiable, care)``: ``satisfiable`` is True iff every one of
+    ``passed_fault_ids``'s required scan-chain-input care bits is jointly
+    satisfiable through the compression decompressor (``solve_xor_broadcast``,
+    reused unmodified for the sequential ring-generator case -- see
+    ring_generator.py::care_bit_rows). ``care`` is the extracted ``(chain_id,
+    cycle, value)`` list itself, for the caller to attach to the accepted
+    pattern's ``load_care`` (see ``ScanPattern.load_care``) -- computed either
+    way, so returning it is free.
 
     Extraction (``extract_scan_care_bits``) is a real cost (2 protocol-fault-
     sim calls per specified (chain, cycle) position) -- callers must scope
@@ -604,7 +608,7 @@ def _check_compression_satisfiable(
     solved = core.solve_xor_broadcast(
         scan_ctx.compression_map.num_channels, fanout, care_bits
     )
-    return bool(solved["ok"])
+    return bool(solved["ok"]), care
 
 
 def _check_compaction_distinguishable(
@@ -1282,11 +1286,9 @@ def _process_scan_candidate(
                     )
                     blocked.append((fault_id, track_key))
 
-    if (
-        scan_ctx.compression_map is not None
-        and source == "sat"
-        and passed_fault_ids
-        and not _check_compression_satisfiable(
+    compression_care: list[tuple[int, int, bool]] | None = None
+    if scan_ctx.compression_map is not None and source == "sat" and passed_fault_ids:
+        satisfiable, compression_care = _check_compression_satisfiable(
             core,
             scan_ctx,
             scan_pattern,
@@ -1300,11 +1302,12 @@ def _process_scan_candidate(
             generic_site_index,
             passed_fault_ids,
         )
-    ):
-        _reject_compression_unsatisfiable(
-            passed_fault_ids, track_key, protocol_sim_rejections, blocked
-        )
-        passed_fault_ids = []
+        if not satisfiable:
+            _reject_compression_unsatisfiable(
+                passed_fault_ids, track_key, protocol_sim_rejections, blocked
+            )
+            passed_fault_ids = []
+            compression_care = None
 
     if scan_ctx.compaction_map is not None and passed_fault_ids:
         observable_ids = _check_compaction_distinguishable(
@@ -1378,6 +1381,13 @@ def _process_scan_candidate(
         (vector_index, run_id),
     )
     conn.commit()
+    if compression_care is not None:
+        scan_pattern = replace(
+            scan_pattern,
+            load_care=tuple(
+                (chain_id, cycle) for chain_id, cycle, _ in compression_care
+            ),
+        )
     return True, False, scan_pattern
 
 

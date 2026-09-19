@@ -94,7 +94,7 @@ def test_check_compression_satisfiable_true_when_solver_says_ok(
         _FaultRow(fault_id=1, fault_site_key="s1", fault_type="sa0", net_index=0),
     ]
 
-    ok = _check_compression_satisfiable(
+    ok, care = _check_compression_satisfiable(
         core,
         ctx,
         scan_pattern,
@@ -111,6 +111,12 @@ def test_check_compression_satisfiable_true_when_solver_says_ok(
 
     assert ok is True
     assert core.solve_calls  # solver was actually consulted
+    # _FakeCore.simulate_scan_protocol_faults makes every trial still detect the
+    # fault, so extract_scan_care_bits finds every position a don't-care -- the
+    # care list this function returns for the caller to attach as ScanPattern.
+    # load_care is therefore empty here, not absent (see the load_care-specific
+    # tests below for a non-empty extraction).
+    assert care == []
 
 
 @pytest.mark.unit
@@ -131,7 +137,7 @@ def test_check_compression_satisfiable_false_when_solver_says_unsatisfiable(
         _FaultRow(fault_id=1, fault_site_key="s1", fault_type="sa0", net_index=0),
     ]
 
-    ok = _check_compression_satisfiable(
+    ok, care = _check_compression_satisfiable(
         core,
         ctx,
         scan_pattern,
@@ -147,6 +153,71 @@ def test_check_compression_satisfiable_false_when_solver_says_unsatisfiable(
     )
 
     assert ok is False
+    # care is still returned (extraction runs regardless of the solver's
+    # verdict) -- the caller discards it on the unsatisfiable path.
+    assert care == []
+
+
+class _PositionSensitiveCore:
+    """Unlike _FakeCore (every trial passes -> every position looks like a
+    don't-care), this stub only reports the fault detected when chain 0's
+    cycle-1 bit is True -- making that one (chain, cycle) position a genuine
+    care bit while every other position stays a don't-care, exercising
+    extract_scan_care_bits's real discriminating behavior."""
+
+    def simulate_scan_protocol_faults(self, *args, faults, load_seqs, **kwargs):
+        detected = bool(load_seqs.get(0, [None, None])[1])
+        lanes = [
+            {"fault_index": i, "outcome": "pass" if detected else "fail"}
+            for i in range(len(faults))
+        ]
+        return {
+            "golden_real_po_values": {},
+            "golden_unload_seqs": {},
+            "batches": [{"batch_index": 0, "lanes": lanes}],
+        }
+
+    def solve_xor_broadcast(self, num_channels, fanout, care_bits):
+        return {"ok": True, "channels": [False] * num_channels}
+
+
+@pytest.mark.unit
+def test_check_compression_satisfiable_returns_the_genuine_care_bit_subset(
+    _stub_kwargs: None,
+) -> None:
+    polynomial = lookup_polynomial(8)
+    phase_shifter_taps = [[0], [0, 1]]
+    compression_map = CompressionMap(8, polynomial, phase_shifter_taps)
+    rows = care_bit_rows(polynomial, phase_shifter_taps, 2)
+    ctx = _ctx(compression_map, rows)
+    core = _PositionSensitiveCore()
+
+    scan_pattern = type(
+        "P", (), {"load_seqs": {0: [False, True], 1: [True, False]}}
+    )()
+    active_rows = [
+        _FaultRow(fault_id=1, fault_site_key="s1", fault_type="sa0", net_index=0),
+    ]
+
+    ok, care = _check_compression_satisfiable(
+        core,
+        ctx,
+        scan_pattern,
+        "generic_cell_map.json",
+        "fail",
+        is_loc=False,
+        is_los=False,
+        head_bits={},
+        active_clock_ports=None,
+        active_rows=active_rows,
+        generic_site_index={"s1": 0},
+        passed_fault_ids=[1],
+    )
+
+    assert ok is True
+    # Only (chain=0, cycle=1) ever changes the detection outcome when flipped
+    # in isolation -- every other position is a genuine don't-care.
+    assert care == [(0, 1, True)]
 
 
 @pytest.mark.unit
