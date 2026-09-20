@@ -392,6 +392,95 @@ threshold = 95.0
 
 
 @pytest.mark.integration
+def test_random_fill_shrinks_fault_ids_across_vectors_in_one_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the random-fill loop must shrink the fault set it grades
+    each subsequent vector against, not pass the same round-start
+    `active_ids` to every one of random_vectors calls. A static list means
+    core.simulate_incremental's own db::load_faults re-queries fault records
+    for faults ALREADY known detected by an earlier vector in this same
+    round -- real, measured cost on large designs (this is what
+    deep_audit_fixes.md's "~6min/vector genericfir waste" / "no intra-round
+    drop" lead was pointing at). Spies on the real core's
+    simulate_incremental to record len(fault_ids) per call and asserts the
+    sequence is non-increasing, with real shrinkage (not just coincidentally
+    flat) somewhere in it."""
+    root = Path(__file__).resolve().parents[3]
+    netlist = root / "tests/benchmarks/iscas85/synth_sky130/c432.json"
+    if not netlist.exists():
+        pytest.skip("c432 netlist missing")
+
+    cfg_path = tmp_path / "config.ofs"
+    cfg_path.write_text(
+        f"""
+[design]
+netlist = {netlist}
+cell_lib = {root / "cells/sky130/sky130_fd_sc_hd.json"}
+
+[fault_model]
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+random_vectors = 8
+random_only = true
+random_stop_coverage = 100.0
+max_rounds = 20
+sat_timeout_seconds = 10
+
+[report]
+threshold = 100.0
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    from faultflow.config import load_config
+    from faultflow.runner import runner as runner_mod
+
+    cfg = load_config(cfg_path, top="c432")
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+
+    real_core = runner_mod._load_core()
+    if real_core is None:
+        pytest.skip("C++ extension _faultflow_core is required")
+    fault_ids_sizes: list[int] = []
+    real_simulate_incremental = real_core.simulate_incremental
+
+    class _SpyCore:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real_core, name)
+
+        def simulate_incremental(self, *args: Any, **kwargs: Any) -> Any:
+            fault_ids_sizes.append(len(args[7]))
+            return real_simulate_incremental(*args, **kwargs)
+
+    # run_progressive_native_atpg does `from faultflow.runner.runner import
+    # _load_core` INSIDE its own body, a fresh lookup on runner_mod's
+    # namespace every call -- so the patch target is runner_mod's own
+    # `_load_core`, not progressive_atpg's (it has no module-level binding
+    # of its own to patch).
+    monkeypatch.setattr(runner_mod, "_load_core", lambda: _SpyCore())
+
+    _, stats, _, _, _ = _run_atpg(cfg, netlist, _model_id(), target_coverage=100.0)
+
+    assert stats.rounds == 1
+    assert (
+        len(fault_ids_sizes) >= 2
+    ), "need at least 2 graded vectors to prove shrinkage"
+    assert fault_ids_sizes == sorted(fault_ids_sizes, reverse=True), (
+        f"fault_ids size must be non-increasing across the round's vectors, "
+        f"got {fault_ids_sizes}"
+    )
+    assert fault_ids_sizes[-1] < fault_ids_sizes[0], (
+        "no shrinkage observed at all across the round -- fault_ids stayed "
+        f"static: {fault_ids_sizes}"
+    )
+
+
+@pytest.mark.integration
 def test_random_only_stops_before_sat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
