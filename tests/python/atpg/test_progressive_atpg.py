@@ -963,6 +963,160 @@ def test_broken_worker_pool_fails_loudly_not_silent_unknowns(
         _run_atpg(cfg, netlist, _model_id(), max_rounds=3, target_coverage=100.0)
 
 
+def _independent_inverters_json(top: str, n: int) -> str:
+    """`n` independent inverters (own A_i/Y_i port pair each) in one flat,
+    purely combinational module -- mirrors tiny_inv.json's single-gate shape
+    exactly, just replicated, so it enumerates the same way tiny_inv.json
+    already does. Enough raw faults (2 per net: each PI + each cell output)
+    to force multiple SAT-dispatch waves at a small `workers` count, unlike
+    tiny_inv.json's single gate."""
+    ports = {}
+    cells = {}
+    netnames = {}
+    for i in range(n):
+        a_net = 2 * i + 2
+        y_net = 2 * i + 3
+        ports[f"A{i}"] = {"direction": "input", "bits": [a_net]}
+        ports[f"Y{i}"] = {"direction": "output", "bits": [y_net]}
+        cells[f"u{i}"] = {
+            "hide_name": 0,
+            "type": "sky130_fd_sc_hd__inv_1",
+            "parameters": {},
+            "attributes": {},
+            "port_directions": {"A": "input", "Y": "output"},
+            "connections": {"A": [a_net], "Y": [y_net]},
+        }
+        netnames[f"A{i}"] = {"hide_name": 0, "bits": [a_net], "attributes": {}}
+        netnames[f"Y{i}"] = {"hide_name": 0, "bits": [y_net], "attributes": {}}
+    module = {
+        top: {
+            "attributes": {"top": "00000000000000000000000000000001"},
+            "ports": ports,
+            "cells": cells,
+            "netnames": netnames,
+        }
+    }
+    return json.dumps(
+        {"creator": "faultflow test fixture", "modules": module}, indent=2
+    )
+
+
+@pytest.mark.unit
+def test_parallel_results_releases_consumed_entries_within_a_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the parallel-wave SAT dispatch loop must POP each fault's
+    solved-result entry out of _parallel_results once consumed, not merely
+    read it. Profiled as the dominant per-fault memory-growth source in the
+    ATPG parent process (unrelated to incremental_sat -- an empirical
+    incremental_sat=true vs. false comparison showed forked SAT workers stay
+    essentially flat in both modes, while the parent grows in both; the
+    growing structure is this dict, which used to retain every consumed
+    entry -- including a full SAT 'vector' payload for every detected fault
+    -- for the entire round instead of releasing it once read).
+
+    Proven via weakref: a marker embedded in each fake wave result must
+    become collectible once its fault_id has been consumed by the processing
+    loop, strictly before the round's SECOND wave is dispatched -- which can
+    only happen after the loop has advanced past every fault_id in wave one
+    (the loop visits active_ids strictly in order), so wave one's entries
+    have no legitimate reason to still be reachable at that point.
+    """
+    import gc
+    import weakref
+    from concurrent.futures import ProcessPoolExecutor
+
+    root = Path(__file__).resolve().parents[3]
+    top = "inv_bank"
+    # workers=2 -> wave_size = 2 * SAT_WAVE_FACTOR(8) = 16; 24 independent
+    # inverters give 2 raw faults per net (24 PIs + 24 outputs) = 96 faults,
+    # comfortably forcing at least two waves.
+    n = 24
+    netlist = tmp_path / f"{top}.json"
+    netlist.write_text(_independent_inverters_json(top, n), encoding="utf-8")
+
+    cfg_path = tmp_path / "config.ofs"
+    cfg_path.write_text(
+        f"""
+[design]
+netlist = {netlist}
+cell_lib = {root / "cells/sky130/sky130_fd_sc_hd.json"}
+
+[fault_model]
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+random_vectors = 1
+random_stop_coverage = 0.0
+sat_conflict_limit = 100000
+max_rounds = 1
+sat_timeout_seconds = 10
+workers = 2
+
+[report]
+threshold = 100.0
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    from faultflow.config import load_config
+
+    cfg = load_config(cfg_path, top=top)
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy(netlist, cfg.output_dir / f"{top}.json")
+    assert cfg.atpg.workers == 2
+
+    live_markers: list[weakref.ReferenceType] = []
+    wave_calls = 0
+    # Recorded (not asserted) inside fake_map: an AssertionError raised there
+    # would be swallowed by the production code's own
+    # `except Exception as _exc: log.warning(...)` around the wave-dispatch
+    # loop, silently "passing" this test no matter what it actually observed.
+    # The real assertion happens after _run_atpg returns, outside that
+    # exception-swallowing context.
+    wave2_pre_dispatch_alive: list[bool] | None = None
+
+    class _Marker:
+        pass
+
+    def fake_map(_self: object, _fn: object, args_iter: Any) -> Any:
+        nonlocal wave_calls, wave2_pre_dispatch_alive
+        wave_calls += 1
+        if wave_calls == 2:
+            gc.collect()
+            wave2_pre_dispatch_alive = [ref() is not None for ref in live_markers]
+        results = []
+        for args in args_iter:
+            fault_id = args[4]
+            marker = _Marker()
+            live_markers.append(weakref.ref(marker))
+            results.append((fault_id, "UNSAT", {"result": "UNSAT", "_m": marker}))
+        return results
+
+    monkeypatch.setattr(ProcessPoolExecutor, "map", fake_map)
+
+    _run_atpg(cfg, netlist, _model_id(), max_rounds=1, target_coverage=100.0)
+
+    assert wave_calls >= 2, "test design didn't force a second wave"
+    assert wave2_pre_dispatch_alive, "no markers recorded from wave 1"
+    # At most the single most-recently-processed fault's `solved` local can
+    # still legitimately reference its marker at this exact instant (it is
+    # only overwritten on the NEXT loop iteration, which is what triggers
+    # wave 2's dispatch in the first place) -- every earlier wave-1 entry
+    # must already be unreachable. With the pre-fix `.get()`, ALL 16 stay
+    # reachable (never removed from the dict at all).
+    still_alive = sum(wave2_pre_dispatch_alive)
+    assert still_alive <= 1, (
+        "wave 1's consumed _parallel_results entries are still reachable "
+        "when wave 2 is dispatched -- .get() is retaining them instead of "
+        f".pop() ({still_alive}/{len(wave2_pre_dispatch_alive)} still alive)"
+    )
+
+
 @pytest.mark.unit
 def test_resume_preserves_detected_faults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
