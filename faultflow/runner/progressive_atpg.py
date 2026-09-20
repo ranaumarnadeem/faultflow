@@ -335,7 +335,12 @@ def _accept_and_simulate(
     test_mode: str = "",
     sim_threads: int = 1,
     on_vector_accepted: Callable[[dict[str, bool], int | None], None] | None,
-) -> None:
+) -> set[int]:
+    """Returns the fault ids this vector detected, so a caller grading several
+    vectors against the same starting fault_ids in one pass (e.g. a
+    random-fill round) can shrink its own list between vectors instead of
+    re-querying every remaining vector's fault records against the full,
+    un-shrunk set -- see the random-fill loops' own comments."""
     fault_id = fault_ids[0] if len(fault_ids) == 1 else None
     if on_vector_accepted is not None:
         on_vector_accepted(vector, fault_id)
@@ -343,7 +348,7 @@ def _accept_and_simulate(
     core.append_vectors(
         db_path, campaign_id, run_id, vector_source, [key], vector_index
     )
-    core.simulate_incremental(
+    detections = core.simulate_incremental(
         json_path,
         cell_map_path,
         db_path,
@@ -359,6 +364,7 @@ def _accept_and_simulate(
         sim_threads,
     )
     core.update_run_vector_count(db_path, run_id, vector_index)
+    return {int(row["fault_id"]) for row in detections}
 
 
 def transition_pattern_key(
@@ -402,7 +408,9 @@ def _accept_and_simulate_transition(
     unsupported: str,
     blackbox_instances: list[str],
     sim_threads: int = 1,
-) -> None:
+) -> set[int]:
+    """Returns the fault ids this pair detected -- see _accept_and_simulate's
+    docstring."""
     launch_key = pattern_key(launch, input_order)
     capture_key = pattern_key(capture, input_order)
     # Capture frame in `pattern`, launch frame in `launch_pattern`.
@@ -415,7 +423,7 @@ def _accept_and_simulate_transition(
         vector_index,
         [launch_key],
     )
-    core.simulate_transition_incremental(
+    detections = core.simulate_transition_incremental(
         json_path,
         cell_map_path,
         db_path,
@@ -430,6 +438,7 @@ def _accept_and_simulate_transition(
         sim_threads,
     )
     core.update_run_vector_count(db_path, run_id, vector_index)
+    return {int(row["fault_id"]) for row in detections}
 
 
 def _precertify_redundant(
@@ -844,11 +853,21 @@ def run_progressive_native_atpg(
                     lambda: _live_detected(effective_db_path, campaign_id),
                 )
                 random_denom = _coverage_denominator(effective_db_path, campaign_id)
+                # Shrinks as vectors are graded, so each subsequent vector's
+                # fault-record load is against only the still-undetected
+                # faults from THIS round, not the full round-start set every
+                # time (previously fault_ids stayed the static `active_ids`
+                # for all random_vectors iterations -- a real, measured cost
+                # on large designs: db::load_faults re-queries the whole
+                # un-shrunk list, chunked, every single vector).
+                random_remaining = set(active_ids)
                 graded = 0
                 for offset, vector in enumerate(new_random):
+                    if not random_remaining:
+                        break
                     vector_index = base_index + offset
                     sim_started = time.perf_counter()
-                    _accept_and_simulate(
+                    newly = _accept_and_simulate(
                         core,
                         json_path=json_path,
                         cell_map_path=effective_cell_map,
@@ -858,7 +877,7 @@ def run_progressive_native_atpg(
                         vector_source=vector_source,
                         vector=vector,
                         input_order=input_order,
-                        fault_ids=active_ids,
+                        fault_ids=sorted(random_remaining),
                         vector_index=vector_index,
                         unsupported=unsupported,
                         blackbox_instances=bb_instances,
@@ -866,6 +885,7 @@ def run_progressive_native_atpg(
                         sim_threads=sim_threads,
                         on_vector_accepted=on_vector_accepted,
                     )
+                    random_remaining.difference_update(newly)
                     fault_sim_seconds += time.perf_counter() - sim_started
                     graded += 1
                     heartbeat.tick(offset + 1)
@@ -1431,10 +1451,16 @@ def run_progressive_transition_atpg(
                 len(new_random),
                 lambda: _live_detected(effective_db_path, campaign_id),
             )
+            # Shrinks as pairs are graded -- see the stuck-at random-fill
+            # loop's identical comment (run_progressive_native_atpg) for why
+            # a static, un-shrunk fault_ids list here is a real cost.
+            random_remaining = set(active_ids)
             for offset, (launch, capture) in enumerate(new_random):
+                if not random_remaining:
+                    break
                 vector_index = base_index + offset
                 sim_started = time.perf_counter()
-                _accept_and_simulate_transition(
+                newly = _accept_and_simulate_transition(
                     core,
                     json_path=json_path,
                     cell_map_path=effective_cell_map,
@@ -1445,12 +1471,13 @@ def run_progressive_transition_atpg(
                     launch=launch,
                     capture=capture,
                     input_order=input_order,
-                    fault_ids=active_ids,
+                    fault_ids=sorted(random_remaining),
                     vector_index=vector_index,
                     unsupported=unsupported,
                     blackbox_instances=bb_instances,
                     sim_threads=sim_threads,
                 )
+                random_remaining.difference_update(newly)
                 fault_sim_seconds += time.perf_counter() - sim_started
                 heartbeat.tick(offset + 1)
 
