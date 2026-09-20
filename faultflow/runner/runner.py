@@ -1124,7 +1124,25 @@ class Runner:
         self,
         manifest: dict[str, object],
         vectors_path: Path | None,
-    ) -> tuple[list[str], dict[str, object]]:
+    ) -> tuple[
+        list[str],
+        dict[str, object],
+        VectorSet,
+        list[str],
+        list[str],
+        dict[str, bool],
+        list[dict[str, bool]],
+    ]:
+        """Returns (warnings, info, scanned_vectors, output_order, clock_names,
+        scan_extra, generic_out). The last five are the normal-mode context
+        plus generic_json's already-computed sequence outputs, so a caller
+        that goes on to run the techmap-equivalence check can reuse them
+        instead of recomputing an identical context and rebuilding
+        generic_json's compiled graph a second time -- a real cost at design
+        scale (profiled: rebuilding the compiled graph for a ~150k-cell
+        design dominates scan-check's wall time; this call was previously
+        duplicated verbatim by _run_scan_techmap_equivalence_check against
+        the exact same deterministic inputs)."""
         source_json = Path(str(manifest["source_json"]))
         generic_json = Path(str(manifest["generic_json"]))
         (
@@ -1151,11 +1169,19 @@ class Runner:
             raise RunnerError(
                 "normal-mode scanned outputs differ from original outputs"
             )
-        return [], {
-            "vector_source": vector_source,
-            "vector_count": vectors.count,
-            "output_order": output_order,
-        }
+        return (
+            [],
+            {
+                "vector_source": vector_source,
+                "vector_count": vectors.count,
+                "output_order": output_order,
+            },
+            scanned_vectors,
+            output_order,
+            clock_names,
+            scan_extra,
+            scanned,
+        )
 
     def _run_scan_techmap_equivalence_check(
         self,
@@ -1164,6 +1190,7 @@ class Runner:
         output_order: list[str],
         clock_names: list[str],
         scan_extra: dict[str, bool],
+        generic_out: list[dict[str, bool]],
     ) -> dict[str, object]:
         sky = manifest.get("sky130_verilog")
         if not isinstance(sky, str) or not sky:
@@ -1202,14 +1229,13 @@ class Runner:
         except ScanError as exc:
             raise RunnerError(str(exc)) from exc
 
-        generic_out = self._sequence_outputs(
-            generic_json,
-            scanned_vectors,
-            output_order,
-            clock_names,
-            extra_inputs=scan_extra,
-            cell_map_path=resolve_scan_cell_map(self.cfg),
-        )
+        # generic_out is supplied by the caller: it's the exact same
+        # deterministic computation the normal-mode check already performed
+        # against this manifest/vectors_path (same generic_json, same
+        # scanned_vectors/output_order/clock_names/scan_extra/cell_map) --
+        # recomputing it here would rebuild generic_json's compiled graph and
+        # rerun the full sequence simulation a second time for an identical
+        # result.
         techmap_out = self._sequence_outputs(
             techmap_json,
             scanned_vectors,
@@ -1332,12 +1358,35 @@ class Runner:
         warnings = list(structural.warnings)
         normal_mode: dict[str, object] | None = None
         techmap_equivalence: dict[str, object] | None = None
+        # Populated by the normal-mode check below so the techmap-equivalence
+        # check (if it also runs) can reuse them instead of recomputing an
+        # identical context and rebuilding generic_json's compiled graph a
+        # second time -- see _run_scan_normal_mode_check's docstring.
+        normal_mode_reuse: (
+            tuple[
+                VectorSet, list[str], list[str], dict[str, bool], list[dict[str, bool]]
+            ]
+            | None
+        ) = None
         if not errors and not structural_only:
             try:
-                extra_warnings, normal_mode = self._run_scan_normal_mode_check(
-                    manifest, vectors_path
-                )
+                (
+                    extra_warnings,
+                    normal_mode,
+                    scanned_vectors,
+                    output_order,
+                    clock_names,
+                    scan_extra,
+                    generic_out,
+                ) = self._run_scan_normal_mode_check(manifest, vectors_path)
                 warnings.extend(extra_warnings)
+                normal_mode_reuse = (
+                    scanned_vectors,
+                    output_order,
+                    clock_names,
+                    scan_extra,
+                    generic_out,
+                )
             except Exception as exc:
                 errors.append(str(exc))
 
@@ -1347,20 +1396,42 @@ class Runner:
         )
         if not errors and run_techmap_check:
             try:
-                (
-                    _vectors,
-                    scanned_vectors,
-                    output_order,
-                    clock_names,
-                    scan_extra,
-                    _vector_source,
-                ) = self._scan_normal_mode_context(manifest, vectors_path)
+                if normal_mode_reuse is not None:
+                    (
+                        scanned_vectors,
+                        output_order,
+                        clock_names,
+                        scan_extra,
+                        generic_out,
+                    ) = normal_mode_reuse
+                else:
+                    # structural_only=True (or the normal-mode check didn't
+                    # run for some other reason): nothing to reuse, so build
+                    # the context and generic_json's outputs fresh -- matches
+                    # this combination's pre-existing behavior exactly.
+                    (
+                        _vectors,
+                        scanned_vectors,
+                        output_order,
+                        clock_names,
+                        scan_extra,
+                        _vector_source,
+                    ) = self._scan_normal_mode_context(manifest, vectors_path)
+                    generic_out = self._sequence_outputs(
+                        Path(str(manifest["generic_json"])),
+                        scanned_vectors,
+                        output_order,
+                        clock_names,
+                        extra_inputs=scan_extra,
+                        cell_map_path=resolve_scan_cell_map(self.cfg),
+                    )
                 techmap_equivalence = self._run_scan_techmap_equivalence_check(
                     manifest,
                     scanned_vectors,
                     output_order,
                     clock_names,
                     scan_extra,
+                    generic_out,
                 )
             except Exception as exc:
                 errors.append(str(exc))
