@@ -113,3 +113,45 @@ def test_equivalence_check_passes_for_a_genuine_techmap(
     result = runner.scan_check(require_techmap=True)
 
     assert "check=PASS" in result or "PASS" in result
+
+
+@pytest.mark.integration
+def test_scan_check_does_not_rebuild_generic_json_sequence_outputs_twice(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """Regression for the check_scan perf fix: _run_scan_techmap_equivalence_check
+    must reuse the normal-mode check's already-computed generic_json sequence
+    outputs rather than recomputing them from scratch. Recomputing means
+    rebuilding generic_json's compiled graph a second time -- cheap here (a
+    tiny D flip-flop), but profiled as the dominant cost of scan-check at real
+    design scale (a ~150k-cell design), where this exact duplicate call was
+    the root cause. Counts _sequence_outputs calls against generic_json
+    specifically, across a full scan_check(require_techmap=True) run that
+    exercises both the normal-mode and techmap-equivalence checks."""
+    import shutil
+
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+
+    runner, manifest_path = _build_techmapped_dff(tmp_path)
+    manifest = load_manifest(manifest_path)
+    generic_json = Path(str(manifest["generic_json"]))
+
+    original = runner._sequence_outputs
+    generic_json_calls: list[Path] = []
+
+    def _counting_sequence_outputs(netlist, *args, **kwargs):
+        netlist_path = Path(netlist)
+        if netlist_path == generic_json:
+            generic_json_calls.append(netlist_path)
+        return original(netlist, *args, **kwargs)
+
+    runner._sequence_outputs = _counting_sequence_outputs
+
+    result = runner.scan_check(require_techmap=True)
+
+    assert "PASS" in result
+    assert len(generic_json_calls) == 1, (
+        "generic_json's sequence outputs were recomputed instead of reused "
+        f"across the normal-mode + techmap-equivalence checks: {generic_json_calls}"
+    )
