@@ -1050,7 +1050,16 @@ def run_progressive_native_atpg(
                 min(prior_timeout_count.get(fault_id, 0), len(timeout_tiers) - 1)
             ]
             if _parallel_results:
-                _pre_res, _pre_slv = _parallel_results.get(
+                # pop, not get: each fault_id in active_ids is read exactly
+                # once (this loop never revisits one), and a wave's results
+                # can include a full SAT 'vector' assignment per detected
+                # fault -- leaving consumed entries in the dict for the rest
+                # of a large round accumulates real memory (profiled: this is
+                # the dominant per-fault growth in the ATPG parent process,
+                # not the SAT solver itself). Popping bounds _parallel_results
+                # to roughly one wave's outstanding results instead of the
+                # whole round's.
+                _pre_res, _pre_slv = _parallel_results.pop(
                     fault_id, ("UNKNOWN", {"result": "UNKNOWN"})
                 )
                 solved = dict(_pre_slv)
@@ -1561,7 +1570,16 @@ def run_progressive_transition_atpg(
                 min(prior_timeout_count.get(fault_id, 0), len(timeout_tiers) - 1)
             ]
             if _parallel_results:
-                _pre_res, _pre_slv = _parallel_results.get(
+                # pop, not get: each fault_id in active_ids is read exactly
+                # once (this loop never revisits one), and a wave's results
+                # can include a full SAT 'vector' assignment per detected
+                # fault -- leaving consumed entries in the dict for the rest
+                # of a large round accumulates real memory (profiled: this is
+                # the dominant per-fault growth in the ATPG parent process,
+                # not the SAT solver itself). Popping bounds _parallel_results
+                # to roughly one wave's outstanding results instead of the
+                # whole round's.
+                _pre_res, _pre_slv = _parallel_results.pop(
                     fault_id, ("UNKNOWN", {"result": "UNKNOWN"})
                 )
                 solved = dict(_pre_slv)
