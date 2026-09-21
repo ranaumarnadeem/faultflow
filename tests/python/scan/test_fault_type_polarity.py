@@ -156,6 +156,48 @@ wbr_model = buffer
 
 
 @pytest.mark.golden
+def test_clock_ports_precomputed_once_not_reparsed_per_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: ctx.clock_ports must be precomputed once in
+    build_scan_pipeline_context, not recomputed (with a full, uncached JSON
+    re-parse of generic_json via _port_name_for_net) inside
+    _protocol_fault_sim_kwargs on every single candidate -- the "Python
+    per-candidate JSON re-parse in _protocol_fault_sim_kwargs" lever from
+    cva6_perf_roadmap.md."""
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, generic, scan_ctx = _stuck_at_scan_workspace(tmp_path)
+
+    assert scan_ctx.clock_ports == ["CLK"]
+
+    import faultflow.runner.runner as runner_mod
+    from faultflow.scan.detection_pipeline import _protocol_fault_sim_kwargs
+    from faultflow.scan.protocol import ScanPattern
+
+    call_count = 0
+    real_port_name_for_net = runner_mod._port_name_for_net
+
+    def _spy(*args: object, **kwargs: object) -> object:
+        nonlocal call_count
+        call_count += 1
+        return real_port_name_for_net(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(runner_mod, "_port_name_for_net", _spy)
+
+    pattern = ScanPattern(load_seqs={}, capture_pi_values={}, expected_unload={})
+    for _ in range(5):
+        kwargs = _protocol_fault_sim_kwargs(scan_ctx, pattern)
+        assert kwargs["clock_ports"] == ["CLK"]
+
+    assert call_count == 0, (
+        "_protocol_fault_sim_kwargs called _port_name_for_net "
+        f"{call_count} times across 5 calls -- clock_ports is being "
+        "recomputed (with a JSON re-parse) per call instead of reusing "
+        "the precomputed ctx.clock_ports"
+    )
+
+
+@pytest.mark.golden
 def test_non_qstem_sa1_fault_not_falsely_credited_by_sa0_vector(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
 ) -> None:
