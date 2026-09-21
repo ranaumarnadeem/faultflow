@@ -1134,7 +1134,7 @@ def run_progressive_native_atpg(
                     stats.accepted_vectors += 1
                     vector_index = len(vectors)
                     sim_started = time.perf_counter()
-                    _accept_and_simulate(
+                    newly = _accept_and_simulate(
                         core,
                         json_path=json_path,
                         cell_map_path=effective_cell_map,
@@ -1154,12 +1154,23 @@ def run_progressive_native_atpg(
                     )
                     fault_sim_seconds += time.perf_counter() - sim_started
                     if drop_sat:
-                        with connect(effective_db_path) as conn:
-                            init_schema(conn)
-                            remaining.intersection_update(
-                                int(r["id"])
-                                for r in _active_fault_rows(conn, campaign_id)
-                            )
+                        # A pure in-memory diff, not a DB re-query: `newly`
+                        # already IS this vector's detected set. A fault
+                        # this same round's earlier UNSAT results marked
+                        # redundant (core.mark_fault_redundant, below) can
+                        # linger in `remaining` under this approach instead
+                        # of being dropped immediately, but harmlessly --
+                        # each fault_id is visited once by the outer loop
+                        # (so a stale entry is never wrongly re-skipped) and
+                        # load_active_fault_records re-checks live DB status
+                        # before including anything in a simulation batch
+                        # (so a stale entry is never wrongly re-simulated).
+                        # Previously this re-queried the WHOLE campaign's
+                        # active-fault list from a fresh connection on every
+                        # single accepted vector -- the "per-accepted-vector
+                        # full active-fault re-read" lead from
+                        # deep_audit_fixes.md.
+                        remaining.difference_update(newly)
                     round_tracker.sat_outcomes.append("SAT")
                 else:
                     stats.rejected_candidates += 1
@@ -1660,7 +1671,7 @@ def run_progressive_transition_atpg(
                     stats.accepted_vectors += 1
                     vector_index = len(pairs)
                     sim_started = time.perf_counter()
-                    _accept_and_simulate_transition(
+                    newly = _accept_and_simulate_transition(
                         core,
                         json_path=json_path,
                         cell_map_path=effective_cell_map,
@@ -1679,12 +1690,11 @@ def run_progressive_transition_atpg(
                     )
                     fault_sim_seconds += time.perf_counter() - sim_started
                     if drop_sat:
-                        with connect(effective_db_path) as conn:
-                            init_schema(conn)
-                            remaining.intersection_update(
-                                int(r["id"])
-                                for r in _active_fault_rows(conn, campaign_id)
-                            )
+                        # Pure in-memory diff -- see the stuck-at loop's
+                        # identical comment (run_progressive_native_atpg)
+                        # for why this is safe and why the DB re-query it
+                        # replaces was real, measured waste.
+                        remaining.difference_update(newly)
                     round_tracker.sat_outcomes.append("SAT")
                 else:
                     stats.rejected_candidates += 1
