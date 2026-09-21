@@ -119,6 +119,14 @@ class ScanPipelineContext:
     # insert_compaction used to build the real compactor's fanout -- true
     # today by construction (a static artifact written once).
     compaction_map: CompactionMap | None = None
+    # Precomputed ONCE per campaign (build_scan_pipeline_context), not
+    # per-candidate: resolving a clock net id to its port name
+    # (_port_name_for_net) does a full, uncached JSON parse of generic_json,
+    # and this is otherwise static for the whole campaign. Previously
+    # recomputed inside _protocol_fault_sim_kwargs, called once per
+    # candidate -- a real cost at scale (the "Python per-candidate JSON
+    # re-parse in _protocol_fault_sim_kwargs" lever from cva6_perf_roadmap.md).
+    clock_ports: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -199,6 +207,16 @@ def build_scan_pipeline_context(
     reset_pi_holds = _scan_reset_pi_holds(
         generic_json, str(manifest.get("top", cfg.top)), cell_map
     )
+    from faultflow.runner.runner import _port_name_for_net
+
+    clock_ports: list[str] = []
+    for clk_net in manifest_clock_net_ids(manifest, error_cls=RunnerError):
+        port = _port_name_for_net(
+            generic_json, str(manifest.get("top", cfg.top)), clk_net, "input"
+        )
+        if port is None:
+            raise RunnerError(f"cannot map scan clock net {clk_net} to a port")
+        clock_ports.append(port)
     compression_map: CompressionMap | None = None
     compression_care_bit_rows: list[list[int]] | None = None
     if cfg.compression.enabled:
@@ -237,6 +255,7 @@ def build_scan_pipeline_context(
         compression_map=compression_map,
         compression_care_bit_rows=compression_care_bit_rows,
         compaction_map=compaction_map,
+        clock_ports=clock_ports,
     )
 
 
@@ -393,17 +412,11 @@ def _mark_preflight_redundant(
 def _protocol_fault_sim_kwargs(
     ctx: ScanPipelineContext, pattern: Any
 ) -> dict[str, object]:
-    from faultflow.runner.runner import _port_name_for_net
-
-    clock_net_ids = manifest_clock_net_ids(ctx.manifest, error_cls=RunnerError)
-    clock_ports: list[str] = []
-    for clk_net in clock_net_ids:
-        port = _port_name_for_net(
-            ctx.generic_json, str(ctx.manifest["top"]), clk_net, "input"
-        )
-        if port is None:
-            raise RunnerError(f"cannot map scan clock net {clk_net} to a port")
-        clock_ports.append(port)
+    # ctx.clock_ports is precomputed ONCE per campaign
+    # (build_scan_pipeline_context) -- resolving a clock net id to its port
+    # name does a full, uncached JSON parse of generic_json, and this
+    # function is called once per candidate, so recomputing it here every
+    # time was a real per-candidate cost at scale.
     scan_inputs = ctx.manifest.get("scan_inputs", [])
     scan_outputs = ctx.manifest.get("scan_outputs", [])
     if not isinstance(scan_inputs, list) or not isinstance(scan_outputs, list):
@@ -425,7 +438,7 @@ def _protocol_fault_sim_kwargs(
         else ctx.functional_output_order
     )
     return {
-        "clock_ports": clock_ports,
+        "clock_ports": ctx.clock_ports,
         "scan_enable_port": str(ctx.manifest["scan_enable"]),
         "scan_input_ports": [str(name) for name in scan_inputs],
         "scan_output_ports": [str(name) for name in scan_outputs],
