@@ -481,6 +481,79 @@ threshold = 100.0
 
 
 @pytest.mark.integration
+def test_fault_drop_sat_does_not_requery_db_per_accepted_vector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: M1's fault-drop bookkeeping (`remaining`) must be updated
+    from the accepted vector's own already-known detections (a pure
+    in-memory diff), not by re-querying the WHOLE campaign's active-fault
+    list from a fresh DB connection on every single accepted SAT vector --
+    the "per-accepted-vector full active-fault re-read in fault_drop" lead
+    from deep_audit_fixes.md. Spies on _active_fault_rows (called once per
+    round to seed active_ids, and previously ALSO once per accepted vector
+    for the M1 resync) and asserts its call count stays close to the round
+    count, not anywhere near the accepted-vector count."""
+    from faultflow.config import load_config
+    from faultflow.runner import progressive_atpg as pa
+
+    root = Path(__file__).resolve().parents[3]
+    netlist = root / "tests/benchmarks/iscas85/synth_sky130/c432.json"
+    if not netlist.exists():
+        pytest.skip("c432 netlist missing")
+
+    cfg_path = tmp_path / "config.ofs"
+    cfg_path.write_text(
+        f"""
+[design]
+netlist = {netlist}
+cell_lib = {root / "cells/sky130/sky130_fd_sc_hd.json"}
+
+[fault_model]
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+random_vectors = 64
+max_rounds = 20
+sat_timeout_seconds = 10
+fault_drop_sat = true
+
+[report]
+threshold = 100.0
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    cfg = load_config(cfg_path, top="c432")
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+
+    call_count = 0
+    real_active_fault_rows = pa._active_fault_rows
+
+    def _spy(conn: Any, campaign_id: int) -> Any:
+        nonlocal call_count
+        call_count += 1
+        return real_active_fault_rows(conn, campaign_id)
+
+    monkeypatch.setattr(pa, "_active_fault_rows", _spy)
+
+    _, stats, _, _, _ = _run_atpg(cfg, netlist, _model_id(), target_coverage=100.0)
+
+    assert stats.accepted_vectors > 0
+    # One call per round to seed active_ids (plus a couple more for
+    # preflight/Phase-A bookkeeping) -- NOT one per accepted SAT vector.
+    # Pre-fix, call_count tracked accepted_vectors almost 1:1; post-fix it's
+    # bounded by rounds, independent of how many vectors got accepted.
+    assert call_count <= stats.rounds * 2 + 2, (
+        f"_active_fault_rows called {call_count} times across {stats.rounds} "
+        f"rounds and {stats.accepted_vectors} accepted vectors -- looks like "
+        "it's still being called per accepted vector, not just per round"
+    )
+
+
+@pytest.mark.integration
 def test_random_only_stops_before_sat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
