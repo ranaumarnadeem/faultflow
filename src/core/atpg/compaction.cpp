@@ -53,26 +53,34 @@ FaultBatch make_batch(const std::vector<Target>& targets, size_t begin,
   return batch;
 }
 
-}  // namespace
-
-std::vector<int64_t> detect_with_vector_unfiltered(
-    const std::string& json_path, const std::string& cell_map_path,
-    const std::string& db_path, const std::map<std::string, bool>& vector,
-    const std::vector<std::string>& input_order,
-    const std::vector<int64_t>& fault_ids,
-    const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
-  if (fault_ids.empty()) {
-    return {};
+// Shared tail of detect_with_vector/detect_with_pair: batch-simulate
+// pre-built targets against an already-loaded vector and collect which fault
+// ids were detected. No DB access -- callers build `targets` either from a
+// fresh DB query (the *_unfiltered wrappers) or from a caller-preloaded list
+// reused across many calls (detect_with_vector/detect_with_pair themselves).
+std::vector<int64_t> simulate_targets(const CachedGraph& ctx,
+                                      const TestVector& tv,
+                                      const std::vector<Target>& targets) {
+  BitParallelSim sim;
+  std::vector<int64_t> detected;
+  const size_t lanes = static_cast<size_t>(kBatchSize);
+  for (size_t begin = 0; begin < targets.size(); begin += lanes) {
+    const size_t end = std::min(begin + lanes, targets.size());
+    const FaultBatch batch = make_batch(targets, begin, end);
+    const uint64_t detected_mask = sim.simulate_batch(ctx.cg, tv, batch);
+    for (size_t i = begin; i < end; ++i) {
+      const CompactFault& lane = batch.faults[i - begin];
+      if ((detected_mask & lane.sa_mask) != 0) {
+        detected.push_back(targets[i].fault_id);
+      }
+    }
   }
-  const CachedGraph& ctx =
-      load_cached_graph(json_path, cell_map_path, unsupported_policy,
-                        blackbox_instances);
-  const TestVector tv = build_vector(ctx.parsed, vector, input_order);
+  return detected;
+}
 
-  // One batched query (matches db::load_faults usage in progressive_atpg.cpp).
-  const std::map<int64_t, db::FaultRecord> records =
-      db::load_faults(db_path, fault_ids);
+std::vector<Target> targets_from_records(
+    const std::vector<int64_t>& fault_ids,
+    const std::map<int64_t, db::FaultRecord>& records) {
   std::vector<Target> targets;
   targets.reserve(fault_ids.size());
   for (int64_t fault_id : fault_ids) {
@@ -96,22 +104,110 @@ std::vector<int64_t> detect_with_vector_unfiltered(
     fault.collapsed_into = rec.collapsed_into;
     targets.push_back({fault_id, fault});
   }
+  return targets;
+}
+
+// Builds Target from a caller-preloaded FaultTarget list -- no DB lookup, so
+// exclusion/collapsed_into aren't re-checked here; the caller is responsible
+// for having already filtered to real simulation targets (mirrors
+// targets_from_records' filtering, done once by the caller instead of once
+// per call).
+std::vector<Target> targets_from_preloaded(
+    const std::vector<FaultTarget>& preloaded) {
+  std::vector<Target> targets;
+  targets.reserve(preloaded.size());
+  for (const auto& ft : preloaded) {
+    CompactFault fault;
+    fault.net_index = ft.net_index;
+    fault.type = ft.type;
+    fault.status = FaultStatus::DETECTED;
+    fault.exclusion = FaultExclusion::NONE;
+    fault.collapsed_into = std::numeric_limits<uint32_t>::max();
+    targets.push_back({ft.fault_id, fault});
+  }
+  return targets;
+}
+
+}  // namespace
+
+std::vector<int64_t> detect_with_vector(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::map<std::string, bool>& vector,
+    const std::vector<std::string>& input_order,
+    const std::vector<FaultTarget>& targets,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  if (targets.empty()) {
+    return {};
+  }
+  const CachedGraph& ctx =
+      load_cached_graph(json_path, cell_map_path, unsupported_policy,
+                        blackbox_instances);
+  const TestVector tv = build_vector(ctx.parsed, vector, input_order);
+  return simulate_targets(ctx, tv, targets_from_preloaded(targets));
+}
+
+std::vector<int64_t> detect_with_pair(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::map<std::string, bool>& launch,
+    const std::map<std::string, bool>& capture,
+    const std::vector<std::string>& input_order,
+    const std::vector<FaultTarget>& targets,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  if (targets.empty()) {
+    return {};
+  }
+  const CachedGraph& ctx =
+      load_cached_graph(json_path, cell_map_path, unsupported_policy,
+                        blackbox_instances);
+  const TestVector v1 = build_vector(ctx.parsed, launch, input_order);
+  const TestVector v2 = build_vector(ctx.parsed, capture, input_order);
+  std::vector<Target> resolved = targets_from_preloaded(targets);
+  for (auto& t : resolved) {
+    t.fault.model = FaultModel::TRANSITION;
+  }
 
   BitParallelSim sim;
   std::vector<int64_t> detected;
   const size_t lanes = static_cast<size_t>(kBatchSize);
-  for (size_t begin = 0; begin < targets.size(); begin += lanes) {
-    const size_t end = std::min(begin + lanes, targets.size());
-    const FaultBatch batch = make_batch(targets, begin, end);
-    const uint64_t detected_mask = sim.simulate_batch(ctx.cg, tv, batch);
+  for (size_t begin = 0; begin < resolved.size(); begin += lanes) {
+    const size_t end = std::min(begin + lanes, resolved.size());
+    const FaultBatch batch = make_batch(resolved, begin, end);
+    const uint64_t detected_mask =
+        sim.simulate_transition_batch(ctx.cg, v1, v2, batch);
     for (size_t i = begin; i < end; ++i) {
       const CompactFault& lane = batch.faults[i - begin];
       if ((detected_mask & lane.sa_mask) != 0) {
-        detected.push_back(targets[i].fault_id);
+        detected.push_back(resolved[i].fault_id);
       }
     }
   }
   return detected;
+}
+
+std::vector<int64_t> detect_with_vector_unfiltered(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, const std::map<std::string, bool>& vector,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  if (fault_ids.empty()) {
+    return {};
+  }
+  const CachedGraph& ctx =
+      load_cached_graph(json_path, cell_map_path, unsupported_policy,
+                        blackbox_instances);
+  const TestVector tv = build_vector(ctx.parsed, vector, input_order);
+
+  // One batched query (matches db::load_faults usage in progressive_atpg.cpp).
+  // A single call is fine here; a caller looping over many vectors against
+  // the same (or shrinking) fault set should preload targets once and call
+  // detect_with_vector directly instead (see FaultTarget's docstring).
+  const std::map<int64_t, db::FaultRecord> records =
+      db::load_faults(db_path, fault_ids);
+  return simulate_targets(ctx, tv, targets_from_records(fault_ids, records));
 }
 
 std::vector<int64_t> detect_with_pair_unfiltered(
@@ -125,52 +221,19 @@ std::vector<int64_t> detect_with_pair_unfiltered(
   if (fault_ids.empty()) {
     return {};
   }
-  const CachedGraph& ctx =
-      load_cached_graph(json_path, cell_map_path, unsupported_policy,
-                        blackbox_instances);
-  const TestVector v1 = build_vector(ctx.parsed, launch, input_order);
-  const TestVector v2 = build_vector(ctx.parsed, capture, input_order);
-
+  // The model gets set to TRANSITION by detect_with_pair itself, so it does
+  // not need to survive the FaultTarget round trip here.
   const std::map<int64_t, db::FaultRecord> records =
       db::load_faults(db_path, fault_ids);
-  std::vector<Target> targets;
-  targets.reserve(fault_ids.size());
-  for (int64_t fault_id : fault_ids) {
-    const auto it = records.find(fault_id);
-    if (it == records.end()) {
-      throw std::runtime_error("fault not found: " + std::to_string(fault_id));
-    }
-    const db::FaultRecord& rec = it->second;
-    if (rec.exclusion != FaultExclusion::NONE ||
-        rec.collapsed_into != std::numeric_limits<uint32_t>::max()) {
-      continue;
-    }
-    CompactFault fault;
-    fault.net_index = rec.compiled_net_index;
-    fault.type = rec.type;
-    fault.status = rec.status;
-    fault.exclusion = rec.exclusion;
-    fault.collapsed_into = rec.collapsed_into;
-    fault.model = FaultModel::TRANSITION;
-    targets.push_back({fault_id, fault});
+  std::vector<Target> targets = targets_from_records(fault_ids, records);
+  std::vector<FaultTarget> preloaded;
+  preloaded.reserve(targets.size());
+  for (const auto& t : targets) {
+    preloaded.push_back({t.fault_id, t.fault.net_index, t.fault.type});
   }
-
-  BitParallelSim sim;
-  std::vector<int64_t> detected;
-  const size_t lanes = static_cast<size_t>(kBatchSize);
-  for (size_t begin = 0; begin < targets.size(); begin += lanes) {
-    const size_t end = std::min(begin + lanes, targets.size());
-    const FaultBatch batch = make_batch(targets, begin, end);
-    const uint64_t detected_mask =
-        sim.simulate_transition_batch(ctx.cg, v1, v2, batch);
-    for (size_t i = begin; i < end; ++i) {
-      const CompactFault& lane = batch.faults[i - begin];
-      if ((detected_mask & lane.sa_mask) != 0) {
-        detected.push_back(targets[i].fault_id);
-      }
-    }
-  }
-  return detected;
+  return detect_with_pair(json_path, cell_map_path, launch, capture,
+                          input_order, preloaded, unsupported_policy,
+                          blackbox_instances);
 }
 
 }  // namespace faultflow::atpg
