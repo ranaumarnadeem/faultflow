@@ -612,6 +612,57 @@ py::list compaction_pair_detections_py(
   return out;
 }
 
+std::vector<atpg::FaultTarget> targets_from_triples(
+    const std::vector<std::tuple<int64_t, uint32_t, uint8_t>>& targets) {
+  std::vector<atpg::FaultTarget> out;
+  out.reserve(targets.size());
+  for (const auto& [fault_id, net_index, type_code] : targets) {
+    out.push_back({fault_id, net_index, static_cast<FaultType>(type_code)});
+  }
+  return out;
+}
+
+// Preloaded-target counterpart to compaction_detections_py: no DB access at
+// all -- `targets` (fault_id, net_index, type_code) is resolved ONCE by the
+// caller (mirrors simulate_scan_protocol_faults_py's own (net_index, type)
+// pair convention) and reused across many calls, so a caller looping over
+// many vectors against the same or shrinking fault set (e.g. reverse-order
+// compaction) never re-opens the database per vector.
+py::list compaction_detections_preloaded_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::map<std::string, bool>& vector,
+    const std::vector<std::string>& input_order,
+    const std::vector<std::tuple<int64_t, uint32_t, uint8_t>>& targets,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const std::vector<int64_t> detected = atpg::detect_with_vector(
+      json_path, cell_map_path, vector, input_order,
+      targets_from_triples(targets), unsupported_policy, blackbox_instances);
+  py::list out;
+  for (int64_t fault_id : detected) {
+    out.append(fault_id);
+  }
+  return out;
+}
+
+py::list compaction_pair_detections_preloaded_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::map<std::string, bool>& launch,
+    const std::map<std::string, bool>& capture,
+    const std::vector<std::string>& input_order,
+    const std::vector<std::tuple<int64_t, uint32_t, uint8_t>>& targets,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const std::vector<int64_t> detected = atpg::detect_with_pair(
+      json_path, cell_map_path, launch, capture, input_order,
+      targets_from_triples(targets), unsupported_policy, blackbox_instances);
+  py::list out;
+  for (int64_t fault_id : detected) {
+    out.append(fault_id);
+  }
+  return out;
+}
+
 void invalidate_stale_redundant_py(const std::string& db_path,
                                    int64_t campaign_id,
                                    const std::string& redundancy_model_id) {
@@ -1096,6 +1147,17 @@ PYBIND11_MODULE(_faultflow_core, m) {
         &faultflow::compaction_pair_detections_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("db_path"), py::arg("launch"),
         py::arg("capture"), py::arg("input_order"), py::arg("fault_ids"),
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
+  m.def("compaction_detections_preloaded",
+        &faultflow::compaction_detections_preloaded_py, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("vector"), py::arg("input_order"),
+        py::arg("targets"), py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
+  m.def("compaction_pair_detections_preloaded",
+        &faultflow::compaction_pair_detections_preloaded_py,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("launch"),
+        py::arg("capture"), py::arg("input_order"), py::arg("targets"),
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("invalidate_stale_redundant", &faultflow::invalidate_stale_redundant_py,
