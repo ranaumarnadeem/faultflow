@@ -115,3 +115,69 @@ TEST_CASE("detect_with_vector_unfiltered returns empty for a non-detecting vecto
 
   std::filesystem::remove(path);
 }
+
+// detect_with_vector (preloaded targets, no DB access at all) must agree
+// exactly with detect_with_vector_unfiltered given equivalent inputs -- this
+// is the function reverse-order compaction now calls in its per-vector loop
+// instead of re-opening the DB and re-fetching the whole remaining-fault set
+// on every single vector.
+TEST_CASE("detect_with_vector matches detect_with_vector_unfiltered given "
+          "equivalent preloaded targets",
+          "[atpg][compaction]") {
+  const auto path = comp_db_path("faultflow_compaction_preloaded.sqlite");
+  db::init_database(path.string());
+  const int64_t campaign_id = insert_campaign(path.string());
+  const std::vector<int64_t> fault_ids =
+      insert_detected_y_faults(path.string(), campaign_id, 5);
+
+  const std::vector<int64_t> via_db = detect_with_vector_unfiltered(
+      test::fixture_path("tiny_inv.json"), test::cell_map_path(), path.string(),
+      detecting_vector(), {"A"}, fault_ids, "fail");
+  REQUIRE(via_db.size() == fault_ids.size());
+
+  const ParsedGraph pg = test::load_parsed("tiny_inv.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_inv.json");
+  const uint32_t y_compiled = static_cast<uint32_t>(
+      cg.yosys_to_compiled.at(pg.net_id_by_name("Y")));
+  std::vector<FaultTarget> targets;
+  targets.reserve(fault_ids.size());
+  for (int64_t fault_id : fault_ids) {
+    targets.push_back({fault_id, y_compiled, FaultType::SA0});
+  }
+  const std::vector<int64_t> via_preloaded = detect_with_vector(
+      test::fixture_path("tiny_inv.json"), test::cell_map_path(),
+      detecting_vector(), {"A"}, targets, "fail");
+
+  REQUIRE(via_preloaded.size() == via_db.size());
+  REQUIRE(std::vector<int64_t>(via_preloaded.begin(), via_preloaded.end()) ==
+          via_db);
+
+  std::filesystem::remove(path);
+}
+
+// Preloaded, no-DB path must also correctly return empty for a non-detecting
+// vector -- same shape as the unfiltered non-detecting regression above.
+TEST_CASE("detect_with_vector returns empty for a non-detecting vector",
+          "[atpg][compaction]") {
+  const ParsedGraph pg = test::load_parsed("tiny_inv.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_inv.json");
+  const uint32_t y_compiled = static_cast<uint32_t>(
+      cg.yosys_to_compiled.at(pg.net_id_by_name("Y")));
+  const std::vector<FaultTarget> targets = {{1, y_compiled, FaultType::SA0},
+                                            {2, y_compiled, FaultType::SA0}};
+
+  const std::vector<int64_t> seen = detect_with_vector(
+      test::fixture_path("tiny_inv.json"), test::cell_map_path(),
+      {{"A", true}}, {"A"}, targets, "fail");
+  REQUIRE(seen.empty());
+}
+
+// detect_with_vector with an empty target list must short-circuit to empty
+// without touching the graph cache or crashing on an empty batch.
+TEST_CASE("detect_with_vector returns empty given no targets",
+          "[atpg][compaction]") {
+  const std::vector<int64_t> seen = detect_with_vector(
+      test::fixture_path("tiny_inv.json"), test::cell_map_path(),
+      detecting_vector(), {"A"}, {}, "fail");
+  REQUIRE(seen.empty());
+}
