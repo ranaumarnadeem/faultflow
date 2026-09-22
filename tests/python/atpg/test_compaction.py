@@ -171,6 +171,52 @@ def test_compaction_preserves_coverage_and_reduces_c17(
 
 @pytest.mark.integration
 @pytest.mark.slow
+def test_reverse_compaction_never_requeries_db_per_vector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    """Reverse-order compaction used to call core.compaction_detections once
+    per vector in its loop, which re-opens the SQLite DB and re-fetches the
+    whole remaining-fault set on every call -- on a large campaign this made
+    compaction take many hours instead of minutes. compact_run must now call
+    the preloaded, no-DB-access binding (compaction_detections_preloaded)
+    exclusively; the old DB-requerying one must never be invoked."""
+    if not C17_JSON.exists():
+        pytest.skip("c17 sky130 netlist missing")
+
+    core = runner_mod._load_core()
+    assert core is not None
+    call_counts = {"old": 0, "preloaded": 0}
+    orig_old = core.compaction_detections
+    orig_preloaded = core.compaction_detections_preloaded
+
+    def spy_old(*args, **kwargs):
+        call_counts["old"] += 1
+        return orig_old(*args, **kwargs)
+
+    def spy_preloaded(*args, **kwargs):
+        call_counts["preloaded"] += 1
+        return orig_preloaded(*args, **kwargs)
+
+    monkeypatch.setattr(core, "compaction_detections", spy_old)
+    monkeypatch.setattr(core, "compaction_detections_preloaded", spy_preloaded)
+
+    _run(
+        tmp_path,
+        monkeypatch,
+        top="c17",
+        netlist=C17_JSON,
+        compaction="reverse",
+        tag="requery_spy",
+    )
+
+    assert call_counts["old"] == 0
+    assert call_counts["preloaded"] > 0
+
+
+@pytest.mark.integration
+@pytest.mark.slow
 def test_transition_compaction_preserves_coverage_c17(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
