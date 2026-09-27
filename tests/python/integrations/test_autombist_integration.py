@@ -95,3 +95,99 @@ def test_synthesize_from_manifest_end_to_end(
         str(result.composed_json_path), str(SKY130_CELL_MAP), "blackbox"
     )
     assert rows, "expected at least one fault site in the composed netlist"
+
+
+@pytest.mark.integration
+def test_synthesize_from_manifest_tolerates_a_tied_off_separate_block_output(
+    tmp_path: Path,
+) -> None:
+    """Regression for a real bug: a "separate" block whose instantiation ties
+    off one output with explicit empty parens (`.port()`) -- the shape a
+    code-generated wrapper emits for every declared port whether wired or not,
+    e.g. autoMBIST's `onchip_row_repair_analyzer` leaving `repair_load_done`
+    unconnected whenever `redundancy.onchip_repair_persistence` is off (the
+    common case) -- used to raise `AssembleError("port ... width mismatch vs
+    instance connections")` from `compose_soc`'s `_build_remap`. Confirmed by
+    direct inspection of real Yosys JSON output: this shape is a PRESENT
+    "connections" key with an EMPTY list (`[]`), not an absent key (that's the
+    OTHER real shape, produced when the port is omitted from the instantiation
+    entirely -- see the key-absent variant in test_assemble.py), so a guard
+    that only checks `is None` misses it. Fixture-free rather than a second
+    checked-in autoMBIST capture: reproducible from a few lines of RTL."""
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "mem_stub.v").write_text(
+        "(* blackbox *)\n"
+        "module tiny_mem(input clk, input we, input [2:0] addr, "
+        "input [3:0] din, output [3:0] dout);\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+    # y and unused_out must be genuinely distinct nets (not both trivial
+    # aliases of a single input), or Yosys collapses the whole block to zero
+    # internal cells and there is nothing left for compose_soc to splice.
+    (src / "leaf_block.v").write_text(
+        "module leaf_block(input clk, input a, input b, output y, "
+        "output unused_out);\n"
+        "  assign y = a & b;\n"
+        "  assign unused_out = ~(a & b);\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+    (src / "wrapper.v").write_text(
+        "module top_wrap(input clk, input a, input b, input we, "
+        "input [2:0] addr, input [3:0] din, output [3:0] dout, output y);\n"
+        "  leaf_block u_leaf(.clk(clk), .a(a), .b(b), .y(y), "
+        ".unused_out());\n"
+        "  tiny_mem u_mem(.clk(clk), .we(we), .addr(addr), .din(din), "
+        ".dout(dout));\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+
+    manifest_data = {
+        "format": "autombist_instance_manifest",
+        "schema_version": "1.0.0",
+        "top_module": "top_wrap",
+        "sources": {"wrapper": "wrapper.v"},
+        "instances": [
+            {
+                "category": "memory",
+                "hierarchical_path": "u_mem",
+                "hierarchy_hint": "blackbox",
+                "instance_name": "u_mem",
+                "module_type": "tiny_mem",
+                "sources": ["mem_stub.v"],
+            },
+            {
+                "category": "instrument",
+                "hierarchical_path": "u_leaf",
+                "hierarchy_hint": "separate",
+                "instance_name": "u_leaf",
+                "module_type": "leaf_block",
+                "sources": ["leaf_block.v"],
+            },
+        ],
+    }
+    manifest_path = src / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest_data), encoding="utf-8")
+
+    manifest = load_autombist_manifest(manifest_path)
+    result = synthesize_from_manifest(
+        manifest,
+        out=tmp_path / "out",
+        liberty=SKY130_LIBERTY,
+        cell_lib=SKY130_CELL_MAP,
+    )
+
+    composed = json.loads(result.composed_json_path.read_text(encoding="utf-8"))
+    top = composed["modules"][result.top_module]
+    cell_names = set(top["cells"].keys())
+    assert "u_leaf" not in cell_names  # instance cell removed by compose_soc
+    assert any(
+        name.startswith("u_leaf__") for name in cell_names
+    ), "expected u_leaf's spliced cells"
+    assert "u_mem" in cell_names  # memory blackbox cell untouched

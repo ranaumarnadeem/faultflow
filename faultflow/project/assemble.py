@@ -292,11 +292,18 @@ def _build_remap(
             continue
         block_bits = port.get("bits", [])
         glue_bits = inst_connections.get(port_name)
-        if glue_bits is None:
+        if not glue_bits:
             # A port genuinely unconnected at the instantiation site (valid
             # Verilog -- e.g. an unused diagnostic output nobody wired up).
-            # Its bits get a fresh internal id below, same as a constant-tied
-            # bit with no glue-space net to bind to.
+            # Real Yosys represents this two different ways depending on how
+            # the instantiation was written: the key is absent entirely when
+            # the port is omitted from the port list, but present with an
+            # EMPTY list (`[]`) when the port is named with explicit empty
+            # parens (`.port()`) -- the shape a code-generated wrapper (e.g.
+            # autoMBIST's) tends to emit for every declared port whether wired
+            # or not. Treat both as unconnected: its bits get a fresh internal
+            # id below, same as a constant-tied bit with no glue-space net to
+            # bind to.
             continue
         for i, bit in enumerate(block_bits):
             if not isinstance(bit, int):
