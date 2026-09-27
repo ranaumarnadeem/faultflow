@@ -380,11 +380,20 @@ def test_compose_soc_tags_wbc_cells_for_aggregation(tmp_path: Path) -> None:
     assert side == "in"
 
 
-def test_compose_soc_tolerates_a_genuinely_unconnected_block_port() -> None:
+def test_compose_soc_tolerates_a_genuinely_unconnected_block_port_key_absent() -> None:
     """A block port the glue instantiation never wires at all (valid Verilog --
     e.g. an unused diagnostic output nobody connected) must not raise; its bits
     get a fresh internal net, same treatment as a constant-tied bit with no
-    glue-space net to bind to."""
+    glue-space net to bind to.
+
+    This covers the Yosys shape produced when the port is omitted entirely
+    from the instantiation's port list -- both "connections" and
+    "port_directions" drop the key. See the sibling
+    `..._empty_connection_list` test below for the OTHER real Yosys shape
+    (key present, value `[]`), produced when the instantiation instead uses
+    explicit empty parens (`.port()`) -- confirmed by direct inspection of
+    real Yosys JSON output for both forms; a prior fix here only handled the
+    key-absent shape and still raised on the empty-list one."""
     # "b" is deliberately given a glue-space id (99) far outside every other id
     # used anywhere else in this fixture, so once its one and only reference
     # (u_a's own connection) is deleted below, it becomes fully orphaned --
@@ -409,6 +418,39 @@ def test_compose_soc_tolerates_a_genuinely_unconnected_block_port() -> None:
     # c0's B input (block_a's "b" port) got a fresh internal id, not an error,
     # and doesn't collide with any glue-space net still actually in use
     # (clk=2, a/top_in=3, y/top_out=8, g0's own nets).
+    b_net = cells["u_a__c0"]["connections"]["B"][0]
+    assert isinstance(b_net, int)
+    live_glue_nets = {2, 3, 8} | {
+        b for bits in cells["g0"]["connections"].values() for b in bits
+    }
+    assert b_net not in live_glue_nets
+
+
+def test_compose_soc_tolerates_a_genuinely_unconnected_block_port_empty_connection_list() -> (  # noqa: E501
+    None
+):
+    """Same tolerance as above, but for the OTHER real Yosys shape: the port
+    key is present in both "connections" and "port_directions", just with an
+    empty bit list (`[]`) -- what Yosys emits for an instantiation using
+    explicit empty parens (`.port()`), the pattern a code-generated wrapper
+    (e.g. autoMBIST's) tends to use for every declared port whether wired or
+    not. `inst_connections.get(port_name)` returns `[]` here, not `None`, so
+    an `is None` check alone does not catch it."""
+    glue = _glue_json({"clk": [2], "a": [3], "b": [99], "y": [8]})
+    glue["modules"]["soc"]["cells"]["u_a"]["connections"]["b"] = []
+
+    block_a = _block_a_json(net_clk=2, net_a=3, net_b=4, net_y=5)
+
+    result = compose_soc(
+        glue_json=glue,
+        soc_top="soc",
+        blocks={"u_a": block_a},
+        block_module={"u_a": "block_a"},
+    )
+
+    cells = result["modules"]["soc"]["cells"]
+    assert "u_a__c0" in cells
+    assert "u_a__c1" in cells
     b_net = cells["u_a__c0"]["connections"]["B"][0]
     assert isinstance(b_net, int)
     live_glue_nets = {2, 3, 8} | {
