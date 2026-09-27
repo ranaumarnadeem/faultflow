@@ -195,6 +195,39 @@ def _parser() -> argparse.ArgumentParser:
         "--out", type=Path, required=True, help="Output retargeted pattern file"
     )
 
+    autombist_p = sub.add_parser(
+        "autombist-generate",
+        help="Generate a FaultFlow synthesis (.ofs) from an autoMBIST manifest",
+    )
+    autombist_p.add_argument(
+        "--config", type=Path, required=True, help="autoMBIST YAML config"
+    )
+    autombist_p.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="Output directory (passed to autombist --out)",
+    )
+    autombist_p.add_argument(
+        "--autombist-cmd",
+        dest="autombist_cmd",
+        default="autombist",
+        help="Command prefix to invoke autoMBIST, e.g. 'python3 -m autombist.cli'",
+    )
+    autombist_p.add_argument(
+        "--liberty",
+        type=Path,
+        required=True,
+        help="Liberty file for synthesis + the written .ofs",
+    )
+    autombist_p.add_argument(
+        "--cell-lib",
+        dest="cell_lib",
+        type=Path,
+        required=True,
+        help="Cell-map JSON for the written .ofs",
+    )
+
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
     status.add_argument(
@@ -354,6 +387,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "retarget":
             return _handle_retarget(args)
+        if args.command == "autombist-generate":
+            return _handle_autombist_generate(args)
         if args.command == "add-clock":
             add_clock_to_config(Path(args.config), args.port, off_state=args.off_state)
             print(
@@ -514,6 +549,33 @@ def _handle_retarget(args: object) -> int:
     }
     written = write_retargeted(Path(getattr(args, "out")), payload)
     print(f"retargeted {len(retargeted)} pattern(s) from {block!r} -> {written}")
+    return 0
+
+
+def _handle_autombist_generate(args: object) -> int:
+    import shlex
+
+    from faultflow.integrations.autombist import run_autombist_generate
+
+    config = Path(getattr(args, "config"))
+    if not config.exists():
+        raise ConfigError(f"autoMBIST config not found: {config}")
+    cmd = tuple(shlex.split(str(getattr(args, "autombist_cmd"))))
+    result = run_autombist_generate(
+        config,
+        Path(getattr(args, "out")),
+        autombist_cmd=cmd,
+        liberty=Path(getattr(args, "liberty")),
+        cell_lib=Path(getattr(args, "cell_lib")),
+    )
+    counts = ", ".join(f"{k}={v}" for k, v in sorted(result.instance_counts.items()))
+    print(
+        f"wrote {result.ofs_path}  (top={result.top_module}, "
+        f"blocks={result.block_count}, {counts})"
+    )
+    print(
+        f"run: python3 ff.py sim --scan --top {result.top_module} -c {result.ofs_path}"
+    )
     return 0
 
 
