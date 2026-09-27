@@ -526,13 +526,6 @@ class ProjectSession:
                         verify_use_power_pins=parse_bool_value(value, key),
                     ),
                 )
-            elif key == "simulation.tie_xz":
-                cfg = replace(
-                    cfg,
-                    simulation=replace(
-                        cfg.simulation, tie_xz=parse_bool_value(value, key)
-                    ),
-                )
         return cfg
 
     def synthesize(self) -> OperationResult:
@@ -850,7 +843,6 @@ class ProjectSession:
             "report.output",
             "simulation.verify",
             "simulation.verify_use_power_pins",
-            "simulation.tie_xz",
         }
         if key not in allowed:
             raise ShellError(f"unsupported option: {key}", "CONFIG", "INVALID_OPTION")
@@ -926,7 +918,6 @@ class ProjectSession:
             "atpg.fault_drop_sat",
             "simulation.verify",
             "simulation.verify_use_power_pins",
-            "simulation.tie_xz",
         }:
             try:
                 parse_bool_value(value, key)

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
 import logging
 import shutil
 import sqlite3
-import tempfile
 import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
@@ -536,39 +534,6 @@ def _escalation_headroom(
     )
 
 
-def _tie_xz_netlist(src: Path, dst: Path) -> int:
-    """Replace all 'x'/'z' constant bits with 0 in a Yosys JSON netlist.
-
-    Fixes bits in ports, cell connections, and netnames (all three places
-    where Yosys JSON can carry x/z literals).  Returns the number tied.
-    """
-    netlist = json.loads(src.read_text())
-    count = 0
-
-    def fix_bits(bits: list) -> list:
-        nonlocal count
-        out = []
-        for b in bits:
-            if b in ("x", "z"):
-                out.append(0)
-                count += 1
-            else:
-                out.append(b)
-        return out
-
-    for mod in netlist.get("modules", {}).values():
-        for port in mod.get("ports", {}).values():
-            port["bits"] = fix_bits(port.get("bits", []))
-        for cell in mod.get("cells", {}).values():
-            for pin in cell.get("connections", {}):
-                cell["connections"][pin] = fix_bits(cell["connections"][pin])
-        for nn in mod.get("netnames", {}).values():
-            nn["bits"] = fix_bits(nn.get("bits", []))
-
-    dst.write_text(json.dumps(netlist, indent=2))
-    return count
-
-
 def run_progressive_native_atpg(
     cfg: FaultflowConfig,
     netlist: Path,
@@ -629,16 +594,7 @@ def run_progressive_native_atpg(
     input_order = _atpg_pi_names(netlist, cfg.top)
     effective_db_path = str(db_path if db_path is not None else cfg.db_path)
 
-    _tmpdir: tempfile.TemporaryDirectory | None = None
-    if cfg.simulation.tie_xz:
-        _tmpdir = tempfile.TemporaryDirectory(prefix="faultflow_tiexz_")
-        _tied_path = Path(_tmpdir.name) / netlist.name
-        _n = _tie_xz_netlist(netlist, _tied_path)
-        if _n:
-            log.info("tie_xz: tied %d x/z bits to 0 in %s", _n, netlist.name)
-        json_path = str(_tied_path)
-    else:
-        json_path = str(netlist)
+    json_path = str(netlist)
 
     effective_cell_map = str(
         cell_map_path if cell_map_path is not None else cfg.cell_lib
@@ -1310,16 +1266,7 @@ def run_progressive_transition_atpg(
     input_order = _atpg_pi_names(netlist, cfg.top)
     effective_db_path = str(db_path if db_path is not None else cfg.db_path)
 
-    _tmpdir2: tempfile.TemporaryDirectory | None = None
-    if cfg.simulation.tie_xz:
-        _tmpdir2 = tempfile.TemporaryDirectory(prefix="faultflow_tiexz_")
-        _tied_path2 = Path(_tmpdir2.name) / netlist.name
-        _n2 = _tie_xz_netlist(netlist, _tied_path2)
-        if _n2:
-            log.info("tie_xz: tied %d x/z bits to 0 in %s", _n2, netlist.name)
-        json_path = str(_tied_path2)
-    else:
-        json_path = str(netlist)
+    json_path = str(netlist)
 
     effective_cell_map = str(
         cell_map_path if cell_map_path is not None else cfg.cell_lib

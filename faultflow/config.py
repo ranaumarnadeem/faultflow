@@ -199,9 +199,6 @@ class SimulationConfig:
     # model set genuinely requires the power-pins variant, this drives VPWR=1 /
     # VGND=0 in the generated testbench and passes -DUSE_POWER_PINS to iverilog.
     verify_use_power_pins: bool = False
-    # Tie Yosys "x"/"z" constant bits to 0 before simulation.
-    # Required for netlists with unconnected/don't-care inputs (e.g. unused scan pins).
-    tie_xz: bool = False
     # Threads used to parallelize fault GRADING (the dominant ATPG cost). 1 keeps
     # the original serial behaviour; 0 = auto (cpu_count - 2, min 1); N uses N
     # threads. Each thread owns its SimState over the shared immutable graph; the
@@ -719,7 +716,6 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             verify_use_power_pins=_bool(
                 parser, "simulation", "verify_use_power_pins", False
             ),
-            tie_xz=_bool(parser, "simulation", "tie_xz", False),
             sim_threads=sim_threads,
         ),
         atpg=AtpgConfig(

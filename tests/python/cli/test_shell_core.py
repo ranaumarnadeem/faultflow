@@ -139,7 +139,6 @@ def test_set_option_materializes_new_atpg_report_simulation_options(
     session.set_option("report.output", "custom_coverage.rpt")
     session.set_option("simulation.verify", "true")
     session.set_option("simulation.verify_use_power_pins", "true")
-    session.set_option("simulation.tie_xz", "true")
 
     cfg = session.materialize_config()
     assert cfg.atpg.compaction == "dynamic"
@@ -151,7 +150,6 @@ def test_set_option_materializes_new_atpg_report_simulation_options(
     assert cfg.report.output == Path("custom_coverage.rpt")
     assert cfg.simulation.verify is True
     assert cfg.simulation.verify_use_power_pins is True
-    assert cfg.simulation.tie_xz is True
 
 
 def test_set_option_rejects_bad_new_atpg_options(tmp_path: Path) -> None:
@@ -172,8 +170,6 @@ def test_set_option_rejects_bad_new_atpg_options(tmp_path: Path) -> None:
         session.set_option("simulation.verify", "not-a-bool")
     with pytest.raises(ShellError, match="must be one of true/false"):
         session.set_option("simulation.verify_use_power_pins", "not-a-bool")
-    with pytest.raises(ShellError, match="must be one of true/false"):
-        session.set_option("simulation.tie_xz", "not-a-bool")
     # Valid boundary/enum values are accepted.
     session.set_option("atpg.compaction", "none")
     session.set_option("atpg.compaction", "reverse")
@@ -187,7 +183,8 @@ def test_set_option_rejects_still_unsupported_options(tmp_path: Path) -> None:
     # runner (nothing branches on it besides fingerprint recording), atpg.mode
     # and simulation.verify_tool each have exactly one currently-valid value,
     # and atpg.output is a rarely-produced internal fallback path -- none of
-    # these are exposed as live-settable options.
+    # these are exposed as live-settable options. simulation.tie_xz is not an
+    # option at all: the core already ties literal x/z bits to CONST0 on parse.
     session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
     for key in (
         "fault_model.model",
@@ -196,6 +193,7 @@ def test_set_option_rejects_still_unsupported_options(tmp_path: Path) -> None:
         "atpg.mode",
         "atpg.output",
         "simulation.verify_tool",
+        "simulation.tie_xz",
     ):
         with pytest.raises(ShellError, match="unsupported option"):
             session.set_option(key, "x")
