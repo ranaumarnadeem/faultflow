@@ -140,6 +140,7 @@ def _minimal_valid_report() -> dict[str, Any]:
             "protocol_unresolved": 0,
             "compression_unresolved": 0,
             "compaction_unresolved": 0,
+            "blackbox_unresolved": 0,
             "fault_coverage_percent": 100.0,
             "test_coverage_percent": 100.0,
             "coverage_percent": 100.0,
@@ -193,6 +194,43 @@ def test_validate_report_accepts_random_only_terminal_reason() -> None:
 
     report = _minimal_valid_report()
     report["run"]["atpg_terminal_reason"] = "RANDOM_ONLY"
+    _validate_report(report)  # must not raise
+
+
+@pytest.mark.parametrize("sat_outcome", [None, "timeout"])
+def test_undetected_reason_reports_blackbox_unresolved(sat_outcome: str | None) -> None:
+    """blackbox_unresolved outranks a recorded SAT outcome: a fault can time out
+    in one round and be proven UNSAT (then classified) in a later one, and the
+    stale outcome row stays behind."""
+    from faultflow.reporter.coverage import _undetected_reason
+
+    assert (
+        _undetected_reason(False, False, False, sat_outcome, blackbox_unresolved=True)
+        == "blackbox_unresolved"
+    )
+
+
+def test_validate_report_accepts_a_blackbox_unresolved_fault() -> None:
+    from faultflow.reporter.coverage import _validate_report
+
+    report = _minimal_valid_report()
+    report["summary"].update(detected=0, undetected=1, blackbox_unresolved=1)
+    for key in ("fault_coverage_percent", "test_coverage_percent", "coverage_percent"):
+        report["summary"][key] = 0.0
+    report["undetected_faults"] = [
+        {
+            "id": 1,
+            "net_id": 6,
+            "net_name": "dout",
+            "fault_type": "sa0",
+            "fault_site_key": "net:6:stem",
+            "protocol_unresolved": False,
+            "compression_unresolved": False,
+            "compaction_unresolved": False,
+            "blackbox_unresolved": True,
+            "reason": "blackbox_unresolved",
+        }
+    ]
     _validate_report(report)  # must not raise
 
 

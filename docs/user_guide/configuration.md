@@ -187,7 +187,7 @@ one-shot from the CLI with `add-clock`).
 
 | Key | Format | Meaning |
 |---|---|---|
-| `instances` | comma list, e.g. `u_sram, u_pll` | Instances modeled as test boundaries (pseudo-PI/PO) |
+| `instances` | comma list, e.g. `u_sram, u_pll` | Instances modeled as test boundaries (pseudo-PI/PO). Scan runs model them opaque instead: outputs tied to 0, inputs unobserved, since a scan test can neither set nor observe them |
 
 ## `[testmode]`
 

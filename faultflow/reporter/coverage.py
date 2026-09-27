@@ -119,6 +119,7 @@ def _undetected_reason(
     compression_unresolved: bool,
     compaction_unresolved: bool,
     sat_outcome: str | None,
+    blackbox_unresolved: bool = False,
 ) -> str:
     """Classify an undetected fault. protocol_unresolved (the simulator could not
     resolve it) is structural; compression_unresolved means every witness SAT
@@ -130,16 +131,20 @@ def _undetected_reason(
     detection_pipeline._is_compaction_only_rejected) -- both mean the fault
     genuinely has a functional test, it's just not deliverable/observable
     through the compressor/compactor, so it stays counted as undetected
-    rather than excluded; a recorded SAT verdict gives timeout/unknown; no
-    record at all means it was never SAT-attempted (or its pattern was
-    rejected without a verdict). Tier C refines the residue into
-    structurally_uncontrollable."""
+    rather than excluded; blackbox_unresolved means it has a test only if a
+    blackbox (memory) output takes a value no scan test can set (see
+    detection_pipeline._testable_with_free_blackboxes), counted the same way;
+    a recorded SAT verdict gives timeout/unknown; no record at all means it
+    was never SAT-attempted (or its pattern was rejected without a verdict).
+    Tier C refines the residue into structurally_uncontrollable."""
     if protocol_unresolved:
         return "structurally_unresolved"
     if compression_unresolved:
         return "compression_unresolved"
     if compaction_unresolved:
         return "compaction_unresolved"
+    if blackbox_unresolved:
+        return "blackbox_unresolved"
     if sat_outcome == "timeout":
         return "sat_timeout"
     if sat_outcome == "unknown":
@@ -153,7 +158,8 @@ def _undetected_faults(
     rows = conn.execute(
         """
         SELECT id, net_id, net_name, fault_type, fault_site_key,
-               protocol_unresolved, compression_unresolved, compaction_unresolved
+               protocol_unresolved, compression_unresolved, compaction_unresolved,
+               blackbox_unresolved
         FROM faults
         WHERE campaign_id = ?
           AND status = 'undetected'
@@ -169,6 +175,7 @@ def _undetected_faults(
         po = bool(row["protocol_unresolved"])
         co = bool(row["compression_unresolved"])
         cao = bool(row["compaction_unresolved"])
+        bbo = bool(row["blackbox_unresolved"])
         sat_outcome = outcomes.get(int(row["id"]))
         fault: dict[str, Any] = {
             "id": int(row["id"]),
@@ -179,7 +186,8 @@ def _undetected_faults(
             "protocol_unresolved": po,
             "compression_unresolved": co,
             "compaction_unresolved": cao,
-            "reason": _undetected_reason(po, co, cao, sat_outcome),
+            "blackbox_unresolved": bbo,
+            "reason": _undetected_reason(po, co, cao, sat_outcome, bbo),
         }
         if sat_outcome in ("timeout", "unknown"):
             fault["sat_outcome"] = sat_outcome
@@ -396,6 +404,7 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         "protocol_unresolved",
         "compression_unresolved",
         "compaction_unresolved",
+        "blackbox_unresolved",
         "fault_coverage_percent",
         "test_coverage_percent",
         "coverage_percent",
@@ -538,6 +547,7 @@ def write_reports(
             f"protocol_unresolved: {data['protocol_unresolved']}",
             f"compression_unresolved: {data.get('compression_unresolved', 0)}",
             f"compaction_unresolved: {data.get('compaction_unresolved', 0)}",
+            f"blackbox_unresolved: {data.get('blackbox_unresolved', 0)}",
             f"fault_coverage_%:    {data['fault_coverage_percent']:.3f}",
             f"test_coverage_%:     {data['test_coverage_percent']:.3f}",
             f"coverage_percent:    {data['coverage_percent']:.3f}",

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from faultflow.db import connect, init_schema
+from faultflow.db import connect, init_schema, summary
 from faultflow.db.candidates import (
     CandidateCommit,
     CandidateRejection,
@@ -402,50 +402,83 @@ def test_reconverge_fanout_branches_enumerate_distinct_site_keys(
     assert "net:2:branch:u1:A" in keys
 
 
+def _add_blackbox_memory(module: dict[str, Any]) -> str:
+    """Give tiny_dff a blackboxed memory `u_mem`, whose cell type is absent
+    from the cell map: Y = u_mem.dout & A, so a test for Y s-a-0 needs
+    dout = 1; u_mem.din = BUF(D), a buffer whose output reaches nothing but
+    the memory; and u_mem.cfg = {1'b1, 1'b0}, tie-offs nothing else uses.
+    Returns the config section that lists the memory."""
+
+    def cell(
+        kind: str, dirs: dict[str, str], conns: dict[str, list[int | str]]
+    ) -> dict:
+        return {
+            "hide_name": 0,
+            "type": kind,
+            "parameters": {},
+            "attributes": {},
+            "port_directions": dirs,
+            "connections": conns,
+        }
+
+    module["ports"]["A"] = {"direction": "input", "bits": [5]}
+    module["ports"]["Y"] = {"direction": "output", "bits": [7]}
+    module["cells"]["u_mem"] = cell(
+        "sram_like",
+        {"din": "input", "cfg": "input", "dout": "output"},
+        {"din": [8], "cfg": ["0", "1"], "dout": [6]},
+    )
+    module["cells"]["g_and"] = cell(
+        "sky130_fd_sc_hd__and2_1",
+        {"A": "input", "B": "input", "X": "output"},
+        {"A": [6], "B": [5], "X": [7]},
+    )
+    module["cells"]["g_buf"] = cell(
+        "sky130_fd_sc_hd__buf_1", {"A": "input", "X": "output"}, {"A": [3], "X": [8]}
+    )
+    for name, bit in (("A", 5), ("dout", 6), ("Y", 7), ("din", 8)):
+        module["netnames"][name] = {"hide_name": 0, "bits": [bit], "attributes": {}}
+    return "[blackbox]\ninstances = u_mem\n"
+
+
 def _tiny_dff_scan_workspace(
-    tmp_path: Path, *, wbr_model: str = "scan"
+    tmp_path: Path, *, wbr_model: str = "scan", with_memory: bool = False
 ) -> tuple[Any, Path, Path, ScanPipelineContext, dict[str, object]]:
     from faultflow.config import load_config
     from faultflow.scan import stitch_scan_json
     from faultflow.scan.reports import hash_file, manifest_from_result, utc_timestamp
 
+    module: dict[str, Any] = {
+        "attributes": {"top": "1"},
+        "ports": {
+            "CLK": {"direction": "input", "bits": [2]},
+            "D": {"direction": "input", "bits": [3]},
+            "Q": {"direction": "output", "bits": [4]},
+        },
+        "cells": {
+            "u0": {
+                "hide_name": 0,
+                "type": "sky130_fd_sc_hd__dfxtp_1",
+                "parameters": {},
+                "attributes": {},
+                "port_directions": {
+                    "CLK": "input",
+                    "D": "input",
+                    "Q": "output",
+                },
+                "connections": {"CLK": [2], "D": [3], "Q": [4]},
+            }
+        },
+        "netnames": {
+            "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+            "D": {"hide_name": 0, "bits": [3], "attributes": {}},
+            "Q": {"hide_name": 0, "bits": [4], "attributes": {}},
+        },
+    }
+    blackbox_section = _add_blackbox_memory(module) if with_memory else ""
     source = tmp_path / "tiny_dff.json"
     source.write_text(
-        json.dumps(
-            {
-                "modules": {
-                    "tiny_dff": {
-                        "attributes": {"top": "1"},
-                        "ports": {
-                            "CLK": {"direction": "input", "bits": [2]},
-                            "D": {"direction": "input", "bits": [3]},
-                            "Q": {"direction": "output", "bits": [4]},
-                        },
-                        "cells": {
-                            "u0": {
-                                "hide_name": 0,
-                                "type": "sky130_fd_sc_hd__dfxtp_1",
-                                "parameters": {},
-                                "attributes": {},
-                                "port_directions": {
-                                    "CLK": "input",
-                                    "D": "input",
-                                    "Q": "output",
-                                },
-                                "connections": {"CLK": [2], "D": [3], "Q": [4]},
-                            }
-                        },
-                        "netnames": {
-                            "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
-                            "D": {"hide_name": 0, "bits": [3], "attributes": {}},
-                            "Q": {"hide_name": 0, "bits": [4], "attributes": {}},
-                        },
-                    }
-                }
-            },
-            indent=2,
-        )
-        + "\n",
+        json.dumps({"modules": {"tiny_dff": module}}, indent=2) + "\n",
         encoding="utf-8",
     )
     cfg_path = tmp_path / "config.ofs"
@@ -464,7 +497,7 @@ random_vectors = 0
 max_rounds = 3
 [wrap]
 wbr_model = {wbr_model}
-""".strip() + "\n",
+""".strip() + "\n" + blackbox_section,
         encoding="utf-8",
     )
     cfg = load_config(cfg_path, "tiny_dff")
@@ -486,7 +519,9 @@ wbr_model = {wbr_model}
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     view, pseudo_port_map = build_scan_atpg_view(
-        json.loads(generic.read_text(encoding="utf-8")), manifest
+        json.loads(generic.read_text(encoding="utf-8")),
+        manifest,
+        blackbox_instances=cfg.blackbox_instances,
     )
     atpg_view = cfg.intermediate_dir / "scan_atpg_view.json"
     atpg_view.write_text(json.dumps(view, indent=2) + "\n", encoding="utf-8")
@@ -1976,3 +2011,120 @@ def test_q_stem_sa_credited_from_reduced_functional_grade(
     assert statuses.get("sa1") == "detected"
     # ...and the per-fault protocol sim was never needed to confirm them.
     assert protocol_calls == []
+
+
+def _classified_sites(
+    cfg: Any, campaign_id: int
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]], dict[str, Any]]:
+    """(blackbox_unresolved sites, redundant sites, summary) of a campaign."""
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT fault_site_key, fault_type, status, blackbox_unresolved
+            FROM faults
+            WHERE campaign_id = ? AND exclusion = 'none' AND collapsed_into IS NULL
+            """,
+            (campaign_id,),
+        ).fetchall()
+        data = summary(conn, campaign_id=campaign_id)
+    blocked = set()
+    redundant = set()
+    for row in rows:
+        site = (str(row["fault_site_key"]), str(row["fault_type"]).lower())
+        if int(row["blackbox_unresolved"]):
+            assert row["status"] == "undetected", site
+            blocked.add(site)
+        if row["status"] == "redundant":
+            redundant.add(site)
+    return blocked, redundant, data
+
+
+def _both(site: str) -> set[tuple[str, str]]:
+    return {(site, "sa0"), (site, "sa1")}
+
+
+# Whatever the memory does, nothing observable sees what only its inputs read:
+# u_mem.din, and the constant nets tied off to u_mem.cfg (-1 and -2 are the
+# netlist's constant-0 and constant-1 nets). A tie holding a blackbox output
+# at 0 must not hang off net -1, or its s-a-1 would reach Y through the tie.
+_MEMORY_INPUTS_ONLY = (
+    _both("net:8:stem")
+    | _both("net:3:branch:g_buf:A")
+    | _both("net:-1:stem")
+    | _both("net:-2:stem")
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("launch_mode", "expected_blocked", "expected_redundant"),
+    [
+        (
+            None,
+            {
+                ("net:6:stem", "sa0"),  # dout s-a-0: excited only by dout = 1
+                ("net:7:stem", "sa0"),  # Y = dout & A is 1 only if dout = 1
+            }
+            | _both("net:5:stem"),  # A propagates only while dout = 1
+            _MEMORY_INPUTS_ONLY,
+        ),
+        (
+            "loc",
+            # dout and Y transition only if dout changes between the frames.
+            _both("net:6:stem") | _both("net:7:stem"),
+            # A and D are real PIs, held launch -> capture: never transition.
+            _MEMORY_INPUTS_ONLY
+            | _both("net:5:stem")
+            | _both("net:3:stem")
+            | _both("net:3:branch:u0:D"),
+        ),
+    ],
+)
+def test_unsat_only_because_of_a_blackbox_is_blackbox_unresolved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+    launch_mode: str | None,
+    expected_blocked: set[tuple[str, str]],
+    expected_redundant: set[tuple[str, str]],
+) -> None:
+    """The scan view ties the memory output to 0, which is what the scan
+    protocol sees, so a fault that needs dout = 1 is UNSAT. It is not
+    redundant, though: the UNSAT branch re-solves it on the blackbox-free twin,
+    finds a test, and marks it blackbox_unresolved -- undetected, counted in
+    the denominator, and never retried. A fault that is UNSAT even with dout
+    free, here one reaching nothing but the memory's input, stays redundant.
+
+    The LOC case also pins that the twin's free dout port is not held between
+    the launch and capture frames the way a real PI is: held, dout could never
+    transition and its faults would be misfiled as redundant."""
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(
+        tmp_path, with_memory=True
+    )
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    _vectors, stats, *_rest = run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        redundancy_model_id(fp),
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=3,
+        target_coverage=100.0,
+        transition=launch_mode is not None,
+        launch_mode=launch_mode or "loc",
+    )
+
+    blocked, redundant, data = _classified_sites(cfg, campaign_id)
+    assert blocked == expected_blocked
+    assert redundant == expected_redundant
+    assert data["blackbox_unresolved"] == len(expected_blocked)
+    # Classified once, then out of the active set: nothing is left to retry.
+    assert stats.terminal_reason == "COMPLETE"
+    assert stats.rounds == 1

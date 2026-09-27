@@ -64,6 +64,7 @@ Its top-level structure is:
 | `excluded_clock` | Clock-net faults (unless `include_clock_faults`) |
 | `excluded_reset` | Reset-net faults (unless `include_reset_faults`) |
 | `excluded_scan`, `excluded_scan_internal`, `excluded_scan_chain` | Scan-cell-internal and scan-path-only faults (scan campaigns) |
+| `blackbox_unresolved` | Scan campaigns: faults, counted in `undetected`, that have a test only if a `[blackbox]` instance's output takes a value no scan test can set |
 | `test_coverage_percent` | `detected / denominator x 100` — credits proven-redundant faults by removing them from the denominator; the **headline** figure |
 | `fault_coverage_percent` | `detected / structural_eligible x 100` — counts proven-redundant faults against you; the **conservative** figure |
 | `coverage_percent` | The headline coverage figure (equal to `test_coverage_percent`) |

@@ -45,7 +45,7 @@ from faultflow.runner.progressive_atpg import (
     pattern_key,
 )
 from faultflow.runner.runner import RunnerError
-from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX
+from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX, make_blackbox_free
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.manifest import manifest_clock_net_ids
 from faultflow.scan.stitch import SCAN_CELL_TYPES
@@ -272,6 +272,7 @@ def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_Faul
           AND protocol_unresolved = 0
           AND compression_unresolved = 0
           AND compaction_unresolved = 0
+          AND blackbox_unresolved = 0
         ORDER BY id
         """,
         (campaign_id,),
@@ -506,6 +507,123 @@ def _is_compaction_only_rejected(reasons: set[str] | None) -> bool:
     mirroring _is_compression_only_rejected exactly.
     """
     return bool(reasons) and reasons == {"compaction_indistinguishable"}
+
+
+@dataclass(frozen=True)
+class _BlackboxTwin:
+    """The blackbox-free twin of the scan ATPG view (atpg_view.
+    make_blackbox_free) and each fault site's compiled net index in it."""
+
+    json_path: str
+    net_index_by_site: dict[str, int]
+
+
+def _build_blackbox_twin(
+    core: Any,
+    scan_ctx: ScanPipelineContext,
+    reduced_json_path: str,
+    generic_cell_map: str,
+    reduced_cell_map: str,
+    unsupported: str,
+    blackbox_instances: list[str],
+    execution_map: dict[str, int],
+) -> _BlackboxTwin | None:
+    """None unless the view ties blackbox outputs. The twin is written beside
+    the view and mapped by the same build_scan_execution_map. Only tie inputs
+    differ between the two, so both must map exactly the same fault sites --
+    anything else is a bug in the twin, raised here rather than mid-round."""
+    if not blackbox_instances:
+        return None
+    reduced = Path(reduced_json_path)
+    view = json.loads(reduced.read_text(encoding="utf-8"))
+    if not make_blackbox_free(view, str(scan_ctx.manifest["top"])):
+        return None
+    twin_path = reduced.with_name(f"{reduced.stem}_bbfree.json")
+    twin_path.write_text(json.dumps(view) + "\n", encoding="utf-8")
+    twin_map, _ = build_scan_execution_map(
+        core,
+        scan_ctx.generic_json,
+        twin_path,
+        generic_cell_map,
+        reduced_cell_map,
+        unsupported,
+        scan_ctx.pseudo_port_map,
+        scan_ctx.manifest,
+        scan_ctx.wbr_decoupled_bits,
+        blackbox_instances=blackbox_instances,
+    )
+    if twin_map.keys() != execution_map.keys():
+        raise ScanError(
+            "blackbox-free view maps different fault sites than the scan ATPG view"
+        )
+    return _BlackboxTwin(str(twin_path), twin_map)
+
+
+def _testable_with_free_blackboxes(
+    core: Any,
+    twin: _BlackboxTwin,
+    *,
+    db_path: str,
+    fault_id: int,
+    site_key: str,
+    cell_map: str,
+    conflict_limit: int,
+    timeout: int,
+    unsupported: str,
+    cone_restrict: bool,
+    transition: bool,
+    los: bool,
+    los_couple_ports: list[tuple[str, str]],
+    los_head_ports: list[str],
+) -> bool:
+    """Re-solve a fault that is UNSAT in the scan ATPG view on its
+    blackbox-free twin: False only if it is UNSAT there too (redundant
+    whatever the blackboxes drive). SAT means only a blackbox output value
+    could test it. TIMEOUT and UNKNOWN also return True -- whether such a
+    fault is redundant is unknown, a redundant verdict needs a proof, and the
+    fault is untestable in the scan view either way."""
+    index = twin.net_index_by_site[site_key]
+    if los:
+        solved = core.solve_scan_los_transition_fault_atpg(
+            twin.json_path,
+            cell_map,
+            db_path,
+            fault_id,
+            los_couple_ports,
+            los_head_ports,
+            [],
+            conflict_limit,
+            timeout,
+            unsupported,
+            cone_restrict=cone_restrict,
+            net_index_override=index,
+        )
+    elif transition:
+        solved = core.solve_scan_transition_fault_atpg(
+            twin.json_path,
+            cell_map,
+            db_path,
+            fault_id,
+            [],
+            conflict_limit,
+            timeout,
+            unsupported,
+            cone_restrict=cone_restrict,
+            net_index_override=index,
+        )
+    else:
+        solved = core.solve_fault_atpg(
+            twin.json_path,
+            cell_map,
+            db_path,
+            fault_id,
+            [],
+            conflict_limit,
+            timeout,
+            unsupported,
+            net_index_override=index,
+        )
+    return str(solved["result"]) != "UNSAT"
 
 
 def _fault_has_raw_scan_diff(diff_unload_seqs: dict[int, list[bool]]) -> bool:
@@ -1549,6 +1667,20 @@ def run_progressive_scan_atpg(
             exclusions,
         )
     core.invalidate_stale_redundant(effective_db_path, campaign_id, redundancy_model)
+    # With blackbox outputs tied in the view, UNSAT alone can't tell a
+    # redundant fault from one only a memory output could test: the UNSAT
+    # branch re-solves on this twin, where the outputs are free.
+    blackbox_twin = _build_blackbox_twin(
+        core,
+        scan_ctx,
+        reduced_json_path,
+        generic_cell_map,
+        reduced_cell_map,
+        unsupported,
+        bb,
+        execution_map,
+    )
+    blackbox_blocked = 0
 
     generic_site_index = build_site_key_index(
         core, scan_ctx.generic_json, generic_cell_map, unsupported, bb
@@ -1676,7 +1808,10 @@ def run_progressive_scan_atpg(
                     len(_preflight.fanout_yosys_ids),
                     len(_preflight.redundant_stem_ids),
                 )
-                if _preflight.redundant_stem_ids:
+                # A canceling stem in the view may be blocked only by a tied
+                # blackbox output: with a twin, leave those faults to SAT and
+                # the UNSAT branch's blackbox check instead.
+                if _preflight.redundant_stem_ids and blackbox_twin is None:
                     _mark_preflight_redundant(
                         effective_db_path,
                         campaign_id,
@@ -2104,6 +2239,29 @@ def run_progressive_scan_atpg(
                     core.mark_fault_compression_unresolved(effective_db_path, fault_id)
                 elif _is_compaction_only_rejected(rejection_reasons.get(fault_id)):
                     core.mark_fault_compaction_unresolved(effective_db_path, fault_id)
+                elif (
+                    blackbox_twin is not None
+                    # UNSAT with patterns blocked isn't a proof to classify.
+                    and not blocked
+                    and _testable_with_free_blackboxes(
+                        core,
+                        blackbox_twin,
+                        db_path=effective_db_path,
+                        fault_id=fault_id,
+                        site_key=row.fault_site_key,
+                        cell_map=reduced_cell_map,
+                        conflict_limit=cfg.atpg.sat_conflict_limit,
+                        timeout=tier_timeout,
+                        unsupported=unsupported,
+                        cone_restrict=cfg.atpg.cone_restrict,
+                        transition=transition,
+                        los=los,
+                        los_couple_ports=los_couple_ports,
+                        los_head_ports=los_head_ports,
+                    )
+                ):
+                    core.mark_fault_blackbox_unresolved(effective_db_path, fault_id)
+                    blackbox_blocked += 1
                 else:
                     core.mark_fault_redundant(
                         effective_db_path, fault_id, redundancy_model
@@ -2170,6 +2328,12 @@ def run_progressive_scan_atpg(
         _executor.shutdown(wait=False)
 
     log.info("atpg   terminated: %s", terminal)
+    if blackbox_blocked:
+        log.info(
+            "atpg   %d faults are testable only through a blackbox output "
+            "(blackbox_unresolved)",
+            blackbox_blocked,
+        )
 
     with connect(effective_db_path) as conn:
         init_schema(conn)

@@ -24,6 +24,11 @@ PPI_PREFIX = "__ppi_"
 PPO_PREFIX = "__ppo_"
 OBSERVE_BUF_CELL = "$faultflow_observe_buf"
 D_BRANCH_BUF_CELL = "$faultflow_d_branch_buf"
+# A constant-0 cell with no inputs: each opaque blackbox output gets its own,
+# rather than a buffer on the design's shared constant-0 net -- that net is a
+# fault site of the real netlist, and a tie hanging off it would give its
+# stuck-at-1 a path through the blackbox the real netlist doesn't have.
+TIE0_CELL = "$faultflow_tie0"
 # Bare (unescaped) spelling of stitch.py's YOSYS_CAPTURE_*_CELL constants --
 # derived, not re-typed, so the two producers of these cell types can't drift.
 CAPTURE_AND_CELL = YOSYS_CAPTURE_AND_CELL.lstrip("\\")
@@ -36,6 +41,14 @@ DATA_PIN = "D"
 SCAN_RESET_TYPES = frozenset({"$scanff_r_faultflow", "\\$scanff_r_faultflow"})
 SCAN_SET_TYPES = frozenset({"$scanff_s_faultflow", "\\$scanff_s_faultflow"})
 ATPG_VIEW_SCHEMA_VER = "scan-atpg-view-observe-buf-1"
+# An opaque blackbox output is driven by a tie cell named with this prefix
+# (_model_blackboxes_opaque); in the view's blackbox-free twin that cell is a
+# buffer fed by an input port named with the second prefix instead
+# (make_blackbox_free). The C++ held_real_pis skips that prefix too.
+BLACKBOX_TIE_PREFIX = "$bbtie0_"
+BLACKBOX_FREE_PORT_PREFIX = "__bbfree_"
+# A net only a blackbox input used keeps a dangling reader named with this.
+BLACKBOX_SINK_PREFIX = "$bbsink_"
 
 
 def _ppi_name(instance: str) -> str:
@@ -540,6 +553,12 @@ def _resolve_d_observe_boundary(
     return observe_input, d_boundary_site_key, next_id, d_observe_net_id
 
 
+def _parsed_net(bit: object) -> object:
+    """A connection bit as the netlist parser sees it: "x"/"z" tie to the same
+    constant-0 net as "0"."""
+    return "0" if bit in ("x", "z") else bit
+
+
 def _model_blackboxes_opaque(module: dict[str, Any], instances: Sequence[str]) -> None:
     """Replace each blackbox instance with what a scan test can see of it:
     nothing. Its outputs are tied to constant 0 -- the value the scan protocol
@@ -551,8 +570,14 @@ def _model_blackboxes_opaque(module: dict[str, Any], instances: Sequence[str]) -
     it must see exactly what the full scan protocol does. Left as a boundary
     (outputs controllable, inputs observable test points), SAT sets outputs
     the protocol can't and credits observations the protocol can't make.
+
+    A net that only a blackbox input used -- typically a constant tie-off --
+    would drop out of the view with the blackbox, but the real netlist keeps
+    its fault sites, and grading them (as unobservable) needs a site in the
+    view. Each such net keeps a dangling internal buffer as its reader.
     """
     cells = module.get("cells", {})
+    input_bits: list[tuple[str, object]] = []
     for inst in instances:
         cell = cells.pop(inst, None)
         if not isinstance(cell, dict):
@@ -566,18 +591,79 @@ def _model_blackboxes_opaque(module: dict[str, Any], instances: Sequence[str]) -
         for pin, bits in cell.get("connections", {}).items():
             if pin not in dirs:
                 raise ScanError(f"blackbox instance {inst!r}: no direction for {pin}")
-            if dirs[pin] != "output":
-                continue
             for i, bit in enumerate(bits):
-                if isinstance(bit, int):
-                    cells[f"$bbtie0_{inst}_{pin}_{i}"] = {
+                if dirs[pin] != "output":
+                    input_bits.append((f"{inst}_{pin}_{i}", bit))
+                elif isinstance(bit, int):
+                    cells[f"{BLACKBOX_TIE_PREFIX}{inst}_{pin}_{i}"] = {
                         "hide_name": 0,
-                        "type": OBSERVE_BUF_CELL,
+                        "type": TIE0_CELL,
                         "parameters": {},
                         "attributes": {"faultflow_internal": "1"},
-                        "port_directions": {"A": "input", "Y": "output"},
-                        "connections": {"A": ["0"], "Y": [bit]},
+                        "port_directions": {"Y": "output"},
+                        "connections": {"Y": [bit]},
                     }
+    if not input_bits:
+        return
+    used = {
+        _parsed_net(bit)
+        for cell in cells.values()
+        for bits in cell.get("connections", {}).values()
+        for bit in bits
+    }
+    used.update(
+        _parsed_net(bit)
+        for port in module.get("ports", {}).values()
+        for bit in port.get("bits", [])
+    )
+    next_id = _next_net_id(module)
+    for name, bit in input_bits:
+        if _parsed_net(bit) in used:
+            continue
+        used.add(_parsed_net(bit))
+        cells[f"{BLACKBOX_SINK_PREFIX}{name}"] = {
+            "hide_name": 0,
+            "type": OBSERVE_BUF_CELL,
+            "parameters": {},
+            "attributes": {"faultflow_internal": "1"},
+            "port_directions": {"A": "input", "Y": "output"},
+            "connections": {"A": [bit], "Y": [next_id]},
+        }
+        next_id += 1
+
+
+def make_blackbox_free(view: dict[str, Any], top: str) -> bool:
+    """Turn an opaque scan ATPG view into its blackbox-free twin, in place:
+    every blackbox tie cell becomes a buffer fed by its own new input port, so
+    SAT may give each blackbox output any value. Returns False, leaving the
+    view untouched, if it ties no blackbox output.
+
+    Only what drives each blackbox output changes, so every fault site keeps
+    its site key. A fault UNSAT in the view but SAT in its twin has a test only
+    if a memory drives a value no scan test can set: it is untestable because
+    of the blackbox, not redundant. The twin serves that classification alone
+    -- no pattern found on it is a pattern the scan protocol can apply.
+    """
+    _, module = _top_module(view, top)
+    cells = module.get("cells", {})
+    ties = sorted(name for name in cells if name.startswith(BLACKBOX_TIE_PREFIX))
+    if not ties:
+        return False
+    ports = module.setdefault("ports", {})
+    netnames = module.setdefault("netnames", {})
+    next_id = _next_net_id(module)
+    for name in ties:
+        port = BLACKBOX_FREE_PORT_PREFIX + name[len(BLACKBOX_TIE_PREFIX) :]
+        if port in ports or port in netnames:
+            raise ScanError(f"blackbox-free port name {port!r} is already taken")
+        tie = cells[name]
+        tie["type"] = OBSERVE_BUF_CELL
+        tie["port_directions"] = {"A": "input", "Y": "output"}
+        tie["connections"] = {"A": [next_id], "Y": tie["connections"]["Y"]}
+        ports[port] = {"direction": "input", "bits": [next_id]}
+        netnames[port] = {"hide_name": 0, "bits": [next_id], "attributes": {}}
+        next_id += 1
+    return True
 
 
 def build_scan_atpg_view(
