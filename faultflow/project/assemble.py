@@ -83,7 +83,20 @@ def _find_top(data: dict[str, Any], requested_top: str) -> dict[str, Any]:
     raise AssembleError(f"cannot find top module {requested_top!r} in glue JSON")
 
 
-def block_stub_verilog(block_json: dict[str, Any], module: str) -> str:
+def _verilog_parameter_literal(value: Any) -> str:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def block_stub_verilog(
+    block_json: dict[str, Any],
+    module: str,
+    *,
+    parameters: dict[str, Any] | None = None,
+) -> str:
     """Emit a blackbox Verilog interface stub for `module` from `block_json`.
 
     ``(* blackbox *) module <module>(...);`` with port declarations only (direction
@@ -91,6 +104,16 @@ def block_stub_verilog(block_json: dict[str, Any], module: str) -> str:
     and no body -- pure string-building, no Yosys involved. When read via
     ``read_verilog -lib``, Yosys treats this as a blackbox: ``flatten`` has nothing
     to inline for it, so the real instance survives glue synthesis untouched.
+
+    ``parameters``, when non-empty, adds a ``#(parameter K = V, ...)`` clause --
+    REQUIRED when the real module has parameters and the glue instantiates it with
+    an override (e.g. ``algo_top #(.ADDR_WIDTH(ADDR_WIDTH)) u_algo(...)``); without
+    the declaration Yosys errors with "Module `X' ... does not have a parameter
+    named 'K'". No type keyword is emitted (bare ``parameter K = V``) -- purely
+    cosmetic for Yosys's own chparam/instantiation-override handling, and guessing
+    one from a bare JSON scalar risks getting it wrong for a case the caller's data
+    doesn't disambiguate. `parameters=None` (the default) produces output identical
+    to before this argument existed.
     """
     modules = block_json.get("modules")
     if not isinstance(modules, dict) or module not in modules:
@@ -111,7 +134,15 @@ def block_stub_verilog(block_json: dict[str, Any], module: str) -> str:
         else:
             decls.append(f"  {direction} [{width - 1}:0] {name};")
 
-    header = f"module {module}({', '.join(port_names)});"
+    param_clause = ""
+    if parameters:
+        param_decls = ", ".join(
+            f"parameter {k} = {_verilog_parameter_literal(v)}"
+            for k, v in parameters.items()
+        )
+        param_clause = f" #({param_decls})"
+
+    header = f"module {module}{param_clause}({', '.join(port_names)});"
     lines = ["(* blackbox *)", header, *decls, "endmodule", ""]
     return "\n".join(lines)
 
@@ -262,7 +293,11 @@ def _build_remap(
         block_bits = port.get("bits", [])
         glue_bits = inst_connections.get(port_name)
         if glue_bits is None:
-            raise AssembleError(f"instance connections missing port {port_name!r}")
+            # A port genuinely unconnected at the instantiation site (valid
+            # Verilog -- e.g. an unused diagnostic output nobody wired up).
+            # Its bits get a fresh internal id below, same as a constant-tied
+            # bit with no glue-space net to bind to.
+            continue
         for i, bit in enumerate(block_bits):
             if not isinstance(bit, int):
                 continue
