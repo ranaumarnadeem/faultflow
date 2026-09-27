@@ -1082,6 +1082,7 @@ class Runner:
                 input_order,
                 output_order,
                 self.cfg.simulation.unsupported_cells,
+                list(self.cfg.blackbox_instances),
             )
         )
 
@@ -1760,6 +1761,7 @@ class Runner:
                 vectors.input_order,
                 output_order,
                 self.cfg.simulation.unsupported_cells,
+                list(self.cfg.blackbox_instances),
             )
         )
 
@@ -1785,6 +1787,7 @@ class Runner:
                 input_order,
                 output_order,
                 self.cfg.simulation.unsupported_cells,
+                list(self.cfg.blackbox_instances),
             )
         )
 
@@ -2159,6 +2162,7 @@ class Runner:
                         run_id=run_id,
                         vectors=vectors,
                         unsupported=self.cfg.simulation.unsupported_cells,
+                        blackbox_instances=self.cfg.blackbox_instances,
                     )
                 else:
                     from faultflow.runner.compaction import (
@@ -2176,6 +2180,7 @@ class Runner:
                             vectors=vectors,
                             unsupported=self.cfg.simulation.unsupported_cells,
                             pack_orders=self.cfg.atpg.pack_orders,
+                            blackbox_instances=self.cfg.blackbox_instances,
                         )
                     else:
                         vectors, run_id, raw_vector_count = compact_run(
@@ -2186,6 +2191,7 @@ class Runner:
                             run_id=run_id,
                             vectors=vectors,
                             unsupported=self.cfg.simulation.unsupported_cells,
+                            blackbox_instances=self.cfg.blackbox_instances,
                         )
                 vector_source = vectors.source
             if verify_enabled:
@@ -2279,8 +2285,15 @@ class Runner:
 
         manifest = self._preflight_sim_scan()
         generic_json = Path(str(manifest["generic_json"]))
+        # Blackbox instances are modeled opaque in the reduced view (outputs
+        # tied to 0, inputs unobserved) so SAT and the reduced simulators see
+        # exactly what the scan protocol does; the view then contains none of
+        # them, so it loads with no blackbox list. The generic netlist keeps
+        # the real instances and still loads with cfg.blackbox_instances.
         view, pseudo_port_map = build_scan_atpg_view(
-            _load_json_object(generic_json), manifest
+            _load_json_object(generic_json),
+            manifest,
+            blackbox_instances=self.cfg.blackbox_instances,
         )
 
         # INTEST: fuse the wrapper boundary into the scan-reduced view so the
@@ -2529,6 +2542,7 @@ class Runner:
                 run_id=run_id,
                 vectors=vectors,
                 unsupported=self.cfg.simulation.unsupported_cells,
+                blackbox_instances=self.cfg.blackbox_instances,
             )
         else:
             raw_vectors = vectors.count

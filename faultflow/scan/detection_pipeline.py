@@ -446,6 +446,7 @@ def _protocol_fault_sim_kwargs(
         "max_chain_length": int(ctx.manifest.get("max_chain_length", 0)),
         "load_seqs": pattern.load_seqs,
         "capture_pi_values": gate_pi_values,
+        "blackbox_instances": list(ctx.cfg.blackbox_instances),
     }
 
 
@@ -1489,6 +1490,11 @@ def run_progressive_scan_atpg(
     )
     generic_cell_map = str(scan_cell_map)
     unsupported = cfg.simulation.unsupported_cells
+    # Every GENERIC-netlist load needs the blackbox list: a blackbox instance's
+    # cell type is usually absent from the cell map, so a load without it fails
+    # outright under unsupported_cells = fail. Reduced-view loads need none --
+    # build_scan_atpg_view models blackboxes opaque, so the view has none.
+    bb = list(cfg.blackbox_instances)
 
     core.ensure_faults_enumerated(
         str(scan_ctx.generic_json),
@@ -1499,6 +1505,7 @@ def run_progressive_scan_atpg(
         cfg.fault_model.include_reset_faults,
         cfg.fault_model.collapsing,
         unsupported,
+        bb,
     )
     execution_map, exclusions = build_scan_execution_map(
         core,
@@ -1510,6 +1517,7 @@ def run_progressive_scan_atpg(
         scan_ctx.pseudo_port_map,
         scan_ctx.manifest,
         scan_ctx.wbr_decoupled_bits,
+        blackbox_instances=bb,
     )
     # For transition faults in multi-domain designs, tag cross-domain fault sites.
     if cfg.fault_model.model == "transition":
@@ -1521,7 +1529,7 @@ def run_progressive_scan_atpg(
             if cross_domain_ids:
                 generic_rows: list[dict[str, Any]] = list(
                     core.list_site_keys(
-                        str(scan_ctx.generic_json), generic_cell_map, unsupported
+                        str(scan_ctx.generic_json), generic_cell_map, unsupported, bb
                     )
                 )
                 exclusions = tag_cross_domain_exclusions(
@@ -1543,7 +1551,7 @@ def run_progressive_scan_atpg(
     core.invalidate_stale_redundant(effective_db_path, campaign_id, redundancy_model)
 
     generic_site_index = build_site_key_index(
-        core, scan_ctx.generic_json, generic_cell_map, unsupported
+        core, scan_ctx.generic_json, generic_cell_map, unsupported, bb
     )
 
     with connect(effective_db_path) as conn:
@@ -1910,7 +1918,7 @@ def run_progressive_scan_atpg(
                     cfg.atpg.cone_restrict,
                     list(los_couple_ports) if los else [],
                     list(los_head_ports) if los else [],
-                    [],  # bb_instances: not needed in scan fused-view path
+                    [],  # bb_instances: the reduced view models blackboxes opaque
                     "",  # test_mode: baked into the fused-view netlist
                     cfg.atpg.incremental_sat,  # scan_stuck_at ignores it for now
                 )
@@ -2344,7 +2352,11 @@ def compact_run_scan_transition(
     row_by_id = {row.fault_id: row for row in detected_rows}
     remaining: set[int] = set(row_by_id)
     generic_site_index = build_site_key_index(
-        core, scan_ctx.generic_json, generic_cell_map, unsupported
+        core,
+        scan_ctx.generic_json,
+        generic_cell_map,
+        unsupported,
+        scan_ctx.cfg.blackbox_instances,
     )
     _couples, _heads, head_by_chain = build_los_couples(scan_ctx.pseudo_port_map)
 

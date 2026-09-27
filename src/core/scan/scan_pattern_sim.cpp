@@ -342,9 +342,10 @@ std::vector<int> scan_sample_yids(const ParsedGraph& parsed,
 
 ScanPatternResult simulate_scan_pattern(
     const std::string& json_path, const std::string& cell_map_path,
-    const ScanPatternRequest& request, const std::string& unsupported_policy) {
-  const CachedGraph& graph =
-      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+    const ScanPatternRequest& request, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& graph = load_cached_graph(
+      json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const ParsedGraph& parsed = graph.parsed;
   const CompiledSimGraph& cg = graph.cg;
 
@@ -358,9 +359,10 @@ ScanPatternResult simulate_scan_pattern(
 ScanProtocolFaultSimResult simulate_scan_protocol_faults(
     const std::string& json_path, const std::string& cell_map_path,
     const ScanProtocolFaultRequest& request,
-    const std::string& unsupported_policy, int sim_threads) {
-  const CachedGraph& graph =
-      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+    const std::string& unsupported_policy, int sim_threads,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& graph = load_cached_graph(
+      json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const ParsedGraph& parsed = graph.parsed;
   const CompiledSimGraph& cg = graph.cg;
 

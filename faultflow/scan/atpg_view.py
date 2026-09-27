@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from faultflow.coverage.site_key import (
     SiteProvenance,
@@ -540,17 +540,61 @@ def _resolve_d_observe_boundary(
     return observe_input, d_boundary_site_key, next_id, d_observe_net_id
 
 
+def _model_blackboxes_opaque(module: dict[str, Any], instances: Sequence[str]) -> None:
+    """Replace each blackbox instance with what a scan test can see of it:
+    nothing. Its outputs are tied to constant 0 -- the value the scan protocol
+    simulator already reads from an undriven blackbox output, since no scan
+    test can control a memory's output -- and its inputs are left unobserved,
+    since no scan test can observe them either.
+
+    The reduced view is what SAT and every reduced-view simulator run on, and
+    it must see exactly what the full scan protocol does. Left as a boundary
+    (outputs controllable, inputs observable test points), SAT sets outputs
+    the protocol can't and credits observations the protocol can't make.
+    """
+    cells = module.get("cells", {})
+    for inst in instances:
+        cell = cells.pop(inst, None)
+        if not isinstance(cell, dict):
+            raise ScanError(f"blackbox instance {inst!r} not found in the scan view")
+        dirs = cell.get("port_directions")
+        if not isinstance(dirs, dict) or not dirs:
+            raise ScanError(
+                f"blackbox instance {inst!r} has no port_directions: its outputs "
+                "can't be told from its inputs"
+            )
+        for pin, bits in cell.get("connections", {}).items():
+            if pin not in dirs:
+                raise ScanError(f"blackbox instance {inst!r}: no direction for {pin}")
+            if dirs[pin] != "output":
+                continue
+            for i, bit in enumerate(bits):
+                if isinstance(bit, int):
+                    cells[f"$bbtie0_{inst}_{pin}_{i}"] = {
+                        "hide_name": 0,
+                        "type": OBSERVE_BUF_CELL,
+                        "parameters": {},
+                        "attributes": {"faultflow_internal": "1"},
+                        "port_directions": {"A": "input", "Y": "output"},
+                        "connections": {"A": ["0"], "Y": [bit]},
+                    }
+
+
 def build_scan_atpg_view(
     generic_json: dict[str, Any],
     manifest: dict[str, Any],
     *,
     active_clock_net: int | None = None,
+    blackbox_instances: Sequence[str] = (),
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """Return (reduced Yosys JSON, pseudo_port_map keyed by FF instance).
 
     When active_clock_net is given, only FFs clocked by that net get a PPO
     observe buffer (per-domain transition view).  All FFs still get a PPI so
     inactive-domain FF state can be controlled as held inputs.
+
+    `blackbox_instances` are modeled opaque (`_model_blackboxes_opaque`), so
+    the returned view contains none of them: load it with no blackbox list.
     """
     top = str(manifest["top"])
     _, source_module = _top_module(generic_json, top)
@@ -561,7 +605,9 @@ def build_scan_atpg_view(
     if not records:
         # A wrapper-only EXTEST graybox has NO internal scan FFs to reduce to
         # pseudo-ports; its IEEE-1500 WBR cells are handled downstream by
-        # fuse_wbr_into_view. Return the netlist unchanged (no pseudo-ports).
+        # fuse_wbr_into_view. Return the netlist otherwise unchanged (no
+        # pseudo-ports); blackboxes are still modeled opaque.
+        _model_blackboxes_opaque(module, blackbox_instances)
         return view, {}
 
     instances = [str(record["instance"]) for record in records]
@@ -714,6 +760,7 @@ def build_scan_atpg_view(
 
     clock_nets_list = manifest_clock_net_ids(manifest)
     _drop_dangling_scan_ports(module, manifest, clock_nets_list)
+    _model_blackboxes_opaque(module, blackbox_instances)
 
     attrs = module.setdefault("attributes", {})
     if isinstance(attrs, dict):
@@ -727,9 +774,11 @@ def build_scan_atpg_view_from_paths(
     manifest: dict[str, Any],
     *,
     active_clock_net: int | None = None,
+    blackbox_instances: Sequence[str] = (),
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     return build_scan_atpg_view(
         _load_json(Path(generic_json_path)),
         manifest,
         active_clock_net=active_clock_net,
+        blackbox_instances=blackbox_instances,
     )

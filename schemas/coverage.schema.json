@@ -46,7 +46,7 @@
         "include_reset_faults": { "type": "boolean" },
         "collapsing": { "type": "boolean" },
         "blackbox_instances": { "type": "array", "items": { "type": "string" } },
-        "blackbox_boundary": { "enum": ["none", "pseudo_port"] }
+        "blackbox_boundary": { "enum": ["none", "pseudo_port", "opaque"] }
       }
     },
     "summary": {

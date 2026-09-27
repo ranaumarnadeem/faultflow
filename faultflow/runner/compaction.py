@@ -4,7 +4,7 @@ import logging
 import random
 import sqlite3
 import time
-from typing import NamedTuple
+from typing import NamedTuple, Sequence
 
 from faultflow.atpg import VectorSet
 from faultflow.db import connect, init_schema, summary
@@ -132,6 +132,7 @@ def compact_run(
     run_id: int,
     vectors: VectorSet,
     unsupported: str,
+    blackbox_instances: Sequence[str] = (),
 ) -> tuple[VectorSet, int, int]:
     """Reverse-order fault-simulation static compaction.
 
@@ -171,6 +172,7 @@ def compact_run(
             input_order,
             _triples(remaining, targets_by_id),
             unsupported,
+            list(blackbox_instances),
         )
         newly = [fid for fid in detected if fid in remaining]
         if newly:
@@ -299,6 +301,7 @@ def compact_run_dynamic(
     vectors: VectorSet,
     unsupported: str,
     pack_orders: int = 1,
+    blackbox_instances: Sequence[str] = (),
 ) -> tuple[VectorSet, int, int]:
     """Dynamic compaction via sim-verified cube packing.
 
@@ -340,6 +343,7 @@ def compact_run_dynamic(
                 input_order,
                 _triples(targets, targets_by_id),
                 unsupported,
+                list(blackbox_instances),
             )
         )
 
@@ -391,6 +395,7 @@ def compact_run_dynamic(
             run_id=run_id,
             vectors=vectors,
             unsupported=unsupported,
+            blackbox_instances=blackbox_instances,
         )
 
     # 5. Write the packed set as a new compacted run (mirrors compact_run).
@@ -427,6 +432,7 @@ def compact_run_transition(
     run_id: int,
     vectors: VectorSet,
     unsupported: str,
+    blackbox_instances: Sequence[str] = (),
 ) -> tuple[VectorSet, int, int]:
     """Reverse-order TWO-FRAME (transition) static compaction.
 
@@ -482,6 +488,7 @@ def compact_run_transition(
             input_order,
             _triples(remaining, targets_by_id),
             unsupported,
+            list(blackbox_instances),
         )
         newly = [fid for fid in detected if fid in remaining]
         if newly:

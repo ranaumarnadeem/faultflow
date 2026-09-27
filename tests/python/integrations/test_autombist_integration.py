@@ -37,6 +37,60 @@ SKY130_CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 
 
 @pytest.mark.integration
+def test_blackbox_design_runs_the_full_scan_flow_under_the_default_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    require_cpp_core: None,
+) -> None:
+    """init -> scan -> scan-check -> sim --scan on a design whose memory is an
+    explicitly blackboxed instance ([blackbox] instances = u_sram, cell type
+    absent from the cell map), with NO `unsupported_cells = blackbox`.
+
+    Every netlist load on the scan path used to ignore the blackbox list, so
+    under the default unsupported_cells = fail scan-check died with
+    "Unsupported cell: <memory type>" and sim --scan (which requires a passing
+    scan-check) was unreachable for every design with a blackbox."""
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+    from faultflow.cli import main
+
+    manifest = load_autombist_manifest(FIXTURE / "manifest.json")
+    memory = next(i for i in manifest.instances if i.hierarchical_path == "u_sram")
+    result = synthesize_from_manifest(
+        manifest,
+        out=tmp_path / "synth",
+        liberty=SKY130_LIBERTY,
+        cell_lib=SKY130_CELL_MAP,
+    )
+    top = result.top_module
+    ofs = result.ofs_path
+    assert result.blackbox_instances == ("u_sram",)
+    assert "unsupported_cells" not in ofs.read_text(encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    for step in (["init"], ["scan"], ["scan-check"], ["sim", "--scan"]):
+        assert main([*step, "--top", top, "-c", str(ofs)]) == 0, step
+    assert "scan-check PASS" in capsys.readouterr().out
+
+    # Scan insertion must keep the blackbox instance under its own name and
+    # type, or the [blackbox] list would no longer match anything.
+    out_dir = tmp_path / "output" / top
+    scanned = json.loads((out_dir / f"{top}_scan.json").read_text(encoding="utf-8"))
+    assert scanned["modules"][top]["cells"]["u_sram"]["type"] == memory.module_type
+
+    report = json.loads(
+        (out_dir / ".faultflow/intermediate/coverage_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["summary"]["denominator"] > 0
+    assert report["summary"]["detected"] > 0
+    assert report["policy"]["blackbox_instances"] == ["u_sram"]
+    assert report["policy"]["blackbox_boundary"] == "opaque"
+
+
+@pytest.mark.integration
 def test_synthesize_from_manifest_end_to_end(
     tmp_path: Path, require_cpp_core: None
 ) -> None:

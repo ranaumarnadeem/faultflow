@@ -68,6 +68,18 @@ def _per_node(conn: sqlite3.Connection, campaign_id: int) -> list[dict[str, Any]
     return nodes
 
 
+def _blackbox_boundary(fp: dict[str, Any], blackbox_instances: tuple[str, ...]) -> str:
+    """How a blackboxed instance's boundary was modeled -- a documented coverage
+    assumption. A scan campaign models it opaque (outputs tied to 0, inputs
+    unobserved): the scan protocol can neither set a memory's outputs nor
+    observe its inputs (atpg_view._model_blackboxes_opaque). Combinational and
+    EXTEST campaigns model it as a test interface (inputs observable, outputs
+    controllable), parallel to scan pseudo-PI/PO."""
+    if not blackbox_instances:
+        return "none"
+    return "opaque" if fp.get("campaign_type") == "scan" else "pseudo_port"
+
+
 def _policy(
     fp: dict[str, Any], blackbox_instances: tuple[str, ...] = ()
 ) -> dict[str, Any]:
@@ -77,10 +89,7 @@ def _policy(
         "include_reset_faults": bool(fp.get("include_reset_faults", 0)),
         "collapsing": bool(fp.get("collapsing", 0)),
         "blackbox_instances": list(blackbox_instances),
-        # When instances are blackboxed, their boundary is modeled as a test
-        # interface (inputs observable, outputs controllable) — a documented
-        # coverage assumption, parallel to scan pseudo-PI/PO.
-        "blackbox_boundary": "pseudo_port" if blackbox_instances else "none",
+        "blackbox_boundary": _blackbox_boundary(fp, blackbox_instances),
     }
 
 

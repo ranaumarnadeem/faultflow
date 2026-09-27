@@ -85,6 +85,7 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
                     conflict_limit,
                     timeout,
                     unsupported,
+                    blackbox_instances=bb_instances,
                     cone_restrict=cone_restrict,
                 )
             )
@@ -99,6 +100,7 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
                     conflict_limit,
                     timeout,
                     unsupported,
+                    blackbox_instances=bb_instances,
                     cone_restrict=cone_restrict,
                 )
             )
@@ -145,6 +147,7 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
                     conflict_limit,
                     timeout,
                     unsupported,
+                    blackbox_instances=bb_instances,
                 )
             )
     except Exception as exc:

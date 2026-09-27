@@ -606,3 +606,81 @@ def test_self_referencing_ff_d_observe_follows_own_rewired_pin() -> None:
         for c in cells.values()
         for pin in c.get("connections", {})
     ), "stale net 10 must not be referenced anywhere in the reduced view"
+
+
+def _scan_chain_with_memory() -> tuple[dict[str, Any], dict[str, Any]]:
+    """One scan FF whose Q feeds a blackbox memory's data input; the memory's
+    two data outputs feed a gate that drives a primary output."""
+    generic, manifest = _big_scan_chain(1)
+    module = generic["modules"][manifest["top"]]
+    module["cells"]["u_mem"] = {
+        "type": "sram_like",
+        "port_directions": {"din": "input", "dout": "output"},
+        "connections": {"din": [100], "dout": [200, 201]},
+    }
+    module["cells"]["g0"] = {
+        "type": "sky130_fd_sc_hd__and2_1",
+        "port_directions": {"A": "input", "B": "input", "X": "output"},
+        "connections": {"A": [200], "B": [201], "X": [300]},
+    }
+    module["ports"]["po"] = {"direction": "output", "bits": [300]}
+    return generic, manifest
+
+
+def _tie_connections(cells: dict[str, Any]) -> dict[str, Any]:
+    return {
+        name: cell["connections"]
+        for name, cell in cells.items()
+        if name.startswith("$bbtie0_")
+    }
+
+
+@pytest.mark.parametrize("with_scan_cells", [True, False])
+def test_blackbox_instance_is_modeled_opaque(with_scan_cells: bool) -> None:
+    """A scan test can neither set a memory's outputs nor observe its inputs,
+    so the reduced view holds each output at the 0 the scan protocol simulator
+    reads from it and drops the memory (and with it the inputs), instead of
+    keeping a boundary SAT could drive and observe. Also on the no-scan-FF
+    (wrapper-only graybox) early return."""
+    generic, manifest = _scan_chain_with_memory()
+    if not with_scan_cells:
+        manifest["cells"] = []
+
+    view, _ = build_scan_atpg_view(generic, manifest, blackbox_instances=["u_mem"])
+
+    cells = view["modules"][manifest["top"]]["cells"]
+    assert "u_mem" not in cells
+    assert _tie_connections(cells) == {
+        "$bbtie0_u_mem_dout_0": {"A": ["0"], "Y": [200]},
+        "$bbtie0_u_mem_dout_1": {"A": ["0"], "Y": [201]},
+    }
+    assert cells["$bbtie0_u_mem_dout_0"]["type"] == OBSERVE_BUF_CELL
+    assert cells["g0"]["connections"] == {"A": [200], "B": [201], "X": [300]}
+
+
+def test_view_keeps_blackbox_cells_that_are_not_listed() -> None:
+    generic, manifest = _scan_chain_with_memory()
+
+    view, _ = build_scan_atpg_view(generic, manifest)
+
+    cells = view["modules"][manifest["top"]]["cells"]
+    assert "u_mem" in cells
+    assert _tie_connections(cells) == {}
+
+
+def test_unknown_blackbox_instance_is_an_error() -> None:
+    generic, manifest = _scan_chain_with_memory()
+
+    with pytest.raises(ScanError, match="u_missing"):
+        build_scan_atpg_view(generic, manifest, blackbox_instances=["u_missing"])
+
+
+def test_blackbox_without_port_directions_is_an_error() -> None:
+    """Without Yosys's port_directions the view can't tell a memory's outputs
+    from its inputs; guessing from pin names is how a memory's dout0 was once
+    read as an input."""
+    generic, manifest = _scan_chain_with_memory()
+    del generic["modules"][manifest["top"]]["cells"]["u_mem"]["port_directions"]
+
+    with pytest.raises(ScanError, match="port_directions"):
+        build_scan_atpg_view(generic, manifest, blackbox_instances=["u_mem"])

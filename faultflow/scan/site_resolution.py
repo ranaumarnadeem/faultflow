@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from faultflow.coverage.site_key import SiteProvenance, canonical_site_key
 
@@ -13,8 +13,11 @@ def build_site_key_index(
     json_path: str | Path,
     cell_map_path: str | Path,
     unsupported: str,
+    blackbox_instances: Sequence[str] = (),
 ) -> dict[str, int]:
-    rows = core.list_site_keys(str(json_path), str(cell_map_path), unsupported)
+    rows = core.list_site_keys(
+        str(json_path), str(cell_map_path), unsupported, list(blackbox_instances)
+    )
     return {str(row["site_key"]): int(row["compiled_net_index"]) for row in rows}
 
 
@@ -48,9 +51,17 @@ def build_scan_execution_map(
     pseudo_port_map: dict[str, dict[str, Any]],
     manifest: Mapping[str, Any],
     wbr_decoupled_bits: frozenset[int] = frozenset(),
+    blackbox_instances: Sequence[str] = (),
 ) -> tuple[dict[str, int], dict[str, str]]:
+    # `blackbox_instances` are the GENERIC netlist's: the reduced view models
+    # them opaque (atpg_view._model_blackboxes_opaque) and contains none.
     generic_rows: list[dict[str, Any]] = list(
-        core.list_site_keys(str(generic_json_path), str(generic_cell_map), unsupported)
+        core.list_site_keys(
+            str(generic_json_path),
+            str(generic_cell_map),
+            unsupported,
+            list(blackbox_instances),
+        )
     )
     reduced_rows: list[dict[str, Any]] = list(
         core.list_site_keys(str(reduced_json_path), str(reduced_cell_map), unsupported)

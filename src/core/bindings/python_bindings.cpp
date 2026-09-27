@@ -225,9 +225,10 @@ std::vector<std::map<std::string, bool>> fault_free_outputs(
     const std::vector<std::map<std::string, bool>>& raw_vectors,
     const std::vector<std::string>& input_order,
     const std::vector<std::string>& output_order,
-    const std::string& unsupported_policy) {
-  const CachedGraph& graph =
-      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& graph = load_cached_graph(
+      json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const ParsedGraph& parsed = graph.parsed;
   const CompiledSimGraph& cg = graph.cg;
   const std::vector<TestVector> vectors =
@@ -257,9 +258,10 @@ std::vector<std::map<std::string, bool>> fault_free_sequence_outputs(
     const std::vector<std::vector<std::map<std::string, bool>>>& raw_sequences,
     const std::vector<std::string>& input_order,
     const std::vector<std::string>& output_order,
-    const std::string& unsupported_policy) {
-  const CachedGraph& graph =
-      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& graph = load_cached_graph(
+      json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const ParsedGraph& parsed = graph.parsed;
   const CompiledSimGraph& cg = graph.cg;
   const std::vector<TestVector> vectors =
@@ -736,7 +738,8 @@ py::dict simulate_scan_pattern_py(
     bool los_two_capture,
     const std::map<int, bool>& los_launch_scan_in,
     const std::vector<std::string>& active_clock_ports,
-    const std::string& test_mode = "") {
+    const std::string& test_mode = "",
+    const std::vector<std::string>& blackbox_instances = {}) {
   scan::ScanPatternRequest request;
   request.clock_ports = clock_ports;
   request.clock_off_states = clock_off_states;
@@ -753,7 +756,7 @@ py::dict simulate_scan_pattern_py(
   request.active_clock_ports = active_clock_ports;
   request.test_mode = parse_test_mode(test_mode);
   const scan::ScanPatternResult result = scan::simulate_scan_pattern(
-      json_path, cell_map_path, request, unsupported_policy);
+      json_path, cell_map_path, request, unsupported_policy, blackbox_instances);
   py::dict out;
   out["real_po_values"] = result.real_po_values;
   py::dict unload;
@@ -780,7 +783,8 @@ py::dict simulate_scan_protocol_faults_py(
     bool los_two_capture, const std::map<int, bool>& los_launch_scan_in,
     const std::vector<std::string>& active_clock_ports,
     const std::string& test_mode = "", int sim_threads = 1,
-    bool capture_diffs = false) {
+    bool capture_diffs = false,
+    const std::vector<std::string>& blackbox_instances = {}) {
   scan::ScanProtocolFaultRequest request;
   request.capture_diffs = capture_diffs;
   request.pattern.clock_ports = clock_ports;
@@ -809,8 +813,9 @@ py::dict simulate_scan_protocol_faults_py(
   scan::ScanProtocolFaultSimResult result;
   {
     py::gil_scoped_release release;
-    result = scan::simulate_scan_protocol_faults(
-        json_path, cell_map_path, request, unsupported_policy, sim_threads);
+    result = scan::simulate_scan_protocol_faults(json_path, cell_map_path,
+                                                 request, unsupported_policy,
+                                                 sim_threads, blackbox_instances);
   }
   py::dict out;
   out["golden_real_po_values"] = result.golden.real_po_values;
@@ -874,9 +879,10 @@ py::dict solve_xor_broadcast_py(
 
 py::list list_site_keys_py(const std::string& json_path,
                            const std::string& cell_map_path,
-                           const std::string& unsupported_policy) {
-  const CachedGraph& graph =
-      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+                           const std::string& unsupported_policy,
+                           const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& graph = load_cached_graph(
+      json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const CompiledSimGraph& cg = graph.cg;
   py::list out;
   for (uint32_t cidx = 0; cidx < static_cast<uint32_t>(cg.net_count); ++cidx) {
@@ -1039,11 +1045,13 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("test_mode") = "");
   m.def("fault_free_outputs", &faultflow::fault_free_outputs, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("vectors"), py::arg("input_order"),
-        py::arg("output_order"), py::arg("unsupported_policy") = "fail");
+        py::arg("output_order"), py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("fault_free_sequence_outputs", &faultflow::fault_free_sequence_outputs,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("sequences"),
         py::arg("input_order"), py::arg("output_order"),
-        py::arg("unsupported_policy") = "fail");
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("atpg_random_vectors", &faultflow::atpg_random_vectors,
         py::arg("input_order"), py::arg("count"), py::arg("seed"));
   m.def("ensure_faults_enumerated", &faultflow::ensure_faults_enumerated_py,
@@ -1196,7 +1204,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
         py::arg("los_launch_scan_in") = std::map<int, bool>{},
         py::arg("active_clock_ports") = std::vector<std::string>{},
-        py::arg("test_mode") = "");
+        py::arg("test_mode") = "",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("simulate_scan_protocol_faults",
         &faultflow::simulate_scan_protocol_faults_py,
         py::arg("json_path"), py::arg("cell_map_path"),
@@ -1211,9 +1220,11 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("los_launch_scan_in") = std::map<int, bool>{},
         py::arg("active_clock_ports") = std::vector<std::string>{},
         py::arg("test_mode") = "", py::arg("sim_threads") = 1,
-        py::arg("capture_diffs") = false);
+        py::arg("capture_diffs") = false,
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("list_site_keys", &faultflow::list_site_keys_py, py::arg("json_path"),
-        py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail");
+        py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("compute_fault_cone_sizes", &faultflow::compute_fault_cone_sizes,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("fault_ids"),
         py::arg("net_indices"), py::arg("unsupported_policy") = "fail",

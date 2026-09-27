@@ -94,6 +94,7 @@ def verify_golden_scan_protocol(
             load_seqs=pattern.load_seqs,
             capture_pi_values=pattern.capture_pi_values,
             unsupported_policy=cfg.simulation.unsupported_cells,
+            blackbox_instances=list(cfg.blackbox_instances),
             loc_two_capture=loc_two_capture,
             los_two_capture=los_two_capture,
             los_launch_scan_in=los_launch_scan_in or {},

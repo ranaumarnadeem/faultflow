@@ -107,9 +107,13 @@ struct ScanProtocolFaultSimResult {
   std::vector<ScanProtocolFaultBatchResult> batches;
 };
 
+// `blackbox_instances` must match what every other load of the same netlist
+// uses: a blackbox instance's cell type is usually absent from the cell map, so
+// without it an `unsupported_policy` of "fail" rejects the netlist outright.
 ScanPatternResult simulate_scan_pattern(
     const std::string& json_path, const std::string& cell_map_path,
-    const ScanPatternRequest& request, const std::string& unsupported_policy);
+    const ScanPatternRequest& request, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 // `sim_threads` parallelizes grading across the independent fault batches:
 // <= 0 auto, 1 serial, N threads. Batches are written to pre-assigned slots, so
@@ -117,7 +121,8 @@ ScanPatternResult simulate_scan_pattern(
 ScanProtocolFaultSimResult simulate_scan_protocol_faults(
     const std::string& json_path, const std::string& cell_map_path,
     const ScanProtocolFaultRequest& request,
-    const std::string& unsupported_policy, int sim_threads = 1);
+    const std::string& unsupported_policy, int sim_threads = 1,
+    const std::vector<std::string>& blackbox_instances = {});
 
 bool scan_observations_equal(const ScanPatternResult& lhs,
                              const ScanPatternResult& rhs);
