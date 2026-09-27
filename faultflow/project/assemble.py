@@ -33,8 +33,10 @@ spliced-in block's wrapper cells as boundary faults owned by that block.
 
 from __future__ import annotations
 
+import itertools
 import shutil
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -188,18 +190,19 @@ def _collect_boundary_bindings(
     inst: str,
     block_module: dict[str, Any],
     inst_connections: dict[str, Any],
+    occurrence: Iterator[int],
 ) -> set[int]:
     """Union every connected port-boundary bit of `inst` with its glue-side
     binding, and return the set of the block's OWN int bit values that were
     bound (used by the caller to tell a boundary bit from a purely-internal
     one when building that instance's remap).
 
-    Block side: `("B", inst, bit)` for an int bit, or `("C", bit)` if the
-    block's own port bit is itself a constant literal ("0"/"1"/"x"/"z") --
-    global, not instance-scoped, since "the constant 1" is the same value
-    regardless of which instance produced it.
-    Glue side: `("G", net)` for an int net, or `("C", net)` if the glue ties
-    the port to a constant.
+    Block side: `("B", inst, bit)` for an int bit. Glue side: `("G", net)`
+    for an int net. A constant literal ("0"/"1"/"x"/"z") on either side is
+    `("C", value, n)`, where `n` is unique per occurrence: a constant must
+    never become a shared node, or every net tied to "0" -- or every
+    undriven block output, which Yosys writes as "x" -- would be unioned
+    into one class, linking electrically unrelated nets.
 
     The tag is ALWAYS element 0 of every key, so classification can test
     `key[0]` alone. An instance-first block key (`(inst, "B", bit)`) would
@@ -236,29 +239,61 @@ def _collect_boundary_bindings(
                 block_key: tuple[Any, ...] = ("B", inst, bit)
                 bound.add(bit)
             else:
-                block_key = ("C", bit)
-            glue_key = ("G", glue_bit) if isinstance(glue_bit, int) else ("C", glue_bit)
+                block_key = ("C", bit, next(occurrence))
+            glue_key = (
+                ("G", glue_bit)
+                if isinstance(glue_bit, int)
+                else ("C", glue_bit, next(occurrence))
+            )
             uf.union(block_key, glue_key)
     return bound
 
 
-def _resolve_classes(
-    uf: _UnionFind, top_level_inputs: set[int]
-) -> tuple[dict[Any, int | str], dict[Any, set[Any]]]:
-    """Resolve every union-find class to one canonical value.
+def _block_driven_bits(block_module: dict[str, Any]) -> set[int]:
+    """Int bits the block itself drives: bits of its output ports that are
+    not also bits of an input port (an input passed straight through to an
+    output is driven from outside, not by the block)."""
+    outputs: set[int] = set()
+    inputs: set[int] = set()
+    ports = block_module.get("ports", {})
+    for port in ports.values() if isinstance(ports, dict) else ():
+        if not isinstance(port, dict):
+            continue
+        bits = _all_int_bits(port.get("bits"))
+        if port.get("direction") == "output":
+            outputs.update(bits)
+        elif port.get("direction") == "input":
+            inputs.update(bits)
+    return outputs - inputs
 
-    - A class containing a constant resolves to that constant. Both "0" and
-      "1" present is a contradiction (AssembleError); a top-level input ALSO
-      tied to a constant is a contradiction too (an externally-driven pin
-      can't also be fixed).
-    - Else a class containing a top-level (primary) INPUT port bit resolves
-      to that bit -- it is the one member guaranteed to stay externally
-      driven no matter which instance cells get spliced/deleted. Two or more
-      DIFFERENT top-level input bits in one class is a short (AssembleError).
-      Otherwise resolves to the lowest glue net id in the class.
-    - A class with no glue/constant member at all (a purely internal block
-      bit, or a genuinely-unconnected port bit) is left unresolved here --
-      the caller assigns it a fresh id.
+
+def _resolve_classes(
+    uf: _UnionFind,
+    top_level_inputs: set[int],
+    driven_bits: dict[str, set[int]],
+) -> tuple[dict[Any, int | str], dict[Any, set[Any]]]:
+    """Resolve every union-find class to one canonical value, by priority:
+
+    1. A "0"/"1" constant. Both present is a contradiction, and so is a
+       top-level input also tied to a constant (an externally driven pin
+       can't also be fixed) -- both raise AssembleError.
+    2. A top-level (primary) INPUT port bit -- the one member guaranteed to
+       stay externally driven no matter which instance cells get spliced or
+       deleted. Two or more DIFFERENT top-level input bits is a short
+       (AssembleError).
+    3. The lowest glue net id.
+    4. "x"/"z". These mean "nothing drives this", not a value, so they only
+       resolve a class that has nothing else: a block input the glue ties
+       to x. An undriven block output (which Yosys writes as "x") sharing a
+       glue net with anything real contributes nothing and loses.
+    A class with none of these (a purely internal block bit, or a bit of a
+    genuinely unconnected port) is left unresolved; the caller assigns it a
+    fresh id.
+
+    A class that resolves to a constant must not contain a bit its own block
+    drives (`driven_bits`): that is a second driver on the net, and
+    substituting the constant would rewrite the driving cell's OUTPUT pin to
+    a constant -- raise instead.
 
     Returns `(resolved, classes)`: `resolved` maps a class's root to its
     canonical value; `classes` maps that same root to its full member set
@@ -268,23 +303,23 @@ def _resolve_classes(
     classes = uf.classes()
     resolved: dict[Any, int | str] = {}
     for root, members in classes.items():
-        constants = sorted({k[1] for k in members if k[0] == "C"})
+        hard = sorted({k[1] for k in members if k[0] == "C" and k[1] in ("0", "1")})
+        soft = sorted({k[1] for k in members if k[0] == "C" and k[1] not in ("0", "1")})
         glue_nets = {k[1] for k in members if k[0] == "G"}
-        if constants:
-            if "0" in constants and "1" in constants:
+        shorted_inputs = glue_nets & top_level_inputs
+        value: int | str
+        if hard:
+            if len(hard) > 1:
                 raise AssembleError(
                     "conflicting constant drivers (0 and 1) tied to the same net"
                 )
-            value = constants[0]
-            shorted_inputs = glue_nets & top_level_inputs
+            value = hard[0]
             if shorted_inputs:
                 raise AssembleError(
                     f"top-level input net(s) {sorted(shorted_inputs)} tied to "
                     f"constant {value!r}"
                 )
-            resolved[root] = value
         elif glue_nets:
-            shorted_inputs = glue_nets & top_level_inputs
             if len(shorted_inputs) > 1:
                 raise AssembleError(
                     "top-level input nets shorted together: "
@@ -293,7 +328,18 @@ def _resolve_classes(
             resolved[root] = (
                 next(iter(shorted_inputs)) if shorted_inputs else min(glue_nets)
             )
-        # else: no glue/constant member in this class -- left unresolved.
+            continue
+        elif soft:
+            value = soft[0]
+        else:
+            continue  # no glue/constant member -- left unresolved
+        for key in members:
+            if key[0] == "B" and key[2] in driven_bits.get(key[1], set()):
+                raise AssembleError(
+                    f"instance {key[1]!r} drives bit {key[2]} itself, but its net "
+                    f"is also tied to constant {value!r} (multiple drivers)"
+                )
+        resolved[root] = value
     return resolved, classes
 
 
@@ -444,8 +490,10 @@ def compose_soc(
 
     # ---- Phase A: gather every instance's data + the boundary union-find ----
     uf = _UnionFind()
+    occurrence = itertools.count()
     block_module_data: dict[str, dict[str, Any]] = {}
     bound_bits: dict[str, set[int]] = {}
+    driven_bits: dict[str, set[int]] = {}
 
     for inst, block_json in blocks.items():
         module_name = block_module.get(inst)
@@ -468,11 +516,12 @@ def compose_soc(
         module_data = block_modules[module_name]
         block_module_data[inst] = module_data
         bound_bits[inst] = _collect_boundary_bindings(
-            uf, inst, module_data, inst_connections
+            uf, inst, module_data, inst_connections, occurrence
         )
+        driven_bits[inst] = _block_driven_bits(module_data)
 
     # ---- Phase B: resolve every class to one canonical value ----
-    resolved, classes = _resolve_classes(uf, top_level_inputs)
+    resolved, classes = _resolve_classes(uf, top_level_inputs, driven_bits)
 
     # ---- Phase C: per-instance remap + splice (fresh ids assigned here) ----
     for inst in blocks:

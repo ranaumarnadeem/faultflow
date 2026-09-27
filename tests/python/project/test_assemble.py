@@ -1215,6 +1215,138 @@ def test_compose_soc_width_mismatch_glue_wider_than_block_raises() -> None:
         )
 
 
+def _out_block(module: str, bits: list[Any], *, driven: bool = False) -> dict[str, Any]:
+    """A one-output block. `bits` is the output port's own bit list: an int
+    for a real net, or a literal -- Yosys writes an undriven output as "x" and
+    a provably constant one as "0"/"1". `driven=True` adds an inverter that
+    drives the (int) output from an input `a`."""
+    ports: dict[str, Any] = {"o": {"direction": "output", "bits": bits}}
+    cells: dict[str, Any] = {}
+    if driven:
+        ports["a"] = {"direction": "input", "bits": [2]}
+        cells["inv"] = {
+            "hide_name": 0,
+            "type": "sky130_fd_sc_hd__inv_1",
+            "parameters": {},
+            "attributes": {},
+            "port_directions": {"A": "input", "Y": "output"},
+            "connections": {"A": [2], "Y": bits},
+        }
+    return {"modules": {module: {"ports": ports, "cells": cells, "netnames": {}}}}
+
+
+def _compose_outputs(
+    insts: dict[str, tuple[dict[str, Any], str, int]], readers: list[int]
+) -> dict[str, Any]:
+    """Glue where each instance's output `o` drives glue net `net`, and a BUF
+    `g<net>` reads each net in `readers` onto its own top-level output. A
+    driven block's input `a` comes from top-level input net 1."""
+    cells: dict[str, Any] = {}
+    for name, (block, module, net) in insts.items():
+        conns: dict[str, Any] = {"o": [net]}
+        dirs = {"o": "output"}
+        if "a" in block["modules"][module]["ports"]:
+            conns["a"] = [1]
+            dirs["a"] = "input"
+        cells[name] = {
+            "hide_name": 0,
+            "type": module,
+            "parameters": {},
+            "attributes": {},
+            "port_directions": dirs,
+            "connections": conns,
+        }
+    for net in readers:
+        cells[f"g{net}"] = {
+            "hide_name": 0,
+            "type": "sky130_fd_sc_hd__buf_1",
+            "parameters": {},
+            "attributes": {},
+            "port_directions": {"A": "input", "X": "output"},
+            "connections": {"A": [net], "X": [100 + net]},
+        }
+    ports: dict[str, Any] = {"a_in": {"direction": "input", "bits": [1]}}
+    ports.update(
+        {f"q{net}": {"direction": "output", "bits": [100 + net]} for net in readers}
+    )
+    glue = {
+        "modules": {
+            "soc": {
+                "attributes": {"top": "1"},
+                "ports": ports,
+                "cells": cells,
+                "netnames": {},
+            }
+        }
+    }
+    return compose_soc(
+        glue,
+        "soc",
+        {name: block for name, (block, _, _) in insts.items()},
+        {name: module for name, (_, module, _) in insts.items()},
+    )["modules"]["soc"]
+
+
+def test_compose_soc_constants_never_link_unrelated_nets() -> None:
+    """Two separate nets, one {undriven output, constant-1 output} and one
+    {undriven output, constant-0 output}, are each consistent on their own. A
+    shared "x" (or constant) union-find node used to merge them into one
+    class and raise a false "conflicting constant drivers" error."""
+    und, one, zero = (
+        _out_block("und", ["x"]),
+        _out_block("one", ["1"]),
+        _out_block("zero", ["0"]),
+    )
+    module = _compose_outputs(
+        {
+            "u1": (und, "und", 9),
+            "u2": (one, "one", 9),
+            "u3": (und, "und", 12),
+            "u4": (zero, "zero", 12),
+        },
+        readers=[9, 12],
+    )
+    assert module["cells"]["g9"]["connections"]["A"] == ["1"]
+    assert module["cells"]["g12"]["connections"]["A"] == ["0"]
+
+
+def test_compose_soc_undriven_output_is_not_forced_to_an_unrelated_constant() -> None:
+    """An undriven block output alone on net 20 must not pick up the constant
+    that a DIFFERENT net (9) carries -- it used to, through the shared "x"
+    node. Net 20 has no driver in the design, so it stays a plain net."""
+    und, one = _out_block("und", ["x"]), _out_block("one", ["1"])
+    module = _compose_outputs(
+        {"u1": (und, "und", 9), "u2": (one, "one", 9), "u5": (und, "und", 20)},
+        readers=[9, 20],
+    )
+    assert module["cells"]["g9"]["connections"]["A"] == ["1"]
+    assert module["cells"]["g20"]["connections"]["A"] == [20]
+
+
+def test_compose_soc_undriven_output_does_not_override_a_real_driver() -> None:
+    """An undriven output ("x") sharing a glue net with a cell-driven output
+    contributes nothing: the driving inverter's OUTPUT pin must keep the net,
+    not be rewritten to "x" (which the C++ core maps onto the global CONST0
+    net, corrupting every 1'b0 tie in the design)."""
+    und, drv = _out_block("und", ["x"]), _out_block("drv", [3], driven=True)
+    module = _compose_outputs(
+        {"u1": (und, "und", 9), "u2": (drv, "drv", 9)}, readers=[9]
+    )
+    assert module["cells"]["u2__inv"]["connections"]["Y"] == [9]
+    assert module["cells"]["g9"]["connections"]["A"] == [9]
+    _assert_single_driver(module)
+
+
+def test_compose_soc_constant_output_shorted_to_a_driven_output_raises() -> None:
+    """A constant block output and a cell-driven block output on the same net
+    are two drivers. Substituting the constant would rewrite the driving
+    cell's OUTPUT pin; raise instead (the C++ core raises "Multiple drivers"
+    for the equivalent two-cell case)."""
+    one, drv = _out_block("one", ["1"]), _out_block("drv", [3], driven=True)
+    with pytest.raises(AssembleError, match="multiple drivers"):
+        _compose_outputs({"u1": (one, "one", 9), "u2": (drv, "drv", 9)}, readers=[9])
+
+
 @pytest.mark.parametrize("inst", ["C", "G", "B"])
 @pytest.mark.parametrize("top_level_input", [True, False])
 def test_compose_soc_instance_name_matching_a_key_tag_is_harmless(

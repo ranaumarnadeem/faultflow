@@ -77,6 +77,9 @@ class WbrRecord:
     # Scan-chain/enable net ids (CTI, SE, CTO) for scan-model cells; empty for
     # buffer-model cells. The fusion pass drops the matching dangling top ports.
     chain_nets: tuple[int, ...] = ()
+    # An input cell's system side tied to a constant literal instead of a net
+    # (the SoC glue ties a wrapped block input off); `sys_net` is then -1.
+    sys_const: str | None = None
 
 
 def _single_bit(cell: dict[str, Any], pin: str, instance: str) -> int:
@@ -87,18 +90,25 @@ def _single_bit(cell: dict[str, Any], pin: str, instance: str) -> int:
     return bits[0]
 
 
-def _is_constant_bit(cell: dict[str, Any], pin: str) -> bool:
-    """True when `pin` is connected to a Yosys constant literal ("0"/"1"/"x"/"z")."""
+def _constant_literal(cell: dict[str, Any], pin: str) -> str | None:
+    """The Yosys constant literal ("0"/"1"/"x"/"z") `pin` is tied to, if any."""
     conns = cell.get("connections", {})
     if not isinstance(conns, dict):
-        return False
+        return None
     raw = conns.get(pin)
-    return (
+    if (
         isinstance(raw, list)
         and len(raw) == 1
         and isinstance(raw[0], str)
         and raw[0] in {"0", "1", "x", "z"}
-    )
+    ):
+        return raw[0]
+    return None
+
+
+def _is_constant_bit(cell: dict[str, Any], pin: str) -> bool:
+    """True when `pin` is connected to a Yosys constant literal ("0"/"1"/"x"/"z")."""
+    return _constant_literal(cell, pin) is not None
 
 
 def _scan_chain_nets(cell: dict[str, Any]) -> tuple[int, ...]:
@@ -137,13 +147,21 @@ def extract_wbr_cells(module: dict[str, Any]) -> list[WbrRecord]:
             # driven: the system-side has no real net to controllability-test).
             if _is_constant_bit(cell, _WBR_IN_CORE_PIN):
                 continue
+            # The system side, by contrast, CAN be a constant: SoC composition
+            # ties a wrapped input off when the glue connects it to 1'b0/1'b1.
+            sys_const = _constant_literal(cell, _WBR_IN_SYS_PIN)
             records.append(
                 WbrRecord(
                     instance=str(instance),
                     core_net=_single_bit(cell, _WBR_IN_CORE_PIN, str(instance)),
-                    sys_net=_single_bit(cell, _WBR_IN_SYS_PIN, str(instance)),
+                    sys_net=(
+                        -1
+                        if sys_const is not None
+                        else _single_bit(cell, _WBR_IN_SYS_PIN, str(instance))
+                    ),
                     is_input=True,
                     chain_nets=_scan_chain_nets(cell) if scan else (),
+                    sys_const=sys_const,
                 )
             )
         elif ctype in _WBR_OUT_TYPES or ctype in _WBR_SCAN_OUT_TYPES:
@@ -444,7 +462,8 @@ def fuse_wbr_into_view(
             port = f"{WBI_PREFIX}{rec.instance}"
             cells.pop(rec.instance, None)
             _add_port(module, port, "input", rec.core_net)
-            sys_nets_to_drop.add(rec.sys_net)
+            if rec.sys_net >= 0:
+                sys_nets_to_drop.add(rec.sys_net)
             wbr_port_map[rec.instance] = {
                 "port": port,
                 "role": "ppi",
@@ -530,13 +549,26 @@ def _fuse_wbr_extest(
             obs_bit = next_id
             next_id += 1
             port = f"{WBI_OBS_PREFIX}{rec.instance}"
-            _add_internal_buf_cell(
-                cells,
-                f"$wbiobserve_{rec.instance}",
-                OBSERVE_BUF_CELL,
-                rec.sys_net,
-                obs_bit,
-            )
+            if rec.sys_const is not None:
+                # A tied-off system side is still interconnect (a stuck-at on
+                # the tie is observable at this capture): observe the constant
+                # through the same buffer, like _add_const0_driver_cell.
+                cells[f"$wbiobserve_{rec.instance}"] = {
+                    "hide_name": 0,
+                    "type": OBSERVE_BUF_CELL,
+                    "parameters": {},
+                    "attributes": {"faultflow_internal": "1"},
+                    "port_directions": {"A": "input", "Y": "output"},
+                    "connections": {"A": [rec.sys_const], "Y": [obs_bit]},
+                }
+            else:
+                _add_internal_buf_cell(
+                    cells,
+                    f"$wbiobserve_{rec.instance}",
+                    OBSERVE_BUF_CELL,
+                    rec.sys_net,
+                    obs_bit,
+                )
             cells.pop(rec.instance, None)
             _add_const0_driver_cell(cells, f"$wbsafe0_{rec.instance}", rec.core_net)
             _add_port(module, port, "output", obs_bit)

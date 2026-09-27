@@ -302,3 +302,58 @@ def test_scan_extest_project_matches_flat_within_explained_gap(
     # hierarchical=99.462%, a ~0.22 point gap -- assert with a tolerance well
     # above that so a genuine hierarchical regression still fails loudly.
     assert abs(hierarchical_pct - flat_pct) <= 1.0
+
+
+@pytest.mark.golden
+def test_scan_extest_project_with_a_wrapped_input_tied_off_in_the_glue(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """The SoC glue ties a WRAPPED block input to a constant (`.add_sub(1'b0)`).
+
+    compose_soc resolves the tie as a real constant, so the spliced WBR-in
+    cell's system pin (FROM_SYS) is the literal "0" rather than a net id. The
+    whole hierarchical flow must accept that: the SoC scan manifest (which
+    used to demand one concrete FROM_SYS net), the EXTEST fusion (which
+    observes FROM_SYS), and aggregation's boundary-ownership guards."""
+    import shutil
+
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+
+    from faultflow.service import FlowService
+
+    blkA_json, blkA_manifest = _build_wrapped_block(
+        tmp_path, ALU_RTL, "blkA", "alu_acc"
+    )
+    blkB_json, blkB_manifest = _build_wrapped_block(
+        tmp_path, CTR_RTL, "blkB", "ctr_fsm"
+    )
+
+    tied_glue = GLUE_RTL.replace(".add_sub(add_sub)", ".add_sub(1'b0)")
+    assert tied_glue != GLUE_RTL
+    glue_rtl = tmp_path / "soc_glue_tied.v"
+    glue_rtl.write_text(tied_glue, encoding="utf-8")
+
+    manifest_path = _write_project_manifest(
+        tmp_path,
+        blkA_json=blkA_json,
+        blkA_manifest=blkA_manifest,
+        blkB_json=blkB_json,
+        blkB_manifest=blkB_manifest,
+        glue_rtl=glue_rtl,
+    )
+
+    result = FlowService().run_project(manifest_path)
+    assert "project complete" in result.message
+
+    report = json.loads(
+        (tmp_path / "output" / "scan_extest_e2e" / "soc_coverage.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    g = report["guards"]
+    assert g["tops_disjoint"] is True
+    assert g["no_double_count"] is True
+    assert g["partition_total"] is True
+    assert g["handoff_complete"] is True
+    assert report["chip"]["denominator"] > 0
