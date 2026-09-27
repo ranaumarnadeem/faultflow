@@ -186,6 +186,24 @@ COMMAND_HELP = {
         "retarget -patterns blkA_patterns.json -soc_access soc_access.json "
         "-block blkA -o blkA_retargeted.json",
     ),
+    "autombist_generate": CommandHelp(
+        "Project",
+        "autombist_generate -config PATH -out PATH [-autombist_cmd CMD] "
+        "-liberty PATH -cell_lib PATH",
+        "Generate a FaultFlow synthesis from an autoMBIST manifest",
+        "Runs `autombist generate --emit-manifest` (or the command given by "
+        "-autombist_cmd, e.g. 'python3 -m autombist.cli'), synthesizes each "
+        "distinct test-instrument instance standalone plus the wrapper glue "
+        "(memories and instruments as blackboxes), splices the real block "
+        "netlists back in, and loads the composed design into this session "
+        "with each memory instance declared blackbox -- run_atpg works "
+        "afterward with no further setup. Also writes a `.ofs` for later "
+        "standalone use with `ff.py sim`.",
+        "autoMBIST installed and reachable via -autombist_cmd (or on PATH).",
+        "autombist_generate -config mbist.yml -out build -liberty "
+        "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib -cell_lib "
+        "cells/sky130/sky130_fd_sc_hd.json",
+    ),
     "add_scan": CommandHelp(
         "Scan",
         "add_scan -chains N [-max_length N] [-SI NAME] [-SO NAME] "

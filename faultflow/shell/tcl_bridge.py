@@ -47,6 +47,7 @@ class TclBridge:
             "reject_tp": self._reject_tp,
             "wrap": self._wrap,
             "retarget": self._retarget,
+            "autombist_generate": self._autombist_generate,
             "WORKERS": self._workers,
             "set_testmode": self._set_testmode,
             "report_testmode": self._report_testmode,
@@ -619,6 +620,60 @@ proc {name} {{args}} {{
                     "MISSING_ARG",
                 )
         return self.session.retarget(**kwargs)  # type: ignore[arg-type]
+
+    def _autombist_generate(self, args: list[str]) -> Any:
+        import shlex
+
+        from faultflow.integrations.autombist import run_autombist_generate
+
+        flag_to_key = {
+            "-config": "config",
+            "-out": "out",
+            "-autombist_cmd": "autombist_cmd",
+            "-liberty": "liberty",
+            "-cell_lib": "cell_lib",
+        }
+        kwargs: dict[str, str] = {}
+        idx = 0
+        while idx < len(args):
+            flag = args[idx]
+            if flag not in flag_to_key:
+                raise ShellError(
+                    f"autombist_generate: unknown option {flag!r}",
+                    "CONFIG",
+                    "INVALID_OPTION",
+                )
+            if idx + 1 >= len(args):
+                raise ShellError(
+                    f"autombist_generate: {flag} requires a value",
+                    "CONFIG",
+                    "MISSING_ARG",
+                )
+            kwargs[flag_to_key[flag]] = args[idx + 1]
+            idx += 2
+        for required in ("config", "out", "liberty", "cell_lib"):
+            if required not in kwargs:
+                raise ShellError(
+                    f"autombist_generate: -{required} is required",
+                    "CONFIG",
+                    "MISSING_ARG",
+                )
+
+        cmd = tuple(shlex.split(kwargs.pop("autombist_cmd", "autombist")))
+        result = run_autombist_generate(
+            Path(kwargs["config"]),
+            Path(kwargs["out"]),
+            autombist_cmd=cmd,
+            liberty=Path(kwargs["liberty"]),
+            cell_lib=Path(kwargs["cell_lib"]),
+        )
+        self.session.load_json(result.composed_json_path, result.top_module)
+        for inst in result.blackbox_instances:
+            self.session.add_blackbox(inst)
+        return (
+            f"autombist synthesis: {result.ofs_path} "
+            f"(top={result.top_module}, blocks={result.block_count})"
+        )
 
     def _set_testmode(self, args: list[str]) -> Any:
         if len(args) != 1:
