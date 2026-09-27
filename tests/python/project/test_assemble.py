@@ -251,6 +251,32 @@ def test_block_stub_verilog_declares_correct_ports() -> None:
     assert "output y" in stub
 
 
+def test_block_stub_verilog_with_parameters() -> None:
+    block_json = _block_ports_fixture()
+
+    stub = block_stub_verilog(
+        block_json, "block_x", parameters={"ADDR_WIDTH": 4, "LABEL": "foo"}
+    )
+
+    assert "(* blackbox *)" in stub
+    assert (
+        'module block_x #(parameter ADDR_WIDTH = 4, parameter LABEL = "foo")(' in stub
+    )
+    assert "input clk" in stub
+    assert "input [3:0] a" in stub
+    assert "output y" in stub
+
+
+def test_block_stub_verilog_parameters_none_is_byte_identical_to_before() -> None:
+    block_json = _block_ports_fixture()
+    assert block_stub_verilog(block_json, "block_x") == block_stub_verilog(
+        block_json, "block_x", parameters=None
+    )
+    assert block_stub_verilog(block_json, "block_x") == block_stub_verilog(
+        block_json, "block_x", parameters={}
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 2. compose_soc splices block cells with remapped nets                       #
 # --------------------------------------------------------------------------- #
@@ -352,6 +378,43 @@ def test_compose_soc_tags_wbc_cells_for_aggregation(tmp_path: Path) -> None:
     assert boundary_wbc == "__wi_a"
     assert pin == "TO_CORE"
     assert side == "in"
+
+
+def test_compose_soc_tolerates_a_genuinely_unconnected_block_port() -> None:
+    """A block port the glue instantiation never wires at all (valid Verilog --
+    e.g. an unused diagnostic output nobody connected) must not raise; its bits
+    get a fresh internal net, same treatment as a constant-tied bit with no
+    glue-space net to bind to."""
+    # "b" is deliberately given a glue-space id (99) far outside every other id
+    # used anywhere else in this fixture, so once its one and only reference
+    # (u_a's own connection) is deleted below, it becomes fully orphaned --
+    # readable as "not a live glue net anymore", not easily confused with a
+    # fresh id that's merely unrelated to the ids still actually in use.
+    glue = _glue_json({"clk": [2], "a": [3], "b": [99], "y": [8]})
+    del glue["modules"]["soc"]["cells"]["u_a"]["connections"]["b"]
+    del glue["modules"]["soc"]["cells"]["u_a"]["port_directions"]["b"]
+
+    block_a = _block_a_json(net_clk=2, net_a=3, net_b=4, net_y=5)
+
+    result = compose_soc(
+        glue_json=glue,
+        soc_top="soc",
+        blocks={"u_a": block_a},
+        block_module={"u_a": "block_a"},
+    )
+
+    cells = result["modules"]["soc"]["cells"]
+    assert "u_a__c0" in cells
+    assert "u_a__c1" in cells
+    # c0's B input (block_a's "b" port) got a fresh internal id, not an error,
+    # and doesn't collide with any glue-space net still actually in use
+    # (clk=2, a/top_in=3, y/top_out=8, g0's own nets).
+    b_net = cells["u_a__c0"]["connections"]["B"][0]
+    assert isinstance(b_net, int)
+    live_glue_nets = {2, 3, 8} | {
+        b for bits in cells["g0"]["connections"].values() for b in bits
+    }
+    assert b_net not in live_glue_nets
 
 
 # --------------------------------------------------------------------------- #
