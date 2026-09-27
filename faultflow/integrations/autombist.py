@@ -308,7 +308,13 @@ def _quote(path: Path) -> str:
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _run_yosys(script_lines: list[str], *, log_path: Path, script_path: Path) -> None:
+def _run_yosys(
+    script_lines: list[str],
+    *,
+    log_path: Path,
+    script_path: Path,
+    error_message: str = "autoMBIST synthesis failed",
+) -> None:
     yosys = shutil.which("yosys")
     if yosys is None:
         raise AssembleError("autoMBIST synthesis requires yosys on PATH")
@@ -323,7 +329,58 @@ def _run_yosys(script_lines: list[str], *, log_path: Path, script_path: Path) ->
     )
     log_path.write_text(proc.stdout, encoding="utf-8")
     if proc.returncode != 0:
-        raise AssembleError(f"autoMBIST synthesis failed; see {log_path}")
+        raise AssembleError(f"{error_message}; see {log_path}")
+
+
+def _check_composed_netlist_drivers(
+    manifest: AutombistManifest,
+    composed_json_path: Path,
+    *,
+    liberty: Path,
+    workdir: Path,
+) -> None:
+    """Guard against a repeat of compose_soc's silent-connection-loss class of
+    bug: run Yosys `check -assert` on the FINAL composed netlist and raise if
+    it reports ANY "used but has no driver" or multiple-driver problem.
+
+    Each blackbox (memory) instance's own real source is loaded via
+    `read_verilog -lib` so `check` knows its port directions -- "separate"
+    blocks need no such stub here, since by this point they're already real,
+    fully-visible sky130 gates spliced into the composed JSON, not blackbox
+    instance cells. autoMBIST's real glue netlists check clean (0 problems,
+    measured -- autoMBIST ties unused block inputs to constants explicitly),
+    so zero is the bar for the composed netlist too. A failure means either
+    compose_soc dropped a connection, or the wrapper genuinely leaves a block
+    input unconnected: compose_soc lets that input float (valid Verilog), and
+    the spliced cells reading it then have no driver.
+    """
+    memory_sources = [
+        inst.sources[0]
+        for inst in manifest.instances
+        if inst.hierarchy_hint == "blackbox"
+    ]
+    script_lines = [f"read_liberty -lib {_quote(liberty)}"]
+    if memory_sources:
+        script_lines.append(
+            "read_verilog -lib " + " ".join(_quote(p) for p in memory_sources)
+        )
+    script_lines.extend(
+        [
+            f"read_json {_quote(composed_json_path)}",
+            f"hierarchy -top {manifest.top_module}",
+            "check -assert",
+        ]
+    )
+    _run_yosys(
+        script_lines,
+        log_path=workdir / "composed_check.log",
+        script_path=workdir / "composed_check.tcl",
+        error_message=(
+            "composed netlist has undriven or multiply-driven nets: either the "
+            "wrapper leaves a block input unconnected (it floats), or "
+            "compose_soc dropped a connection"
+        ),
+    )
 
 
 def synthesize_block(block: Block, *, liberty: Path, workdir: Path) -> Path:
@@ -531,6 +588,10 @@ def synthesize_from_manifest(
     composed_json_path = out / f"{manifest.top_module}_composed.json"
     composed_json_path.parent.mkdir(parents=True, exist_ok=True)
     composed_json_path.write_text(json.dumps(composed, indent=2), encoding="utf-8")
+
+    _check_composed_netlist_drivers(
+        manifest, composed_json_path, liberty=liberty, workdir=workdir
+    )
 
     blackbox_instances = tuple(
         inst.hierarchical_path

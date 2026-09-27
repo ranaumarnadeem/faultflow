@@ -15,7 +15,12 @@ from typing import Any
 
 import pytest
 
-from faultflow.project.assemble import assemble_soc, block_stub_verilog, compose_soc
+from faultflow.project.assemble import (
+    AssembleError,
+    assemble_soc,
+    block_stub_verilog,
+    compose_soc,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = ROOT / "cells" / "sky130" / "sky130_fd_sc_hd.json"
@@ -64,7 +69,24 @@ def _glue_json(inst_ports: dict[str, list[int]]) -> dict[str, Any]:
                         "parameters": {},
                         "attributes": {},
                         "port_directions": {"A": "input", "X": "output"},
-                        "connections": {"A": [3], "X": [8]},
+                        # Drives net 13, NOT top_out (8) -- top_out is driven
+                        # by u_a's own "y" connection; having g0 ALSO drive it
+                        # would be a pre-existing double-driver conflict with
+                        # nothing to do with compose_soc's own correctness.
+                        "connections": {"A": [3], "X": [13]},
+                    },
+                    # Drives net 9 -- the conventional "b" net most callers use
+                    # -- from top_in, so a block's "b" port is electrically
+                    # complete (has a real driver) rather than an intentional
+                    # gap; tests that want a genuinely orphaned net use a
+                    # different id (99) precisely to avoid this cell.
+                    "g1": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__buf_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "X": "output"},
+                        "connections": {"A": [3], "X": [9]},
                     },
                     "u_a": {
                         "hide_name": 0,
@@ -235,6 +257,62 @@ def _all_int_bits(module: dict[str, Any]) -> set[int]:
     return out
 
 
+def _assert_single_driver(module: dict[str, Any]) -> None:
+    """Every net READ by a cell (an input-direction pin, per that cell's own
+    `port_directions`) or exposed as a top-level output must have EXACTLY one
+    driver: some cell's output-direction pin, or -- for a net that is also a
+    top-level input -- the outside world. A constant ("0"/"1"/"x"/"z"
+    appearing directly in a `connections`/`bits` list) is a literal value, not
+    a net id, and needs no driver.
+
+    This is the regression guard for compose_soc's MERGE/CONST_IN/CONST_OUT
+    bug class: a net silently left with zero drivers (or, for a different
+    flavor of the same bug class, more than one) is exactly what a flat
+    per-instance remap dict used to produce.
+
+    Hand-built fixtures only: in a REAL Yosys-synthesized netlist, library
+    cells carry no `port_directions`, so this would count no library cell as
+    a driver. Use Yosys `check` (Liberty-aware) on real netlists instead."""
+    ports = module.get("ports", {})
+    top_level_inputs = {
+        b
+        for port in ports.values()
+        if isinstance(port, dict) and port.get("direction") == "input"
+        for b in port.get("bits", [])
+        if isinstance(b, int)
+    }
+    top_level_outputs = {
+        b
+        for port in ports.values()
+        if isinstance(port, dict) and port.get("direction") == "output"
+        for b in port.get("bits", [])
+        if isinstance(b, int)
+    }
+
+    driver_count: dict[int, int] = {}
+    read_nets: set[int] = set(top_level_outputs)
+
+    for cell in module.get("cells", {}).values():
+        if not isinstance(cell, dict):
+            continue
+        directions = cell.get("port_directions", {})
+        for pin, bits in cell.get("connections", {}).items():
+            direction = directions.get(pin)
+            for b in bits:
+                if not isinstance(b, int):
+                    continue
+                if direction == "output":
+                    driver_count[b] = driver_count.get(b, 0) + 1
+                elif direction == "input":
+                    read_nets.add(b)
+
+    for net in sorted(read_nets):
+        if net in top_level_inputs:
+            continue  # driven externally, by definition
+        count = driver_count.get(net, 0)
+        assert count == 1, f"net {net} has {count} driver(s), expected exactly 1"
+
+
 # --------------------------------------------------------------------------- #
 # 1. block_stub_verilog                                                       #
 # --------------------------------------------------------------------------- #
@@ -335,6 +413,8 @@ def test_compose_soc_splices_block_cells_with_remapped_nets() -> None:
 
     # (e) constant "1" on c1.B passed through unchanged.
     assert cells["u_a__c1"]["connections"]["B"] == ["1"]
+
+    _assert_single_driver(module)
 
 
 # --------------------------------------------------------------------------- #
@@ -537,6 +617,674 @@ def test_compose_soc_two_blocks_no_net_collision() -> None:
     assert a_nets, "expected u_a__ prefixed cells with net connections"
     assert b_nets, "expected u_b__ prefixed cells with net connections"
     assert a_nets.isdisjoint(b_nets)
+
+    _assert_single_driver(result["modules"]["soc"])
+
+
+# --------------------------------------------------------------------------- #
+# 4b. compose_soc: MERGE resolution (union-find across boundary positions)    #
+# --------------------------------------------------------------------------- #
+
+
+def test_compose_soc_merge_input_output_passthrough() -> None:
+    """A block's internal net backs BOTH an input port and an output port
+    (e.g. a clock passed straight through to a second port name). The glue
+    wires the two port names to DIFFERENT glue nets. The internal reader must
+    see the input-side net (guaranteed externally driven), and the
+    output-side glue net -- previously "driven" only by the now-deleted
+    instance cell -- must be substituted to that same value everywhere the
+    ORIGINAL glue referenced it, not left dangling."""
+    glue = {
+        "creator": "test",
+        "modules": {
+            "soc": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "clk": {"direction": "input", "bits": [1]},
+                    "p_a": {"direction": "input", "bits": [2]},
+                    "p_out": {"direction": "output", "bits": [3]},
+                },
+                "cells": {
+                    # Reads net 9 expecting it to be driven by u_m's "p_out"
+                    # -- exactly the net a flat remap dict leaves dangling
+                    # once u_m is deleted.
+                    "g_reader": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__buf_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "X": "output"},
+                        "connections": {"A": [9], "X": [3]},
+                    },
+                    "u_m": {
+                        "hide_name": 0,
+                        "type": "block_m",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"p_in": "input", "p_out": "output"},
+                        "connections": {"p_in": [2], "p_out": [9]},
+                    },
+                },
+                "netnames": {},
+            },
+        },
+    }
+    block_m = {
+        "creator": "test",
+        "modules": {
+            "block_m": {
+                "attributes": {"top": "1"},
+                # p_in and p_out are the SAME internal bit (5): p_out is
+                # p_in wired straight through, no gate in between.
+                "ports": {
+                    "p_in": {"direction": "input", "bits": [5]},
+                    "p_out": {"direction": "output", "bits": [5]},
+                },
+                "cells": {
+                    "c0": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__inv_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "Y": "output"},
+                        "connections": {"A": [5], "Y": [6]},
+                    },
+                },
+                "netnames": {},
+            }
+        },
+    }
+
+    result = compose_soc(
+        glue_json=glue,
+        soc_top="soc",
+        blocks={"u_m": block_m},
+        block_module={"u_m": "block_m"},
+    )
+
+    module = result["modules"]["soc"]
+    cells = module["cells"]
+    assert "u_m" not in cells
+
+    # The internal reader (c0.A) gets the INPUT-side net (2) -- the one
+    # guaranteed to stay externally driven -- not the output-side net (9).
+    assert cells["u_m__c0"]["connections"]["A"] == [2]
+
+    # The output-side glue net (9) is merged into 2 everywhere the ORIGINAL
+    # glue referenced it: g_reader (untouched by any per-instance remap) must
+    # now read 2, not the orphaned 9.
+    assert cells["g_reader"]["connections"]["A"] == [2]
+
+    _assert_single_driver(module)
+
+
+def test_compose_soc_merge_output_output() -> None:
+    """A block's internal net backs TWO output ports (e.g. two diagnostic
+    status signals derived identically). The glue wires the two port names
+    to DIFFERENT glue nets, each read by its own consumer. Both consumers
+    must converge on the SAME (correctly driven) net."""
+    glue = {
+        "creator": "test",
+        "modules": {
+            "soc": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "clk": {"direction": "input", "bits": [1]},
+                    "p_in": {"direction": "input", "bits": [2]},
+                },
+                "cells": {
+                    "g1": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__buf_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "X": "output"},
+                        "connections": {"A": [20], "X": [22]},
+                    },
+                    "g2": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__buf_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "X": "output"},
+                        "connections": {"A": [21], "X": [23]},
+                    },
+                    "u_n": {
+                        "hide_name": 0,
+                        "type": "block_n",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {
+                            "p_in": "input",
+                            "q_out1": "output",
+                            "q_out2": "output",
+                        },
+                        "connections": {
+                            "p_in": [2],
+                            "q_out1": [20],
+                            "q_out2": [21],
+                        },
+                    },
+                },
+                "netnames": {},
+            },
+        },
+    }
+    block_n = {
+        "creator": "test",
+        "modules": {
+            "block_n": {
+                "attributes": {"top": "1"},
+                # q_out1 and q_out2 are the SAME internal bit (7).
+                "ports": {
+                    "p_in": {"direction": "input", "bits": [5]},
+                    "q_out1": {"direction": "output", "bits": [7]},
+                    "q_out2": {"direction": "output", "bits": [7]},
+                },
+                "cells": {
+                    "c0": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__inv_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "Y": "output"},
+                        "connections": {"A": [5], "Y": [7]},
+                    },
+                },
+                "netnames": {},
+            }
+        },
+    }
+
+    result = compose_soc(
+        glue_json=glue,
+        soc_top="soc",
+        blocks={"u_n": block_n},
+        block_module={"u_n": "block_n"},
+    )
+    module = result["modules"]["soc"]
+    cells = module["cells"]
+
+    driven = cells["u_n__c0"]["connections"]["Y"][0]
+    assert isinstance(driven, int)
+    assert cells["g1"]["connections"]["A"] == [driven]
+    assert cells["g2"]["connections"]["A"] == [driven]
+
+    _assert_single_driver(module)
+
+
+def test_compose_soc_merge_within_one_port_shared_across_bit_positions() -> None:
+    """A single internal net backs ALL FOUR bit positions of one multi-bit
+    block OUTPUT port (e.g. a diagnostic module that broadcasts one bit
+    across a 4-wide bus). The glue wires the 4 bit positions to 4 DIFFERENT
+    glue nets, one per external consumer. All 4 consumers must converge on
+    the SAME (correctly driven) net -- a flat per-instance remap dict keeps
+    only the LAST bit position's target, leaving the other 3 consumers
+    reading an undriven net."""
+    glue = {
+        "creator": "test",
+        "modules": {
+            "soc": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "clk": {"direction": "input", "bits": [1]},
+                    "p_in": {"direction": "input", "bits": [2]},
+                },
+                "cells": {
+                    "g0": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__buf_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "X": "output"},
+                        "connections": {"A": [40], "X": [60]},
+                    },
+                    "g1": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__buf_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "X": "output"},
+                        "connections": {"A": [41], "X": [61]},
+                    },
+                    "g2": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__buf_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "X": "output"},
+                        "connections": {"A": [42], "X": [62]},
+                    },
+                    "g3": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__buf_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "X": "output"},
+                        "connections": {"A": [43], "X": [63]},
+                    },
+                    "u_w": {
+                        "hide_name": 0,
+                        "type": "block_w",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"p_in": "input", "d_out": "output"},
+                        "connections": {"p_in": [2], "d_out": [40, 41, 42, 43]},
+                    },
+                },
+                "netnames": {},
+            },
+        },
+    }
+    block_w = {
+        "creator": "test",
+        "modules": {
+            "block_w": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "p_in": {"direction": "input", "bits": [5]},
+                    # All 4 bit positions are the SAME internal net (30).
+                    "d_out": {"direction": "output", "bits": [30, 30, 30, 30]},
+                },
+                "cells": {
+                    "c0": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__inv_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "Y": "output"},
+                        "connections": {"A": [5], "Y": [30]},
+                    },
+                },
+                "netnames": {},
+            }
+        },
+    }
+
+    result = compose_soc(
+        glue_json=glue,
+        soc_top="soc",
+        blocks={"u_w": block_w},
+        block_module={"u_w": "block_w"},
+    )
+    module = result["modules"]["soc"]
+    cells = module["cells"]
+
+    driven = cells["u_w__c0"]["connections"]["Y"][0]
+    assert isinstance(driven, int)
+    for i in range(4):
+        assert cells[f"g{i}"]["connections"]["A"] == [
+            driven
+        ], f"g{i} did not converge on the correctly-driven net"
+
+    _assert_single_driver(module)
+
+
+# --------------------------------------------------------------------------- #
+# 4c. compose_soc: CONST_IN / CONST_OUT resolution                            #
+# --------------------------------------------------------------------------- #
+
+
+def test_compose_soc_const_in_glue_ties_block_input_to_constant() -> None:
+    """The glue ties a block's input port to a constant (not a real net).
+    The block's internal reader must see the CONSTANT directly, not a fresh
+    undriven net -- what checking `isinstance(glue_bit, int)` alone used to
+    produce, since a non-int glue value was silently skipped entirely."""
+    glue = {
+        "creator": "test",
+        "modules": {
+            "soc": {
+                "attributes": {"top": "1"},
+                "ports": {"clk": {"direction": "input", "bits": [1]}},
+                "cells": {
+                    "u_ci": {
+                        "hide_name": 0,
+                        "type": "block_ci",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"en": "input", "y": "output"},
+                        "connections": {"en": ["0"], "y": [9]},
+                    },
+                },
+                "netnames": {},
+            },
+        },
+    }
+    block_ci = {
+        "creator": "test",
+        "modules": {
+            "block_ci": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "en": {"direction": "input", "bits": [5]},
+                    "y": {"direction": "output", "bits": [6]},
+                },
+                "cells": {
+                    "c0": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__buf_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "X": "output"},
+                        "connections": {"A": [5], "X": [6]},
+                    },
+                },
+                "netnames": {},
+            }
+        },
+    }
+
+    result = compose_soc(
+        glue_json=glue,
+        soc_top="soc",
+        blocks={"u_ci": block_ci},
+        block_module={"u_ci": "block_ci"},
+    )
+    module = result["modules"]["soc"]
+
+    # c0's A input reads the LITERAL constant, not a fresh undriven net.
+    assert module["cells"]["u_ci__c0"]["connections"]["A"] == ["0"]
+
+    _assert_single_driver(module)
+
+
+def test_compose_soc_const_out_block_output_is_itself_a_constant() -> None:
+    """A block's own output port bit is ITSELF a constant literal (Yosys
+    emits this for a provably-constant output), not a real internal net.
+    Both a glue-native reader cell AND a top-level output port that
+    referenced the (now-deleted) instance's output must show the constant,
+    not an orphaned net id -- what skipping via `isinstance(bit, int)` alone
+    used to leave undriven."""
+    glue = {
+        "creator": "test",
+        "modules": {
+            "soc": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "clk": {"direction": "input", "bits": [1]},
+                    "top_status": {"direction": "output", "bits": [70]},
+                },
+                "cells": {
+                    "g_reader": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__buf_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "X": "output"},
+                        "connections": {"A": [70], "X": [71]},
+                    },
+                    "u_co": {
+                        "hide_name": 0,
+                        "type": "block_co",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"status": "output"},
+                        "connections": {"status": [70]},
+                    },
+                },
+                "netnames": {
+                    "top_status": {
+                        "hide_name": 0,
+                        "bits": [70],
+                        "attributes": {},
+                    },
+                },
+            },
+        },
+    }
+    block_co = {
+        "creator": "test",
+        "modules": {
+            "block_co": {
+                "attributes": {"top": "1"},
+                # "status" is a provably-constant output: its own bit is the
+                # literal "1", not a real net id.
+                "ports": {"status": {"direction": "output", "bits": ["1"]}},
+                "cells": {},
+                "netnames": {},
+            }
+        },
+    }
+
+    result = compose_soc(
+        glue_json=glue,
+        soc_top="soc",
+        blocks={"u_co": block_co},
+        block_module={"u_co": "block_co"},
+    )
+    module = result["modules"]["soc"]
+
+    # The glue-native reader now reads the constant directly.
+    assert module["cells"]["g_reader"]["connections"]["A"] == ["1"]
+    # The top-level output PORT bit is substituted to the constant too.
+    assert module["ports"]["top_status"]["bits"] == ["1"]
+
+    _assert_single_driver(module)
+
+
+# --------------------------------------------------------------------------- #
+# 4d. compose_soc: contradiction errors                                       #
+# --------------------------------------------------------------------------- #
+
+
+def test_compose_soc_conflicting_0_and_1_constants_raises() -> None:
+    """A block's internal net is tied to "0" via one port and "1" via
+    another (a genuine contradiction) -- must raise, not silently pick one."""
+    glue = {
+        "creator": "test",
+        "modules": {
+            "soc": {
+                "attributes": {"top": "1"},
+                "ports": {"clk": {"direction": "input", "bits": [1]}},
+                "cells": {
+                    "u_bad": {
+                        "hide_name": 0,
+                        "type": "block_bad0",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"a_in": "input", "b_in": "input"},
+                        "connections": {"a_in": ["0"], "b_in": ["1"]},
+                    },
+                },
+                "netnames": {},
+            },
+        },
+    }
+    block_bad0 = {
+        "creator": "test",
+        "modules": {
+            "block_bad0": {
+                "attributes": {"top": "1"},
+                # a_in and b_in are the SAME internal bit.
+                "ports": {
+                    "a_in": {"direction": "input", "bits": [80]},
+                    "b_in": {"direction": "input", "bits": [80]},
+                },
+                "cells": {},
+                "netnames": {},
+            }
+        },
+    }
+
+    with pytest.raises(AssembleError, match="conflicting constant"):
+        compose_soc(
+            glue_json=glue,
+            soc_top="soc",
+            blocks={"u_bad": block_bad0},
+            block_module={"u_bad": "block_bad0"},
+        )
+
+
+def test_compose_soc_two_top_level_inputs_shorted_together_raises() -> None:
+    """A block's internal net is tied to TWO DIFFERENT top-level primary
+    inputs (a genuine short between two independently-driven pins) -- must
+    raise, not silently pick one and drop the other's connection."""
+    glue = {
+        "creator": "test",
+        "modules": {
+            "soc": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "clk": {"direction": "input", "bits": [1]},
+                    "in_x": {"direction": "input", "bits": [90]},
+                    "in_y": {"direction": "input", "bits": [91]},
+                },
+                "cells": {
+                    "u_bad": {
+                        "hide_name": 0,
+                        "type": "block_bad1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"p1": "input", "p2": "input"},
+                        "connections": {"p1": [90], "p2": [91]},
+                    },
+                },
+                "netnames": {},
+            },
+        },
+    }
+    block_bad1 = {
+        "creator": "test",
+        "modules": {
+            "block_bad1": {
+                "attributes": {"top": "1"},
+                # p1 and p2 are the SAME internal bit.
+                "ports": {
+                    "p1": {"direction": "input", "bits": [95]},
+                    "p2": {"direction": "input", "bits": [95]},
+                },
+                "cells": {},
+                "netnames": {},
+            }
+        },
+    }
+
+    with pytest.raises(AssembleError, match="shorted together"):
+        compose_soc(
+            glue_json=glue,
+            soc_top="soc",
+            blocks={"u_bad": block_bad1},
+            block_module={"u_bad": "block_bad1"},
+        )
+
+
+def test_compose_soc_width_mismatch_glue_wider_than_block_raises() -> None:
+    """The old check only raised when the glue side was NARROWER than the
+    block's port; a glue connection WIDER than the block's own port must
+    raise too -- Yosys always emits connections at the stub's own width, so
+    an exact-match check is safe."""
+    glue = {
+        "creator": "test",
+        "modules": {
+            "soc": {
+                "attributes": {"top": "1"},
+                "ports": {"clk": {"direction": "input", "bits": [1]}},
+                "cells": {
+                    "u_bad": {
+                        "hide_name": 0,
+                        "type": "block_bad2",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"p": "input"},
+                        # 3 bits connected, but the block's own "p" is 2 wide.
+                        "connections": {"p": [200, 201, 202]},
+                    },
+                },
+                "netnames": {},
+            },
+        },
+    }
+    block_bad2 = {
+        "creator": "test",
+        "modules": {
+            "block_bad2": {
+                "attributes": {"top": "1"},
+                "ports": {"p": {"direction": "input", "bits": [100, 101]}},
+                "cells": {},
+                "netnames": {},
+            }
+        },
+    }
+
+    with pytest.raises(AssembleError, match="width mismatch"):
+        compose_soc(
+            glue_json=glue,
+            soc_top="soc",
+            blocks={"u_bad": block_bad2},
+            block_module={"u_bad": "block_bad2"},
+        )
+
+
+@pytest.mark.parametrize("inst", ["C", "G", "B"])
+@pytest.mark.parametrize("top_level_input", [True, False])
+def test_compose_soc_instance_name_matching_a_key_tag_is_harmless(
+    inst: str, top_level_input: bool
+) -> None:
+    """Union-find keys are tagged tuples; an instance literally named like a
+    tag ("C", "G", "B") must not be misread as a constant/glue key. With an
+    instance-first block key this wrote the string 'B' into the netlist as a
+    net (inst "C"), raised a bogus "tied to constant" error (inst "C" on a
+    top-level input), or crashed comparing str with int (inst "G")."""
+    net = 2 if top_level_input else 7
+    ports = {"clk": {"direction": "input", "bits": [1]}}
+    cells: dict[str, Any] = {}
+    if top_level_input:
+        ports["p_in"] = {"direction": "input", "bits": [2]}
+    else:
+        cells["drv"] = {
+            "hide_name": 0,
+            "type": "sky130_fd_sc_hd__buf_1",
+            "parameters": {},
+            "attributes": {},
+            "port_directions": {"A": "input", "X": "output"},
+            "connections": {"A": [1], "X": [7]},
+        }
+    cells[inst] = {
+        "hide_name": 0,
+        "type": "blk",
+        "parameters": {},
+        "attributes": {},
+        "port_directions": {"p": "input"},
+        "connections": {"p": [net]},
+    }
+    glue = {
+        "creator": "test",
+        "modules": {
+            "soc": {
+                "attributes": {"top": "1"},
+                "ports": ports,
+                "cells": cells,
+                "netnames": {},
+            }
+        },
+    }
+    block = {
+        "creator": "test",
+        "modules": {
+            "blk": {
+                "attributes": {"top": "1"},
+                "ports": {"p": {"direction": "input", "bits": [5]}},
+                "cells": {
+                    "c0": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__inv_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "Y": "output"},
+                        "connections": {"A": [5], "Y": [6]},
+                    }
+                },
+                "netnames": {},
+            }
+        },
+    }
+
+    result = compose_soc(
+        glue_json=glue, soc_top="soc", blocks={inst: block}, block_module={inst: "blk"}
+    )
+    module = result["modules"]["soc"]
+    assert module["cells"][f"{inst}__c0"]["connections"]["A"] == [net]
+    _assert_single_driver(module)
 
 
 # --------------------------------------------------------------------------- #
