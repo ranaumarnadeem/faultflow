@@ -83,7 +83,10 @@ def _detected_fault_targets(
 def _triples(
     fault_ids: set[int] | list[int], targets_by_id: dict[int, _FaultTarget]
 ) -> list[tuple[int, int, int]]:
-    return [tuple(targets_by_id[fid]) for fid in sorted(fault_ids)]
+    return [
+        (t.fault_id, t.net_index, t.type_code)
+        for t in (targets_by_id[fid] for fid in sorted(fault_ids))
+    ]
 
 
 def _insert_compacted_run(
