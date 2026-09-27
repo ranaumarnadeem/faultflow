@@ -11,7 +11,7 @@
 
 namespace faultflow::db {
 
-constexpr int kSchemaUserVersion = 8;
+constexpr int kSchemaUserVersion = 9;
 
 struct CoverageSummary {
   int64_t total_raw_faults = 0;
@@ -137,6 +137,16 @@ void mark_fault_compression_unresolved(const std::string& db_path,
 // same character as protocol_unresolved/compression_unresolved.
 void mark_fault_compaction_unresolved(const std::string& db_path,
                                       int64_t fault_id);
+
+// A scan fault that is UNSAT with every blackbox output tied to 0 (what the
+// scan protocol sees) but SAT with those outputs free: a test exists only if
+// a memory drives a value no scan test can set, so it is untestable because
+// of the blackbox, not redundant. Reaches here instead of mark_fault_redundant
+// from the round loop's UNSAT branch. Leaves `status` untouched (same guard
+// as mark_fault_protocol_unresolved: does not overwrite a detected fault) --
+// not an exclusion, the fault stays in the coverage denominator.
+void mark_fault_blackbox_unresolved(const std::string& db_path,
+                                    int64_t fault_id);
 
 void invalidate_stale_redundant(const std::string& db_path,
                                 int64_t campaign_id,

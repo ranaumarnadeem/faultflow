@@ -322,11 +322,12 @@ py::dict solve_fault_atpg(
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
     const std::string& test_mode = "", bool cone_restrict = true,
-    bool incremental = false) {
+    bool incremental = false, int64_t net_index_override = -1) {
   const atpg::SolveFaultResult result = atpg::solve_fault_for_db(
       json_path, cell_map_path, db_path, fault_id, blocked_patterns,
       conflict_limit, sat_timeout_seconds, unsupported_policy,
-      blackbox_instances, test_mode, cone_restrict, incremental);
+      blackbox_instances, test_mode, cone_restrict, incremental,
+      net_index_override);
   py::dict out;
   out["result"] = result.result;
   out["vector"] = result.vector;
@@ -426,12 +427,12 @@ py::dict solve_scan_transition_fault_atpg(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    bool cone_restrict = true) {
+    bool cone_restrict = true, int64_t net_index_override = -1) {
   const atpg::SolveTransitionResult result =
       atpg::solve_scan_transition_fault_for_db(
           json_path, cell_map_path, db_path, fault_id, blocked_patterns,
           conflict_limit, sat_timeout_seconds, unsupported_policy,
-          blackbox_instances, cone_restrict);
+          blackbox_instances, cone_restrict, net_index_override);
   py::dict out;
   out["result"] = result.result;
   out["launch"] = result.launch;
@@ -447,12 +448,13 @@ py::dict solve_scan_los_transition_fault_atpg(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    bool cone_restrict = true) {
+    bool cone_restrict = true, int64_t net_index_override = -1) {
   const atpg::SolveTransitionResult result =
       atpg::solve_scan_los_transition_fault_for_db(
           json_path, cell_map_path, db_path, fault_id, couple_ports,
           head_ppi_ports, blocked_patterns, conflict_limit, sat_timeout_seconds,
-          unsupported_policy, blackbox_instances, cone_restrict);
+          unsupported_policy, blackbox_instances, cone_restrict,
+          net_index_override);
   py::dict out;
   out["result"] = result.result;
   out["launch"] = result.launch;
@@ -698,6 +700,11 @@ void mark_fault_compression_unresolved_py(const std::string& db_path,
 void mark_fault_compaction_unresolved_py(const std::string& db_path,
                                          int64_t fault_id) {
   db::mark_fault_compaction_unresolved(db_path, fault_id);
+}
+
+void mark_fault_blackbox_unresolved_py(const std::string& db_path,
+                                       int64_t fault_id) {
+  db::mark_fault_blackbox_unresolved(db_path, fault_id);
 }
 
 void complete_run_with_atpg_py(const std::string& db_path, int64_t run_id,
@@ -1067,7 +1074,7 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("test_mode") = "", py::arg("cone_restrict") = true,
-        py::arg("incremental") = false);
+        py::arg("incremental") = false, py::arg("net_index_override") = -1);
   m.def("verify_fault_candidate", &faultflow::verify_fault_candidate,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("vector"),
@@ -1117,7 +1124,7 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("sat_timeout_seconds") = 10,
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("cone_restrict") = true);
+        py::arg("cone_restrict") = true, py::arg("net_index_override") = -1);
   m.def("solve_scan_los_transition_fault_atpg",
         &faultflow::solve_scan_los_transition_fault_atpg, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("db_path"), py::arg("fault_id"),
@@ -1126,7 +1133,7 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("sat_timeout_seconds") = 10,
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("cone_restrict") = true);
+        py::arg("cone_restrict") = true, py::arg("net_index_override") = -1);
   m.def("verify_transition_candidate", &faultflow::verify_transition_candidate,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("launch"), py::arg("capture"),
@@ -1185,6 +1192,9 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("fault_id"));
   m.def("mark_fault_compaction_unresolved",
         &faultflow::mark_fault_compaction_unresolved_py, py::arg("db_path"),
+        py::arg("fault_id"));
+  m.def("mark_fault_blackbox_unresolved",
+        &faultflow::mark_fault_blackbox_unresolved_py, py::arg("db_path"),
         py::arg("fault_id"));
   m.def("complete_run_with_atpg", &faultflow::complete_run_with_atpg_py,
         py::arg("db_path"), py::arg("run_id"), py::arg("coverage_percent"),

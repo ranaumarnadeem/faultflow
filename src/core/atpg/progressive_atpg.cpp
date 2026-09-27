@@ -127,6 +127,21 @@ CompactFault fault_from_record(const db::FaultRecord& rec) {
   return fault;
 }
 
+// See solve_fault_for_db's `net_index_override`: bounds-checked against the
+// graph actually loaded, since the override indexes a different view than
+// the one the record's own index was taken from.
+void apply_net_index_override(CompactFault& fault, const CompiledSimGraph& cg,
+                              int64_t net_index_override) {
+  if (net_index_override < 0) {
+    return;
+  }
+  if (net_index_override >= cg.net_count) {
+    throw std::runtime_error("net_index_override out of range: " +
+                             std::to_string(net_index_override));
+  }
+  fault.net_index = static_cast<uint32_t>(net_index_override);
+}
+
 struct ActiveFaultRecord {
   int64_t fault_id = 0;
   CompactFault fault;
@@ -357,7 +372,8 @@ std::vector<uint32_t> held_real_pis(const ParsedGraph& parsed,
     if (port.direction != "input") {
       continue;
     }
-    if (name.rfind(ppi_prefix, 0) == 0) {
+    if (name.rfind(ppi_prefix, 0) == 0 ||
+        name.rfind(kBlackboxFreePortPrefix, 0) == 0) {
       continue;
     }
     for (int bit : port.bits) {
@@ -425,7 +441,8 @@ SolveFaultResult solve_fault_for_db(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode, bool cone_restrict, bool incremental) {
+    const std::string& test_mode, bool cone_restrict, bool incremental,
+    int64_t net_index_override) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -435,6 +452,7 @@ SolveFaultResult solve_fault_for_db(
   }
   const auto pis = ordered_pis(ctx.parsed, ctx.cg);
   CompactFault fault = fault_from_record(rec);
+  apply_net_index_override(fault, ctx.cg, net_index_override);
 
   SatSolveOptions options;
   options.conflict_limit = conflict_limit;
@@ -668,7 +686,8 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances, bool cone_restrict) {
+    const std::vector<std::string>& blackbox_instances, bool cone_restrict,
+    int64_t net_index_override) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -679,6 +698,7 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
   const auto pis = ordered_pis(ctx.parsed, ctx.cg);
   const ScanLocView view = build_scan_loc_view(ctx.parsed, ctx.cg);
   CompactFault fault = fault_from_record(rec);
+  apply_net_index_override(fault, ctx.cg, net_index_override);
   fault.model = FaultModel::TRANSITION;
 
   SatSolveOptions options;
@@ -710,7 +730,8 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
     const std::vector<std::string>& head_ppi_ports,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances, bool cone_restrict) {
+    const std::vector<std::string>& blackbox_instances, bool cone_restrict,
+    int64_t net_index_override) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -745,6 +766,7 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
   const std::vector<uint32_t> held = held_real_pis(ctx.parsed, ctx.cg);
 
   CompactFault fault = fault_from_record(rec);
+  apply_net_index_override(fault, ctx.cg, net_index_override);
   fault.model = FaultModel::TRANSITION;
 
   SatSolveOptions options;

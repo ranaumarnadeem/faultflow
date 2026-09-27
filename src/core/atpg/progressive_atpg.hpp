@@ -61,6 +61,10 @@ void ensure_faults_enumerated(
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {});
 
+// `net_index_override`, when >= 0, replaces the fault record's stored compiled
+// net index: it solves the same fault on another view of the same netlist,
+// whose compiled indices differ (the blackbox-free twin of a scan ATPG view).
+// The same parameter does the same on the scan LOC/LOS solvers below.
 SolveFaultResult solve_fault_for_db(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
@@ -68,7 +72,7 @@ SolveFaultResult solve_fault_for_db(
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {},
     const std::string& test_mode = "", bool cone_restrict = true,
-    bool incremental = false);
+    bool incremental = false, int64_t net_index_override = -1);
 
 bool verify_fault_vector(
     const std::string& json_path, const std::string& cell_map_path,
@@ -172,6 +176,11 @@ std::vector<int64_t> simulate_transition_tentative_from_preloaded(
 // at-speed capture window) regardless of which scan protocol drives capture.
 // Exposed (not file-local) so its per-bit handling of a multi-bit port is
 // directly unit-testable.
+//
+// `__bbfree_*` inputs are not held: they stand for blackbox outputs in the
+// blackbox-free twin of a scan ATPG view (faultflow/scan/atpg_view.py), and a
+// memory's output can change between the launch and capture edges.
+constexpr char kBlackboxFreePortPrefix[] = "__bbfree_";
 std::vector<uint32_t> held_real_pis(const ParsedGraph& parsed,
                                     const CompiledSimGraph& cg);
 
@@ -189,7 +198,7 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {},
-    bool cone_restrict = true);
+    bool cone_restrict = true, int64_t net_index_override = -1);
 
 // ---- Transition model (scan launch-on-shift) -------------------------------
 // LOS couples (capture PPI == launch predecessor PPI) and chain-head PPIs (free
@@ -204,6 +213,6 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {},
-    bool cone_restrict = true);
+    bool cone_restrict = true, int64_t net_index_override = -1);
 
 }  // namespace faultflow::atpg
