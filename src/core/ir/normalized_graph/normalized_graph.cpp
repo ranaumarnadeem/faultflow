@@ -127,7 +127,11 @@ NormalizedGraph NormalizedGraph::from_parsed(
   }
 
   // Resolve whether a pin is an output of a (possibly unknown-type) cell:
-  // prefer the cell-map entry, else fall back to common output-pin names.
+  // prefer the cell-map entry, then the direction Yosys wrote for the cell,
+  // and only then guess from common output-pin names. A blackbox memory's
+  // type is never in the cell map and its data output is named like "dout0",
+  // which the name guess reads as an input -- leaving the output undriven
+  // (a free variable to SAT, 0 to the simulator) and observed as a test point.
   auto is_output_pin = [&](const ParsedCell& cell,
                            const std::string& pin) -> bool {
     const auto entry = cell_map.lookup(cell.type);
@@ -143,6 +147,10 @@ NormalizedGraph NormalizedGraph::from_parsed(
           return false;
         }
       }
+    }
+    const auto dir = cell.port_directions.find(pin);
+    if (dir != cell.port_directions.end()) {
+      return dir->second == "output";
     }
     return pin == "Y" || pin == "YS" || pin == "YC" || pin == "Q" ||
            pin == "X" || pin == "CO" || pin == "SUM" || pin == "S" ||

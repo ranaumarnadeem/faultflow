@@ -268,6 +268,65 @@ TEST_CASE("Phase9 unknown blackbox instance throws", "[normalized_graph][blackbo
       ParseError);
 }
 
+// A blackboxed MEMORY: its type is never in the cell map, and its data output
+// is named "dout", which the output-pin-name fallback does not recognize. Only
+// Yosys's own port_directions says it is an output.
+static ParsedGraph memory_blackbox_graph() {
+  return ParsedGraph::from_json_string(R"({
+    "modules": {"top_mem": {
+      "attributes": {"top": "1"},
+      "ports": {
+        "a": {"direction": "input",  "bits": [2]},
+        "b": {"direction": "input",  "bits": [3]},
+        "y": {"direction": "output", "bits": [6]}
+      },
+      "cells": {
+        "u_mem": {
+          "type": "sram_like",
+          "port_directions": {"din": "input", "dout": "output"},
+          "connections": {"din": [2], "dout": [5]}
+        },
+        "g_dn": {
+          "type": "sky130_fd_sc_hd__xor2_1",
+          "port_directions": {"A": "input", "B": "input", "X": "output"},
+          "connections": {"A": [5], "B": [3], "X": [6]}
+        }
+      },
+      "netnames": {
+        "a": {"bits": [2]}, "b": {"bits": [3]}, "dout": {"bits": [5]},
+        "y": {"bits": [6]}
+      }
+    }}
+  })");
+}
+
+TEST_CASE("Phase9 blackbox output named outside the pin-name guess uses Yosys "
+          "port_directions",
+          "[normalized_graph][blackbox9]") {
+  const ParsedGraph pg = memory_blackbox_graph();
+  const CellMap map = CellMap::load(test::cell_map_path());
+  const NormalizedGraph ng =
+      NormalizedGraph::from_parsed(pg, map, "fail", {"u_mem"});
+  // The output is a driven, controllable pseudo-PI -- not an undriven net
+  // (a free variable to SAT, 0 to the simulator) observed as a test point.
+  REQUIRE(ng.pseudo_inputs.count(5) == 1);
+  REQUIRE(ng.nets.at(5).driver >= 0);
+  REQUIRE_FALSE(ng.nets.at(5).is_tp);
+  // The input is the observable test point.
+  REQUIRE(ng.nets.at(2).is_tp);
+  REQUIRE(ng.pseudo_inputs.count(2) == 0);
+}
+
+TEST_CASE("Blackbox policy excludes an unknown cell's output named outside the "
+          "pin-name guess",
+          "[normalized_graph]") {
+  const ParsedGraph pg = memory_blackbox_graph();
+  const CellMap map = CellMap::load(test::cell_map_path());
+  const NormalizedGraph ng = NormalizedGraph::from_parsed(pg, map, "blackbox");
+  REQUIRE(ng.nets.at(5).is_blackboxed);
+  REQUIRE_FALSE(ng.nets.at(2).is_blackboxed);
+}
+
 TEST_CASE("Phase9 empty blackbox set leaves unsupported-cell path intact",
           "[normalized_graph][blackbox9]") {
   const ParsedGraph pg = test::load_parsed("tiny_blackbox.json");

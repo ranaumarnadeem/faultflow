@@ -140,6 +140,15 @@ ParsedGraph ParsedGraph::from_json(const nlohmann::json& j) {
             cell.conns[conn.key()] = parse_bits(conn.value());
           }
         }
+        if (c.value().contains("port_directions") &&
+            c.value()["port_directions"].is_object()) {
+          for (auto d = c.value()["port_directions"].begin();
+               d != c.value()["port_directions"].end(); ++d) {
+            if (d.value().is_string()) {
+              cell.port_directions[d.key()] = d.value().get<std::string>();
+            }
+          }
+        }
         mod.cells[cell.instance] = std::move(cell);
       }
     }

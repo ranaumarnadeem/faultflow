@@ -19,6 +19,10 @@ struct ParsedCell {
   std::string type;
   std::map<std::string, std::vector<int>> conns;
   std::map<std::string, std::string> attrs;
+  // Yosys's own per-pin direction ("input"/"output"/"inout"), written for a
+  // cell whose module is known -- including a blackbox such as a memory,
+  // whose type is never in the cell map. Empty when Yosys didn't write it.
+  std::map<std::string, std::string> port_directions;
 };
 
 struct ParsedNet {
