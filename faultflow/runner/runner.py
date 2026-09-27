@@ -776,13 +776,20 @@ class Runner:
         if not isinstance(latest, dict) or latest.get("status") != "PASS":
             raise RunnerError("run scan-check successfully before scan-compress")
 
-        scan_in_ports = [str(p) for p in manifest.get("scan_inputs", [])]
+        raw_scan_in_ports = manifest.get("scan_inputs", [])
+        scan_in_ports = (
+            [str(p) for p in raw_scan_in_ports]
+            if isinstance(raw_scan_in_ports, list)
+            else []
+        )
         clock_port = self.cfg.compression.clock or self._default_clock_port(
             manifest, generic_json
         )
         scan_enable_port = self.cfg.compression.scan_enable or str(
             manifest["scan_enable"]
         )
+        if self.cfg.liberty is None or not self.cfg.liberty.exists():
+            raise RunnerError(f"liberty file not found: {self.cfg.liberty}")
 
         core_top = str(manifest["top"])
         output_json = self.cfg.output_dir / f"{self.cfg.top}_compressed.json"
@@ -814,7 +821,7 @@ class Runner:
             time.perf_counter() - t0,
         )
 
-        manifest["compression"] = {
+        compression_entry: dict[str, object] = {
             "enabled": True,
             "num_channels": compression_map.num_channels,
             "tap_source_net": "effective_state",
@@ -831,8 +838,9 @@ class Runner:
                 "taps": sorted(compression_map.polynomial.taps),
             },
         }
+        manifest["compression"] = compression_entry
         structural = check_compression_structure(manifest)
-        manifest["compression"]["structural_check"] = {
+        compression_entry["structural_check"] = {
             "status": "PASS" if structural.passed else "FAIL",
             "errors": structural.errors,
         }
@@ -879,8 +887,15 @@ class Runner:
         if not isinstance(latest, dict) or latest.get("status") != "PASS":
             raise RunnerError("run scan-check successfully before scan-compact")
 
-        scan_out_ports = [str(p) for p in manifest.get("scan_outputs", [])]
+        raw_scan_out_ports = manifest.get("scan_outputs", [])
+        scan_out_ports = (
+            [str(p) for p in raw_scan_out_ports]
+            if isinstance(raw_scan_out_ports, list)
+            else []
+        )
         core_top = str(manifest["top"])
+        if self.cfg.liberty is None or not self.cfg.liberty.exists():
+            raise RunnerError(f"liberty file not found: {self.cfg.liberty}")
         output_json = self.cfg.output_dir / f"{self.cfg.top}_compacted.json"
         workdir = self.cfg.intermediate_dir / "compaction"
         t0 = time.perf_counter()
@@ -908,7 +923,7 @@ class Runner:
             time.perf_counter() - t0,
         )
 
-        manifest["compaction"] = {
+        compaction_entry: dict[str, object] = {
             "enabled": True,
             "num_outputs": compaction_map.num_outputs,
             "scan_out_ports": scan_out_ports,
@@ -918,8 +933,9 @@ class Runner:
             "composed_top": f"{core_top}_compacted",
             "composed_json_hash": _hash_file(output_json),
         }
+        manifest["compaction"] = compaction_entry
         structural = check_compaction_structure(manifest)
-        manifest["compaction"]["structural_check"] = {
+        compaction_entry["structural_check"] = {
             "status": "PASS" if structural.passed else "FAIL",
             "errors": structural.errors,
         }
