@@ -64,7 +64,8 @@ int parse_bit(const nlohmann::json& b) {
     }
     if (s == "x" || s == "z") {
       // Post-synthesis x/z means "unconnected/don't-care input pin". Tie to
-      // CONST0 conservatively. True X-state propagation is Phase 2.5d.
+      // CONST0: the core is two-valued by design, X-state is permanently out
+      // of scope.
       return CONST0_NET_ID;
     }
     throw ParseError("Unknown constant bit: " + s);
