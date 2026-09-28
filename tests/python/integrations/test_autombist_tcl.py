@@ -96,3 +96,44 @@ def test_tcl_autombist_generate_unknown_option_errors(tmp_path: Path) -> None:
     with pytest.raises(ShellError) as exc:
         bridge.call("autombist_generate", "-bogus", "x")
     assert "INVALID_OPTION" in str(exc.value) or "unknown option" in str(exc.value)
+
+
+JTAG_FIXTURE = ROOT / "tests/fixtures/autombist/input_demo_8x16_scn4m_jtag"
+
+
+@pytest.mark.integration
+def test_tcl_autombist_generate_test_access_declares_both_clocks(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """-test_access wraps the generated design and loads the wrapped one: its
+    two clocks are declared in the session, and the result says how many scan
+    chains insertion needs."""
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+    stub = tmp_path / "fake_autombist.py"
+    stub.write_text(
+        "import shutil, sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        "if args[0] == 'generate':\n"
+        "    out = Path(args[args.index('--out') + 1])\n"
+        f"    shutil.copytree({str(JTAG_FIXTURE)!r}, out / 'input_demo_8x16_scn4m')\n"
+        "elif args[0] != 'wrap-test-access':\n"
+        "    sys.exit('unexpected arguments: ' + ' '.join(args))\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "unused.yml"
+    config_path.write_text("memory_name: unused\n", encoding="utf-8")
+
+    session = ProjectSession(output_root=tmp_path / "output")
+    bridge = TclBridge(session)
+    out = bridge.eval(
+        f"autombist_generate -config {config_path} -out {tmp_path / 'out'} "
+        f"-autombist_cmd {{python3 {stub}}} -test_access "
+        f"-liberty {SKY130_LIBERTY} -cell_lib {SKY130_CELL_MAP}"
+    )
+
+    assert "add_scan -chains 2" in str(out)
+    assert session.top == "input_demo_8x16_scn4m_mbist"
+    assert session.declared_blackbox == ["u_sram"]
+    assert [c.port for c in session.declared_clocks] == ["clk", "tck"]

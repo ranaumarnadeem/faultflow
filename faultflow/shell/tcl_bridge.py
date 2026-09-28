@@ -634,9 +634,14 @@ proc {name} {{args}} {{
             "-cell_lib": "cell_lib",
         }
         kwargs: dict[str, str] = {}
+        test_access = False
         idx = 0
         while idx < len(args):
             flag = args[idx]
+            if flag == "-test_access":
+                test_access = True
+                idx += 1
+                continue
             if flag not in flag_to_key:
                 raise ShellError(
                     f"autombist_generate: unknown option {flag!r}",
@@ -666,14 +671,23 @@ proc {name} {{args}} {{
             autombist_cmd=cmd,
             liberty=Path(kwargs["liberty"]),
             cell_lib=Path(kwargs["cell_lib"]),
+            test_access=test_access,
         )
         self.session.load_json(result.composed_json_path, result.top_module)
         for inst in result.blackbox_instances:
             self.session.add_blackbox(inst)
-        return (
+        for port in result.clock_ports:
+            self.session.add_clock(port)
+        message = (
             f"autombist synthesis: {result.ofs_path} "
             f"(top={result.top_module}, blocks={result.block_count})"
         )
+        if result.scan_chains is not None:
+            message += (
+                f"; clocks {', '.join(result.clock_ports)}: "
+                f"add_scan -chains {result.scan_chains}"
+            )
+        return message
 
     def _set_testmode(self, args: list[str]) -> Any:
         if len(args) != 1:

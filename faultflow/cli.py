@@ -227,6 +227,14 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         help="Cell-map JSON for the written .ofs",
     )
+    autombist_p.add_argument(
+        "--test-access",
+        dest="test_access",
+        action="store_true",
+        help="Wrap the generated design for JTAG access (autombist "
+        "wrap-test-access, which needs warptap) and synthesize the wrapped "
+        "design",
+    )
 
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
@@ -567,12 +575,18 @@ def _handle_autombist_generate(args: object) -> int:
         autombist_cmd=cmd,
         liberty=Path(getattr(args, "liberty")),
         cell_lib=Path(getattr(args, "cell_lib")),
+        test_access=bool(getattr(args, "test_access", False)),
     )
     counts = ", ".join(f"{k}={v}" for k, v in sorted(result.instance_counts.items()))
     print(
         f"wrote {result.ofs_path}  (top={result.top_module}, "
         f"blocks={result.block_count}, {counts})"
     )
+    if result.scan_chains is not None:
+        print(
+            f"clocks: {', '.join(result.clock_ports)}  "
+            f"(scan chains: {result.scan_chains}, one per clock domain)"
+        )
     print(
         f"run: python3 ff.py sim --scan --top {result.top_module} -c {result.ofs_path}"
     )

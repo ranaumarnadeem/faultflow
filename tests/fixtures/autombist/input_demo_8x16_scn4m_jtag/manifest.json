@@ -1,0 +1,211 @@
+{
+  "format": "autombist_instance_manifest",
+  "generated_at": "1970-01-01T00:00:00+00:00",
+  "generator": {
+    "command": "generate",
+    "config_path": "config.yml",
+    "topology": "dedicated"
+  },
+  "instances": [
+    {
+      "category": "memory",
+      "geometry": {
+        "addr_width": 4,
+        "connected_addr_width": 4,
+        "connected_data_width": 8,
+        "data_width": 8,
+        "mem_addr_width": 4,
+        "mem_data_width": 8,
+        "num_diagnosis_entries": 0,
+        "num_spare_cols": 0,
+        "num_spare_rows": 0,
+        "read_latency": 0
+      },
+      "hierarchical_path": "u_sram",
+      "hierarchy_hint": "blackbox",
+      "instance_name": "u_sram",
+      "module_type": "input_demo_8x16_scn4m",
+      "present_because": "always",
+      "sources": [
+        "input_demo_8x16_scn4m_bbox.v"
+      ]
+    },
+    {
+      "category": "mbist_controller",
+      "hierarchical_path": "u_algo_top",
+      "hierarchy_hint": "separate",
+      "instance_name": "u_algo_top",
+      "module_type": "march_c_top",
+      "parameters": {
+        "ADDR_WIDTH": 4,
+        "DATA_WIDTH": 8,
+        "READ_LATENCY": 0
+      },
+      "present_because": "always",
+      "sources": [
+        "march_c/march_c_algo.sv",
+        "march_c/march_c_fsm.sv",
+        "march_c/march_c_top.sv"
+      ]
+    }
+  ],
+  "module_outdir": "<ignored by faultflow -- see load_autombist_manifest, sources always resolve against the manifest file's own directory>",
+  "schema_version": "1.0.0",
+  "sources": {
+    "blackbox_stub": "input_demo_8x16_scn4m_bbox.v",
+    "wrapper": "input_demo_8x16_scn4m_mbist.v"
+  },
+  "test_access": {
+    "boundary_ports": [
+      "tck",
+      "tms",
+      "tdi",
+      "tdo",
+      "trst_n"
+    ],
+    "icl_path": "test-access/input_demo_8x16_scn4m_mbist_test_access.icl",
+    "instances": [
+      {
+        "category": "mbist_controller",
+        "hierarchical_path": "u_algo_top",
+        "hierarchy_hint": "separate",
+        "instance_name": "u_algo_top",
+        "module_type": "\\$paramod$184691435fe18cb404280b7d4569f2c7421bbf2f\\march_c_top"
+      },
+      {
+        "category": "memory",
+        "hierarchical_path": "u_sram",
+        "hierarchy_hint": "blackbox",
+        "instance_name": "u_sram",
+        "module_type": "input_demo_8x16_scn4m",
+        "sources": [
+          "input_demo_8x16_scn4m_bbox.v"
+        ]
+      },
+      {
+        "category": "ijtag_sib",
+        "hierarchical_path": "warptap_sib_bist_done",
+        "hierarchy_hint": "separate",
+        "instance_name": "warptap_sib_bist_done",
+        "instrument": "bist_done",
+        "module_type": "sib_cell",
+        "sib_name": "sib_bist_done"
+      },
+      {
+        "bit": 0,
+        "category": "ijtag_tdr",
+        "hierarchical_path": "warptap_sib_bist_done_inst_0",
+        "hierarchy_hint": "separate",
+        "instance_name": "warptap_sib_bist_done_inst_0",
+        "module_type": "bc1_shift_only",
+        "sib_name": "sib_bist_done"
+      },
+      {
+        "category": "ijtag_sib",
+        "hierarchical_path": "warptap_sib_bist_fail",
+        "hierarchy_hint": "separate",
+        "instance_name": "warptap_sib_bist_fail",
+        "instrument": "bist_fail",
+        "module_type": "sib_cell",
+        "sib_name": "sib_bist_fail"
+      },
+      {
+        "bit": 0,
+        "category": "ijtag_tdr",
+        "hierarchical_path": "warptap_sib_bist_fail_inst_0",
+        "hierarchy_hint": "separate",
+        "instance_name": "warptap_sib_bist_fail_inst_0",
+        "module_type": "bc1_shift_only",
+        "sib_name": "sib_bist_fail"
+      },
+      {
+        "category": "ijtag_sib",
+        "hierarchical_path": "warptap_sib_bist_start",
+        "hierarchy_hint": "separate",
+        "instance_name": "warptap_sib_bist_start",
+        "instrument": "bist_start",
+        "module_type": "sib_cell",
+        "sib_name": "sib_bist_start"
+      },
+      {
+        "bit": 0,
+        "category": "ijtag_tdr",
+        "hierarchical_path": "warptap_sib_bist_start_inst_0",
+        "hierarchy_hint": "separate",
+        "instance_name": "warptap_sib_bist_start_inst_0",
+        "module_type": "instrument_write",
+        "sib_name": "sib_bist_start"
+      },
+      {
+        "category": "ijtag_sib",
+        "hierarchical_path": "warptap_sib_test_mode",
+        "hierarchy_hint": "separate",
+        "instance_name": "warptap_sib_test_mode",
+        "instrument": "test_mode",
+        "module_type": "sib_cell",
+        "sib_name": "sib_test_mode"
+      },
+      {
+        "bit": 0,
+        "category": "ijtag_tdr",
+        "hierarchical_path": "warptap_sib_test_mode_inst_0",
+        "hierarchy_hint": "separate",
+        "instance_name": "warptap_sib_test_mode_inst_0",
+        "module_type": "instrument_write",
+        "sib_name": "sib_test_mode"
+      },
+      {
+        "category": "jtag_tap",
+        "hierarchical_path": "warptap_tap_core",
+        "hierarchy_hint": "separate",
+        "instance_name": "warptap_tap_core",
+        "module_type": "tap_core"
+      }
+    ],
+    "instruments": [
+      {
+        "name": "test_mode",
+        "role": "control",
+        "sib": "warptap_sib_test_mode",
+        "tdr_bits": [
+          "warptap_sib_test_mode_inst_0"
+        ],
+        "width": 1
+      },
+      {
+        "name": "bist_start",
+        "role": "control",
+        "sib": "warptap_sib_bist_start",
+        "tdr_bits": [
+          "warptap_sib_bist_start_inst_0"
+        ],
+        "width": 1
+      },
+      {
+        "name": "bist_done",
+        "role": "status",
+        "sib": "warptap_sib_bist_done",
+        "tdr_bits": [
+          "warptap_sib_bist_done_inst_0"
+        ],
+        "width": 1
+      },
+      {
+        "name": "bist_fail",
+        "role": "status",
+        "sib": "warptap_sib_bist_fail",
+        "tdr_bits": [
+          "warptap_sib_bist_fail_inst_0"
+        ],
+        "width": 1
+      }
+    ],
+    "memory_blackboxed": true,
+    "output_dir": "test-access",
+    "output_verilog": "test-access/input_demo_8x16_scn4m_mbist_test_access.v",
+    "top_module": "input_demo_8x16_scn4m_mbist",
+    "wrapped": true
+  },
+  "tool_version": "0.1.0",
+  "top_module": "input_demo_8x16_scn4m_mbist"
+}

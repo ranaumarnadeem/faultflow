@@ -180,3 +180,154 @@ def test_non_dict_root_rejected(tmp_path: Path) -> None:
     manifest_path.write_text("[1, 2, 3]", encoding="utf-8")
     with pytest.raises(AutombistManifestError, match="must be a JSON object"):
         load_autombist_manifest(manifest_path)
+
+
+def _test_access() -> dict[str, Any]:
+    """A `test_access` block as `autombist wrap-test-access` records it: the
+    memory's entry names no sources of its own here."""
+    return {
+        "wrapped": True,
+        "top_module": "top",
+        "output_verilog": "test-access/top_test_access.v",
+        "output_dir": "/written/by/autombist/never/read",
+        "icl_path": "/abs/top_test_access.icl",
+        "boundary_ports": ["tck", "tms", "tdi", "tdo", "trst_n"],
+        "memory_blackboxed": True,
+        "instances": [
+            {
+                "category": "memory",
+                "hierarchical_path": "u_mem",
+                "hierarchy_hint": "blackbox",
+                "instance_name": "u_mem",
+                "module_type": "mem",
+            },
+            {
+                "category": "mbist_controller",
+                "hierarchical_path": "u_algo",
+                "hierarchy_hint": "separate",
+                "instance_name": "u_algo",
+                "module_type": "\\$paramod$abc\\algo_top",
+            },
+            {
+                "category": "ijtag_sib",
+                "hierarchical_path": "warptap_sib_go",
+                "hierarchy_hint": "separate",
+                "instance_name": "warptap_sib_go",
+                "module_type": "sib_cell",
+                "instrument": "go",
+                "sib_name": "sib_go",
+            },
+            {
+                "bit": 0,
+                "category": "ijtag_tdr",
+                "hierarchical_path": "warptap_sib_go_inst_0",
+                "hierarchy_hint": "separate",
+                "instance_name": "warptap_sib_go_inst_0",
+                "module_type": "instrument_write",
+                "sib_name": "sib_go",
+            },
+            {
+                "category": "jtag_tap",
+                "hierarchical_path": "warptap_tap_core",
+                "hierarchy_hint": "separate",
+                "instance_name": "warptap_tap_core",
+                "module_type": "tap_core",
+            },
+        ],
+        "instruments": [
+            {
+                "name": "go",
+                "role": "control",
+                "width": 1,
+                "sib": "warptap_sib_go",
+                "tdr_bits": ["warptap_sib_go_inst_0"],
+            }
+        ],
+    }
+
+
+def _wrapped(tmp_path: Path, **changes: Any) -> dict[str, Any]:
+    data = _base_manifest(tmp_path)
+    data["test_access"] = {**_test_access(), **changes}
+    return data
+
+
+def test_test_access_block_is_parsed(tmp_path: Path) -> None:
+    manifest = load_autombist_manifest(_write(tmp_path, _wrapped(tmp_path)))
+
+    access = manifest.test_access
+    assert access is not None
+    assert access.top_module == "top"
+    # Relative paths resolve against the manifest's directory, absolute ones
+    # stay as written.
+    assert access.output_verilog == tmp_path / "test-access/top_test_access.v"
+    assert access.icl_path == Path("/abs/top_test_access.icl")
+    assert access.boundary_ports == ("tck", "tms", "tdi", "tdo", "trst_n")
+    mem, algo, sib, tdr, tap = access.instances
+    # The memory's stub is the base instance's.
+    assert mem.sources == (tmp_path / "mem_bbox.v",)
+    assert algo.module_type == "\\$paramod$abc\\algo_top"
+    assert algo.sources == ()
+    assert (sib.category, sib.sib_name, sib.instrument) == ("ijtag_sib", "sib_go", "go")
+    assert (tdr.sib_name, tdr.bit) == ("sib_go", 0)
+    assert tap.category == "jtag_tap"
+    (go,) = access.instruments
+    assert (go.name, go.role, go.width) == ("go", "control", 1)
+    assert (go.sib, go.tdr_bits) == ("warptap_sib_go", ("warptap_sib_go_inst_0",))
+
+
+def test_a_memory_entry_may_name_its_own_stub(tmp_path: Path) -> None:
+    data = _wrapped(tmp_path)
+    data["test_access"]["instances"][0]["sources"] = ["other_bbox.v"]
+    manifest = load_autombist_manifest(_write(tmp_path, data))
+    assert manifest.test_access is not None
+    assert manifest.test_access.instances[0].sources == (tmp_path / "other_bbox.v",)
+
+
+def test_an_unwrapped_test_access_block_is_no_test_access(tmp_path: Path) -> None:
+    manifest = load_autombist_manifest(
+        _write(tmp_path, _wrapped(tmp_path, wrapped=False))
+    )
+    assert manifest.test_access is None
+
+
+def test_a_memory_built_from_its_model_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(AutombistManifestError, match="memory_blackboxed"):
+        load_autombist_manifest(
+            _write(tmp_path, _wrapped(tmp_path, memory_blackboxed=False))
+        )
+
+
+def test_a_memory_without_a_stub_is_rejected(tmp_path: Path) -> None:
+    data = _wrapped(tmp_path)
+    data["test_access"]["instances"][0]["hierarchical_path"] = "u_other_mem"
+    with pytest.raises(AutombistManifestError, match="has no stub"):
+        load_autombist_manifest(_write(tmp_path, data))
+
+
+def test_duplicate_test_access_instance_rejected(tmp_path: Path) -> None:
+    data = _wrapped(tmp_path)
+    data["test_access"]["instances"][4]["hierarchical_path"] = "u_algo"
+    with pytest.raises(AutombistManifestError, match="duplicate hierarchical_path"):
+        load_autombist_manifest(_write(tmp_path, data))
+
+
+def test_an_instrument_must_name_listed_instances(tmp_path: Path) -> None:
+    data = _wrapped(tmp_path)
+    data["test_access"]["instruments"][0]["tdr_bits"] = ["warptap_sib_gone_inst_0"]
+    with pytest.raises(AutombistManifestError, match="warptap_sib_gone_inst_0"):
+        load_autombist_manifest(_write(tmp_path, data))
+
+
+def test_an_instrument_needs_one_tdr_cell_per_bit(tmp_path: Path) -> None:
+    data = _wrapped(tmp_path)
+    data["test_access"]["instruments"][0]["width"] = 2
+    with pytest.raises(AutombistManifestError, match="one TDR cell per bit"):
+        load_autombist_manifest(_write(tmp_path, data))
+
+
+def test_an_instrument_role_is_control_or_status(tmp_path: Path) -> None:
+    data = _wrapped(tmp_path)
+    data["test_access"]["instruments"][0]["role"] = "both"
+    with pytest.raises(AutombistManifestError, match="role"):
+        load_autombist_manifest(_write(tmp_path, data))

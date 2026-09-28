@@ -25,11 +25,21 @@ a flat cell after ``flatten``), never ``instance_name`` -- the two happen to be
 textually identical for a flat (non-nested) design but are documented as
 distinct fields, and only ``hierarchical_path`` survives synthesis as the real
 netlist cell name.
+
+A design wrapped for JTAG access (``autombist wrap-test-access``, recorded in
+the manifest's ``test_access`` block) is built from that block alone: its
+``output_verilog`` defines every module the wrapped netlist uses, already
+parameter-specialized (``$paramod$<hash>\\march_c_top``), plus warptap's TAP,
+SIB and TDR cells. Each distinct "separate" module is synthesized once from
+that file, the glue is the same file with those modules blackboxed, and the
+memory stays the base manifest's blackbox stub. The TAP and its IJTAG network
+run on tck/trst_n, the MBIST logic on clk/rst_n: a two-clock-domain design.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from collections.abc import Sequence
@@ -39,6 +49,7 @@ from typing import Any
 
 from faultflow.config import ConfigError
 from faultflow.project.assemble import AssembleError, block_stub_verilog, compose_soc
+from faultflow.scan.stitch import scan_clock_domains
 
 MANIFEST_FORMAT = "autombist_instance_manifest"
 
@@ -68,16 +79,59 @@ class AutombistInstance:
 
 
 @dataclass(frozen=True)
+class AutombistTestAccessInstance:
+    """One instance of the JTAG-wrapped netlist (a `test_access.instances`
+    entry). `module_type` is spelled as the wrapped netlist spells it, e.g.
+    `\\$paramod$<hash>\\march_c_top`: used verbatim, never re-parameterized.
+    `sources` is set for a blackbox (the memory) only: its stub. SIB and TDR
+    instances name their SIB (`sib_name`), and a TDR bit its `instrument` and
+    `bit`."""
+
+    category: str
+    hierarchical_path: str
+    hierarchy_hint: str  # "blackbox" | "separate"
+    instance_name: str
+    module_type: str
+    sources: tuple[Path, ...] = ()
+    sib_name: str | None = None
+    instrument: str | None = None
+    bit: int | None = None
+
+
+@dataclass(frozen=True)
+class AutombistTestAccessInstrument:
+    """One wrapped port: a control port becomes JTAG-only, a status port stays
+    readable at its pin and is only tapped. Listed in scan-chain order, TDI
+    side first; `sib` and `tdr_bits` are instance paths."""
+
+    name: str
+    role: str  # "control" | "status"
+    width: int
+    sib: str
+    tdr_bits: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AutombistTestAccess:
+    """The manifest's `test_access` block for a design wrapped with a JTAG TAP
+    and an IJTAG network (`autombist wrap-test-access`)."""
+
+    top_module: str
+    output_verilog: Path
+    boundary_ports: tuple[str, ...]
+    instances: tuple[AutombistTestAccessInstance, ...]
+    instruments: tuple[AutombistTestAccessInstrument, ...]
+    icl_path: Path | None = None
+
+
+@dataclass(frozen=True)
 class AutombistManifest:
     top_module: str
     wrapper: Path
     instances: tuple[AutombistInstance, ...]
-    # Captured for forward-compatibility with autoMBIST's JTAG-wrapped mode
-    # (`autombist wrap-test-access`), never interpreted here -- that flow is a
-    # separate, larger integration (new instance categories, a different glue
-    # recipe) explicitly out of scope for this module. Its presence must not
-    # break loading a manifest.
-    test_access: Any | None = None
+    # Set when `autombist wrap-test-access` wrapped the design for JTAG
+    # access: synthesis then builds from this block instead of `instances`.
+    test_access: AutombistTestAccess | None = None
     root: Path = field(default=Path("."))
 
 
@@ -92,6 +146,137 @@ def _resolve(root: Path, value: Any, where: str) -> Path:
         raise AutombistManifestError(f"{where}: expected a non-empty path string")
     p = Path(value)
     return p if p.is_absolute() else (root / p)
+
+
+def _optional_str(raw: dict[str, Any], key: str) -> str | None:
+    value = raw.get(key)
+    return None if value is None else str(value)
+
+
+def _load_test_access(
+    raw: Any, root: Path, base: tuple[AutombistInstance, ...]
+) -> AutombistTestAccess | None:
+    """Parse the `test_access` block, or None for a design not wrapped for
+    JTAG access. Paths resolve like `sources`: absolute as written (autoMBIST
+    writes them so), relative against the manifest's own directory. A memory
+    entry without its own `sources` takes the base instance's stub."""
+    if raw is None:
+        return None
+    where = "manifest.test_access"
+    if not isinstance(raw, dict):
+        raise AutombistManifestError(f"{where} must be an object or null")
+    if raw.get("wrapped") is not True:
+        return None
+    if raw.get("memory_blackboxed") is not True:
+        raise AutombistManifestError(
+            f"{where}.memory_blackboxed is not true: the wrapped netlist builds the "
+            "memory from its model, but FaultFlow tests the memory as a blackbox. "
+            "Rerun `autombist wrap-test-access --manifest DIR`, which wraps the "
+            "memory's blackbox stub"
+        )
+    top_module = str(_req(raw, "top_module", where))
+    output_verilog = _resolve(
+        root, _req(raw, "output_verilog", where), f"{where}.output_verilog"
+    )
+    icl_raw = raw.get("icl_path")
+    icl_path = None if icl_raw is None else _resolve(root, icl_raw, f"{where}.icl")
+    ports = _req(raw, "boundary_ports", where)
+    if not isinstance(ports, list) or not all(isinstance(p, str) for p in ports):
+        raise AutombistManifestError(f"{where}.boundary_ports must list port names")
+
+    base_sources = {inst.hierarchical_path: inst.sources for inst in base}
+    raw_instances = _req(raw, "instances", where)
+    if not isinstance(raw_instances, list) or not raw_instances:
+        raise AutombistManifestError(f"{where}.instances must be a non-empty list")
+    instances: list[AutombistTestAccessInstance] = []
+    seen: set[str] = set()
+    for i, entry in enumerate(raw_instances):
+        at = f"{where}.instances[{i}]"
+        if not isinstance(entry, dict):
+            raise AutombistManifestError(f"{at}: must be an object")
+        path = str(_req(entry, "hierarchical_path", at))
+        if path in seen:
+            raise AutombistManifestError(f"{at}: duplicate hierarchical_path {path!r}")
+        seen.add(path)
+        hint = str(_req(entry, "hierarchy_hint", at))
+        if hint not in ("blackbox", "separate"):
+            raise AutombistManifestError(
+                f"{at}: hierarchy_hint must be 'blackbox' or 'separate', got {hint!r}"
+            )
+        sources: tuple[Path, ...] = ()
+        if hint == "blackbox":
+            raw_sources = entry.get("sources")
+            if raw_sources is None:
+                sources = base_sources.get(path, ())
+            elif isinstance(raw_sources, list):
+                sources = tuple(_resolve(root, s, at) for s in raw_sources)
+            if not sources:
+                raise AutombistManifestError(
+                    f"{at}: blackbox {path!r} has no stub: neither its own sources "
+                    "nor a base instance of that path"
+                )
+        bit = entry.get("bit")
+        if bit is not None and not isinstance(bit, int):
+            raise AutombistManifestError(f"{at}: bit must be an integer")
+        instances.append(
+            AutombistTestAccessInstance(
+                category=str(_req(entry, "category", at)),
+                hierarchical_path=path,
+                hierarchy_hint=hint,
+                instance_name=str(entry.get("instance_name", path)),
+                module_type=str(_req(entry, "module_type", at)),
+                sources=sources,
+                sib_name=_optional_str(entry, "sib_name"),
+                instrument=_optional_str(entry, "instrument"),
+                bit=bit,
+            )
+        )
+
+    raw_instruments = _req(raw, "instruments", where)
+    if not isinstance(raw_instruments, list):
+        raise AutombistManifestError(f"{where}.instruments must be a list")
+    instruments: list[AutombistTestAccessInstrument] = []
+    for i, entry in enumerate(raw_instruments):
+        at = f"{where}.instruments[{i}]"
+        if not isinstance(entry, dict):
+            raise AutombistManifestError(f"{at}: must be an object")
+        role = str(_req(entry, "role", at))
+        if role not in ("control", "status"):
+            raise AutombistManifestError(
+                f"{at}: role must be 'control' or 'status', got {role!r}"
+            )
+        width = _req(entry, "width", at)
+        if not isinstance(width, int) or width < 1:
+            raise AutombistManifestError(f"{at}: width must be a positive integer")
+        sib = str(_req(entry, "sib", at))
+        tdr_bits = _req(entry, "tdr_bits", at)
+        if not isinstance(tdr_bits, list) or len(tdr_bits) != width:
+            raise AutombistManifestError(
+                f"{at}: tdr_bits must list one TDR cell per bit ({width})"
+            )
+        unknown = [p for p in (sib, *map(str, tdr_bits)) if p not in seen]
+        if unknown:
+            raise AutombistManifestError(
+                f"{at}: names instances not in {where}.instances: {unknown}"
+            )
+        instruments.append(
+            AutombistTestAccessInstrument(
+                name=str(_req(entry, "name", at)),
+                role=role,
+                width=width,
+                sib=sib,
+                tdr_bits=tuple(str(b) for b in tdr_bits),
+            )
+        )
+
+    return AutombistTestAccess(
+        top_module=top_module,
+        output_verilog=output_verilog,
+        boundary_ports=tuple(ports),
+        instances=tuple(instances),
+        instruments=tuple(instruments),
+        icl_path=icl_path,
+    )
 
 
 def load_autombist_manifest(path: str | Path) -> AutombistManifest:
@@ -195,7 +380,7 @@ def load_autombist_manifest(path: str | Path) -> AutombistManifest:
         top_module=top_module,
         wrapper=wrapper,
         instances=tuple(instances),
-        test_access=data.get("test_access"),
+        test_access=_load_test_access(data.get("test_access"), root, tuple(instances)),
         root=root,
     )
 
@@ -303,9 +488,46 @@ def invoke_autombist_generate(
     return matches[0]
 
 
+def invoke_autombist_wrap_test_access(
+    module_dir: Path, cmd: Sequence[str] = ("autombist",)
+) -> None:
+    """Run `<cmd> wrap-test-access --manifest <module_dir> --emit-icl`, which
+    wraps the generated design's control/status ports with a JTAG TAP and an
+    IJTAG network and records the result in manifest.json's `test_access`
+    block. autoMBIST needs the warptap package importable, plus Yosys and
+    Icarus Verilog on PATH."""
+    proc = subprocess.run(
+        [*cmd, "wrap-test-access", "--manifest", str(module_dir), "--emit-icl"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise AutombistRunError(
+            f"autombist wrap-test-access failed (exit {proc.returncode}): "
+            f"{proc.stderr or proc.stdout}"
+        )
+
+
 def _quote(path: Path) -> str:
     text = str(path)
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _synth_lines(top: str, liberty: Path, output_json: Path) -> list[str]:
+    """The locked synthesis sequence, from `hierarchy` to `write_json`, that
+    every block and glue run shares once its sources are read."""
+    return [
+        f"hierarchy -check -top {top}",
+        "proc",
+        "flatten",
+        f"synth -top {top}",
+        f"dfflibmap -liberty {_quote(liberty)}",
+        f"abc -liberty {_quote(liberty)}",
+        "delete t:$scopeinfo",
+        "clean",
+        f"write_json {_quote(output_json)}",
+    ]
 
 
 def _run_yosys(
@@ -354,11 +576,17 @@ def _check_composed_netlist_drivers(
     input unconnected: compose_soc lets that input float (valid Verilog), and
     the spliced cells reading it then have no driver.
     """
-    memory_sources = [
-        inst.sources[0]
-        for inst in manifest.instances
-        if inst.hierarchy_hint == "blackbox"
-    ]
+    access = manifest.test_access
+    if access is not None:
+        top = access.top_module
+        memory_sources = _memory_stubs(access)
+    else:
+        top = manifest.top_module
+        memory_sources = [
+            inst.sources[0]
+            for inst in manifest.instances
+            if inst.hierarchy_hint == "blackbox"
+        ]
     script_lines = [f"read_liberty -lib {_quote(liberty)}"]
     if memory_sources:
         script_lines.append(
@@ -367,7 +595,7 @@ def _check_composed_netlist_drivers(
     script_lines.extend(
         [
             f"read_json {_quote(composed_json_path)}",
-            f"hierarchy -top {manifest.top_module}",
+            f"hierarchy -top {top}",
             "check -assert",
         ]
     )
@@ -402,19 +630,7 @@ def synthesize_block(block: Block, *, liberty: Path, workdir: Path) -> Path:
             for k, v in block.parameters.items()
         )
         script_lines.append(f"chparam {sets} {block.module}")
-    script_lines.extend(
-        [
-            f"hierarchy -check -top {block.module}",
-            "proc",
-            "flatten",
-            f"synth -top {block.module}",
-            f"dfflibmap -liberty {_quote(liberty)}",
-            f"abc -liberty {_quote(liberty)}",
-            "delete t:$scopeinfo",
-            "clean",
-            f"write_json {_quote(output_json)}",
-        ]
-    )
+    script_lines.extend(_synth_lines(block.module, liberty, output_json))
     _run_yosys(script_lines, log_path=log_path, script_path=script_path)
     return output_json
 
@@ -460,19 +676,7 @@ def synthesize_glue(
         script_lines.append(
             "read_verilog -lib " + " ".join(_quote(p) for p in lib_sources)
         )
-    script_lines.extend(
-        [
-            f"hierarchy -check -top {manifest.top_module}",
-            "proc",
-            "flatten",
-            f"synth -top {manifest.top_module}",
-            f"dfflibmap -liberty {_quote(liberty)}",
-            f"abc -liberty {_quote(liberty)}",
-            "delete t:$scopeinfo",
-            "clean",
-            f"write_json {_quote(output_json)}",
-        ]
-    )
+    script_lines.extend(_synth_lines(manifest.top_module, liberty, output_json))
     _run_yosys(script_lines, log_path=log_path, script_path=script_path)
 
     glue_json = json.loads(output_json.read_text(encoding="utf-8"))
@@ -506,6 +710,119 @@ def synthesize_glue(
     return output_json
 
 
+def wrapped_block_modules(access: AutombistTestAccess) -> tuple[str, ...]:
+    """The distinct module types of a wrapped design's "separate" instances, in
+    manifest order: each is synthesized once and spliced into every instance
+    of it (one SIB module serves every SIB)."""
+    modules: list[str] = []
+    for inst in access.instances:
+        if inst.hierarchy_hint == "separate" and inst.module_type not in modules:
+            modules.append(inst.module_type)
+    return tuple(modules)
+
+
+def _memory_stubs(access: AutombistTestAccess) -> list[Path]:
+    stubs: list[Path] = []
+    for inst in access.instances:
+        if inst.hierarchy_hint != "blackbox":
+            continue
+        for source in inst.sources:
+            if source not in stubs:
+                stubs.append(source)
+    return stubs
+
+
+def _file_stems(modules: Sequence[str]) -> dict[str, str]:
+    """A distinct file name stem per module. A wrapped design's module names
+    carry Yosys's parameter mangling (`\\$paramod$<hash>\\march_c_top`)."""
+    stems: dict[str, str] = {}
+    for module in modules:
+        base = re.sub(r"[^A-Za-z0-9_.-]+", "_", module).strip("_") or "module"
+        stem, n = base, 1
+        while stem in stems.values():
+            n += 1
+            stem = f"{base}_{n}"
+        stems[module] = stem
+    return stems
+
+
+def _wrapped_reads(access: AutombistTestAccess) -> list[str]:
+    lines = [f"read_verilog -sv {_quote(access.output_verilog)}"]
+    stubs = _memory_stubs(access)
+    if stubs:
+        lines.append("read_verilog -lib " + " ".join(_quote(p) for p in stubs))
+    return lines
+
+
+def synthesize_wrapped_block(
+    access: AutombistTestAccess,
+    module: str,
+    *,
+    liberty: Path,
+    workdir: Path,
+    stem: str,
+) -> Path:
+    """Synthesize one module of the wrapped netlist standalone, from
+    `output_verilog` as it stands, producing <workdir>/blocks/<stem>.json."""
+    blocks_dir = workdir / "blocks"
+    output_json = blocks_dir / f"{stem}.json"
+    script_lines = _wrapped_reads(access) + _synth_lines(module, liberty, output_json)
+    _run_yosys(
+        script_lines,
+        log_path=blocks_dir / f"{stem}_synth.log",
+        script_path=blocks_dir / f"{stem}_synth.tcl",
+    )
+    return output_json
+
+
+def synthesize_wrapped_glue(
+    access: AutombistTestAccess,
+    modules: Sequence[str],
+    *,
+    liberty: Path,
+    workdir: Path,
+) -> Path:
+    """Synthesize the wrapped top with every module in `modules` blackboxed,
+    producing <workdir>/glue.json, and check that its non-library cells are
+    exactly the `test_access.instances`: a cell anywhere else would be logic
+    no instance's category accounts for."""
+    output_json = workdir / "glue.json"
+    script_lines = [
+        *_wrapped_reads(access),
+        *(f"blackbox {module}" for module in modules),
+        *_synth_lines(access.top_module, liberty, output_json),
+    ]
+    _run_yosys(
+        script_lines,
+        log_path=workdir / "glue_synth.log",
+        script_path=workdir / "glue_synth.tcl",
+    )
+    glue_json = json.loads(output_json.read_text(encoding="utf-8"))
+    modules_json = glue_json.get("modules", {})
+    top = modules_json.get(access.top_module)
+    if not isinstance(top, dict):
+        raise AssembleError(
+            f"glue synthesis did not produce top module {access.top_module!r}"
+        )
+    # A library cell's type is no module of the netlist; a blackbox's is, and
+    # an unmapped Yosys cell's starts with "$".
+    designs = set(modules_json) - {access.top_module}
+    found: dict[str, str] = {}
+    for name, cell in top.get("cells", {}).items():
+        cell_type = str(cell.get("type", "")) if isinstance(cell, dict) else ""
+        if cell_type in designs or cell_type.startswith("$"):
+            found[name] = cell_type
+    expected = {inst.hierarchical_path: inst.module_type for inst in access.instances}
+    if found != expected:
+        wrong = sorted(p for p in set(found) & set(expected) if found[p] != expected[p])
+        raise AssembleError(
+            "wrapped glue's non-library cells differ from test_access.instances: "
+            f"missing={sorted(set(expected) - set(found))}, "
+            f"unlisted={sorted(set(found) - set(expected))}, wrong_type={wrong}"
+        )
+    return output_json
+
+
 def write_ofs(
     path: Path,
     *,
@@ -514,12 +831,16 @@ def write_ofs(
     cell_lib: Path,
     liberty: Path,
     blackbox_instances: tuple[str, ...],
+    clock_ports: tuple[str, ...] = (),
+    scan_chains: int | None = None,
 ) -> Path:
     """Write a fresh `.ofs` for the composed netlist. `.ofs` paths resolve
     against the CWD, not the .ofs file's own directory (`config.py::_path`) --
     every path here is written absolute (`.resolve()`d) to be safe regardless
     of the caller's cwd. Deliberately no `top =` line: no `.ofs` in this
     codebase carries one, `top` is always a separate CLI/API argument.
+
+    `clock_ports` are declared in `[clocks]`, and `scan_chains` in `[scan]`.
     """
     lines = [
         "[design]",
@@ -531,9 +852,30 @@ def write_ofs(
         f"instances = {', '.join(blackbox_instances)}",
         "",
     ]
+    if clock_ports:
+        lines.extend(["[clocks]", f"ports = {', '.join(clock_ports)}", ""])
+    if scan_chains is not None:
+        lines.extend(["[scan]", f"chains = {scan_chains}", ""])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
+
+
+def _clock_domains(
+    netlist: Path, top: str, cell_lib: Path
+) -> tuple[tuple[str, ...], int]:
+    """The input ports clocking the netlist's scan flops, in clock-net order,
+    and how many clock domains those flops form. A domain clocked from inside
+    the design has no port to name; scan insertion reports it."""
+    domains = scan_clock_domains(netlist, cell_lib, top)
+    ports = json.loads(netlist.read_text(encoding="utf-8"))["modules"][top]["ports"]
+    by_net = {
+        port["bits"][0]: name
+        for name, port in ports.items()
+        if port.get("direction") == "input" and len(port.get("bits", [])) == 1
+    }
+    names = tuple(by_net[net] for net in sorted(domains) if net in by_net)
+    return names, max(1, len(domains))
 
 
 @dataclass(frozen=True)
@@ -544,20 +886,25 @@ class AutombistSynthesisResult:
     blackbox_instances: tuple[str, ...]
     instance_counts: dict[str, int]
     block_count: int
+    # A design wrapped for JTAG access: the clock port of each clock domain,
+    # and the scan chain count the .ofs asks for (one per domain).
+    clock_ports: tuple[str, ...] = ()
+    scan_chains: int | None = None
 
 
-def synthesize_from_manifest(
-    manifest: AutombistManifest,
-    *,
-    out: Path,
-    liberty: Path,
-    cell_lib: Path,
-) -> AutombistSynthesisResult:
-    """Steps 2-6: plan_blocks -> synthesize each block -> synthesize glue ->
-    compose_soc -> write .ofs. No autoMBIST subprocess invocation -- this is
-    the entry point for callers that already have a manifest (e.g. the
-    fixture-based integration test)."""
-    workdir = out / "autombist_synth"
+@dataclass(frozen=True)
+class _Composition:
+    top: str
+    netlist: dict[str, Any]
+    blackbox_instances: tuple[str, ...]
+    categories: tuple[str, ...]  # one per instance
+    block_count: int
+
+
+def _compose_base(
+    manifest: AutombistManifest, *, liberty: Path, workdir: Path
+) -> _Composition:
+    """The design as `autombist generate` wrote it: blocks from `instances`."""
     blocks = plan_blocks(manifest)
 
     block_json_paths = {
@@ -585,40 +932,123 @@ def synthesize_from_manifest(
         blocks=blocks_by_instance,
         block_module=module_by_instance,
     )
-    composed_json_path = out / f"{manifest.top_module}_composed.json"
+    return _Composition(
+        top=manifest.top_module,
+        netlist=composed,
+        blackbox_instances=tuple(
+            inst.hierarchical_path
+            for inst in manifest.instances
+            if inst.hierarchy_hint == "blackbox"
+        ),
+        categories=tuple(inst.category for inst in manifest.instances),
+        block_count=len(blocks),
+    )
+
+
+def _compose_wrapped(
+    access: AutombistTestAccess, *, liberty: Path, workdir: Path
+) -> _Composition:
+    """The JTAG-wrapped design, built from its `test_access` block alone."""
+    if not access.output_verilog.is_file():
+        raise AutombistManifestError(
+            f"test_access.output_verilog not found: {access.output_verilog}"
+        )
+    modules = wrapped_block_modules(access)
+    stems = _file_stems(modules)
+    block_json = {
+        module: json.loads(
+            synthesize_wrapped_block(
+                access, module, liberty=liberty, workdir=workdir, stem=stems[module]
+            ).read_text(encoding="utf-8")
+        )
+        for module in modules
+    }
+    glue_json_path = synthesize_wrapped_glue(
+        access, modules, liberty=liberty, workdir=workdir
+    )
+    separate = [i for i in access.instances if i.hierarchy_hint == "separate"]
+    composed = compose_soc(
+        glue_json=json.loads(glue_json_path.read_text(encoding="utf-8")),
+        soc_top=access.top_module,
+        blocks={i.hierarchical_path: block_json[i.module_type] for i in separate},
+        block_module={i.hierarchical_path: i.module_type for i in separate},
+    )
+    return _Composition(
+        top=access.top_module,
+        netlist=composed,
+        blackbox_instances=tuple(
+            i.hierarchical_path
+            for i in access.instances
+            if i.hierarchy_hint == "blackbox"
+        ),
+        categories=tuple(i.category for i in access.instances),
+        block_count=len(modules),
+    )
+
+
+def synthesize_from_manifest(
+    manifest: AutombistManifest,
+    *,
+    out: Path,
+    liberty: Path,
+    cell_lib: Path,
+) -> AutombistSynthesisResult:
+    """Steps 2-6: plan_blocks -> synthesize each block -> synthesize glue ->
+    compose_soc -> write .ofs. No autoMBIST subprocess invocation -- this is
+    the entry point for callers that already have a manifest (e.g. the
+    fixture-based integration test). A design wrapped for JTAG access is built
+    from its `test_access` block instead of `instances`."""
+    workdir = out / "autombist_synth"
+    if manifest.test_access is not None:
+        composition = _compose_wrapped(
+            manifest.test_access, liberty=liberty, workdir=workdir
+        )
+    else:
+        composition = _compose_base(manifest, liberty=liberty, workdir=workdir)
+
+    composed_json_path = out / f"{composition.top}_composed.json"
     composed_json_path.parent.mkdir(parents=True, exist_ok=True)
-    composed_json_path.write_text(json.dumps(composed, indent=2), encoding="utf-8")
+    composed_json_path.write_text(
+        json.dumps(composition.netlist, indent=2), encoding="utf-8"
+    )
 
     _check_composed_netlist_drivers(
         manifest, composed_json_path, liberty=liberty, workdir=workdir
     )
 
-    blackbox_instances = tuple(
-        inst.hierarchical_path
-        for inst in manifest.instances
-        if inst.hierarchy_hint == "blackbox"
-    )
-    ofs_path = out / f"{manifest.top_module}.ofs"
+    clock_ports: tuple[str, ...] = ()
+    scan_chains: int | None = None
+    if manifest.test_access is not None:
+        # The TAP runs on its own clock, so the design has two clock domains
+        # at least, and a scan chain never spans two: one chain per domain.
+        clock_ports, scan_chains = _clock_domains(
+            composed_json_path, composition.top, cell_lib
+        )
+    ofs_path = out / f"{composition.top}.ofs"
     write_ofs(
         ofs_path,
         netlist=composed_json_path,
-        top=manifest.top_module,
+        top=composition.top,
         cell_lib=cell_lib,
         liberty=liberty,
-        blackbox_instances=blackbox_instances,
+        blackbox_instances=composition.blackbox_instances,
+        clock_ports=clock_ports,
+        scan_chains=scan_chains,
     )
 
     instance_counts: dict[str, int] = {}
-    for inst in manifest.instances:
-        instance_counts[inst.category] = instance_counts.get(inst.category, 0) + 1
+    for category in composition.categories:
+        instance_counts[category] = instance_counts.get(category, 0) + 1
 
     return AutombistSynthesisResult(
         ofs_path=ofs_path,
         composed_json_path=composed_json_path,
-        top_module=manifest.top_module,
-        blackbox_instances=blackbox_instances,
+        top_module=composition.top,
+        blackbox_instances=composition.blackbox_instances,
         instance_counts=instance_counts,
-        block_count=len(blocks),
+        block_count=composition.block_count,
+        clock_ports=clock_ports,
+        scan_chains=scan_chains,
     )
 
 
@@ -629,11 +1059,21 @@ def run_autombist_generate(
     autombist_cmd: Sequence[str] = ("autombist",),
     liberty: Path,
     cell_lib: Path,
+    test_access: bool = False,
 ) -> AutombistSynthesisResult:
     """Steps 1-6 in full: invoke autoMBIST -> load its manifest ->
-    synthesize_from_manifest. This is what the CLI and Tcl handlers call."""
+    synthesize_from_manifest. This is what the CLI and Tcl handlers call.
+    With `test_access`, autoMBIST first wraps the generated design for JTAG
+    access, and the wrapped design is what gets synthesized."""
     manifest_path = invoke_autombist_generate(config, out, cmd=autombist_cmd)
+    if test_access:
+        invoke_autombist_wrap_test_access(manifest_path.parent, cmd=autombist_cmd)
     manifest = load_autombist_manifest(manifest_path)
+    if test_access and manifest.test_access is None:
+        raise AutombistRunError(
+            f"autombist wrap-test-access recorded no wrapped test_access block in "
+            f"{manifest_path}"
+        )
     return synthesize_from_manifest(
         manifest, out=out, liberty=liberty, cell_lib=cell_lib
     )

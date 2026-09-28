@@ -34,6 +34,10 @@ from faultflow.integrations.autombist import (
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURE = ROOT / "tests/fixtures/autombist/input_demo_8x16_scn4m"
+# The same design after `autombist wrap-test-access`. It holds only what the
+# manifest's test_access block names -- the wrapped netlist and the memory's
+# stub -- so a build that read the base wrapper or march_c RTL would fail.
+JTAG_FIXTURE = ROOT / "tests/fixtures/autombist/input_demo_8x16_scn4m_jtag"
 SKY130_LIBERTY = ROOT / "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib"
 SKY130_CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 
@@ -269,6 +273,9 @@ def test_synthesize_from_manifest_end_to_end(
     cfg = load_config(result.ofs_path, "input_demo_8x16_scn4m_mbist")
     assert str(cfg.netlist) == str(result.composed_json_path)
     assert list(cfg.blackbox_instances) == ["u_sram"]
+    # Nothing a single-clock design doesn't need.
+    assert cfg.clocks == ()
+    assert cfg.scan.chains == 1
 
     # Composed JSON: both instances spliced in (u_sram's real blackbox cell
     # survives as its own cell since memories are never synthesized/spliced --
@@ -512,3 +519,121 @@ def test_synthesize_from_manifest_tolerates_a_block_clock_aliased_to_another_por
         f"spliced flip-flop clock net(s) {ff_clock_nets} are not the "
         f"top-level clk input {top_clk} -- clk/pass_clk merge was lost"
     )
+
+
+@pytest.mark.integration
+def test_a_wrapped_design_is_built_from_its_test_access_block(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """Each distinct "separate" module of the wrapped netlist is synthesized
+    once and spliced into every instance of it -- the TAP, four SIBs, four TDR
+    bits and the parameter-specialized controller -- and the memory stays a
+    blackbox. The TAP runs on tck, the controller on clk: the .ofs declares
+    both and asks for a scan chain per clock."""
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+
+    manifest = load_autombist_manifest(JTAG_FIXTURE / "manifest.json")
+    access = manifest.test_access
+    assert access is not None
+    result = synthesize_from_manifest(
+        manifest, out=tmp_path, liberty=SKY130_LIBERTY, cell_lib=SKY130_CELL_MAP
+    )
+
+    assert result.top_module == access.top_module
+    assert result.blackbox_instances == ("u_sram",)
+    assert result.block_count == 5
+    assert result.instance_counts == {
+        "mbist_controller": 1,
+        "memory": 1,
+        "ijtag_sib": 4,
+        "ijtag_tdr": 4,
+        "jtag_tap": 1,
+    }
+
+    composed = json.loads(result.composed_json_path.read_text(encoding="utf-8"))
+    top = composed["modules"][result.top_module]
+    cells = set(top["cells"])
+    for inst in access.instances:
+        if inst.hierarchy_hint == "separate":
+            assert inst.hierarchical_path not in cells
+            assert any(c.startswith(inst.hierarchical_path + "__") for c in cells)
+    assert top["cells"]["u_sram"]["type"] == "input_demo_8x16_scn4m"
+    assert set(access.boundary_ports) <= set(top["ports"])
+
+    cfg = load_config(result.ofs_path, result.top_module)
+    assert list(cfg.blackbox_instances) == ["u_sram"]
+    assert [c.port for c in cfg.clocks] == ["clk", "tck"]
+    assert cfg.scan.chains == 2
+
+
+@pytest.mark.integration
+def test_a_wrapped_design_runs_the_scan_flow_on_two_clock_domains(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    require_cpp_core: None,
+) -> None:
+    """init -> scan -> scan-check -> sim --scan on the .ofs synthesis wrote,
+    unedited. Every flop is scanned, the MBIST logic's and the TAP's each on
+    chains of their own; trst_n resets like rst_n; and the memory's outputs
+    stay unknown to the scan test."""
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+    from faultflow.cli import main
+
+    manifest = load_autombist_manifest(JTAG_FIXTURE / "manifest.json")
+    result = synthesize_from_manifest(
+        manifest,
+        out=tmp_path / "synth",
+        liberty=SKY130_LIBERTY,
+        cell_lib=SKY130_CELL_MAP,
+    )
+    top, ofs = result.top_module, result.ofs_path
+
+    monkeypatch.chdir(tmp_path)
+    patterns = tmp_path / "patterns.json"
+    for step in (
+        ["init"],
+        ["scan"],
+        ["scan-check"],
+        ["sim", "--scan", "--export-patterns", str(patterns)],
+    ):
+        assert main([*step, "--top", top, "-c", str(ofs)]) == 0, step
+    assert "scan-check PASS" in capsys.readouterr().out
+
+    cfg = load_config(ofs, top)
+    scan_manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+    assert scan_manifest["ineligible_ffs"] == []
+    clock_of_chain: list[int] = []
+    for chain in scan_manifest["chains"]:
+        clocks = {
+            cell["clock_net"]
+            for cell in scan_manifest["cells"]
+            if cell["chain_index"] == chain["index"]
+        }
+        assert len(clocks) == 1
+        clock_of_chain.extend(clocks)
+    assert len(set(clock_of_chain)) == 2
+    # Both resets directly clear scan flops, so the scan test holds both off.
+    from faultflow.scan.detection_pipeline import _scan_reset_pi_holds
+
+    holds = _scan_reset_pi_holds(
+        Path(scan_manifest["generic_json"]),
+        top,
+        json.loads(SKY130_CELL_MAP.read_text(encoding="utf-8")),
+    )
+    assert holds == {"rst_n": True, "trst_n": True}
+
+    report = json.loads(
+        (
+            tmp_path / "output" / top / ".faultflow/intermediate/coverage_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    summary = report["summary"]
+    assert summary["detected"] > 0
+    assert summary["blackbox_unresolved"] > 0
+    assert summary["undetected"] == summary["blackbox_unresolved"]
+    assert report["run"]["atpg_terminal_reason"] == "COMPLETE"
+
+    _assert_unload_independent_of_memory(cfg, patterns, loc=False)

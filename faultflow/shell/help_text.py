@@ -189,7 +189,7 @@ COMMAND_HELP = {
     "autombist_generate": CommandHelp(
         "Project",
         "autombist_generate -config PATH -out PATH [-autombist_cmd CMD] "
-        "-liberty PATH -cell_lib PATH",
+        "-liberty PATH -cell_lib PATH [-test_access]",
         "Generate a FaultFlow synthesis from an autoMBIST manifest",
         "Runs `autombist generate --emit-manifest` (or the command given by "
         "-autombist_cmd, e.g. 'python3 -m autombist.cli'), synthesizes each "
@@ -198,8 +198,13 @@ COMMAND_HELP = {
         "netlists back in, and loads the composed design into this session "
         "with each memory instance declared blackbox -- run_atpg works "
         "afterward with no further setup. Also writes a `.ofs` for later "
-        "standalone use with `ff.py sim`.",
-        "autoMBIST installed and reachable via -autombist_cmd (or on PATH).",
+        "standalone use with `ff.py sim`. -test_access first runs `autombist "
+        "wrap-test-access`, which puts the control/status ports behind a JTAG "
+        "TAP and an IJTAG network, and synthesizes that wrapped design; its "
+        "clocks (the MBIST clock and tck) are declared in the session, and "
+        "scan insertion needs a chain per clock (add_scan -chains 2).",
+        "autoMBIST installed and reachable via -autombist_cmd (or on PATH); "
+        "for -test_access, warptap importable by autoMBIST.",
         "autombist_generate -config mbist.yml -out build -liberty "
         "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib -cell_lib "
         "cells/sky130/sky130_fd_sc_hd.json",
