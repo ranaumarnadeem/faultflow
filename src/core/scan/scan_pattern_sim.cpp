@@ -315,6 +315,36 @@ ScanPatternResult extract_scan_lane_observations(
   return result;
 }
 
+bool unload_bit_compared(const std::map<int, std::vector<bool>>& unload_mask,
+                         int chain_id, size_t offset) {
+  const auto it = unload_mask.find(chain_id);
+  return it == unload_mask.end() || offset >= it->second.size() ||
+         it->second[offset];
+}
+
+// !scan_observations_equal, but blind to the unload bits `unload_mask` masks.
+bool observations_differ(const ScanPatternResult& golden,
+                         const ScanPatternResult& faulty,
+                         const std::map<int, std::vector<bool>>& unload_mask) {
+  if (golden.real_po_values != faulty.real_po_values ||
+      golden.unload_seqs.size() != faulty.unload_seqs.size()) {
+    return true;
+  }
+  for (const auto& [chain_id, golden_bits] : golden.unload_seqs) {
+    const auto it = faulty.unload_seqs.find(chain_id);
+    if (it == faulty.unload_seqs.end() || it->second.size() != golden_bits.size()) {
+      return true;
+    }
+    for (size_t t = 0; t < golden_bits.size(); ++t) {
+      if (golden_bits[t] != it->second[t] &&
+          unload_bit_compared(unload_mask, chain_id, t)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 bool scan_observations_equal(const ScanPatternResult& lhs,
@@ -426,14 +456,16 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
       const int lane_bit_index = static_cast<int>(fault_idx - begin) + 1;
       const ScanPatternResult faulty_obs = extract_scan_lane_observations(
           parsed, cg, request.pattern, batch_samples, lane_bit_index);
-      bool detected = !scan_observations_equal(result.golden, faulty_obs);
+      bool detected =
+          observations_differ(result.golden, faulty_obs, request.unload_mask);
 
       if (request.capture_diffs) {
         for (const auto& [chain_id, faulty_bits] : faulty_obs.unload_seqs) {
           const auto& golden_bits = result.golden.unload_seqs.at(chain_id);
           std::vector<bool> diff(faulty_bits.size());
           for (size_t t = 0; t < faulty_bits.size(); ++t) {
-            diff[t] = (faulty_bits[t] != golden_bits[t]);
+            diff[t] = faulty_bits[t] != golden_bits[t] &&
+                      unload_bit_compared(request.unload_mask, chain_id, t);
           }
           lane.diff_unload_seqs[chain_id] = std::move(diff);
         }

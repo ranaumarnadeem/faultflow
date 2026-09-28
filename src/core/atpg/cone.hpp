@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "ir/compiled_graph/compiled_graph.hpp"
@@ -71,5 +72,20 @@ FaultStructuralReason structural_reason(const CompiledSimGraph& cg,
 int nearest_reconvergent_stem(const CompiledSimGraph& cg, uint32_t fault_net,
                               const std::vector<int>& driver,
                               const std::vector<char>& reconvergent);
+
+// Forward reach of `sources` through combinational logic: the walk never
+// passes a flip-flop, but records each flip-flop input it arrives at as (flop
+// node index, input slot), in SimNode's FF slot order (in0 data, in1 clock,
+// in2 clear or enable, in3 preset, in4 scan-in, in5 scan-enable). A blackbox
+// output's unknown value (faultflow/scan/x_mask.py) reaches exactly `nets`:
+// the observable ones get no detection credit, and a flop clock, scan-in or
+// scan-enable it reaches would corrupt the scan shift itself.
+struct CombinationalReach {
+  std::vector<uint32_t> nets;  // sources included
+  std::vector<std::pair<uint32_t, int>> flop_inputs;
+};
+
+CombinationalReach combinational_reach(const CompiledSimGraph& cg,
+                                       const std::vector<uint32_t>& sources);
 
 }  // namespace faultflow::atpg

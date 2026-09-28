@@ -1,8 +1,13 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "atpg/cone.hpp"
+#include "common/errors.hpp"
 #include "helpers/test_helpers.hpp"
 #include "ir/normalized_graph/cell_map.hpp"
 #include "ir/normalized_graph/normalized_graph.hpp"
@@ -162,4 +167,119 @@ TEST_CASE("nearest_reconvergent_stem finds the nearest fan-in stem",
   // No reconvergent nets in the cone -> -1.
   const std::vector<char> none(static_cast<size_t>(cg.net_count), 0);
   REQUIRE(atpg::nearest_reconvergent_stem(cg, gate_out, driver, none) == -1);
+}
+
+namespace {
+// y = a & b, z = !a, both outputs; `attrs` is spliced into the top module's
+// attribute object.
+ParsedGraph two_output_graph(const std::string& attrs) {
+  return ParsedGraph::from_json_string(R"({"modules": {"top2": {
+    "attributes": {"top": "1")" + attrs + R"(},
+    "ports": {
+      "a": {"direction": "input",  "bits": [2]},
+      "b": {"direction": "input",  "bits": [3]},
+      "y": {"direction": "output", "bits": [5]},
+      "z": {"direction": "output", "bits": [6]}
+    },
+    "cells": {
+      "g_and": {"type": "sky130_fd_sc_hd__and2_1",
+                "port_directions": {"A": "input", "B": "input", "X": "output"},
+                "connections": {"A": [2], "B": [3], "X": [5]}},
+      "g_inv": {"type": "sky130_fd_sc_hd__inv_1",
+                "port_directions": {"A": "input", "Y": "output"},
+                "connections": {"A": [2], "Y": [6]}}
+    },
+    "netnames": {"a": {"bits": [2]}, "b": {"bits": [3]}, "y": {"bits": [5]},
+                 "z": {"bits": [6]}}
+  }}})");
+}
+}  // namespace
+
+TEST_CASE("An unobserved output stays a port but leaves the observable set",
+          "[compiled_graph][unobserved]") {
+  const CellMap map = CellMap::load(test::cell_map_path());
+  const NormalizedGraph ng = NormalizedGraph::from_parsed(
+      two_output_graph(R"(, "faultflow_unobserved_nets": "5")"), map);
+  REQUIRE(ng.POs == std::set<int>{5, 6});
+  REQUIRE(ng.unobserved == std::set<int>{5});
+  const CompiledSimGraph cg = GraphCompiler::compile(ng);
+  REQUIRE(cg.observable ==
+          std::vector<int>{cg.yosys_to_compiled.at(6)});
+
+  // Without the attribute both outputs are observed.
+  const CompiledSimGraph plain =
+      GraphCompiler::compile(NormalizedGraph::from_parsed(two_output_graph(""), map));
+  REQUIRE(plain.observable.size() == 2);
+}
+
+TEST_CASE("The unobserved-nets attribute names only output bits",
+          "[compiled_graph][unobserved]") {
+  const CellMap map = CellMap::load(test::cell_map_path());
+  // net 2 is an input: masking it would mask nothing, silently.
+  REQUIRE_THROWS_AS(
+      NormalizedGraph::from_parsed(
+          two_output_graph(R"(, "faultflow_unobserved_nets": "5 2")"), map),
+      ParseError);
+  REQUIRE_THROWS_AS(
+      NormalizedGraph::from_parsed(
+          two_output_graph(R"(, "faultflow_unobserved_nets": "5x")"), map),
+      ParseError);
+}
+
+TEST_CASE("combinational_reach stops at flops and names the pins it reaches",
+          "[compiled_graph][cone]") {
+  // a feeds u_ff.D directly and u_ff.CLK through g_clk (a gated clock); y
+  // buffers the gated clock. se feeds only the flop's scan enable.
+  const ParsedGraph pg = ParsedGraph::from_json_string(R"({"modules": {"top_ff": {
+    "attributes": {"top": "1"},
+    "ports": {
+      "a":  {"direction": "input",  "bits": [2]},
+      "b":  {"direction": "input",  "bits": [3]},
+      "se": {"direction": "input",  "bits": [4]},
+      "si": {"direction": "input",  "bits": [5]},
+      "y":  {"direction": "output", "bits": [7]},
+      "q":  {"direction": "output", "bits": [8]}
+    },
+    "cells": {
+      "g_clk": {"type": "sky130_fd_sc_hd__and2_1",
+                "port_directions": {"A": "input", "B": "input", "X": "output"},
+                "connections": {"A": [2], "B": [3], "X": [6]}},
+      "g_y": {"type": "sky130_fd_sc_hd__buf_1",
+              "port_directions": {"A": "input", "X": "output"},
+              "connections": {"A": [6], "X": [7]}},
+      "u_ff": {"type": "sky130_fd_sc_hd__sdfxtp_1",
+               "port_directions": {"CLK": "input", "D": "input", "SCD": "input",
+                                   "SCE": "input", "Q": "output"},
+               "connections": {"CLK": [6], "D": [2], "SCD": [5], "SCE": [4],
+                               "Q": [8]}}
+    },
+    "netnames": {"a": {"bits": [2]}, "b": {"bits": [3]}, "se": {"bits": [4]},
+                 "si": {"bits": [5]}, "gclk": {"bits": [6]}, "y": {"bits": [7]},
+                 "q": {"bits": [8]}}
+  }}})");
+  const CellMap map = CellMap::load(test::cell_map_path());
+  const CompiledSimGraph cg =
+      GraphCompiler::compile(NormalizedGraph::from_parsed(pg, map));
+  const auto cidx = [&](int yid) {
+    return static_cast<uint32_t>(cg.yosys_to_compiled.at(yid));
+  };
+  int ff_node = -1;
+  for (size_t i = 0; i < cg.nodes.size(); ++i) {
+    if (cg.nodes[i].type == GateType::DFF) {
+      ff_node = static_cast<int>(i);
+    }
+  }
+  REQUIRE(ff_node >= 0);
+  const auto ff = static_cast<uint32_t>(ff_node);
+
+  const atpg::CombinationalReach from_a = atpg::combinational_reach(cg, {cidx(2)});
+  const std::set<uint32_t> nets(from_a.nets.begin(), from_a.nets.end());
+  REQUIRE(nets.count(cidx(7)) == 1);  // y, through the gated clock
+  REQUIRE(nets.count(cidx(8)) == 0);  // q: the walk never passes the flop
+  REQUIRE(from_a.flop_inputs ==
+          std::vector<std::pair<uint32_t, int>>{{ff, 0}, {ff, 1}});
+
+  const atpg::CombinationalReach from_se = atpg::combinational_reach(cg, {cidx(4)});
+  REQUIRE(from_se.flop_inputs == std::vector<std::pair<uint32_t, int>>{{ff, 5}});
+  REQUIRE(from_se.nets == std::vector<uint32_t>{cidx(4)});
 }

@@ -596,13 +596,13 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
   cg.compiled_to_yosys = std::move(c2y);
 
   for (int po : ng.POs) {
-    if (cg.yosys_to_compiled.count(po)) {
+    if (cg.yosys_to_compiled.count(po) && !ng.unobserved.count(po)) {
       cg.observable.push_back(cg.yosys_to_compiled.at(po));
     }
   }
   // Phase 9: test points (e.g. blackbox input nets) become observable pseudo-POs.
   for (int tp : ng.TPs) {
-    if (cg.yosys_to_compiled.count(tp)) {
+    if (cg.yosys_to_compiled.count(tp) && !ng.unobserved.count(tp)) {
       const int cidx = cg.yosys_to_compiled.at(tp);
       if (std::find(cg.observable.begin(), cg.observable.end(), cidx) ==
           cg.observable.end()) {

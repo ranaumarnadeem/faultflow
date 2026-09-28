@@ -63,6 +63,12 @@ struct NormWrapperCell {
   YosysNetID cto_net = 0;
 };
 
+// Top-module attribute: space-separated Yosys ids of output bits no simulator
+// or SAT miter may observe (see NormalizedGraph::unobserved). A scan ATPG view
+// lists the capture points a blackbox output's unknown value reaches
+// (faultflow/scan/x_mask.py).
+inline constexpr char kUnobservedNetsAttr[] = "faultflow_unobserved_nets";
+
 struct NormalizedGraph {
   std::map<int, NormNode> nodes;
   std::map<int, NormNet> nets;
@@ -70,6 +76,10 @@ struct NormalizedGraph {
   std::map<int, std::vector<std::string>> name_map;
   std::set<int> PIs;
   std::set<int> POs;
+  // Output bits that stay ports -- simulated, and in a scan LOC view still
+  // carrying a flop's captured state to the next frame -- but that nothing
+  // may observe: the top module's kUnobservedNetsAttr lists them.
+  std::set<int> unobserved;
   std::set<int> TPs;
   std::set<int> clocks;
   std::set<int> resets;

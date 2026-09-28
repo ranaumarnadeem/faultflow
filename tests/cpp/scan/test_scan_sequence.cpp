@@ -1,8 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 #include "helpers/test_helpers.hpp"
 #include "ir/compiled_graph/compiled_graph.hpp"
@@ -155,6 +157,37 @@ TEST_CASE("simulate_scan_protocol_faults detects capture fault on active D",
   REQUIRE(result.batches.front().lanes.size() == 1);
   REQUIRE(result.batches.front().lanes.front().outcome ==
           ScanProtocolFaultOutcome::PASS);
+}
+
+TEST_CASE("simulate_scan_protocol_faults ignores masked unload bits", "[scan]") {
+  ScanProtocolFaultRequest request;
+  request.pattern = tiny_scan_chain_request();
+  request.capture_diffs = true;
+  const uint32_t d0 = compiled_index_for_yosys_net("tiny_scan_chain.json", 5);
+  request.faults.push_back({d0, 0});  // SA0 on D0 while capture drives true
+  const auto run = [&]() {
+    return simulate_scan_protocol_faults(test::fixture_path("tiny_scan_chain.json"),
+                                         test::cell_map_path(), request, "fail");
+  };
+
+  const auto unmasked = run();
+  const auto& seen = unmasked.batches.front().lanes.front();
+  REQUIRE(seen.outcome == ScanProtocolFaultOutcome::PASS);
+  // The fault shows only at the unload bits it flips: mask exactly those.
+  const std::vector<bool>& diff = seen.diff_unload_seqs.at(0);
+  std::vector<bool> mask(diff.size());
+  for (size_t t = 0; t < diff.size(); ++t) {
+    mask[t] = !diff[t];
+  }
+  REQUIRE(std::count(mask.begin(), mask.end(), false) >= 1);
+  request.unload_mask[0] = mask;
+
+  const auto masked = run();
+  const auto& lane = masked.batches.front().lanes.front();
+  REQUIRE(lane.outcome == ScanProtocolFaultOutcome::NO_CAPTURE_OR_UNLOAD_EFFECT);
+  REQUIRE(lane.diff_unload_seqs.at(0) == std::vector<bool>(diff.size(), false));
+  // The mask changes what counts, never what is simulated.
+  REQUIRE(scan_observations_equal(unmasked.golden, masked.golden));
 }
 
 TEST_CASE(

@@ -791,9 +791,11 @@ py::dict simulate_scan_protocol_faults_py(
     const std::vector<std::string>& active_clock_ports,
     const std::string& test_mode = "", int sim_threads = 1,
     bool capture_diffs = false,
-    const std::vector<std::string>& blackbox_instances = {}) {
+    const std::vector<std::string>& blackbox_instances = {},
+    const std::map<int, std::vector<bool>>& unload_mask = {}) {
   scan::ScanProtocolFaultRequest request;
   request.capture_diffs = capture_diffs;
+  request.unload_mask = unload_mask;
   request.pattern.clock_ports = clock_ports;
   request.pattern.clock_off_states = clock_off_states;
   request.pattern.scan_enable_port = scan_enable_port;
@@ -1038,6 +1040,53 @@ py::dict compute_fault_structural_reasons(
   return out;
 }
 
+// atpg::combinational_reach from Yosys net IDs, answered in Yosys IDs:
+//   {"observable": sorted IDs of the observed nets the walk reaches,
+//    "flop_inputs": [(flop output net ID, pin), ...]}
+// where pin names the flop input slot the walk arrived at.
+py::dict combinational_reach_py(const std::string& json_path,
+                                const std::string& cell_map_path,
+                                const std::vector<int>& source_nets,
+                                const std::string& unsupported_policy,
+                                const std::vector<std::string>& blackbox_instances) {
+  static const char* const kFlopPins[] = {"data",    "clock",   "clear/enable",
+                                          "preset",  "scan_in", "scan_enable"};
+  const CachedGraph& graph = load_cached_graph(
+      json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  const CompiledSimGraph& cg = graph.cg;
+  std::vector<uint32_t> sources;
+  sources.reserve(source_nets.size());
+  for (int yid : source_nets) {
+    const auto it = cg.yosys_to_compiled.find(yid);
+    if (it == cg.yosys_to_compiled.end()) {
+      throw std::invalid_argument("combinational_reach: net " +
+                                  std::to_string(yid) + " is not in the netlist");
+    }
+    sources.push_back(static_cast<uint32_t>(it->second));
+  }
+  const atpg::CombinationalReach reach = atpg::combinational_reach(cg, sources);
+  std::vector<char> reached(static_cast<size_t>(cg.net_count), 0);
+  for (uint32_t net : reach.nets) {
+    reached[net] = 1;
+  }
+  std::vector<int> observable;
+  for (int cidx : cg.observable) {
+    if (reached[static_cast<size_t>(cidx)]) {
+      observable.push_back(cg.compiled_to_yosys[static_cast<size_t>(cidx)]);
+    }
+  }
+  std::sort(observable.begin(), observable.end());
+  py::list flop_inputs;
+  for (const auto& [node, slot] : reach.flop_inputs) {
+    flop_inputs.append(py::make_tuple(
+        cg.compiled_to_yosys[cg.nodes[node].out], kFlopPins[slot]));
+  }
+  py::dict out;
+  out["observable"] = observable;
+  out["flop_inputs"] = flop_inputs;
+  return out;
+}
+
 }  // namespace faultflow
 
 PYBIND11_MODULE(_faultflow_core, m) {
@@ -1231,7 +1280,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("active_clock_ports") = std::vector<std::string>{},
         py::arg("test_mode") = "", py::arg("sim_threads") = 1,
         py::arg("capture_diffs") = false,
-        py::arg("blackbox_instances") = std::vector<std::string>{});
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("unload_mask") = std::map<int, std::vector<bool>>{});
   m.def("list_site_keys", &faultflow::list_site_keys_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{});
@@ -1245,6 +1295,10 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("reconvergent_yosys_ids") = std::vector<int64_t>{});
+  m.def("combinational_reach", &faultflow::combinational_reach_py,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("source_nets"),
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("solve_xor_broadcast", &faultflow::solve_xor_broadcast_py,
         py::arg("num_channels"), py::arg("fanout"), py::arg("care_bits"));
 }

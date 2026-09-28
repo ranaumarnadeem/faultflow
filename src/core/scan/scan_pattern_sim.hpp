@@ -81,6 +81,12 @@ struct ScanProtocolFaultRequest {
   // observability check (faultflow.scan.detection_pipeline), which needs the
   // real diff to fold through the compactor's XOR fanout map.
   bool capture_diffs = false;
+  // Per chain, per unload offset: false where the good machine's unload bit
+  // is unknown -- a flop that captured a blackbox output's value, which no
+  // scan test knows (faultflow/scan/x_mask.py). A masked bit never counts as
+  // a detection and reads as no difference in diff_unload_seqs. A chain
+  // absent here, or an offset past its list, is compared; empty compares all.
+  std::map<int, std::vector<bool>> unload_mask;
 };
 
 struct ScanProtocolFaultLaneResult {
