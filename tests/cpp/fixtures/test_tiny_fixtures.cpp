@@ -34,6 +34,7 @@ const char* kTinyFixtures[] = {
     "tiny_chain.json",
     "tiny_reconverge.json",
     "tiny_const.json",
+    "tiny_po_fanout.json",
 };
 
 // OSU035-only fixtures (FAX1, HAX1): must use the OSU035 cell map explicitly.

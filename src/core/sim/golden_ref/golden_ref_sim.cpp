@@ -43,11 +43,17 @@ void broadcast_inputs(const CompiledSimGraph& cg, const TestCycle& cycle,
   }
 }
 
+// One value per Yosys net ID: the value of the net yosys_to_compiled names,
+// i.e. the stem. A fanout branch carries its stem's ID too
+// (graph_compiler.cpp append_branch_alias), so filling the map from every
+// compiled index let a stem's last branch overwrite it -- and a fault on that
+// branch then read as a change at the stem, a false detection whenever the
+// stem is observed (a PO that also feeds two or more gates).
 std::map<int, bool> snapshot(const CompiledSimGraph& cg,
                              const std::vector<bool>& values) {
   std::map<int, bool> out;
-  for (size_t i = 0; i < cg.compiled_to_yosys.size(); ++i) {
-    out[cg.compiled_to_yosys[i]] = values[i];
+  for (const auto& [yid, cidx] : cg.yosys_to_compiled) {
+    out[yid] = values[static_cast<size_t>(cidx)];
   }
   return out;
 }
@@ -360,11 +366,7 @@ std::map<int, bool> GoldenRefSim::simulate_fault_free(
 
   run_levels();
 
-  std::map<int, bool> out;
-  for (size_t i = 0; i < cg.compiled_to_yosys.size(); ++i) {
-    out[cg.compiled_to_yosys[i]] = values[i];
-  }
-  return out;
+  return snapshot(cg, values);
 }
 
 std::map<int, bool> GoldenRefSim::simulate_with_fault(
@@ -453,11 +455,7 @@ std::map<int, bool> GoldenRefSim::simulate_with_fault(
 
   run_levels();
 
-  std::map<int, bool> out;
-  for (size_t i = 0; i < cg.compiled_to_yosys.size(); ++i) {
-    out[cg.compiled_to_yosys[i]] = values[i];
-  }
-  return out;
+  return snapshot(cg, values);
 }
 
 namespace {
