@@ -154,8 +154,8 @@ There is no silent-skip option.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `chains` | `1` | Number of scan chains |
-| `max_chain_length` | (none) | Maximum flip-flops per chain; empty means unbounded |
+| `chains` | `1` | Number of scan chains. A chain never spans two clock domains, so a multi-clock design needs one per domain at least; flip-flops split as evenly as the count allows, and where that would straddle a domain boundary, each domain gets whole chains in proportion to its flip-flop count |
+| `max_chain_length` | (none) | Maximum flip-flops per chain; empty means unbounded. With `chains = 1`, the chain count becomes what keeps every chain within it, counted per clock domain |
 | `scan_in` | `scan_in` | Scan input port base name |
 | `scan_out` | `scan_out` | Scan output port base name |
 | `scan_enable` | `scan_en` | Scan enable port name |
