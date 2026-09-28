@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import fnmatch
+import itertools
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -521,19 +522,58 @@ def balanced_chain_lengths(ff_count: int, chain_count: int) -> list[int]:
     return [base + (1 if index < extra else 0) for index in range(chain_count)]
 
 
+def _domain_sizes(eligible: list[_EligibleFF]) -> list[int]:
+    """FF count per clock domain, in clock-net order: the order _build_plan
+    packs the domains into chains."""
+    counts: dict[int, int] = {}
+    for ff in eligible:
+        counts[ff.clock_net] = counts.get(ff.clock_net, 0) + 1
+    return [counts[net] for net in sorted(counts)]
+
+
+def _chains_per_domain(domain_sizes: list[int], chain_count: int) -> list[int]:
+    """Whole chains for each domain, `chain_count` in all: one each, then each
+    further chain to the domain whose chains are longest, which keeps the
+    longest chain as short as the count allows."""
+    counts = [1] * len(domain_sizes)
+    for _ in range(chain_count - len(domain_sizes)):
+        open_domains = [d for d, n in enumerate(domain_sizes) if counts[d] < n]
+        widest = max(open_domains, key=lambda d: domain_sizes[d] / counts[d])
+        counts[widest] += 1
+    return counts
+
+
+def chain_lengths(domain_sizes: list[int], chain_count: int) -> list[int]:
+    """Chain lengths, in packing order, for domains of `domain_sizes` FFs.
+
+    FFs split as evenly as the chain count allows (balanced_chain_lengths).
+    A chain may not span two clock domains, so when that split would straddle
+    a domain boundary, each domain instead gets whole chains -- in proportion
+    to its FF count -- split evenly within it."""
+    lengths = balanced_chain_lengths(sum(domain_sizes), chain_count)
+    chain_ends = set(itertools.accumulate(lengths))
+    if set(itertools.accumulate(domain_sizes)) <= chain_ends:
+        return lengths
+    counts = _chains_per_domain(domain_sizes, chain_count)
+    return [
+        length
+        for size, count in zip(domain_sizes, counts)
+        for length in balanced_chain_lengths(size, count)
+    ]
+
+
 def _chain_count_from_options(
-    ff_count: int, scan_chains: int, max_chain_length: int | None
+    domain_sizes: list[int], scan_chains: int, max_chain_length: int | None
 ) -> int:
+    """The chain count: `scan_chains`, or -- when only one chain was asked for
+    and `max_chain_length` is set -- as many as keep every chain within it.
+    Chains never span clock domains, so each domain counts on its own."""
     if scan_chains < 1:
         raise ScanError("scan_chains must be >= 1")
     if max_chain_length is not None and max_chain_length < 1:
         raise ScanError("max_chain_length must be >= 1")
-    if (
-        max_chain_length is not None
-        and scan_chains == 1
-        and ff_count > max_chain_length
-    ):
-        scan_chains = (ff_count + max_chain_length - 1) // max_chain_length
+    if max_chain_length is not None and scan_chains == 1:
+        scan_chains = max(1, sum(-(-n // max_chain_length) for n in domain_sizes))
     return scan_chains
 
 
@@ -556,19 +596,19 @@ def _build_plan(
             raise ScanError(f"no eligible FF cells found to stitch; reasons: {reasons}")
         raise ScanError("no eligible FF cells found to stitch")
     unique_clock_nets = sorted({ff.clock_net for ff in eligible})
-    # Sort FFs by (clock_net, instance) so all FFs of each domain are adjacent,
-    # which guarantees chain boundaries fall between domains (not across them).
+    # Sort FFs by (clock_net, instance) so all FFs of each domain are adjacent;
+    # chain_lengths then lets chain boundaries fall between domains, never
+    # across them.
     eligible = sorted(eligible, key=lambda ff: (ff.clock_net, ff.instance))
+    domain_sizes = _domain_sizes(eligible)
 
-    chain_count = _chain_count_from_options(
-        len(eligible), scan_chains, max_chain_length
-    )
+    chain_count = _chain_count_from_options(domain_sizes, scan_chains, max_chain_length)
     if chain_count < len(unique_clock_nets):
         raise ScanError(
             f"scan_chains ({chain_count}) must be >= number of clock domains "
             f"({len(unique_clock_nets)}) so each domain gets at least one chain"
         )
-    lengths = balanced_chain_lengths(len(eligible), chain_count)
+    lengths = chain_lengths(domain_sizes, chain_count)
     if max_chain_length is not None:
         for length in lengths:
             if length > max_chain_length:
@@ -757,6 +797,19 @@ def _build_wrapper_chains(
     return chains
 
 
+def scan_clock_domains(
+    netlist_json: Path, cell_map_json: Path, top: str
+) -> dict[int, int]:
+    """Scan-eligible FF count per clock net: the clock domains stitching
+    gives chains of their own."""
+    _, module = _top_module(_load_json(netlist_json), top)
+    eligible, _ = _collect_ffs(module, _load_json(cell_map_json))
+    counts: dict[int, int] = {}
+    for ff in eligible:
+        counts[ff.clock_net] = counts.get(ff.clock_net, 0) + 1
+    return counts
+
+
 def plan_scan_json(
     netlist_json: Path,
     cell_map_json: Path,
@@ -772,7 +825,7 @@ def plan_scan_json(
     top_name, module = _top_module(data, top)
     eligible, ineligible = _collect_ffs(module, cell_map)
     chain_count = _chain_count_from_options(
-        len(eligible), scan_chains, max_chain_length
+        _domain_sizes(eligible), scan_chains, max_chain_length
     )
     next_id = _next_net_id(module)
     scan_in_bits = [next_id + index for index in range(chain_count)]
@@ -908,7 +961,7 @@ def stitch_scan_json(
 
     eligible, ineligible = _collect_ffs(stitched_module, cell_map)
     chain_count = _chain_count_from_options(
-        len(eligible), scan_chains, max_chain_length
+        _domain_sizes(eligible), scan_chains, max_chain_length
     )
     next_id = _next_net_id(stitched_module)
     scan_in_bits = [next_id + index for index in range(chain_count)]
