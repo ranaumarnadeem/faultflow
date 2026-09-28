@@ -12,6 +12,7 @@ from faultflow.scan import ScanError, stitch_scan_json
 from faultflow.scan.atpg_view import (
     ATPG_VIEW_SCHEMA_VER,
     BLACKBOX_FREE_PORT_PREFIX,
+    BLACKBOX_INSTANCE_ATTR,
     BLACKBOX_OBSERVE_PORT_PREFIX,
     D_BRANCH_BUF_CELL,
     OBSERVE_BUF_CELL,
@@ -662,6 +663,13 @@ def test_blackbox_instance_is_modeled_opaque(with_scan_cells: bool) -> None:
         "$bbtie0_u_mem_dout_1": {"Y": [201]},
     }
     assert cells["$bbtie0_u_mem_dout_0"]["type"] == TIE0_CELL
+    # Each tie names the instance it stands in for, so x_mask can tell an
+    # unknown output from one asserted known ([blackbox] output_value).
+    assert all(
+        cell["attributes"][BLACKBOX_INSTANCE_ATTR] == "u_mem"
+        for name, cell in cells.items()
+        if name.startswith("$bbtie0_")
+    )
     assert cells["g0"]["connections"] == {"A": [200], "B": [201], "X": [300]}
     # The memory's input keeps a dangling, unobserved reader.
     reader = cells["$bbsink_u_mem_din_0"]

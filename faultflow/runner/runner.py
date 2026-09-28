@@ -67,6 +67,7 @@ from faultflow.scan.reports import (
     utc_timestamp,
     write_scan_artifacts,
 )
+from faultflow.scan.x_mask import XMask, launch_mode_key, mask_scan_view
 from faultflow.verify import IverilogVerifier, VerificationError
 
 log = logging.getLogger(__name__)
@@ -335,7 +336,7 @@ class Runner:
         return ensure_campaign(conn, self._campaign_type(scan), payload)
 
     def _config_fingerprint_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "top": self.cfg.top,
             "cell_lib": str(self.cfg.cell_lib),
             "fault_model": self.cfg.fault_model.model,
@@ -368,6 +369,14 @@ class Runner:
             "compaction_enabled": self.cfg.compaction.enabled,
             "compaction_channels": self.cfg.compaction.channels,
         }
+        if self.cfg.blackbox_output_values:
+            # What each blackbox outputs in a scan test (x or 0) decides what
+            # the test may observe (scan.x_mask). Keyed only with blackboxes, so
+            # a design without any keeps its config_hash.
+            payload["blackbox_output_values"] = [
+                list(pair) for pair in self.cfg.blackbox_output_values
+            ]
+        return payload
 
     def _rendered_yosys_script(self, source: Path | None = None) -> str:
         src = source or self._existing_verilog_source()
@@ -2263,6 +2272,37 @@ class Runner:
             f"report={txt_path} json={json_path}{purge_note}{clean_note}"
         )
 
+    def _mask_unknown_blackbox_outputs(
+        self,
+        view: dict[str, Any],
+        view_path: Path,
+        manifest: dict[str, Any],
+        generic_json: Path,
+        functional_output_order: list[str],
+    ) -> XMask:
+        """Mask, in the scan ATPG view on disk, every observation point an
+        unknown blackbox output reaches (scan.x_mask), for this campaign's
+        launch mode. Refuses a design where such an output reaches the scan
+        path itself."""
+        launch_mode = launch_mode_key(
+            self.cfg.fault_model.model == "transition", self.cfg.fault_model.launch
+        )
+        if not self.cfg.blackbox_x_instances:
+            return XMask(launch_mode=launch_mode)
+        core = _load_core()
+        if core is None:
+            raise RunnerError("C++ extension _faultflow_core is required")
+        return mask_scan_view(
+            core,
+            self.cfg,
+            view,
+            view_path,
+            manifest,
+            generic_json,
+            functional_output_order,
+            launch_mode=launch_mode,
+        )
+
     def _sim_scan(
         self,
         *,
@@ -2287,9 +2327,11 @@ class Runner:
         generic_json = Path(str(manifest["generic_json"]))
         # Blackbox instances are modeled opaque in the reduced view (outputs
         # tied to 0, inputs unobserved) so SAT and the reduced simulators see
-        # exactly what the scan protocol does; the view then contains none of
-        # them, so it loads with no blackbox list. The generic netlist keeps
-        # the real instances and still loads with cfg.blackbox_instances.
+        # exactly what the scan protocol does, and every observation point an
+        # output of unknown value reaches is masked (scan.x_mask). The view
+        # then contains none of them, so it loads with no blackbox list. The
+        # generic netlist keeps the real instances and still loads with
+        # cfg.blackbox_instances.
         view, pseudo_port_map = build_scan_atpg_view(
             _load_json_object(generic_json),
             manifest,
@@ -2337,6 +2379,10 @@ class Runner:
             for port in _port_names(netlist, self.cfg.top, "output", expand_buses=True)
             if not port.startswith("__ppo_")
         ]
+        # Before the fingerprint, which then hashes the masked view.
+        x_mask = self._mask_unknown_blackbox_outputs(
+            view, atpg_view_path, manifest, generic_json, functional_output_order
+        )
         scan_pipeline_ctx = build_scan_pipeline_context(
             self.cfg,
             manifest,
@@ -2346,6 +2392,7 @@ class Runner:
             wbr_stimulus_name_by_port=wbr_stimulus,
             wbr_observe_name_by_port=wbr_observe,
             wbr_decoupled_bits=wbr_decoupled,
+            x_mask=x_mask,
         )
 
         from faultflow.scan.atpg_view import ATPG_VIEW_SCHEMA_VER

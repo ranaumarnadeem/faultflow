@@ -70,20 +70,24 @@ def _per_node(conn: sqlite3.Connection, campaign_id: int) -> list[dict[str, Any]
 
 def _blackbox_boundary(fp: dict[str, Any], blackbox_instances: tuple[str, ...]) -> str:
     """How a blackboxed instance's boundary was modeled -- a documented coverage
-    assumption. A scan campaign models it opaque (outputs tied to 0, inputs
-    unobserved): the scan protocol can neither set a memory's outputs nor
-    observe its inputs (atpg_view._model_blackboxes_opaque). Combinational and
-    EXTEST campaigns model it as a test interface (inputs observable, outputs
-    controllable), parallel to scan pseudo-PI/PO."""
+    assumption. A scan campaign models it opaque: its inputs are unobserved,
+    and its outputs are whatever blackbox_output_values says -- unknown by
+    default, so no observation point they reach gets credit (scan.x_mask).
+    The scan protocol can neither set a memory's outputs, know them, nor
+    observe its inputs. Combinational and EXTEST campaigns model it as a test
+    interface (inputs observable, outputs controllable), parallel to scan
+    pseudo-PI/PO."""
     if not blackbox_instances:
         return "none"
     return "opaque" if fp.get("campaign_type") == "scan" else "pseudo_port"
 
 
 def _policy(
-    fp: dict[str, Any], blackbox_instances: tuple[str, ...] = ()
+    fp: dict[str, Any],
+    blackbox_instances: tuple[str, ...] = (),
+    blackbox_output_values: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, Any]:
-    return {
+    policy: dict[str, Any] = {
         "unsupported_cells": fp.get("unsupported_cells", "fail"),
         "include_clock_faults": bool(fp.get("include_clock_faults", 0)),
         "include_reset_faults": bool(fp.get("include_reset_faults", 0)),
@@ -91,6 +95,11 @@ def _policy(
         "blackbox_instances": list(blackbox_instances),
         "blackbox_boundary": _blackbox_boundary(fp, blackbox_instances),
     }
+    if policy["blackbox_boundary"] == "opaque":
+        # What each opaque blackbox's outputs hold in the scan test: "x"
+        # (unknown) or "0" ([blackbox] output_value).
+        policy["blackbox_output_values"] = dict(blackbox_output_values)
+    return policy
 
 
 def _sat_outcomes(conn: sqlite3.Connection, campaign_id: int) -> dict[int, str]:
@@ -498,7 +507,7 @@ def write_reports(
             "config_hash": fp.get("config_hash", ""),
             "template_hash": fp.get("template_hash", ""),
         },
-        "policy": _policy(fp, cfg.blackbox_instances),
+        "policy": _policy(fp, cfg.blackbox_instances, cfg.blackbox_output_values),
         "summary": data,
         "run": _latest_run(conn, campaign_id),
         "per_node": per_node,

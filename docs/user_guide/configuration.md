@@ -187,7 +187,8 @@ one-shot from the CLI with `add-clock`).
 
 | Key | Format | Meaning |
 |---|---|---|
-| `instances` | comma list, e.g. `u_sram, u_pll` | Instances modeled as test boundaries (pseudo-PI/PO). Scan runs model them opaque instead: outputs tied to 0, inputs unobserved, since a scan test can neither set nor observe them |
+| `instances` | comma list, e.g. `u_sram, u_pll` | Instances modeled as test boundaries (pseudo-PI/PO). Scan runs model them opaque instead: a scan test can neither set, know nor observe them, so their inputs are unobserved and their outputs hold `output_value` |
+| `output_value` | `x` or `0`, plus per-instance `inst:x` / `inst:0` overrides, e.g. `x, u_rom:0` | Scan runs only: what an instance's outputs hold during the scan test. `x` (the default) is unknown, like an SRAM's output, which holds whatever it last read: every scan flop capture and primary output it reaches combinationally (for launch-on-capture, also through a flop that captured it at launch) gets no detection credit and is don't-care in exported patterns. Faults seen only there count as `blackbox_unresolved`. `0` asserts the design holds the output at 0 in test mode. An unknown output that reaches a scan flop's clock, scan-in or scan-enable is an error |
 
 ## `[testmode]`
 

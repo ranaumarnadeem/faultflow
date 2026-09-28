@@ -376,6 +376,11 @@ class FaultflowConfig:
     output_root: Path = Path("output")
     clocks: tuple[ClockSpec, ...] = ()
     blackbox_instances: tuple[str, ...] = ()
+    # [blackbox] output_value: (instance, value) for each listed instance --
+    # what its outputs hold during a scan test. "x" (the default): unknown,
+    # so every observation point they reach is masked (scan.x_mask). "0": the
+    # design guarantees 0, e.g. gated in test mode.
+    blackbox_output_values: tuple[tuple[str, str], ...] = ()
     testpoint: TestpointConfig = TestpointConfig()
     # IEEE 1500 wrapper test mode: "functional" | "intest" | "extest". INTEST and
     # EXTEST reconfigure the wrapper boundary control/observe points, so they are
@@ -386,6 +391,12 @@ class FaultflowConfig:
     # adds the wrapper boundary register as a real scan chain — control/observe
     # points and fault sites differ, so it is part of the fingerprint.
     wbr_model: str = "scan"
+
+    @property
+    def blackbox_x_instances(self) -> tuple[str, ...]:
+        """The blackbox instances whose outputs are unknown in a scan test."""
+        values = dict(self.blackbox_output_values)
+        return tuple(i for i in self.blackbox_instances if values.get(i, "x") == "x")
 
     @property
     def output_dir(self) -> Path:
@@ -606,6 +617,57 @@ def _parse_blackbox(parser: ConfigParser) -> tuple[str, ...]:
     return tuple(instances)
 
 
+def _blackbox_output_value(value: str) -> str:
+    value = value.strip().lower()
+    if value == "1":
+        raise ConfigError(
+            "[blackbox] output_value 1 is not supported yet: the scan protocol "
+            "simulator holds an undriven blackbox output at 0"
+        )
+    if value not in {"x", "0"}:
+        raise ConfigError(f"[blackbox] output_value must be x or 0, got '{value}'")
+    return value
+
+
+def _parse_blackbox_output_values(
+    parser: ConfigParser, instances: tuple[str, ...]
+) -> tuple[tuple[str, str], ...]:
+    """Parse ``[blackbox] output_value``: what each listed instance's outputs
+    hold during a scan test. A bare value sets the default for every
+    instance; ``<instance>:<value>`` overrides it for one::
+
+        output_value = x, u_rom:0
+
+    ``x`` (the default) is unknown, like an SRAM's output, which holds its
+    last read; ``0`` asserts the design holds the output at 0 in test mode.
+    """
+    raw = parser.get("blackbox", "output_value", fallback="").strip()
+    if not raw:
+        return tuple((inst, "x") for inst in instances)
+    if not instances:
+        raise ConfigError("[blackbox] output_value needs [blackbox] instances")
+    default: str | None = None
+    overrides: dict[str, str] = {}
+    for item in (part.strip() for part in raw.split(",")):
+        if not item:
+            continue
+        inst, sep, value = item.rpartition(":")
+        if not sep:
+            if default is not None:
+                raise ConfigError("[blackbox] output_value gives two defaults")
+            default = _blackbox_output_value(item)
+            continue
+        inst = inst.strip()
+        if inst not in instances:
+            raise ConfigError(
+                f"[blackbox] output_value names '{inst}', which is not in instances"
+            )
+        if inst in overrides:
+            raise ConfigError(f"[blackbox] output_value repeats '{inst}'")
+        overrides[inst] = _blackbox_output_value(value)
+    return tuple((inst, overrides.get(inst, default or "x")) for inst in instances)
+
+
 def _verilog_models(parser: ConfigParser) -> Path:
     value = parser.get("simulation", "verilog_models", fallback="").strip()
     if not value:
@@ -681,6 +743,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
 
     clocks = _parse_clocks(parser)
     blackbox_instances = _parse_blackbox(parser)
+    blackbox_output_values = _parse_blackbox_output_values(parser, blackbox_instances)
 
     test_mode = parser.get("testmode", "mode", fallback="functional").strip().lower()
     if test_mode not in {"functional", "intest", "extest"}:
@@ -756,6 +819,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         compaction=_compaction_config(parser),
         clocks=clocks,
         blackbox_instances=blackbox_instances,
+        blackbox_output_values=blackbox_output_values,
         testpoint=TestpointConfig(
             opentest=Path(parser.get("testpoint", "opentest", fallback="opentest")),
             metric=parser.get("testpoint", "metric", fallback="scoap"),

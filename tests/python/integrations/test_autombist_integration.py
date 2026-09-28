@@ -18,8 +18,10 @@ checked-in manifest+companion-data fixture directory in this codebase.
 from __future__ import annotations
 
 import json
+import random
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -57,7 +59,9 @@ def test_blackbox_design_runs_the_full_scan_flow_under_the_default_policy(
     scan-check) was unreachable for every design with a blackbox. And once it
     ran, SAT and the fault simulator disagreed about the memory's outputs:
     every undetected fault must now be classified blackbox_unresolved in the
-    first round, not retried round after round."""
+    first round, not retried round after round. Finally, the memory's output
+    is unknown to a scan test, so no compared bit of an exported pattern may
+    depend on it."""
     if shutil.which("yosys") is None:
         pytest.skip("yosys is not available")
     from faultflow.cli import main
@@ -82,7 +86,13 @@ def test_blackbox_design_runs_the_full_scan_flow_under_the_default_policy(
             )
 
     monkeypatch.chdir(tmp_path)
-    for step in (["init"], ["scan"], ["scan-check"], ["sim", "--scan"]):
+    patterns = tmp_path / "patterns.json"
+    for step in (
+        ["init"],
+        ["scan"],
+        ["scan-check"],
+        ["sim", "--scan", "--export-patterns", str(patterns)],
+    ):
         assert main([*step, "--top", top, "-c", str(ofs)]) == 0, step
     assert "scan-check PASS" in capsys.readouterr().out
 
@@ -101,11 +111,123 @@ def test_blackbox_design_runs_the_full_scan_flow_under_the_default_policy(
     assert summary["denominator"] > 0
     assert summary["detected"] > 0
     assert summary["blackbox_unresolved"] > 0
-    assert summary["undetected"] == summary["blackbox_unresolved"]
+    # The one flop that captures the memory's output does so at the LOC launch
+    # edge too, so its state after launch is unknown and no transition at its
+    # Q can be credited: its two Q-stem faults stay protocol_unresolved. Every
+    # other undetected fault is blackbox_unresolved.
+    assert summary["protocol_unresolved"] == (2 if launch == "loc" else 0)
+    assert (
+        summary["undetected"]
+        == summary["blackbox_unresolved"] + summary["protocol_unresolved"]
+    )
     assert report["run"]["atpg_terminal_reason"] == "COMPLETE"
     assert report["run"]["atpg_rounds"] == 1
     assert report["policy"]["blackbox_instances"] == ["u_sram"]
     assert report["policy"]["blackbox_boundary"] == "opaque"
+    assert report["policy"]["blackbox_output_values"] == {"u_sram": "x"}
+
+    # An exported LOS pattern doesn't carry its launch-shift scan-in bits, so
+    # only stuck-at and LOC patterns can be replayed from the file.
+    if launch != "los":
+        _assert_unload_independent_of_memory(
+            load_config(ofs, top), patterns, loc=launch == "loc"
+        )
+
+
+def _assert_unload_independent_of_memory(
+    cfg: Any, patterns_path: Path, *, loc: bool
+) -> None:
+    """A scan test can't know what the memory outputs, so no compared bit of
+    an exported pattern may depend on it: replayed through the scan protocol
+    with the memory's outputs forced to 1, and to random per-bit values, every
+    bit the pattern's unload_mask compares must come out as expected."""
+    from faultflow.runner.runner import _load_core, _port_name_for_net
+    from faultflow.scan.cell_map import resolve_scan_cell_map
+    from faultflow.scan.manifest import manifest_clock_net_ids
+    from faultflow.scan.pattern_export import scan_pattern_from_dict
+
+    core = _load_core()
+    assert core is not None
+    top = cfg.top
+    manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+    scan_json = Path(str(manifest["generic_json"]))
+    design = json.loads(scan_json.read_text(encoding="utf-8"))
+    memory = design["modules"][top]["cells"]["u_sram"]
+    outputs = sorted(
+        bit
+        for pin, bits in memory["connections"].items()
+        if memory["port_directions"][pin] == "output"
+        for bit in bits
+        if isinstance(bit, int)
+    )
+    cell_map = str(resolve_scan_cell_map(cfg))
+    clock_ports = [
+        _port_name_for_net(scan_json, top, net, "input")
+        for net in manifest_clock_net_ids(manifest)
+    ]
+
+    def forced(values: dict[int, str], name: str) -> Path:
+        """The scanned netlist with the memory replaced by constants."""
+        copy = json.loads(json.dumps(design))
+        module = copy["modules"][top]
+        del module["cells"]["u_sram"]
+
+        def sub(bits: list[Any]) -> list[Any]:
+            return [values.get(b, b) if isinstance(b, int) else b for b in bits]
+
+        for cell in module["cells"].values():
+            cell["connections"] = {p: sub(b) for p, b in cell["connections"].items()}
+        for table in ("ports", "netnames"):
+            for entry in module[table].values():
+                entry["bits"] = sub(entry["bits"])
+        path = patterns_path.with_name(f"{name}.json")
+        path.write_text(json.dumps(copy), encoding="utf-8")
+        return path
+
+    def replay(netlist: Path, pattern: Any, blackboxes: list[str]) -> dict:
+        result = core.simulate_scan_pattern(
+            str(netlist),
+            cell_map,
+            clock_ports,
+            scan_enable_port=str(manifest["scan_enable"]),
+            scan_input_ports=[str(p) for p in manifest["scan_inputs"]],
+            scan_output_ports=[str(p) for p in manifest["scan_outputs"]],
+            functional_output_ports=[],
+            max_chain_length=int(manifest["max_chain_length"]),
+            load_seqs=pattern.load_seqs,
+            capture_pi_values=pattern.capture_pi_values,
+            unsupported_policy="fail",
+            loc_two_capture=loc,
+            blackbox_instances=blackboxes,
+        )
+        return {int(k): list(v) for k, v in dict(result["unload_seqs"]).items()}
+
+    rng = random.Random(0)
+    variants = [forced({b: "1" for b in outputs}, "memory_ones")] + [
+        forced({b: rng.choice("01") for b in outputs}, f"memory_random{i}")
+        for i in range(4)
+    ]
+    patterns = [
+        scan_pattern_from_dict(d)
+        for d in json.loads(patterns_path.read_text(encoding="utf-8"))
+    ]
+    assert patterns
+    masked = 0
+    for pattern in patterns:
+        # The unchanged netlist, whose memory the protocol reads as 0,
+        # reproduces every expected bit, masked ones included.
+        assert replay(scan_json, pattern, ["u_sram"]) == pattern.expected_unload
+        care = pattern.unload_mask or {}
+        masked += sum(not c for bits in care.values() for c in bits)
+        for netlist in variants:
+            got = replay(netlist, pattern, [])
+            for chain, expected in pattern.expected_unload.items():
+                compared = care.get(chain, [True] * len(expected))
+                assert [g for g, c in zip(got[chain], compared) if c] == [
+                    e for e, c in zip(expected, compared) if c
+                ], (netlist.name, chain)
+    # The memory does reach a scan flop here, so some bits are don't-care.
+    assert masked > 0
 
 
 @pytest.mark.integration

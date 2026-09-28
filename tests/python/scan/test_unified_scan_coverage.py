@@ -442,8 +442,14 @@ def _add_blackbox_memory(module: dict[str, Any]) -> str:
 
 
 def _tiny_dff_scan_workspace(
-    tmp_path: Path, *, wbr_model: str = "scan", with_memory: bool = False
+    tmp_path: Path,
+    *,
+    wbr_model: str = "scan",
+    with_memory: bool = False,
+    launch_mode: str | None = None,
 ) -> tuple[Any, Path, Path, ScanPipelineContext, dict[str, object]]:
+    """`launch_mode` (x_mask.launch_mode_key: None for stuck-at) is the mode
+    the memory's X mask is computed for."""
     from faultflow.config import load_config
     from faultflow.scan import stitch_scan_json
     from faultflow.scan.reports import hash_file, manifest_from_result, utc_timestamp
@@ -533,8 +539,23 @@ wbr_model = {wbr_model}
         for port in _port_names(atpg_view, cfg.top, "output")
         if not port.startswith("__ppo_")
     ]
+    x_mask = None
+    if with_memory:
+        from faultflow.runner.runner import _load_core
+        from faultflow.scan.x_mask import mask_scan_view
+
+        x_mask = mask_scan_view(
+            _load_core(),
+            cfg,
+            view,
+            atpg_view,
+            manifest,
+            generic,
+            functional_outputs,
+            launch_mode=launch_mode,
+        )
     scan_ctx = build_scan_pipeline_context(
-        cfg, manifest, generic, pseudo_port_map, functional_outputs
+        cfg, manifest, generic, pseudo_port_map, functional_outputs, x_mask=x_mask
     )
     fp = {
         "top": cfg.top,
@@ -2065,11 +2086,12 @@ _CONSTANT_AT_ITS_VALUE = {("net:-1:stem", "sa0"), ("net:-2:stem", "sa1")}
     [
         (
             None,
-            {
-                ("net:6:stem", "sa0"),  # dout s-a-0: excited only by dout = 1
-                ("net:7:stem", "sa0"),  # Y = dout & A is 1 only if dout = 1
-            }
-            | _both("net:5:stem")  # A propagates only while dout = 1
+            # Y = dout & A is the only point dout, Y and A reach, and a scan
+            # test doesn't know dout: Y is unobserved. With dout tied to 0,
+            # dout s-a-1 and Y s-a-1 used to read as detected at Y.
+            _both("net:6:stem")
+            | _both("net:7:stem")
+            | _both("net:5:stem")
             | (_MEMORY_INPUT_SIDE - _CONSTANT_AT_ITS_VALUE),
             _CONSTANT_AT_ITS_VALUE,
         ),
@@ -2094,20 +2116,20 @@ def test_unsat_only_because_of_a_blackbox_is_blackbox_unresolved(
     expected_blocked: set[tuple[str, str]],
     expected_redundant: set[tuple[str, str]],
 ) -> None:
-    """The scan view makes the memory opaque -- its output tied to 0 and its
-    inputs unobserved, which is what the scan protocol sees -- so a fault that
-    needs dout = 1, or that only the memory's input sees, is UNSAT. It is not
-    redundant, though: the UNSAT branch re-solves it on the
-    blackbox-transparent twin, finds a test, and marks it blackbox_unresolved
-    (Tessent's AU.BB) -- undetected, counted in the denominator, and never
-    retried. Only a fault untestable whatever the memory does stays redundant.
+    """The scan view makes the memory opaque -- its inputs unobserved, and its
+    output unknown, so Y, which it reaches, is unobserved too -- so a fault
+    only Y or the memory's input sees is UNSAT. It is not redundant, though:
+    the UNSAT branch re-solves it on the blackbox-transparent twin, finds a
+    test, and marks it blackbox_unresolved (Tessent's AU.BB) -- undetected,
+    counted in the denominator, and never retried. Only a fault untestable
+    whatever the memory does stays redundant.
 
     The LOC case also pins that the twin's free dout port is not held between
     the launch and capture frames the way a real PI is: held, dout could never
     transition and its faults would be misfiled as redundant."""
     monkeypatch.chdir(tmp_path)
     cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(
-        tmp_path, with_memory=True
+        tmp_path, with_memory=True, launch_mode=launch_mode
     )
     with connect(cfg.db_path) as conn:
         init_schema(conn)

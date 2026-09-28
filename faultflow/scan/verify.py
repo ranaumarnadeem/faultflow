@@ -118,9 +118,16 @@ def verify_golden_scan_protocol(
                 f"port={port} expected={expected} actual={actual}"
             )
 
+    # A masked bit is don't-care: a flop that captured a blackbox output's
+    # unknown value (ScanPattern.unload_mask).
+    unload_mask = pattern.unload_mask or {}
     for chain_id, expected_bits in pattern.expected_unload.items():
         actual_bits = unload_seqs.get(chain_id, [])
-        if actual_bits != expected_bits:
+        care = unload_mask.get(chain_id, [])
+        if len(actual_bits) != len(expected_bits) or any(
+            actual != expected and (k >= len(care) or care[k])
+            for k, (actual, expected) in enumerate(zip(actual_bits, expected_bits))
+        ):
             raise RunnerError(
                 "golden scan protocol mismatch on unload sequence "
                 f"vector_index={vector_index} fault_id={fault_id} "

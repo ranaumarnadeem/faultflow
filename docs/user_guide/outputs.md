@@ -43,7 +43,7 @@ Its top-level structure is:
 | Section | Contents |
 |---|---|
 | `metadata` | Tool/run identity and input fingerprints |
-| `policy` | The active policies (collapsing, clock/reset inclusion, unsupported-cell mode) |
+| `policy` | The active policies (collapsing, clock/reset inclusion, unsupported-cell mode, how `[blackbox]` instances were modeled and, for scan, what their outputs hold) |
 | `summary` | The coverage and fault-count totals (see below) |
 | `run` | Per-run statistics, including ATPG round counts and timing |
 | `per_node` | Per-net fault counts and detection status |
@@ -64,7 +64,7 @@ Its top-level structure is:
 | `excluded_clock` | Clock-net faults (unless `include_clock_faults`) |
 | `excluded_reset` | Reset-net faults (unless `include_reset_faults`) |
 | `excluded_scan`, `excluded_scan_internal`, `excluded_scan_chain` | Scan-cell-internal and scan-path-only faults (scan campaigns) |
-| `blackbox_unresolved` | Scan campaigns: faults, counted in `undetected`, that have a test only if a `[blackbox]` instance could be driven or observed, which no scan test can do (Tessent's AU.BB) |
+| `blackbox_unresolved` | Scan campaigns: faults, counted in `undetected`, that have a test only if a `[blackbox]` instance could be driven, observed or known, which no scan test can do (Tessent's AU.BB) |
 | `test_coverage_percent` | `detected / denominator x 100` — credits proven-redundant faults by removing them from the denominator; the **headline** figure |
 | `fault_coverage_percent` | `detected / structural_eligible x 100` — counts proven-redundant faults against you; the **conservative** figure |
 | `coverage_percent` | The headline coverage figure (equal to `test_coverage_percent`) |
@@ -90,7 +90,10 @@ practice it is rarely present — don't rely on it as a routine deliverable.
 The reliable ways to get generated vectors out are the campaign database
 (`faultflow.sqlite`) and `coverage_report.json` below, or
 `sim --scan --export-patterns PATH` — a distinct, JSON-format mechanism (see
-[Running without the shell](running_without_shell.md)). External vectors supplied
+[Running without the shell](running_without_shell.md)). When a `[blackbox]`
+output of unknown value reaches a scan flop, each exported pattern carries an
+`unload_mask` parallel to `expected_unload` (per chain, `true` = compare): a
+`false` bit is don't-care, since that flop captured the unknown value. External vectors supplied
 with `sim --ext` use the same plain-text format as `patterns.test` and require a
 same-stem `.bench` sidecar that fixes the primary-input order.
 

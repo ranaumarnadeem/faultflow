@@ -51,6 +51,13 @@ BLACKBOX_TIE_PREFIX = "$bbtie0_"
 BLACKBOX_SINK_PREFIX = "$bbsink_"
 BLACKBOX_FREE_PORT_PREFIX = "__bbfree_"
 BLACKBOX_OBSERVE_PORT_PREFIX = "__bbobs_"
+# Each tie cell's attribute naming the blackbox instance it stands in for.
+BLACKBOX_INSTANCE_ATTR = "faultflow_blackbox"
+# Top-module attribute of a scan ATPG view: space-separated net ids of output
+# bits nothing may observe (x_mask.py). Mirrors kUnobservedNetsAttr in
+# src/core/ir/normalized_graph/normalized_graph.hpp, which drops them from
+# every simulator's and SAT miter's observable set.
+UNOBSERVED_NETS_ATTR = "faultflow_unobserved_nets"
 
 
 def _ppi_name(instance: str) -> str:
@@ -564,9 +571,11 @@ def _parsed_net(bit: object) -> object:
 def _model_blackboxes_opaque(module: dict[str, Any], instances: Sequence[str]) -> None:
     """Replace each blackbox instance with what a scan test can see of it:
     nothing. Its outputs are tied to constant 0 -- the value the scan protocol
-    simulator already reads from an undriven blackbox output, since no scan
-    test can control a memory's output -- and its inputs are left unobserved,
-    since no scan test can observe them either.
+    simulator already reads from an undriven blackbox output -- and its inputs
+    are left unobserved, since no scan test can observe them. A scan test
+    can't know a memory's output either, so the tie is only a placeholder a
+    two-valued simulator needs: x_mask.py masks every observation point it
+    can reach.
 
     The reduced view is what SAT and every reduced-view simulator run on, and
     it must see exactly what the full scan protocol does. Left as a boundary
@@ -602,7 +611,10 @@ def _model_blackboxes_opaque(module: dict[str, Any], instances: Sequence[str]) -
                         "hide_name": 0,
                         "type": TIE0_CELL,
                         "parameters": {},
-                        "attributes": {"faultflow_internal": "1"},
+                        "attributes": {
+                            "faultflow_internal": "1",
+                            BLACKBOX_INSTANCE_ATTR: inst,
+                        },
                         "port_directions": {"Y": "output"},
                         "connections": {"Y": [bit]},
                     }
@@ -626,17 +638,19 @@ def _model_blackboxes_opaque(module: dict[str, Any], instances: Sequence[str]) -
 def make_blackbox_transparent(view: dict[str, Any], top: str) -> bool:
     """Turn an opaque scan ATPG view into its blackbox-transparent twin, in
     place: every blackbox tie cell becomes a buffer fed by its own new input
-    port, so SAT may give each blackbox output any value, and every blackbox
-    input's reader drives a new output port, so SAT may observe it. Returns
-    False, leaving the view untouched, if the view models no blackbox.
+    port, so SAT may give each blackbox output any value; every blackbox
+    input's reader drives a new output port, so SAT may observe it; and the
+    points x_mask.py left unobserved, because a blackbox output's unknown
+    value reaches them, are observed again. Returns False, leaving the view
+    untouched, if the view models no blackbox.
 
-    Only ties and new ports change, so every fault site keeps its site key. A
-    fault UNSAT in the view but SAT in its twin has a test only if a blackbox
-    could be driven or observed, which no scan test can do: it is untestable
-    because of the blackbox (Tessent's AU.BB), not redundant. UNSAT in both,
-    it is redundant whatever the blackbox does. The twin serves that
-    classification alone -- no pattern found on it is a pattern the scan
-    protocol can apply.
+    Only ties, ports and the mask change, so every fault site keeps its site
+    key. A fault UNSAT in the view but SAT in its twin has a test only if a
+    blackbox could be driven, observed or known, which no scan test can do:
+    it is untestable because of the blackbox (Tessent's AU.BB), not
+    redundant. UNSAT in both, it is redundant whatever the blackbox does. The
+    twin serves that classification alone -- no pattern found on it is a
+    pattern the scan protocol can apply.
     """
     _, module = _top_module(view, top)
     cells = module.get("cells", {})
@@ -644,6 +658,9 @@ def make_blackbox_transparent(view: dict[str, Any], top: str) -> bool:
     sinks = sorted(name for name in cells if name.startswith(BLACKBOX_SINK_PREFIX))
     if not ties and not sinks:
         return False
+    attributes = module.get("attributes")
+    if isinstance(attributes, dict):
+        attributes.pop(UNOBSERVED_NETS_ATTR, None)
     ports = module.setdefault("ports", {})
     netnames = module.setdefault("netnames", {})
 

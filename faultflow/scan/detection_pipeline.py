@@ -52,7 +52,7 @@ from faultflow.scan.atpg_view import (
 )
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.manifest import manifest_clock_net_ids
-from faultflow.scan.stitch import SCAN_CELL_TYPES
+from faultflow.scan.stitch import SCAN_CELL_TYPES, _top_module
 from faultflow.scan.protocol import ScanPattern, serialize_vector
 from faultflow.scan.domain_reach import (
     compute_cross_domain_net_ids,
@@ -74,6 +74,12 @@ from faultflow.scan.ring_generator import (
     lookup_polynomial,
 )
 from faultflow.scan.verify import reduced_protocol_matches
+from faultflow.scan.x_mask import (
+    XMask,
+    launch_mode_key,
+    recorded_x_mask,
+    x_source_nets,
+)
 from faultflow.testpoint.preflight import PreflightData, run_preflight
 
 log = logging.getLogger(__name__)
@@ -131,6 +137,10 @@ class ScanPipelineContext:
     # candidate -- a real cost at scale (the "Python per-candidate JSON
     # re-parse in _protocol_fault_sim_kwargs" lever from cva6_perf_roadmap.md).
     clock_ports: list[str] = field(default_factory=list)
+    # The observation points a blackbox output's unknown value reaches, for
+    # this campaign's launch mode (faultflow.scan.x_mask): no detection credit,
+    # no SAT target, don't-care in every pattern. Empty without blackboxes.
+    x_mask: XMask = XMask()
 
 
 @dataclass
@@ -193,6 +203,7 @@ def build_scan_pipeline_context(
     wbr_stimulus_name_by_port: dict[str, str] | None = None,
     wbr_observe_name_by_port: dict[str, str] | None = None,
     wbr_decoupled_bits: frozenset[int] | None = None,
+    x_mask: XMask | None = None,
 ) -> ScanPipelineContext:
     q_stems = {
         str(entry["boundary"]["q_stem_site_key"])
@@ -260,7 +271,37 @@ def build_scan_pipeline_context(
         compression_care_bit_rows=compression_care_bit_rows,
         compaction_map=compaction_map,
         clock_ports=clock_ports,
+        x_mask=x_mask if x_mask is not None else XMask(),
     )
+
+
+def _require_x_mask(
+    scan_ctx: ScanPipelineContext, reduced_json_path: str, mode: str | None
+) -> None:
+    """The view SAT and every reduced simulator run on must mask exactly what
+    scan_ctx.x_mask says, computed for this campaign's launch mode. A view
+    with an unknown blackbox output and no mask would silently credit
+    detections that depend on the memory's content."""
+    x_instances = scan_ctx.cfg.blackbox_x_instances
+    if not x_instances:
+        return
+    top = str(scan_ctx.manifest["top"])
+    view = json.loads(Path(reduced_json_path).read_text(encoding="utf-8"))
+    _, module = _top_module(view, top)
+    if not x_source_nets(module, x_instances):
+        return
+    recorded = recorded_x_mask(view, top)
+    if recorded is None:
+        raise ScanError(
+            "the scan ATPG view has blackbox outputs of unknown value but no X "
+            "mask (faultflow.scan.x_mask.compute_x_mask)"
+        )
+    if recorded != scan_ctx.x_mask.nets or scan_ctx.x_mask.launch_mode != mode:
+        raise ScanError(
+            "the scan ATPG view's X mask does not match the scan context's, or "
+            f"was computed for launch mode {scan_ctx.x_mask.launch_mode!r}, not "
+            f"{mode!r}"
+        )
 
 
 def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_FaultRow]:
@@ -437,10 +478,11 @@ def _protocol_fault_sim_kwargs(
         if rename
         else pattern.capture_pi_values
     )
+    # No credit where a blackbox output's unknown value lands: its functional
+    # outputs aren't compared, nor its unload bits (pattern.unload_mask).
+    observed_outputs = _observed_outputs(ctx)
     gate_output_ports = (
-        [obs_map.get(p, p) for p in ctx.functional_output_order]
-        if obs_map
-        else ctx.functional_output_order
+        [obs_map.get(p, p) for p in observed_outputs] if obs_map else observed_outputs
     )
     return {
         "clock_ports": ctx.clock_ports,
@@ -452,7 +494,35 @@ def _protocol_fault_sim_kwargs(
         "load_seqs": pattern.load_seqs,
         "capture_pi_values": gate_pi_values,
         "blackbox_instances": list(ctx.cfg.blackbox_instances),
+        "unload_mask": pattern.unload_mask or {},
     }
+
+
+def _launch_known(ctx: ScanPipelineContext, row: _FaultRow) -> bool:
+    """False for a Q-stem of a flop that captures a blackbox output's unknown
+    value at the launch-on-capture launch edge: its state after launch is
+    unknown, so whether its Q makes a transition is too, and no test may be
+    credited with one."""
+    return ctx.q_stem_to_ppo.get(row.fault_site_key) not in ctx.x_mask.launch_ppo_ports
+
+
+def _observed_outputs(ctx: ScanPipelineContext) -> list[str]:
+    """The functional outputs a test may compare: all but the ones a blackbox
+    output's unknown value reaches."""
+    return [p for p in ctx.functional_output_order if p not in ctx.x_mask.outputs]
+
+
+def _serialize(
+    ctx: ScanPipelineContext, serialize_input: dict[str, bool]
+) -> ScanPattern:
+    """serialize_vector, with the X-masked expected bits marked don't-care."""
+    return serialize_vector(
+        serialize_input,
+        ctx.pseudo_port_map,
+        ctx.manifest,
+        masked_ppo_ports=ctx.x_mask.ppo_ports,
+        masked_outputs=ctx.x_mask.outputs,
+    )
 
 
 def _reject_compression_unsatisfiable(
@@ -647,13 +717,24 @@ def _compaction_diff_observable(
     diff_unload_seqs: dict[int, list[bool]],
     fanout: list[list[int]],
     max_chain_length: int,
+    unload_mask: dict[int, list[bool]] | None = None,
 ) -> bool:
     """Pure GF(2) evaluation, no simulation, no C++ call, no solve (there is
     nothing to search for -- the diff is already known). True iff at least
     one compacted output bit (fanout[o] = chain indices XORed into output o)
-    differs from golden at at least one cycle."""
+    differs from golden at at least one cycle. A compacted bit that folds in
+    a chain bit `unload_mask` leaves don't-care is itself unknown -- the XOR
+    of an unknown value -- so it can't show a difference."""
+    mask = unload_mask or {}
+
+    def known(chain_id: int, cycle: int) -> bool:
+        bits = mask.get(chain_id)
+        return bits is None or cycle >= len(bits) or bits[cycle]
+
     for cycle in range(max_chain_length):
         for row in fanout:
+            if not all(known(chain_id, cycle) for chain_id in row):
+                continue
             bit = False
             for chain_id in row:
                 bits = diff_unload_seqs.get(chain_id)
@@ -840,7 +921,12 @@ def _check_compaction_distinguishable(
                 ).items()
             }
             if not _fault_has_raw_scan_diff(diff_unload_seqs) or (
-                _compaction_diff_observable(diff_unload_seqs, fanout, max_chain_length)
+                _compaction_diff_observable(
+                    diff_unload_seqs,
+                    fanout,
+                    max_chain_length,
+                    scan_pattern.unload_mask,
+                )
             ):
                 observable.add(fault_id)
 
@@ -1101,11 +1187,7 @@ def _process_scan_candidate(
         vector_pattern = pattern_key_str
         launch_pattern = ""
 
-    scan_pattern = serialize_vector(
-        serialize_input,
-        scan_ctx.pseudo_port_map,
-        scan_ctx.manifest,
-    )
+    scan_pattern = _serialize(scan_ctx, serialize_input)
     insert_pending_candidate(
         conn,
         campaign_id=campaign_id,
@@ -1127,19 +1209,17 @@ def _process_scan_candidate(
     _obs_map = scan_ctx.wbr_observe_name_by_port
     _rename = {**_stim_map, **_obs_map}
     if _rename:
-        gate_scan_pattern = ScanPattern(
-            load_seqs=scan_pattern.load_seqs,
+        gate_scan_pattern = replace(
+            scan_pattern,
             capture_pi_values={
                 _rename.get(k, k): v for k, v in scan_pattern.capture_pi_values.items()
             },
-            expected_unload=scan_pattern.expected_unload,
         )
     else:
         gate_scan_pattern = scan_pattern
+    observed_outputs = _observed_outputs(scan_ctx)
     gate_output_order = (
-        [_obs_map.get(p, p) for p in scan_ctx.functional_output_order]
-        if _obs_map
-        else scan_ctx.functional_output_order
+        [_obs_map.get(p, p) for p in observed_outputs] if _obs_map else observed_outputs
     )
     gate_reduced = (
         {_obs_map.get(k, k): v for k, v in reduced_expectation.items()}
@@ -1318,13 +1398,21 @@ def _process_scan_candidate(
     if protocol_sim_fault_ids:
         if not transition:
             row_by_id = {row.fault_id: row for row in active_rows}
-            fallback_target_id: int | None = None
+            # Left to the protocol sim: the SAT target when its capture value
+            # doesn't credit it, and every Q-stem of a flop that captures a
+            # blackbox output's unknown value. That flop's own unload bit is
+            # masked, but a stuck Q still corrupts each upstream bit it shifts
+            # out, and the protocol sim compares those.
+            protocol_ids: list[int] = []
             for fault_id in protocol_sim_fault_ids:
                 row = row_by_id.get(fault_id)
                 if row is None:
                     continue
                 ppo_port = scan_ctx.q_stem_to_ppo.get(row.fault_site_key)
                 if ppo_port is None:
+                    continue
+                if ppo_port in scan_ctx.x_mask.ppo_ports:
+                    protocol_ids.append(fault_id)
                     continue
                 cap_val = bool(reduced_expectation.get(ppo_port, False))
                 detected = (
@@ -1335,14 +1423,18 @@ def _process_scan_candidate(
                 if detected:
                     passed_fault_ids.append(fault_id)
                 elif source == "sat" and fault_id == sat_target_fault_id:
-                    fallback_target_id = fault_id
-            if fallback_target_id is not None:
-                row = row_by_id[fallback_target_id]
-                generic_cidx = generic_site_index.get(row.fault_site_key)
-                if generic_cidx is None:
-                    raise RunnerError(
-                        f"generic compiled index missing for site {row.fault_site_key}"
-                    )
+                    protocol_ids.append(fault_id)
+            if protocol_ids:
+                specs: list[tuple[int, int]] = []
+                for fault_id in protocol_ids:
+                    row = row_by_id[fault_id]
+                    generic_cidx = generic_site_index.get(row.fault_site_key)
+                    if generic_cidx is None:
+                        raise RunnerError(
+                            "generic compiled index missing for site "
+                            f"{row.fault_site_key}"
+                        )
+                    specs.append((generic_cidx, fault_type_to_sa_code(row.fault_type)))
                 protocol_fault_sim_kwargs = _protocol_fault_sim_kwargs(
                     scan_ctx, scan_pattern
                 )
@@ -1350,7 +1442,7 @@ def _process_scan_candidate(
                     core.simulate_scan_protocol_faults(
                         str(scan_ctx.generic_json),
                         generic_cell_map,
-                        faults=[(generic_cidx, fault_type_to_sa_code(row.fault_type))],
+                        faults=specs,
                         unsupported_policy=unsupported,
                         loc_two_capture=is_loc,
                         los_two_capture=is_los,
@@ -1359,21 +1451,19 @@ def _process_scan_candidate(
                         **protocol_fault_sim_kwargs,
                     )
                 )
-                outcome = "fail"
-                for batch in protocol_fault_sim_result.get("batches", []):
-                    lanes = batch.get("lanes", [])
-                    if lanes:
-                        outcome = str(dict(lanes[0]).get("outcome"))
-                        break
-                if outcome == "pass":
-                    passed_fault_ids.append(fallback_target_id)
-                else:
-                    protocol_sim_rejections.append(
-                        CandidateRejection(
-                            fallback_target_id, "no_capture_or_unload_effect"
+                outcome_by_index = {
+                    int(dict(lane)["fault_index"]): str(dict(lane).get("outcome"))
+                    for batch in protocol_fault_sim_result.get("batches", [])
+                    for lane in batch.get("lanes", [])
+                }
+                for index, fault_id in enumerate(protocol_ids):
+                    if outcome_by_index.get(index) == "pass":
+                        passed_fault_ids.append(fault_id)
+                    elif source == "sat" and fault_id == sat_target_fault_id:
+                        protocol_sim_rejections.append(
+                            CandidateRejection(fault_id, "no_capture_or_unload_effect")
                         )
-                    )
-                    blocked.append((fallback_target_id, track_key))
+                        blocked.append((fault_id, track_key))
         else:
             # Transition faults: full protocol sim required (two-frame detection).
             row_by_id = {row.fault_id: row for row in active_rows}
@@ -1382,6 +1472,13 @@ def _process_scan_candidate(
             for fault_id in protocol_sim_fault_ids:
                 row = row_by_id.get(fault_id)
                 if row is None:
+                    continue
+                if not _launch_known(scan_ctx, row):
+                    if source == "sat" and fault_id == sat_target_fault_id:
+                        protocol_sim_rejections.append(
+                            CandidateRejection(fault_id, "no_capture_or_unload_effect")
+                        )
+                        blocked.append((fault_id, track_key))
                     continue
                 generic_cidx = generic_site_index.get(row.fault_site_key)
                 if generic_cidx is None:
@@ -1620,6 +1717,17 @@ def run_progressive_scan_atpg(
     # outright under unsupported_cells = fail. Reduced-view loads need none --
     # build_scan_atpg_view models blackboxes opaque, so the view has none.
     bb = list(cfg.blackbox_instances)
+    _require_x_mask(
+        scan_ctx, reduced_json_path, launch_mode_key(transition, launch_mode)
+    )
+    if scan_ctx.x_mask.nets:
+        log.info(
+            "atpg   blackbox outputs of unknown value reach %d observation points "
+            "(%d scan flops, %d outputs): unobserved, don't-care in every pattern",
+            len(scan_ctx.x_mask.nets),
+            len(scan_ctx.x_mask.ppo_ports),
+            len(scan_ctx.x_mask.outputs),
+        )
 
     core.ensure_faults_enumerated(
         str(scan_ctx.generic_json),
@@ -2438,9 +2546,7 @@ def _grade_launch_candidate(
         serialize_input[str(entry["ppo_port"])] = bool(
             reduced_expectation.get(str(entry["ppo_port"]), False)
         )
-    scan_pattern = serialize_vector(
-        serialize_input, scan_ctx.pseudo_port_map, scan_ctx.manifest
-    )
+    scan_pattern = _serialize(scan_ctx, serialize_input)
 
     sim_ids: list[int] = []
     specs: list[tuple[int, int]] = []

@@ -19,6 +19,11 @@ from faultflow.scan.detection_pipeline import (
     _is_compaction_only_rejected,
     _reject_compaction_indistinguishable,
 )
+from faultflow.scan.protocol import ScanPattern
+
+# The stubbed _protocol_fault_sim_kwargs ignores the pattern; the fold reads
+# only its unload_mask.
+_PATTERN = ScanPattern(load_seqs={}, capture_pi_values={}, expected_unload={})
 
 
 def _ctx(compaction_map) -> ScanPipelineContext:
@@ -108,6 +113,52 @@ def test_compaction_diff_observable_false_for_all_zero_diff() -> None:
 
 
 @pytest.mark.unit
+def test_compaction_diff_observable_ignores_bits_folded_with_an_unknown() -> None:
+    """A compacted bit that XORs in a don't-care chain bit (a flop that
+    captured a blackbox output's unknown value) is itself unknown, so it
+    can't show a difference -- even one on the other, known chain."""
+    diff = {0: [True, False], 1: [False, False]}
+    mask = {1: [False, True]}  # chain 1's cycle-0 bit is don't-care
+    assert _compaction_diff_observable(diff, [[0, 1]], 2) is True
+    assert _compaction_diff_observable(diff, [[0, 1]], 2, mask) is False
+    # A second output that folds in chain 0 alone still shows it.
+    assert _compaction_diff_observable(diff, [[0, 1], [0]], 2, mask) is True
+
+
+@pytest.mark.unit
+def test_check_compaction_distinguishable_honours_the_pattern_unload_mask(
+    _stub_kwargs: None,
+) -> None:
+    ctx = _ctx(CompactionMap(1, [[0, 1]]))
+    core = _FakeCore(lane_diffs=[{0: [True, False], 1: [False, False]}])
+    pattern = ScanPattern(
+        load_seqs={},
+        capture_pi_values={},
+        expected_unload={0: [False, False], 1: [False, False]},
+        unload_mask={0: [True, True], 1: [False, True]},
+    )
+
+    observable = _check_compaction_distinguishable(
+        core,
+        ctx,
+        scan_pattern=pattern,
+        generic_cell_map="generic_cell_map.json",
+        unsupported="fail",
+        is_loc=False,
+        is_los=False,
+        head_bits={},
+        active_clock_ports=None,
+        active_rows=[
+            _FaultRow(fault_id=1, fault_site_key="s1", fault_type="sa0", net_index=0)
+        ],
+        generic_site_index={"s1": 0},
+        passed_fault_ids=[1],
+    )
+
+    assert observable == set()
+
+
+@pytest.mark.unit
 def test_fault_has_raw_scan_diff_false_for_all_false_or_empty() -> None:
     assert _fault_has_raw_scan_diff({}) is False
     assert _fault_has_raw_scan_diff({0: [False, False], 1: [False]}) is False
@@ -138,7 +189,7 @@ def test_check_compaction_distinguishable_all_observable(
     observable = _check_compaction_distinguishable(
         core,
         ctx,
-        scan_pattern=object(),
+        scan_pattern=_PATTERN,
         generic_cell_map="generic_cell_map.json",
         unsupported="fail",
         is_loc=False,
@@ -170,7 +221,7 @@ def test_check_compaction_distinguishable_po_only_diff_always_included(
     observable = _check_compaction_distinguishable(
         core,
         ctx,
-        scan_pattern=object(),
+        scan_pattern=_PATTERN,
         generic_cell_map="generic_cell_map.json",
         unsupported="fail",
         is_loc=False,
@@ -201,7 +252,7 @@ def test_check_compaction_distinguishable_excludes_aliased_fault(
     observable = _check_compaction_distinguishable(
         core,
         ctx,
-        scan_pattern=object(),
+        scan_pattern=_PATTERN,
         generic_cell_map="generic_cell_map.json",
         unsupported="fail",
         is_loc=False,
@@ -230,7 +281,7 @@ def test_check_compaction_distinguishable_missing_site_index_passes_through(
     observable = _check_compaction_distinguishable(
         core,
         ctx,
-        scan_pattern=object(),
+        scan_pattern=_PATTERN,
         generic_cell_map="generic_cell_map.json",
         unsupported="fail",
         is_loc=False,
