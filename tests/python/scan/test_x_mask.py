@@ -37,10 +37,13 @@ DOUT = (200, 201)
 PO = 300
 
 
-def _design(**overrides: list[int]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _design(
+    ff0_type: str = "$scanff_faultflow", **overrides: list[int]
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """A scan chain ff0 -> ff1 -> ff2 and a memory u_mem: ff0 captures
     dout[0], ff1 captures ff0's state, ff2 the primary input pi, and the
-    primary output po = dout[1] & pi. `overrides` rewires ff0's pins."""
+    primary output po = dout[1] & pi. ff0 is a `ff0_type`, and `overrides`
+    rewires its pins."""
     data = (DOUT[0], Q[0], PI)
     cells: dict[str, Any] = {
         "u_mem": {
@@ -76,6 +79,7 @@ def _design(**overrides: list[int]) -> tuple[dict[str, Any], dict[str, Any]]:
                 "clock_net": CLK,
             }
         )
+    cells["ff0"]["type"] = ff0_type
     cells["ff0"]["connections"].update(overrides)
     ports = {
         "clk": {"direction": "input", "bits": [CLK]},
@@ -257,12 +261,76 @@ def test_an_unknown_output_may_reach_a_flop_capture(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(("pin", "role"), [("CLK", "clock"), ("SE", "scan_enable")])
+@pytest.mark.parametrize(
+    ("ff0_type", "pin", "role"),
+    [
+        ("$scanff_faultflow", "CLK", "clock"),
+        ("$scanff_faultflow", "SE", "scan_enable"),
+        # An async clear or preset forces the flop during shift too.
+        ("$scanff_r_faultflow", "RESET_B", "clear"),
+        ("$scanff_s_faultflow", "SET_B", "preset"),
+    ],
+)
 def test_an_unknown_output_on_the_scan_path_is_an_error(
-    tmp_path: Path, require_cpp_core: None, pin: str, role: str
+    tmp_path: Path, require_cpp_core: None, ff0_type: str, pin: str, role: str
 ) -> None:
-    with pytest.raises(ScanError, match=f"ff0.{role}"):
-        _check(tmp_path, *_design(**{pin: [DOUT[1]]}))
+    with pytest.raises(ScanError, match=rf"ff0\.{role}\b"):
+        _check(tmp_path, *_design(ff0_type, **{pin: [DOUT[1]]}))
+
+
+@pytest.mark.unit
+def test_combinational_reach_names_a_clear_apart_from_an_enable(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """A flop's third input slot holds a clear or an enable. Only the clear
+    is on the scan path, so the reach must say which one it arrived at."""
+    src, q_en, q_clr = 10, 20, 21
+    cells = {
+        "u_en": {
+            "type": "sky130_fd_sc_hd__edfxtp_1",
+            "connections": {"CLK": [CLK], "D": [PI], "DE": [src], "Q": [q_en]},
+        },
+        "u_clr": {
+            "type": "$scanff_r_faultflow",
+            "connections": {
+                "CLK": [CLK],
+                "D": [PI],
+                "SDI": [SDI],
+                "SE": [SE],
+                "RESET_B": [src],
+                "Q": [q_clr],
+            },
+        },
+    }
+    ports = {
+        "clk": {"direction": "input", "bits": [CLK]},
+        "se": {"direction": "input", "bits": [SE]},
+        "sdi": {"direction": "input", "bits": [SDI]},
+        "pi": {"direction": "input", "bits": [PI]},
+        "src": {"direction": "input", "bits": [src]},
+        "q_en": {"direction": "output", "bits": [q_en]},
+        "q_clr": {"direction": "output", "bits": [q_clr]},
+    }
+    path = tmp_path / "reach.json"
+    path.write_text(
+        json.dumps(
+            {
+                "modules": {
+                    TOP: {
+                        "attributes": {"top": "1"},
+                        "ports": ports,
+                        "cells": cells,
+                        "netnames": {n: {"bits": p["bits"]} for n, p in ports.items()},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    core = _load_core()
+    assert core is not None
+    found = core.combinational_reach(str(path), CELL_MAP, [src])
+    assert sorted(found["flop_inputs"]) == [(q_en, "enable"), (q_clr, "clear")]
 
 
 def _pseudo_port_map() -> dict[str, dict[str, Any]]:

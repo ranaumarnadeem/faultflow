@@ -1043,14 +1043,15 @@ py::dict compute_fault_structural_reasons(
 // atpg::combinational_reach from Yosys net IDs, answered in Yosys IDs:
 //   {"observable": sorted IDs of the observed nets the walk reaches,
 //    "flop_inputs": [(flop output net ID, pin), ...]}
-// where pin names the flop input slot the walk arrived at.
+// where pin names the flop input slot the walk arrived at: data, clock,
+// clear, enable, preset, scan_in or scan_enable.
 py::dict combinational_reach_py(const std::string& json_path,
                                 const std::string& cell_map_path,
                                 const std::vector<int>& source_nets,
                                 const std::string& unsupported_policy,
                                 const std::vector<std::string>& blackbox_instances) {
-  static const char* const kFlopPins[] = {"data",    "clock",   "clear/enable",
-                                          "preset",  "scan_in", "scan_enable"};
+  static const char* const kFlopPins[] = {"data",   "clock",   "clear",
+                                          "preset", "scan_in", "scan_enable"};
   const CachedGraph& graph = load_cached_graph(
       json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const CompiledSimGraph& cg = graph.cg;
@@ -1078,8 +1079,11 @@ py::dict combinational_reach_py(const std::string& json_path,
   std::sort(observable.begin(), observable.end());
   py::list flop_inputs;
   for (const auto& [node, slot] : reach.flop_inputs) {
-    flop_inputs.append(py::make_tuple(
-        cg.compiled_to_yosys[cg.nodes[node].out], kFlopPins[slot]));
+    const SimNode& ff = cg.nodes[node];
+    // Slot 2 carries a clear or an enable, never both (GraphCompiler).
+    const bool enable = slot == 2 && cg.ff_configs[ff.ff_cfg].has_enable;
+    flop_inputs.append(py::make_tuple(cg.compiled_to_yosys[ff.out],
+                                      enable ? "enable" : kFlopPins[slot]));
   }
   py::dict out;
   out["observable"] = observable;

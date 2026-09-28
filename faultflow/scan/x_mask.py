@@ -51,9 +51,10 @@ from faultflow.scan.stitch import _top_module
 
 # Flop inputs (combinational_reach's pin names) an unknown value must not
 # reach: it would corrupt the scan shift itself, which no per-bit mask repairs.
-# A data, enable or async set/reset input only changes what the flop captures,
+# An async clear or preset forces the flop whatever the clock does, during
+# shift as well. A data or enable input only changes what the flop captures,
 # and the view's capture cone already covers that.
-_SCAN_PATH_PINS = frozenset({"clock", "scan_in", "scan_enable"})
+_SCAN_PATH_PINS = frozenset({"clock", "scan_in", "scan_enable", "clear", "preset"})
 
 
 @dataclass(frozen=True)
