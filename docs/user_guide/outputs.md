@@ -48,6 +48,7 @@ Its top-level structure is:
 | `run` | Per-run statistics, including ATPG round counts and timing |
 | `per_node` | Per-net fault counts and detection status |
 | `undetected_faults` | The remaining undetected/redundant faults |
+| `autombist_categories` | Only with `[autombist] manifest`: `detected`, `denominator`, `blackbox_unresolved` and `coverage_percent` per autoMBIST instance category, `glue` holding what no instance owns; they add up to the `summary` totals. `coverage.rpt` shows the same as a table. See [External tools](../external_tools.md) |
 
 ### The `summary` block
 

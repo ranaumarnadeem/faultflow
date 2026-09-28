@@ -202,6 +202,14 @@ one-shot from the CLI with `add-clock`).
 |---|---|---|---|
 | `wbr_model` | `buffer`, `scan` | `scan` | Wrapper boundary register model used by the shell's `wrap` command: `buffer` is transparent, `scan` is a native shiftable WBR |
 
+## `[autombist]`
+
+Written by `ff.py autombist-generate` (see [External tools](../external_tools.md)).
+
+| Key | Format | Meaning |
+|---|---|---|
+| `manifest` | path | The autoMBIST instance manifest the netlist was built from. The coverage report then breaks detected faults, the denominator and `blackbox_unresolved` down by the manifest's instance categories. Report-only: not part of the campaign fingerprint |
+
 ## Notes on legacy and inert keys
 
 ```{note}

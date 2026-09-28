@@ -391,6 +391,10 @@ class FaultflowConfig:
     # adds the wrapper boundary register as a real scan chain — control/observe
     # points and fault sites differ, so it is part of the fingerprint.
     wbr_model: str = "scan"
+    # [autombist] manifest: the autoMBIST instance manifest the netlist was
+    # built from (ff.py autombist-generate). The coverage report then breaks
+    # coverage down by instance category. Report-only: not fingerprinted.
+    autombist_manifest: Path | None = None
 
     @property
     def blackbox_x_instances(self) -> tuple[str, ...]:
@@ -828,4 +832,14 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         ),
         test_mode=test_mode,
         wbr_model=wbr_model,
+        autombist_manifest=_autombist_manifest(parser),
     )
+
+
+def _autombist_manifest(parser: ConfigParser) -> Path | None:
+    """``[autombist] manifest``, checked now: the coverage report reads it
+    only once a campaign has run."""
+    path = _optional_path(parser, "autombist", "manifest")
+    if path is not None and not path.is_file():
+        raise ConfigError(f"[autombist] manifest not found: {path}")
+    return path

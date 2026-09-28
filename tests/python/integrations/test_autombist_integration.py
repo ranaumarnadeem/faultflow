@@ -129,6 +129,7 @@ def test_blackbox_design_runs_the_full_scan_flow_under_the_default_policy(
     assert report["policy"]["blackbox_instances"] == ["u_sram"]
     assert report["policy"]["blackbox_boundary"] == "opaque"
     assert report["policy"]["blackbox_output_values"] == {"u_sram": "x"}
+    _assert_categories_add_up(report, {"glue", "mbist_controller", "memory"})
 
     # An exported LOS pattern doesn't carry its launch-shift scan-in bits, so
     # only stuck-at and LOC patterns can be replayed from the file.
@@ -136,6 +137,15 @@ def test_blackbox_design_runs_the_full_scan_flow_under_the_default_policy(
         _assert_unload_independent_of_memory(
             load_config(ofs, top), patterns, loc=launch == "loc"
         )
+
+
+def _assert_categories_add_up(report: dict[str, Any], categories: set[str]) -> None:
+    """The report breaks coverage down by the manifest's instance categories,
+    and every counted fault falls in exactly one."""
+    by_category = report["autombist_categories"]
+    assert set(by_category) == categories
+    for key in ("detected", "denominator", "blackbox_unresolved"):
+        assert sum(c[key] for c in by_category.values()) == report["summary"][key]
 
 
 def _assert_unload_independent_of_memory(
@@ -273,7 +283,9 @@ def test_synthesize_from_manifest_end_to_end(
     cfg = load_config(result.ofs_path, "input_demo_8x16_scn4m_mbist")
     assert str(cfg.netlist) == str(result.composed_json_path)
     assert list(cfg.blackbox_instances) == ["u_sram"]
-    # Nothing a single-clock design doesn't need.
+    # It names the manifest, for the coverage report's category breakdown,
+    # and nothing a single-clock design doesn't need.
+    assert cfg.autombist_manifest == (FIXTURE / "manifest.json").resolve()
     assert cfg.clocks == ()
     assert cfg.scan.chains == 1
 
@@ -635,5 +647,11 @@ def test_a_wrapped_design_runs_the_scan_flow_on_two_clock_domains(
     assert summary["blackbox_unresolved"] > 0
     assert summary["undetected"] == summary["blackbox_unresolved"]
     assert report["run"]["atpg_terminal_reason"] == "COMPLETE"
+    _assert_categories_add_up(
+        report,
+        {"glue", "ijtag_sib", "ijtag_tdr", "jtag_tap", "mbist_controller", "memory"},
+    )
+    text = cfg.coverage_report_path.read_text(encoding="utf-8")
+    assert "IJTAG network-integrity patterns are not generated" in text
 
     _assert_unload_independent_of_memory(cfg, patterns, loc=False)

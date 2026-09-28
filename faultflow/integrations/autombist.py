@@ -133,6 +133,8 @@ class AutombistManifest:
     # access: synthesis then builds from this block instead of `instances`.
     test_access: AutombistTestAccess | None = None
     root: Path = field(default=Path("."))
+    # The manifest file this was loaded from.
+    path: Path | None = None
 
 
 def _req(obj: dict[str, Any], key: str, where: str) -> Any:
@@ -382,6 +384,7 @@ def load_autombist_manifest(path: str | Path) -> AutombistManifest:
         instances=tuple(instances),
         test_access=_load_test_access(data.get("test_access"), root, tuple(instances)),
         root=root,
+        path=manifest_path.resolve(),
     )
 
 
@@ -833,6 +836,7 @@ def write_ofs(
     blackbox_instances: tuple[str, ...],
     clock_ports: tuple[str, ...] = (),
     scan_chains: int | None = None,
+    manifest: Path | None = None,
 ) -> Path:
     """Write a fresh `.ofs` for the composed netlist. `.ofs` paths resolve
     against the CWD, not the .ofs file's own directory (`config.py::_path`) --
@@ -841,6 +845,9 @@ def write_ofs(
     codebase carries one, `top` is always a separate CLI/API argument.
 
     `clock_ports` are declared in `[clocks]`, and `scan_chains` in `[scan]`.
+    `manifest`, the autoMBIST manifest the netlist was built from, goes in
+    `[autombist]`: the coverage report breaks coverage down by its instance
+    categories.
     """
     lines = [
         "[design]",
@@ -856,6 +863,8 @@ def write_ofs(
         lines.extend(["[clocks]", f"ports = {', '.join(clock_ports)}", ""])
     if scan_chains is not None:
         lines.extend(["[scan]", f"chains = {scan_chains}", ""])
+    if manifest is not None:
+        lines.extend(["[autombist]", f"manifest = {manifest.resolve()}", ""])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
@@ -890,6 +899,8 @@ class AutombistSynthesisResult:
     # and the scan chain count the .ofs asks for (one per domain).
     clock_ports: tuple[str, ...] = ()
     scan_chains: int | None = None
+    # The manifest the design was built from, named in the .ofs [autombist].
+    manifest_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -1034,6 +1045,7 @@ def synthesize_from_manifest(
         blackbox_instances=composition.blackbox_instances,
         clock_ports=clock_ports,
         scan_chains=scan_chains,
+        manifest=manifest.path,
     )
 
     instance_counts: dict[str, int] = {}
@@ -1049,6 +1061,7 @@ def synthesize_from_manifest(
         block_count=composition.block_count,
         clock_ports=clock_ports,
         scan_chains=scan_chains,
+        manifest_path=manifest.path,
     )
 
 

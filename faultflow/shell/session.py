@@ -62,6 +62,9 @@ class ProjectSession:
         self.declared_clocks: list[ClockSpec] = []
         self.declared_blackbox: list[str] = []
         self.test_mode: str = "functional"
+        # The autoMBIST manifest the loaded design was built from: its
+        # coverage report breaks coverage down by instance category.
+        self.autombist_manifest: Path | None = None
 
     @property
     def checkpoint_path(self) -> Path:
@@ -90,6 +93,8 @@ class ProjectSession:
         ]
         snap["declared_blackbox"] = list(self.declared_blackbox)
         snap["test_mode"] = self.test_mode
+        if self.autombist_manifest is not None:
+            snap["autombist_manifest"] = str(self.autombist_manifest)
         return snap
 
     def checkpoint(self) -> tuple[Path, str]:
@@ -153,6 +158,11 @@ class ProjectSession:
             )
         self.declared_clocks = [cs for cs in self.declared_clocks if cs.port != port]
         self.declared_clocks.append(ClockSpec(port=port, off_state=off_state))
+        if self.top is not None:
+            self.checkpoint()
+
+    def set_autombist_manifest(self, path: Path) -> None:
+        self.autombist_manifest = path
         if self.top is not None:
             self.checkpoint()
 
@@ -382,6 +392,7 @@ class ProjectSession:
                 clocks=tuple(self.declared_clocks),
                 blackbox_instances=tuple(self.declared_blackbox),
                 test_mode=self.test_mode,
+                autombist_manifest=self.autombist_manifest,
             )
         else:
             cfg = FaultflowConfig(
@@ -401,6 +412,7 @@ class ProjectSession:
                 clocks=tuple(self.declared_clocks),
                 blackbox_instances=tuple(self.declared_blackbox),
                 test_mode=self.test_mode,
+                autombist_manifest=self.autombist_manifest,
             )
         for key, value in self.options.items():
             if key == "atpg.max_rounds":
@@ -994,6 +1006,8 @@ class ProjectSession:
             str(name) for name in data.get("declared_blackbox", [])
         ]
         self.test_mode = str(data.get("test_mode", "functional"))
+        manifest = data.get("autombist_manifest")
+        self.autombist_manifest = Path(str(manifest)) if manifest else None
         if resume and self.scan_inserted:
             cfg = self.materialize_config()
             if not cfg.scan_manifest_path.exists():
@@ -1041,3 +1055,4 @@ class ProjectSession:
         self.declared_clocks.clear()
         self.declared_blackbox.clear()
         self.test_mode = "functional"
+        self.autombist_manifest = None

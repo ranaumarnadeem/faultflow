@@ -208,6 +208,21 @@
           "bottleneck_net": { "type": "string" }
         }
       }
+    },
+    "autombist_categories": {
+      "description": "Coverage by autoMBIST instance category ([autombist] manifest); faults no instance owns count as glue",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["detected", "denominator", "blackbox_unresolved", "coverage_percent"],
+        "additionalProperties": false,
+        "properties": {
+          "detected": { "type": "integer", "minimum": 0 },
+          "denominator": { "type": "integer", "minimum": 0 },
+          "blackbox_unresolved": { "type": "integer", "minimum": 0 },
+          "coverage_percent": { "type": ["number", "null"] }
+        }
+      }
     }
   }
 }

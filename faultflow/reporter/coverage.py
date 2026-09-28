@@ -428,6 +428,57 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         raise CoverageError("coverage report node/fault sections must be arrays")
 
 
+def _autombist_categories(
+    conn: sqlite3.Connection,
+    cfg: FaultflowConfig,
+    campaign_id: int,
+    campaign_type: str,
+) -> dict[str, Any] | None:
+    """Coverage by autoMBIST instance category, for a netlist built from an
+    autoMBIST manifest ([autombist] manifest). A scan campaign's fault sites
+    name the scan ATPG view's nets and cells."""
+    if cfg.autombist_manifest is None:
+        return None
+    from faultflow.integrations.autombist import load_autombist_manifest
+    from faultflow.integrations.autombist_coverage import (
+        category_coverage,
+        instance_categories,
+    )
+
+    netlist = cfg.netlist
+    view = cfg.intermediate_dir / "scan_atpg_view.json"
+    if campaign_type == "scan" and view.exists():
+        netlist = view
+    return category_coverage(
+        conn,
+        campaign_id,
+        netlist_json=netlist,
+        cell_map_json=cfg.cell_lib,
+        top=cfg.top,
+        categories=instance_categories(load_autombist_manifest(cfg.autombist_manifest)),
+    )
+
+
+def _category_lines(categories: dict[str, Any]) -> list[str]:
+    from faultflow.integrations.autombist_coverage import JTAG_CATEGORIES
+
+    lines = ["autombist categories (detected / denominator, blackbox_unresolved):"]
+    for name, entry in categories.items():
+        percent = entry["coverage_percent"]
+        lines.append(
+            f"  {name:17s} {entry['detected']:6d} / {entry['denominator']:<6d} "
+            f"{entry['blackbox_unresolved']:6d}  "
+            + ("n/a" if percent is None else f"{percent:.3f}%")
+        )
+    if JTAG_CATEGORIES & set(categories):
+        lines.append(
+            "  note: scan patterns grade the TAP and the IJTAG network like any "
+            "other logic; TAP non-scan operation and IJTAG network-integrity "
+            "patterns are not generated"
+        )
+    return lines
+
+
 def _translate_scan_net_name(net_name: str) -> str:
     if net_name.startswith("__ppi_"):
         instance = net_name.removeprefix("__ppi_")
@@ -518,6 +569,11 @@ def write_reports(
         run = cast(dict[str, Any], report["run"])
         run["scan_mode"] = True
         run["scan_manifest_hash"] = scan_context.get("manifest_hash", "")
+    categories = _autombist_categories(
+        conn, cfg, campaign_id, str(fp.get("campaign_type", ""))
+    )
+    if categories is not None:
+        report["autombist_categories"] = categories
     _validate_report(report)
     run = cast(dict[str, Any], report["run"])
     json_path = cfg.coverage_json_path
@@ -590,6 +646,9 @@ def write_reports(
     for _rk, _rv in sorted(cast(dict[str, int], report["reason_summary"]).items()):
         txt.append(f"  {_rk}: {_rv}")
     txt.append("")
+    if categories is not None:
+        txt.extend(_category_lines(categories))
+        txt.append("")
     txt.append("undetected faults:")
     for fault in cast(list[dict[str, Any]], report["undetected_faults"]):
         txt.append(

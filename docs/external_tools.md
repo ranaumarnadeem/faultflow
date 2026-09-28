@@ -91,8 +91,8 @@ This runs `autombist generate --emit-manifest` (`--autombist-cmd` names another 
 e.g. `'python3 -m autombist'`), then builds the design from the manifest: every distinct
 instrument synthesized once on its own, the wrapper synthesized with the instruments and
 the memory as blackboxes, and the instruments' netlists spliced back in. It writes the
-composed netlist and a `.ofs` for it, whose `[blackbox] instances` names the
-memories. The Tcl shell's `autombist_generate` does the
+composed netlist and a `.ofs` for it: `[blackbox] instances` names the memories, and
+`[autombist] manifest` names the manifest. The Tcl shell's `autombist_generate` does the
 same and loads the design into the session.
 
 A memory's outputs are unknown to a scan test: every scan-flop capture and primary output
@@ -115,13 +115,21 @@ clock domains. The `.ofs` declares both in `[clocks]` and asks for one scan chai
 domain; scan insertion scans every flop of both, and holds `trst_n` inactive like
 `rst_n`.
 
+**Coverage by category.** With `[autombist] manifest` set, the coverage report breaks
+detected faults, the denominator and `blackbox_unresolved` down by the manifest's
+instance categories (`autombist_categories` in `coverage_report.json`, a table in
+`coverage.rpt`): memory, mbist_controller, self_repair, diagnosis, repair_remap and, for a
+wrapped design, jtag_tap, ijtag_sib, ijtag_tdr, ijtag_scan_mux. A fault belongs to the
+instance of the cell it sits on; what no instance owns — the wrapper's own logic, its
+ports, constant nets — counts as `glue`, so the categories add up to the totals.
+
 ```{admonition} Known limitation: TAP and IJTAG network test
 :class: warning
 
 faultflow scans the TAP and the IJTAG network's flops like any other logic and grades
 their faults with scan patterns. It does not run the TAP non-scan, and does not generate
 the network-integrity patterns a production flow plays through TCK (instruction-register
-capture, SIB and TDR shift-through).
+capture, SIB and TDR shift-through). The `coverage.rpt` of a wrapped design notes this.
 
 Also note that warptap's network shifts on every DR scan, whatever instruction the TAP
 holds: its top-level SIBs' select input is tied high, and the instruction only chooses

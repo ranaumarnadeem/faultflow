@@ -678,6 +678,8 @@ proc {name} {{args}} {{
             self.session.add_blackbox(inst)
         for port in result.clock_ports:
             self.session.add_clock(port)
+        if result.manifest_path is not None:
+            self.session.set_autombist_manifest(result.manifest_path)
         message = (
             f"autombist synthesis: {result.ofs_path} "
             f"(top={result.top_module}, blocks={result.block_count})"
