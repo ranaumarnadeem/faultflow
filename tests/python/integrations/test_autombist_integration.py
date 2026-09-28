@@ -37,20 +37,27 @@ SKY130_CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("launch", [None, "loc", "los"])
 def test_blackbox_design_runs_the_full_scan_flow_under_the_default_policy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     require_cpp_core: None,
+    launch: str | None,
 ) -> None:
     """init -> scan -> scan-check -> sim --scan on a design whose memory is an
     explicitly blackboxed instance ([blackbox] instances = u_sram, cell type
-    absent from the cell map), with NO `unsupported_cells = blackbox`.
+    absent from the cell map), with NO `unsupported_cells = blackbox`, for
+    stuck-at and both transition launch modes (each loads the netlist its own
+    way).
 
     Every netlist load on the scan path used to ignore the blackbox list, so
     under the default unsupported_cells = fail scan-check died with
     "Unsupported cell: <memory type>" and sim --scan (which requires a passing
-    scan-check) was unreachable for every design with a blackbox."""
+    scan-check) was unreachable for every design with a blackbox. And once it
+    ran, SAT and the fault simulator disagreed about the memory's outputs:
+    every undetected fault must now be classified blackbox_unresolved in the
+    first round, not retried round after round."""
     if shutil.which("yosys") is None:
         pytest.skip("yosys is not available")
     from faultflow.cli import main
@@ -67,6 +74,12 @@ def test_blackbox_design_runs_the_full_scan_flow_under_the_default_policy(
     ofs = result.ofs_path
     assert result.blackbox_instances == ("u_sram",)
     assert "unsupported_cells" not in ofs.read_text(encoding="utf-8")
+    if launch is not None:
+        with ofs.open("a", encoding="utf-8") as fh:
+            fh.write(
+                "\n[fault_model]\nmodel = transition\n"
+                f"launch = {launch}\ncollapsing = false\n"
+            )
 
     monkeypatch.chdir(tmp_path)
     for step in (["init"], ["scan"], ["scan-check"], ["sim", "--scan"]):
@@ -84,8 +97,13 @@ def test_blackbox_design_runs_the_full_scan_flow_under_the_default_policy(
             encoding="utf-8"
         )
     )
-    assert report["summary"]["denominator"] > 0
-    assert report["summary"]["detected"] > 0
+    summary = report["summary"]
+    assert summary["denominator"] > 0
+    assert summary["detected"] > 0
+    assert summary["blackbox_unresolved"] > 0
+    assert summary["undetected"] == summary["blackbox_unresolved"]
+    assert report["run"]["atpg_terminal_reason"] == "COMPLETE"
+    assert report["run"]["atpg_rounds"] == 1
     assert report["policy"]["blackbox_instances"] == ["u_sram"]
     assert report["policy"]["blackbox_boundary"] == "opaque"
 
