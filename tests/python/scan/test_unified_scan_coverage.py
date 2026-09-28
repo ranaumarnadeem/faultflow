@@ -2044,16 +2044,19 @@ def _both(site: str) -> set[tuple[str, str]]:
     return {(site, "sa0"), (site, "sa1")}
 
 
-# Whatever the memory does, nothing observable sees what only its inputs read:
-# u_mem.din, and the constant nets tied off to u_mem.cfg (-1 and -2 are the
-# netlist's constant-0 and constant-1 nets). A tie holding a blackbox output
-# at 0 must not hang off net -1, or its s-a-1 would reach Y through the tie.
-_MEMORY_INPUTS_ONLY = (
+# What only the memory's inputs see: u_mem.din (net 8, BUF(D)) and the
+# constant nets tied off to u_mem.cfg (-1 and -2 are the netlist's constant-0
+# and constant-1 nets). A tie holding a blackbox output at 0 must not hang off
+# net -1, or its s-a-1 would reach Y through the tie and read as detected.
+_MEMORY_INPUT_SIDE = (
     _both("net:8:stem")
     | _both("net:3:branch:g_buf:A")
     | _both("net:-1:stem")
     | _both("net:-2:stem")
 )
+# A constant net stuck at its own value is never excited, whatever the memory
+# does: redundant.
+_CONSTANT_AT_ITS_VALUE = {("net:-1:stem", "sa0"), ("net:-2:stem", "sa1")}
 
 
 @pytest.mark.unit
@@ -2066,15 +2069,17 @@ _MEMORY_INPUTS_ONLY = (
                 ("net:6:stem", "sa0"),  # dout s-a-0: excited only by dout = 1
                 ("net:7:stem", "sa0"),  # Y = dout & A is 1 only if dout = 1
             }
-            | _both("net:5:stem"),  # A propagates only while dout = 1
-            _MEMORY_INPUTS_ONLY,
+            | _both("net:5:stem")  # A propagates only while dout = 1
+            | (_MEMORY_INPUT_SIDE - _CONSTANT_AT_ITS_VALUE),
+            _CONSTANT_AT_ITS_VALUE,
         ),
         (
             "loc",
             # dout and Y transition only if dout changes between the frames.
             _both("net:6:stem") | _both("net:7:stem"),
-            # A and D are real PIs, held launch -> capture: never transition.
-            _MEMORY_INPUTS_ONLY
+            # A and D are real PIs, held launch -> capture, and the constants
+            # are constant: none of them ever transitions.
+            _MEMORY_INPUT_SIDE
             | _both("net:5:stem")
             | _both("net:3:stem")
             | _both("net:3:branch:u0:D"),
@@ -2089,12 +2094,13 @@ def test_unsat_only_because_of_a_blackbox_is_blackbox_unresolved(
     expected_blocked: set[tuple[str, str]],
     expected_redundant: set[tuple[str, str]],
 ) -> None:
-    """The scan view ties the memory output to 0, which is what the scan
-    protocol sees, so a fault that needs dout = 1 is UNSAT. It is not
-    redundant, though: the UNSAT branch re-solves it on the blackbox-free twin,
-    finds a test, and marks it blackbox_unresolved -- undetected, counted in
-    the denominator, and never retried. A fault that is UNSAT even with dout
-    free, here one reaching nothing but the memory's input, stays redundant.
+    """The scan view makes the memory opaque -- its output tied to 0 and its
+    inputs unobserved, which is what the scan protocol sees -- so a fault that
+    needs dout = 1, or that only the memory's input sees, is UNSAT. It is not
+    redundant, though: the UNSAT branch re-solves it on the
+    blackbox-transparent twin, finds a test, and marks it blackbox_unresolved
+    (Tessent's AU.BB) -- undetected, counted in the denominator, and never
+    retried. Only a fault untestable whatever the memory does stays redundant.
 
     The LOC case also pins that the twin's free dout port is not held between
     the launch and capture frames the way a real PI is: held, dout could never

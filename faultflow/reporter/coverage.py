@@ -132,8 +132,9 @@ def _undetected_reason(
     genuinely has a functional test, it's just not deliverable/observable
     through the compressor/compactor, so it stays counted as undetected
     rather than excluded; blackbox_unresolved means it has a test only if a
-    blackbox (memory) output takes a value no scan test can set (see
-    detection_pipeline._testable_with_free_blackboxes), counted the same way;
+    blackbox (memory) could be driven or observed, which no scan test can do
+    (see detection_pipeline._testable_through_blackboxes; Tessent's AU.BB),
+    counted the same way;
     a recorded SAT verdict gives timeout/unknown; no record at all means it
     was never SAT-attempted (or its pattern was rejected without a verdict).
     Tier C refines the residue into structurally_uncontrollable."""

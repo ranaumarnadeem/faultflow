@@ -63,7 +63,8 @@ void ensure_faults_enumerated(
 
 // `net_index_override`, when >= 0, replaces the fault record's stored compiled
 // net index: it solves the same fault on another view of the same netlist,
-// whose compiled indices differ (the blackbox-free twin of a scan ATPG view).
+// whose compiled indices differ (the blackbox-transparent twin of a scan ATPG
+// view).
 // The same parameter does the same on the scan LOC/LOS solvers below.
 SolveFaultResult solve_fault_for_db(
     const std::string& json_path, const std::string& cell_map_path,
@@ -178,8 +179,8 @@ std::vector<int64_t> simulate_transition_tentative_from_preloaded(
 // directly unit-testable.
 //
 // `__bbfree_*` inputs are not held: they stand for blackbox outputs in the
-// blackbox-free twin of a scan ATPG view (faultflow/scan/atpg_view.py), and a
-// memory's output can change between the launch and capture edges.
+// blackbox-transparent twin of a scan ATPG view (faultflow/scan/atpg_view.py),
+// and a memory's output can change between the launch and capture edges.
 constexpr char kBlackboxFreePortPrefix[] = "__bbfree_";
 std::vector<uint32_t> held_real_pis(const ParsedGraph& parsed,
                                     const CompiledSimGraph& cg);

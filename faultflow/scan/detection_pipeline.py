@@ -45,7 +45,11 @@ from faultflow.runner.progressive_atpg import (
     pattern_key,
 )
 from faultflow.runner.runner import RunnerError
-from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX, make_blackbox_free
+from faultflow.scan.atpg_view import (
+    PPI_PREFIX,
+    PPO_PREFIX,
+    make_blackbox_transparent,
+)
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.manifest import manifest_clock_net_ids
 from faultflow.scan.stitch import SCAN_CELL_TYPES
@@ -511,8 +515,9 @@ def _is_compaction_only_rejected(reasons: set[str] | None) -> bool:
 
 @dataclass(frozen=True)
 class _BlackboxTwin:
-    """The blackbox-free twin of the scan ATPG view (atpg_view.
-    make_blackbox_free) and each fault site's compiled net index in it."""
+    """The blackbox-transparent twin of the scan ATPG view (atpg_view.
+    make_blackbox_transparent) and each fault site's compiled net index in
+    it."""
 
     json_path: str
     net_index_by_site: dict[str, int]
@@ -528,17 +533,17 @@ def _build_blackbox_twin(
     blackbox_instances: list[str],
     execution_map: dict[str, int],
 ) -> _BlackboxTwin | None:
-    """None unless the view ties blackbox outputs. The twin is written beside
-    the view and mapped by the same build_scan_execution_map. Only tie inputs
+    """None unless the view models a blackbox. The twin is written beside the
+    view and mapped by the same build_scan_execution_map. Only ties and ports
     differ between the two, so both must map exactly the same fault sites --
     anything else is a bug in the twin, raised here rather than mid-round."""
     if not blackbox_instances:
         return None
     reduced = Path(reduced_json_path)
     view = json.loads(reduced.read_text(encoding="utf-8"))
-    if not make_blackbox_free(view, str(scan_ctx.manifest["top"])):
+    if not make_blackbox_transparent(view, str(scan_ctx.manifest["top"])):
         return None
-    twin_path = reduced.with_name(f"{reduced.stem}_bbfree.json")
+    twin_path = reduced.with_name(f"{reduced.stem}_bbtransparent.json")
     twin_path.write_text(json.dumps(view) + "\n", encoding="utf-8")
     twin_map, _ = build_scan_execution_map(
         core,
@@ -554,12 +559,13 @@ def _build_blackbox_twin(
     )
     if twin_map.keys() != execution_map.keys():
         raise ScanError(
-            "blackbox-free view maps different fault sites than the scan ATPG view"
+            "blackbox-transparent view maps different fault sites than the scan "
+            "ATPG view"
         )
     return _BlackboxTwin(str(twin_path), twin_map)
 
 
-def _testable_with_free_blackboxes(
+def _testable_through_blackboxes(
     core: Any,
     twin: _BlackboxTwin,
     *,
@@ -577,11 +583,12 @@ def _testable_with_free_blackboxes(
     los_head_ports: list[str],
 ) -> bool:
     """Re-solve a fault that is UNSAT in the scan ATPG view on its
-    blackbox-free twin: False only if it is UNSAT there too (redundant
-    whatever the blackboxes drive). SAT means only a blackbox output value
-    could test it. TIMEOUT and UNKNOWN also return True -- whether such a
-    fault is redundant is unknown, a redundant verdict needs a proof, and the
-    fault is untestable in the scan view either way."""
+    blackbox-transparent twin, where blackbox outputs are free and inputs
+    observed: False only if it is UNSAT there too (redundant whatever the
+    blackboxes do). SAT means only driving or observing a blackbox could test
+    it (Tessent's AU.BB). TIMEOUT and UNKNOWN also return True -- whether
+    such a fault is redundant is unknown, a redundant verdict needs a proof,
+    and the fault is untestable in the scan view either way."""
     index = twin.net_index_by_site[site_key]
     if los:
         solved = core.solve_scan_los_transition_fault_atpg(
@@ -1667,9 +1674,9 @@ def run_progressive_scan_atpg(
             exclusions,
         )
     core.invalidate_stale_redundant(effective_db_path, campaign_id, redundancy_model)
-    # With blackbox outputs tied in the view, UNSAT alone can't tell a
-    # redundant fault from one only a memory output could test: the UNSAT
-    # branch re-solves on this twin, where the outputs are free.
+    # With blackboxes opaque in the view, UNSAT alone can't tell a redundant
+    # fault from one only a blackbox could test, by driving its outputs or
+    # observing its inputs: the UNSAT branch re-solves on this twin, which can.
     blackbox_twin = _build_blackbox_twin(
         core,
         scan_ctx,
@@ -1808,8 +1815,8 @@ def run_progressive_scan_atpg(
                     len(_preflight.fanout_yosys_ids),
                     len(_preflight.redundant_stem_ids),
                 )
-                # A canceling stem in the view may be blocked only by a tied
-                # blackbox output: with a twin, leave those faults to SAT and
+                # A canceling stem in the view may be blocked only by an
+                # opaque blackbox: with a twin, leave those faults to SAT and
                 # the UNSAT branch's blackbox check instead.
                 if _preflight.redundant_stem_ids and blackbox_twin is None:
                     _mark_preflight_redundant(
@@ -2243,7 +2250,7 @@ def run_progressive_scan_atpg(
                     blackbox_twin is not None
                     # UNSAT with patterns blocked isn't a proof to classify.
                     and not blocked
-                    and _testable_with_free_blackboxes(
+                    and _testable_through_blackboxes(
                         core,
                         blackbox_twin,
                         db_path=effective_db_path,
@@ -2330,7 +2337,7 @@ def run_progressive_scan_atpg(
     log.info("atpg   terminated: %s", terminal)
     if blackbox_blocked:
         log.info(
-            "atpg   %d faults are testable only through a blackbox output "
+            "atpg   %d faults are testable only through a blackbox "
             "(blackbox_unresolved)",
             blackbox_blocked,
         )

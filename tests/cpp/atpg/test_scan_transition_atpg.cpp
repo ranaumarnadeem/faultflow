@@ -240,9 +240,9 @@ TEST_CASE("held_real_pis holds every bit of a multi-bit real PI",
   REQUIRE(held_yosys_ids == std::vector<int>{2, 8});
 }
 
-// A `__bbfree_*` input stands for a blackbox output in the blackbox-free twin
-// of a scan ATPG view. A memory's output can change between the launch and
-// capture edges, so it must not be held like a real PI.
+// A `__bbfree_*` input stands for a blackbox output in the blackbox-transparent
+// twin of a scan ATPG view. A memory's output can change between the launch
+// and capture edges, so it must not be held like a real PI.
 TEST_CASE("held_real_pis does not hold blackbox-free ports",
           "[scan_transition][atpg]") {
   const ParsedGraph pg = ParsedGraph::from_json_string(R"({
