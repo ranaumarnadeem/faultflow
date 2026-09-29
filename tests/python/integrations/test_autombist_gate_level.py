@@ -20,7 +20,6 @@ BYPASS must not either.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
 import shutil
@@ -37,6 +36,7 @@ from faultflow.integrations.autombist import (
     load_autombist_manifest,
     synthesize_from_manifest,
 )
+from faultflow.integrations.autombist_jtag import rebuild_network, warptap_available
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURE = ROOT / "tests/fixtures/autombist/input_demo_8x16_scn4m"
@@ -327,47 +327,19 @@ def _jtag_program(
     """TMS/TDI per TCK cycle: load `opcode` (None: keep IDCODE, loaded by the
     TAP reset), then write test_mode=1 and bist_start=1 through the IJTAG
     network the manifest describes."""
-    if importlib.util.find_spec("warptap") is None:
+    if not warptap_available():
         pytest.skip("needs warptap importable (e.g. PYTHONPATH=~/warptap/src)")
     # warptap is optional: without it, mypy finds no module to check against.
-    from warptap.icl_model import (  # type: ignore[import-not-found]
-        InstrumentDirection,
-        SignalBinding,
-        slot_name,
-    )
     from warptap.pdl_interpreter import (  # type: ignore[import-not-found]
         PDLInterpreter,
-    )
-    from warptap.sib_plan import (  # type: ignore[import-not-found]
-        InstrumentSpec,
-        build_sib_plan,
     )
     from warptap.tap_fsm import TapState  # type: ignore[import-not-found]
     from warptap.tap_ir import GotoState, ShiftIR  # type: ignore[import-not-found]
     from warptap.tap_ir_play import to_cycles  # type: ignore[import-not-found]
 
-    # The network wrap-test-access built, rebuilt from the manifest the way
-    # autoMBIST built it: one SIB per instrument, in chain order.
-    specs = [
-        InstrumentSpec(
-            ins.name,
-            width=ins.width,
-            capture_value=0,
-            direction=(
-                InstrumentDirection.WRITE
-                if ins.role == "control"
-                else InstrumentDirection.READ
-            ),
-            signal_bits=tuple(SignalBinding(ins.name, b) for b in range(ins.width)),
-        )
-        for ins in access.instruments
-    ]
-    graph, root = build_sib_plan(specs, top_name=access.top_module)
-    sib_of = {i.hierarchical_path: i.sib_name for i in access.instances}
-    assert [slot_name(node) for node in graph.chain] == [
-        sib_of[ins.sib] for ins in access.instruments
-    ], "the rebuilt IJTAG network is not the one in the netlist"
-
+    # The network wrap-test-access built, rebuilt from the manifest (and checked
+    # against its SIB names) the way autoMBIST built it.
+    graph, root = rebuild_network(access)
     pdl = PDLInterpreter(graph, root)
     for control in ("test_mode", "bist_start"):
         pdl.iTarget(control)
