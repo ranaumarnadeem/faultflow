@@ -341,6 +341,7 @@ def _reason_summary(
             "excluded_scan_chain",
             "excluded_cross_domain",
             "excluded_wbr_decoupled",
+            "excluded_jtag",
         )
     )
     summary = {
@@ -411,6 +412,7 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         "excluded_scan_chain",
         "excluded_cross_domain",
         "excluded_wbr_decoupled",
+        "excluded_jtag",
         "protocol_unresolved",
         "compression_unresolved",
         "compaction_unresolved",
@@ -462,7 +464,9 @@ def _autombist_categories(
     )
 
 
-def _category_lines(categories: dict[str, Any], jtag: bool) -> list[str]:
+def _category_lines(
+    categories: dict[str, Any], jtag: bool, nonscan: bool = False
+) -> list[str]:
     from faultflow.integrations.autombist_coverage import JTAG_CATEGORIES
 
     lines = ["autombist categories (detected / denominator, blackbox_unresolved):"]
@@ -481,7 +485,18 @@ def _category_lines(categories: dict[str, Any], jtag: bool) -> list[str]:
                 + ("n/a" if combined is None else f"{combined:.3f}%")
             )
         lines.append(line)
-    if JTAG_CATEGORIES & set(categories):
+    if JTAG_CATEGORIES & set(categories) and nonscan:
+        lines.append(
+            "  note: the TAP and the IJTAG network run non-scan ([scan] "
+            "nonscan_cells): scan leaves their faults to JTAG (excluded_jtag)"
+            + (
+                ", and ff.py jtag's network-integrity program graded them "
+                "through TCK (with jtag)"
+                if jtag
+                else "; ff.py jtag grades them"
+            )
+        )
+    elif JTAG_CATEGORIES & set(categories):
         lines.append(
             "  note: scan patterns grade the TAP and the IJTAG network like any "
             "other logic"
@@ -489,8 +504,8 @@ def _category_lines(categories: dict[str, Any], jtag: bool) -> list[str]:
                 ", and ff.py jtag's network-integrity program graded them "
                 "through TCK too (with jtag)"
                 if jtag
-                else "; TAP non-scan operation is not modeled, and the IJTAG "
-                "network-integrity patterns are not graded (ff.py jtag grades them)"
+                else "; the IJTAG network-integrity patterns are not graded (ff.py "
+                "jtag grades them), and [scan] nonscan_cells runs them non-scan"
             )
         )
     return lines
@@ -555,6 +570,7 @@ def write_reports(
         + data["excluded_scan"]
         + data.get("excluded_cross_domain", 0)
         + data.get("excluded_wbr_decoupled", 0)
+        + data.get("excluded_jtag", 0)
     )
     if data["total_raw_faults"] != invariant:
         raise CoverageError(
@@ -658,6 +674,7 @@ def write_reports(
             f"excluded_scan_chain:{data['excluded_scan_chain']}",
             f"excluded_cross_domain:{data.get('excluded_cross_domain', 0)}",
             f"excluded_wbr_decoupled:{data.get('excluded_wbr_decoupled', 0)}",
+            f"excluded_jtag:       {data.get('excluded_jtag', 0)}",
             f"protocol_unresolved: {data['protocol_unresolved']}",
             f"compression_unresolved: {data.get('compression_unresolved', 0)}",
             f"compaction_unresolved: {data.get('compaction_unresolved', 0)}",
@@ -698,7 +715,11 @@ def write_reports(
         txt.extend(_jtag_lines(*jtag_blocks))
         txt.append("")
     if categories is not None:
-        txt.extend(_category_lines(categories, jtag_blocks is not None))
+        txt.extend(
+            _category_lines(
+                categories, jtag_blocks is not None, bool(cfg.scan.nonscan_cells)
+            )
+        )
         txt.append("")
     txt.append("undetected faults:")
     for fault in cast(list[dict[str, Any]], report["undetected_faults"]):

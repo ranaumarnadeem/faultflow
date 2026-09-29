@@ -292,7 +292,14 @@ def apply_scan_execution_map(
     campaign_id: int,
     execution: dict[str, int],
     exclusions: dict[str, str],
+    *,
+    jtag_sites: set[str] | frozenset[str] = frozenset(),
+    jtag_faults: frozenset[tuple[str, str]] = frozenset(),
 ) -> None:
+    """Write the view site of every fault ATPG grades and the exclusion of every
+    fault it doesn't. ``jtag_sites`` (both faults of each site) and ``jtag_faults``
+    ((site key, "sa0"/"sa1") pairs) are left to JTAG (scan/nonscan.py): only an
+    uncollapsed fault nothing else excludes is tagged, so it is counted once."""
     conn.execute(
         "UPDATE faults SET atpg_compiled_net_index = NULL WHERE campaign_id = ?",
         (campaign_id,),
@@ -319,6 +326,18 @@ def apply_scan_execution_map(
             (exclusion, exclusion, campaign_id, key)
             for key, exclusion in exclusions.items()
         ],
+    )
+    jtag_update = """
+        UPDATE faults
+        SET exclusion = 'jtag', excluded = 'jtag', status = 'excluded',
+            atpg_compiled_net_index = NULL
+        WHERE campaign_id = ? AND fault_site_key = ?
+          AND exclusion = 'none' AND collapsed_into IS NULL
+        """
+    conn.executemany(jtag_update, [(campaign_id, key) for key in sorted(jtag_sites)])
+    conn.executemany(
+        jtag_update + " AND lower(fault_type) = ?",
+        [(campaign_id, key, fault_type) for key, fault_type in sorted(jtag_faults)],
     )
     missing = conn.execute(
         """

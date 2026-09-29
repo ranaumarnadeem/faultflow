@@ -238,7 +238,8 @@ def run_jtag(
                 """
                 SELECT id, fault_site_key, fault_type, compiled_net_index
                 FROM faults
-                WHERE campaign_id = ? AND exclusion = 'none' AND collapsed_into IS NULL
+                WHERE campaign_id = ? AND exclusion IN ('none', 'jtag')
+                  AND collapsed_into IS NULL
                 ORDER BY id
                 """,
                 (campaign_id,),

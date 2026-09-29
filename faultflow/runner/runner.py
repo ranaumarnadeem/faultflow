@@ -67,6 +67,7 @@ from faultflow.scan.reports import (
     utc_timestamp,
     write_scan_artifacts,
 )
+from faultflow.scan.nonscan import NONSCAN_REASON, NonscanSetup, analyze_nonscan
 from faultflow.scan.x_mask import XMask, launch_mode_key, mask_scan_view
 from faultflow.verify import IverilogVerifier, VerificationError
 
@@ -1991,32 +1992,25 @@ class Runner:
                 "scan-check is stale for the current generic scanned JSON; "
                 "re-run scan-check"
             )
-        if self.cfg.scan.hold:
-            raise RunnerError(
-                "sim --scan does not apply [scan] hold yet; remove it to run scan ATPG"
-            )
         ineligible = manifest.get("ineligible_ffs", [])
         if isinstance(ineligible, list) and ineligible:
             # WBR scan cells are deliberately routed to the wrapper chain (fused
             # into the view downstream by fuse_wbr_into_view), NOT the main scan
-            # chain -- they are not a full-scan blocker. Genuinely unscannable FFs
-            # (unsupported_ff_shape, unknown_cell_type, existing_scan_cell) are.
+            # chain -- they are not a full-scan blocker; nor are flops left out
+            # by [scan] nonscan_cells, which the view ties (scan.nonscan refuses
+            # one it can't). Genuinely unscannable FFs (unsupported_ff_shape,
+            # unknown_cell_type, existing_scan_cell) are.
             blockers = [
                 item
                 for item in ineligible
-                if isinstance(item, dict) and item.get("reason") != "wbr_scan_cell"
+                if isinstance(item, dict)
+                and item.get("reason") not in ("wbr_scan_cell", NONSCAN_REASON)
             ]
-            nonscan = sorted(
-                str(item.get("instance", "?"))
-                for item in blockers
-                if item.get("reason") == "nonscan_policy"
+            wbr_count = sum(
+                1
+                for item in ineligible
+                if isinstance(item, dict) and item.get("reason") == "wbr_scan_cell"
             )
-            if nonscan:
-                raise RunnerError(
-                    "sim --scan does not model non-scan cells ([scan] nonscan_cells) "
-                    f"yet: {', '.join(nonscan)}"
-                )
-            wbr_count = len(ineligible) - len(blockers)
             if wbr_count:
                 log.info(
                     "scan preflight: %d WBR cell(s) routed to wrapper chain",
@@ -2301,15 +2295,18 @@ class Runner:
         manifest: dict[str, Any],
         generic_json: Path,
         functional_output_order: list[str],
+        nonscan: NonscanSetup | None = None,
     ) -> XMask:
         """Mask, in the scan ATPG view on disk, every observation point an
-        unknown blackbox output reaches (scan.x_mask), for this campaign's
-        launch mode. Refuses a design where such an output reaches the scan
-        path itself."""
+        unknown value reaches (scan.x_mask) -- a blackbox output's, or a
+        non-scan flop's no held input keeps in reset -- for this campaign's
+        launch mode. Refuses a design where such a value reaches the scan path
+        itself."""
         launch_mode = launch_mode_key(
             self.cfg.fault_model.model == "transition", self.cfg.fault_model.launch
         )
-        if not self.cfg.blackbox_x_instances:
+        x_flops = nonscan.x_sources if nonscan is not None else ()
+        if not self.cfg.blackbox_x_instances and not x_flops:
             return XMask(launch_mode=launch_mode)
         core = _load_core()
         if core is None:
@@ -2323,7 +2320,36 @@ class Runner:
             generic_json,
             functional_output_order,
             launch_mode=launch_mode,
+            nonscan_x_nets=x_flops,
+            nonscan_q_nets=(
+                [flop.q for flop in nonscan.flops] if nonscan is not None else ()
+            ),
         )
+
+    def _nonscan_setup(
+        self, manifest: dict[str, Any], generic_json: Path
+    ) -> NonscanSetup | None:
+        """[scan] nonscan_cells and [scan] hold, checked against the scanned
+        netlist (scan.nonscan), or None without either."""
+        if not self.cfg.scan.nonscan_cells and not self.cfg.scan.hold:
+            return None
+        from faultflow.scan.detection_pipeline import _scan_reset_pi_holds
+
+        cell_map = _load_json_object(resolve_scan_cell_map(self.cfg))
+        _, module = _json_top_module(generic_json, self.cfg.top)
+        try:
+            return analyze_nonscan(
+                module,
+                manifest,
+                cell_map,
+                globs=self.cfg.scan.nonscan_cells,
+                holds=self.cfg.scan.hold,
+                scan_reset_holds=_scan_reset_pi_holds(
+                    generic_json, self.cfg.top, cell_map
+                ),
+            )
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
 
     def _sim_scan(
         self,
@@ -2353,11 +2379,14 @@ class Runner:
         # output of unknown value reaches is masked (scan.x_mask). The view
         # then contains none of them, so it loads with no blackbox list. The
         # generic netlist keeps the real instances and still loads with
-        # cfg.blackbox_instances.
+        # cfg.blackbox_instances. Non-scan flops and held inputs are tied the
+        # same way (scan.nonscan).
+        nonscan = self._nonscan_setup(manifest, generic_json)
         view, pseudo_port_map = build_scan_atpg_view(
             _load_json_object(generic_json),
             manifest,
             blackbox_instances=self.cfg.blackbox_instances,
+            nonscan=nonscan,
         )
 
         # INTEST: fuse the wrapper boundary into the scan-reduced view so the
@@ -2403,7 +2432,12 @@ class Runner:
         ]
         # Before the fingerprint, which then hashes the masked view.
         x_mask = self._mask_unknown_blackbox_outputs(
-            view, atpg_view_path, manifest, generic_json, functional_output_order
+            view,
+            atpg_view_path,
+            manifest,
+            generic_json,
+            functional_output_order,
+            nonscan=nonscan,
         )
         scan_pipeline_ctx = build_scan_pipeline_context(
             self.cfg,
@@ -2415,6 +2449,7 @@ class Runner:
             wbr_observe_name_by_port=wbr_observe,
             wbr_decoupled_bits=wbr_decoupled,
             x_mask=x_mask,
+            nonscan=nonscan,
         )
 
         from faultflow.scan.atpg_view import ATPG_VIEW_SCHEMA_VER
@@ -2541,6 +2576,11 @@ class Runner:
         view doesn't have. Dead-core faults are unobservable here and fall out as
         SAT-redundant, so coverage reflects the testable interconnect.
         """
+        if self.cfg.scan.nonscan_cells or self.cfg.scan.hold:
+            raise RunnerError(
+                "[scan] nonscan_cells and [scan] hold apply to scan ATPG "
+                "(FUNCTIONAL and INTEST), not to EXTEST"
+            )
         from faultflow.runner.progressive_atpg import (
             redundancy_model_id,
             run_progressive_native_atpg,
@@ -2709,5 +2749,11 @@ class Runner:
                 f"excluded_blackbox={data['excluded_blackbox']} "
                 f"excluded_clock={data['excluded_clock']} "
                 f"excluded_reset={data['excluded_reset']} "
-                f"xdomain={data.get('excluded_cross_domain', 0)}{atpg_note}"
+                f"xdomain={data.get('excluded_cross_domain', 0)}"
+                + (
+                    f" excluded_jtag={data['excluded_jtag']}"
+                    if data.get("excluded_jtag")
+                    else ""
+                )
+                + atpg_note
             )

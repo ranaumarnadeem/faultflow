@@ -19,7 +19,9 @@ assembly owns it (``handoff``). Each fault is classified into exactly one of:
     owned              — owning role == this scope's role AND in this denominator
     foreign            — in this denominator but the OTHER role owns it
     handoff            — excluded here (wbr_decoupled) but the OTHER role owns it
-    excluded_by_design — clock/reset/scan/blackbox + AU/redundant + collapsed
+    excluded_by_design — clock/reset/scan/blackbox/jtag + AU/redundant + collapsed
+                         (jtag: left to a TAP's JTAG test, [scan] nonscan_cells --
+                         its JTAG credit is not in the chip number)
 
 Guards (on the UNCOLLAPSED canonical fault universe, keyed net-id-independently by
 ``(boundary_block, boundary_wbc, pin, side, fault_type)`` so a boundary fault is the

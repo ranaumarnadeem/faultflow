@@ -41,6 +41,8 @@ from faultflow.config import FaultflowConfig
 from faultflow.scan.atpg_view import (
     BLACKBOX_INSTANCE_ATTR,
     BLACKBOX_TIE_PREFIX,
+    NONSCAN_X_ATTR,
+    NONSCAN_X_PREFIX,
     PPI_PREFIX,
     PPO_PREFIX,
     UNOBSERVED_NETS_ATTR,
@@ -82,14 +84,21 @@ def launch_mode_key(transition: bool, launch_mode: str) -> str | None:
 
 
 def x_source_nets(module: dict[str, Any], x_instances: Collection[str]) -> list[int]:
-    """Net ids of the view's tie cells standing in for the outputs of
-    `x_instances`: the blackboxes whose output value is unknown."""
+    """Net ids of the view's tie cells standing in for an unknown value: the
+    outputs of `x_instances`, the blackboxes whose output value is unknown, and
+    of every non-scan flop no held input keeps in reset (scan/nonscan.py)."""
     wanted = set(x_instances)
     nets: set[int] = set()
     for name, cell in module.get("cells", {}).items():
-        if not str(name).startswith(BLACKBOX_TIE_PREFIX) or not isinstance(cell, dict):
+        if not isinstance(cell, dict):
             continue
-        if cell.get("attributes", {}).get(BLACKBOX_INSTANCE_ATTR) not in wanted:
+        attributes = cell.get("attributes", {})
+        if str(name).startswith(NONSCAN_X_PREFIX) and attributes.get(NONSCAN_X_ATTR):
+            nets.update(b for b in cell["connections"]["Y"] if isinstance(b, int))
+            continue
+        if not str(name).startswith(BLACKBOX_TIE_PREFIX):
+            continue
+        if attributes.get(BLACKBOX_INSTANCE_ATTR) not in wanted:
             continue
         nets.update(b for b in cell["connections"]["Y"] if isinstance(b, int))
     return sorted(nets)
@@ -199,13 +208,17 @@ def mask_scan_view(
     functional_output_order: Collection[str],
     *,
     launch_mode: str | None,
+    nonscan_x_nets: Collection[int] = (),
+    nonscan_q_nets: Collection[int] = (),
 ) -> XMask:
-    """Mask every observation point an unknown blackbox output reaches, for a
+    """Mask every observation point an unknown value reaches -- a blackbox
+    output's, or a non-scan flop's (`nonscan_x_nets`, its output nets) -- for a
     campaign in `launch_mode` (launch_mode_key), in `view` and in the file
-    `view_path` that holds it. Refuses a design where such an output reaches
-    the scan path of the scanned netlist `generic_json`."""
+    `view_path` that holds it. Refuses a design where such a value reaches the
+    scan path of the scanned netlist `generic_json`; `nonscan_q_nets` are the
+    non-scan flops, whose own pins are off it."""
     x_instances = cfg.blackbox_x_instances
-    if not x_instances:
+    if not x_instances and not nonscan_x_nets:
         return XMask(launch_mode=launch_mode)
     cell_map = str(resolve_scan_cell_map(cfg))
     unsupported = cfg.simulation.unsupported_cells
@@ -217,6 +230,8 @@ def mask_scan_view(
         unsupported=unsupported,
         blackbox_instances=cfg.blackbox_instances,
         x_instances=x_instances,
+        extra_sources=nonscan_x_nets,
+        off_path_q_nets=nonscan_q_nets,
     )
     mask = compute_x_mask(
         core,
@@ -244,13 +259,17 @@ def check_x_off_scan_path(
     unsupported: str,
     blackbox_instances: Collection[str],
     x_instances: Collection[str],
+    extra_sources: Collection[int] = (),
+    off_path_q_nets: Collection[int] = (),
 ) -> None:
-    """Raise ScanError if an unknown blackbox output reaches a scan flop's
-    clock, scan-in or scan-enable in the scanned netlist. There it would
-    corrupt the shift, and the per-bit mask assumes a clean one."""
+    """Raise ScanError if an unknown blackbox output, or one of
+    `extra_sources`, reaches a scan flop's clock, scan-in or scan-enable in
+    the scanned netlist. There it would corrupt the shift, and the per-bit
+    mask assumes a clean one. The flops `off_path_q_nets` name (by output net)
+    are off the scan path whatever reaches them."""
     top = str(manifest["top"])
     _, module = _top_module(json.loads(generic_json.read_text(encoding="utf-8")), top)
-    sources: set[int] = set()
+    sources: set[int] = set(extra_sources)
     for inst in x_instances:
         cell = module.get("cells", {}).get(inst, {})
         directions = cell.get("port_directions", {})
@@ -271,10 +290,11 @@ def check_x_off_scan_path(
         for record in manifest.get("cells", [])
         if isinstance(record, dict) and "q_net" in record
     }
+    off_path = set(off_path_q_nets)
     bad = sorted(
         f"{flop_by_q.get(int(q), f'net {q}')}.{pin}"
         for q, pin in found["flop_inputs"]
-        if pin in _SCAN_PATH_PINS
+        if pin in _SCAN_PATH_PINS and int(q) not in off_path
     )
     if bad:
         raise ScanError(

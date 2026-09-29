@@ -143,7 +143,8 @@ def report_blocks(
     if run is None:
         return None
     run_id = int(run["id"])
-    eligible = "f.exclusion = 'none' AND f.collapsed_into IS NULL"
+    # Scan's own faults, and those it leaves to JTAG ([scan] nonscan_cells).
+    eligible = "f.exclusion IN ('none', 'jtag') AND f.collapsed_into IS NULL"
     row = conn.execute(
         f"""
         SELECT
@@ -199,7 +200,8 @@ def report_blocks(
         "scan_redundant_conflicts": conflicts,
         "holds": {str(k): int(v) for k, v in json.loads(str(run["holds"]))},
     }
-    structural = int(summary["structural_eligible"])
+    left_to_jtag = int(summary.get("excluded_jtag", 0))
+    structural = int(summary["structural_eligible"]) + left_to_jtag
     denominator = structural - redundant
     combined = {
         "structural_eligible": structural,
@@ -212,8 +214,11 @@ def report_blocks(
         ),
     }
     # Scan and JTAG credit only move faults between detected, undetected and
-    # redundant: the Policy-3 invariant holds with the combined numbers too.
-    moved = int(summary["denominator"]) + int(summary.get("redundant", 0))
+    # redundant, and bring back the ones scan left to JTAG: the Policy-3
+    # invariant holds with the combined numbers too.
+    moved = (
+        int(summary["denominator"]) + int(summary.get("redundant", 0)) + left_to_jtag
+    )
     if denominator + redundant != moved:
         raise RuntimeError(
             "combined coverage invariant failed: denominator + redundant "

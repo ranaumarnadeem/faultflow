@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
 from faultflow.coverage.site_key import (
     SiteProvenance,
@@ -20,6 +20,9 @@ from faultflow.scan.stitch import (
     _top_module,
 )
 
+if TYPE_CHECKING:
+    from faultflow.scan.nonscan import NonscanSetup
+
 PPI_PREFIX = "__ppi_"
 PPO_PREFIX = "__ppo_"
 OBSERVE_BUF_CELL = "$faultflow_observe_buf"
@@ -29,6 +32,7 @@ D_BRANCH_BUF_CELL = "$faultflow_d_branch_buf"
 # fault site of the real netlist, and a tie hanging off it would give its
 # stuck-at-1 a path through the blackbox the real netlist doesn't have.
 TIE0_CELL = "$faultflow_tie0"
+TIE1_CELL = "$faultflow_tie1"
 # Bare (unescaped) spelling of stitch.py's YOSYS_CAPTURE_*_CELL constants --
 # derived, not re-typed, so the two producers of these cell types can't drift.
 CAPTURE_AND_CELL = YOSYS_CAPTURE_AND_CELL.lstrip("\\")
@@ -53,6 +57,17 @@ BLACKBOX_FREE_PORT_PREFIX = "__bbfree_"
 BLACKBOX_OBSERVE_PORT_PREFIX = "__bbobs_"
 # Each tie cell's attribute naming the blackbox instance it stands in for.
 BLACKBOX_INSTANCE_ATTR = "faultflow_blackbox"
+# Non-scan cells (_model_nonscan): a tie named with the first prefix and its value
+# drives a forced non-scan flop's output, one named with the second an X source's; a
+# dangling reader named with the third reads each of its input pins; and a tie named
+# with the fourth drives each held input, whose port the view drops. Each flop's cells
+# name it in the attribute; an X source's tie is also marked with the last.
+NONSCAN_TIE_PREFIX = "$nstie"
+NONSCAN_X_PREFIX = "$nsx_"
+NONSCAN_SINK_PREFIX = "$nssink_"
+HOLD_TIE_PREFIX = "$nshold_"
+NONSCAN_INSTANCE_ATTR = "faultflow_nonscan"
+NONSCAN_X_ATTR = "faultflow_nonscan_x"
 # Top-module attribute of a scan ATPG view: space-separated net ids of output
 # bits nothing may observe (x_mask.py). Mirrors kUnobservedNetsAttr in
 # src/core/ir/normalized_graph/normalized_graph.hpp, which drops them from
@@ -631,6 +646,56 @@ def _model_blackboxes_opaque(module: dict[str, Any], instances: Sequence[str]) -
         next_id += 1
 
 
+def _tie(value: int, bit: int, attributes: dict[str, str]) -> dict[str, Any]:
+    return {
+        "hide_name": 0,
+        "type": TIE1_CELL if value else TIE0_CELL,
+        "parameters": {},
+        "attributes": {"faultflow_internal": "1", **attributes},
+        "port_directions": {"Y": "output"},
+        "connections": {"Y": [bit]},
+    }
+
+
+def _model_nonscan(module: dict[str, Any], nonscan: NonscanSetup) -> None:
+    """Replace each non-scan flop with what a scan test sees of it (scan/nonscan.py):
+    a forced flop's output is tied to the value its held reset forces; an X source's
+    to 0, a placeholder x_mask.py masks. Each of its input pins keeps a dangling
+    reader of its own, which holds the net in the view as the flop's pin did and
+    marks it for the hold twin to observe. Each held input's port is dropped and a
+    tie drives its net, so ATPG can't assign it either."""
+    cells = module.get("cells", {})
+    next_id = _next_net_id(module)
+    for flop in nonscan.flops:
+        if cells.pop(flop.instance, None) is None:
+            raise ScanError(
+                f"non-scan flop {flop.instance!r} not found in the scan view"
+            )
+        attributes = {NONSCAN_INSTANCE_ATTR: flop.instance}
+        if flop.value is None:
+            name = f"{NONSCAN_X_PREFIX}{flop.instance}"
+            cells[name] = _tie(0, flop.q, {**attributes, NONSCAN_X_ATTR: "1"})
+        else:
+            name = f"{NONSCAN_TIE_PREFIX}{flop.value}_{flop.instance}"
+            cells[name] = _tie(flop.value, flop.q, attributes)
+        for pin, bit in flop.inputs:
+            cells[f"{NONSCAN_SINK_PREFIX}{flop.instance}_{pin}"] = {
+                "hide_name": 0,
+                "type": OBSERVE_BUF_CELL,
+                "parameters": {},
+                "attributes": {"faultflow_internal": "1", **attributes},
+                "port_directions": {"A": "input", "Y": "output"},
+                "connections": {"A": [bit], "Y": [next_id]},
+            }
+            next_id += 1
+    ports = module.get("ports", {})
+    for port, value in sorted(nonscan.holds.items()):
+        entry = ports.pop(port, None)
+        if not isinstance(entry, dict) or len(entry.get("bits", [])) != 1:
+            raise ScanError(f"held input {port!r} is not a single-bit port of the view")
+        cells[f"{HOLD_TIE_PREFIX}{port}"] = _tie(value, entry["bits"][0], {})
+
+
 def _branch_flop_outputs(
     module: dict[str, Any], pseudo_port_map: dict[str, dict[str, Any]]
 ) -> None:
@@ -751,6 +816,7 @@ def build_scan_atpg_view(
     *,
     active_clock_net: int | None = None,
     blackbox_instances: Sequence[str] = (),
+    nonscan: NonscanSetup | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """Return (reduced Yosys JSON, pseudo_port_map keyed by FF instance).
 
@@ -760,6 +826,8 @@ def build_scan_atpg_view(
 
     `blackbox_instances` are modeled opaque (`_model_blackboxes_opaque`), so
     the returned view contains none of them: load it with no blackbox list.
+    `nonscan` (scan/nonscan.py) replaces the non-scan flops and held inputs
+    with ties (`_model_nonscan`).
     """
     top = str(manifest["top"])
     _, source_module = _top_module(generic_json, top)
@@ -773,6 +841,8 @@ def build_scan_atpg_view(
         # fuse_wbr_into_view. Return the netlist otherwise unchanged (no
         # pseudo-ports); blackboxes are still modeled opaque.
         _model_blackboxes_opaque(module, blackbox_instances)
+        if nonscan is not None:
+            _model_nonscan(module, nonscan)
         return view, {}
 
     instances = [str(record["instance"]) for record in records]
@@ -941,6 +1011,8 @@ def build_scan_atpg_view(
     clock_nets_list = manifest_clock_net_ids(manifest)
     _drop_dangling_scan_ports(module, manifest, clock_nets_list)
     _model_blackboxes_opaque(module, blackbox_instances)
+    if nonscan is not None:
+        _model_nonscan(module, nonscan)
     _branch_flop_outputs(module, pseudo_port_map)
 
     attrs = module.setdefault("attributes", {})
@@ -956,10 +1028,12 @@ def build_scan_atpg_view_from_paths(
     *,
     active_clock_net: int | None = None,
     blackbox_instances: Sequence[str] = (),
+    nonscan: NonscanSetup | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     return build_scan_atpg_view(
         _load_json(Path(generic_json_path)),
         manifest,
         active_clock_net=active_clock_net,
         blackbox_instances=blackbox_instances,
+        nonscan=nonscan,
     )

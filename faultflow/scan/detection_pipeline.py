@@ -68,6 +68,7 @@ from faultflow.scan.care_bits import extract_scan_care_bits
 from faultflow.scan.compaction import CompactionMap, build_compactor_fanout
 from faultflow.scan.compression import CompressionMap, build_broadcast_fanout
 from faultflow.scan.errors import ScanError
+from faultflow.scan.nonscan import NonscanSetup, jtag_sites
 from faultflow.scan.ring_generator import (
     bitmask_to_index_list,
     care_bit_rows,
@@ -141,6 +142,12 @@ class ScanPipelineContext:
     # this campaign's launch mode (faultflow.scan.x_mask): no detection credit,
     # no SAT target, don't-care in every pattern. Empty without blackboxes.
     x_mask: XMask = XMask()
+    # [scan] nonscan_cells / [scan] hold (faultflow.scan.nonscan): the view ties
+    # the non-scan flops and the held inputs, so the held inputs aren't view
+    # ports; every pattern applies them in every cycle (_serialize). None and
+    # empty without non-scan cells.
+    nonscan: NonscanSetup | None = None
+    input_holds: dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass
@@ -204,6 +211,7 @@ def build_scan_pipeline_context(
     wbr_observe_name_by_port: dict[str, str] | None = None,
     wbr_decoupled_bits: frozenset[int] | None = None,
     x_mask: XMask | None = None,
+    nonscan: NonscanSetup | None = None,
 ) -> ScanPipelineContext:
     q_stems = {
         str(entry["boundary"]["q_stem_site_key"])
@@ -272,6 +280,12 @@ def build_scan_pipeline_context(
         compaction_map=compaction_map,
         clock_ports=clock_ports,
         x_mask=x_mask if x_mask is not None else XMask(),
+        nonscan=nonscan,
+        input_holds=(
+            {port: bool(value) for port, value in nonscan.holds.items()}
+            if nonscan is not None
+            else {}
+        ),
     )
 
 
@@ -281,9 +295,12 @@ def _require_x_mask(
     """The view SAT and every reduced simulator run on must mask exactly what
     scan_ctx.x_mask says, computed for this campaign's launch mode. A view
     with an unknown blackbox output and no mask would silently credit
-    detections that depend on the memory's content."""
+    detections that depend on the memory's content -- or on a non-scan flop's
+    unknown state."""
     x_instances = scan_ctx.cfg.blackbox_x_instances
-    if not x_instances:
+    if not x_instances and not (
+        scan_ctx.nonscan is not None and scan_ctx.nonscan.x_sources
+    ):
         return
     top = str(scan_ctx.manifest["top"])
     view = json.loads(Path(reduced_json_path).read_text(encoding="utf-8"))
@@ -470,9 +487,10 @@ def _observed_outputs(ctx: ScanPipelineContext) -> list[str]:
 def _serialize(
     ctx: ScanPipelineContext, serialize_input: dict[str, bool]
 ) -> ScanPattern:
-    """serialize_vector, with the X-masked expected bits marked don't-care."""
+    """serialize_vector, with the X-masked expected bits marked don't-care and
+    the held inputs, which the view ties rather than lists, at their values."""
     return serialize_vector(
-        serialize_input,
+        {**serialize_input, **ctx.input_holds},
         ctx.pseudo_port_map,
         ctx.manifest,
         masked_ppo_ports=ctx.x_mask.ppo_ports,
@@ -1728,6 +1746,31 @@ def run_progressive_scan_atpg(
                     "cross-domain: tagged %d fault sites excluded_cross_domain",
                     n_xd,
                 )
+    # Non-scan cells: their own faults, and what only they see, are left to
+    # JTAG (ff.py jtag) -- tagged before any SAT, which would otherwise call
+    # them redundant -- and so are the stuck-ats that could release a flop the
+    # view ties in reset.
+    jtag_keys: set[str] = set()
+    if scan_ctx.nonscan is not None:
+        top_name = str(scan_ctx.manifest.get("top", cfg.top))
+        _, generic_module = _top_module(
+            json.loads(scan_ctx.generic_json.read_text(encoding="utf-8")), top_name
+        )
+        jtag_keys = jtag_sites(
+            list(
+                core.list_site_keys(
+                    str(scan_ctx.generic_json), generic_cell_map, unsupported, bb
+                )
+            ),
+            generic_module,
+            json.loads(Path(generic_cell_map).read_text(encoding="utf-8")),
+            scan_ctx.nonscan,
+            tdo=cfg.jtag.tdo,
+            blackbox_instances=bb,
+        )
+        log.info(
+            "non-scan: %d fault sites left to JTAG (excluded_jtag)", len(jtag_keys)
+        )
     with connect(effective_db_path) as conn:
         init_schema(conn)
         apply_scan_execution_map(
@@ -1735,6 +1778,12 @@ def run_progressive_scan_atpg(
             campaign_id,
             execution_map,
             exclusions,
+            jtag_sites=jtag_keys,
+            jtag_faults=(
+                scan_ctx.nonscan.release_faults
+                if scan_ctx.nonscan is not None
+                else frozenset()
+            ),
         )
     core.invalidate_stale_redundant(effective_db_path, campaign_id, redundancy_model)
     # With blackboxes opaque in the view, UNSAT alone can't tell a redundant

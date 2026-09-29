@@ -398,6 +398,7 @@ def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[st
                 "excluded_scan_chain": 0,
                 "excluded_cross_domain": 0,
                 "excluded_wbr_decoupled": 0,
+                "excluded_jtag": 0,
                 "protocol_unresolved": 0,
                 "compression_unresolved": 0,
                 "compaction_unresolved": 0,
@@ -436,6 +437,8 @@ def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[st
                     THEN 1 ELSE 0 END) AS excluded_cross_domain,
           SUM(CASE WHEN exclusion = 'wbr_decoupled'
                     THEN 1 ELSE 0 END) AS excluded_wbr_decoupled,
+          SUM(CASE WHEN exclusion = 'jtag' AND collapsed_into IS NULL
+                    THEN 1 ELSE 0 END) AS excluded_jtag,
           SUM(CASE WHEN protocol_unresolved = 1 AND exclusion = 'none'
                     AND collapsed_into IS NULL AND status != 'detected'
                     THEN 1 ELSE 0 END) AS protocol_unresolved,

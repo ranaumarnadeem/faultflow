@@ -145,17 +145,21 @@ def category_coverage(
     scan campaign. The categories -- GLUE included -- add up to the summary.
 
     Scan patterns grade the TAP and the IJTAG network like any other logic:
-    their flops are scanned. `jtag_detected` (fault ids ff.py jtag's
-    network-integrity program detected) adds combined_detected,
+    their flops are scanned -- unless [scan] nonscan_cells leaves them to JTAG
+    (exclusion jtag), out of these denominators. `jtag_detected` (fault ids
+    ff.py jtag's network-integrity program detected) adds combined_detected,
     combined_denominator and combined_coverage_percent: scan and JTAG credit
-    together, a scan-redundant fault JTAG detects counting as detected."""
+    together, a scan-redundant fault JTAG detects counting as detected, and a
+    fault left to JTAG counting whether JTAG detects it or not."""
     _, module = _top_module(_load_json(netlist_json), top)
     owners = _Owners(module, categories)
     drivers = _drivers(module, _load_json(cell_map_json))
     counts: dict[str, dict[str, Any]] = {}
-    # The fault id is read only to match JTAG detections.
+    # The fault id is read only to match JTAG detections. A fault scan leaves to
+    # JTAG ([scan] nonscan_cells) is in the combined denominator either way.
     jtag_columns = (
-        ", id, (exclusion = 'none' AND collapsed_into IS NULL) AS eligible"
+        ", id, (exclusion IN ('none', 'jtag') AND collapsed_into IS NULL) AS eligible,"
+        " (exclusion = 'jtag' AND collapsed_into IS NULL) AS left_to_jtag"
         if jtag_detected is not None
         else ""
     )
@@ -187,7 +191,9 @@ def category_coverage(
             entry.setdefault("combined_detected", 0)
             entry.setdefault("combined_denominator", 0)
             entry["combined_detected"] += int(bool(row[3]) or by_jtag)
-            entry["combined_denominator"] += int(bool(row[2]) or by_jtag)
+            entry["combined_denominator"] += int(
+                bool(row[2]) or by_jtag or bool(row[7])
+            )
     for entry in counts.values():
         denominator = entry["denominator"]
         entry["coverage_percent"] = (

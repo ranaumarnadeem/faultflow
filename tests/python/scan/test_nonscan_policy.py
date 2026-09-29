@@ -12,7 +12,7 @@ import pytest
 from faultflow.config import ConfigError, load_config
 from faultflow.rule_check.model import Severity
 from faultflow.rule_check.rules import rules_scan
-from faultflow.runner import Runner, RunnerError
+from faultflow.runner import Runner
 from faultflow.scan import stitch_scan_json
 from faultflow.scan.reports import hash_file, manifest_from_result, utc_timestamp
 from faultflow.scan.stitch import IneligibleFF, scan_clock_domains
@@ -164,9 +164,10 @@ def test_nonscan_config_is_fingerprinted_only_when_set(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_sim_scan_refuses_nonscan_cells_until_they_are_modeled(
+def test_sim_scan_takes_the_nonscan_flops_for_full_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Left out by policy, they don't block sim --scan: the view ties them."""
     monkeypatch.chdir(tmp_path)
     source = _netlist(tmp_path)
     cfg = load_config(
@@ -187,5 +188,7 @@ def test_sim_scan_refuses_nonscan_cells_until_they_are_modeled(
     }
     cfg.scan_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    with pytest.raises(RunnerError, match="does not model non-scan cells.*u_tap__st"):
-        Runner(cfg)._preflight_sim_scan()
+    ineligible = Runner(cfg)._preflight_sim_scan()["ineligible_ffs"]
+
+    assert isinstance(ineligible, list)
+    assert [ff["reason"] for ff in ineligible] == ["nonscan_policy"]

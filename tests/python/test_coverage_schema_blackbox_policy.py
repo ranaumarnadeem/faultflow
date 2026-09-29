@@ -137,6 +137,7 @@ def _minimal_valid_report() -> dict[str, Any]:
             "excluded_scan_chain": 0,
             "excluded_cross_domain": 0,
             "excluded_wbr_decoupled": 0,
+            "excluded_jtag": 0,
             "protocol_unresolved": 0,
             "compression_unresolved": 0,
             "compaction_unresolved": 0,
