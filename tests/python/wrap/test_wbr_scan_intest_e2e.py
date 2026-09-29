@@ -39,7 +39,9 @@ import pytest
 from faultflow.config import load_config
 from faultflow.db import connect, summary
 from faultflow.runner import Runner
+from faultflow.runner.runner import _load_core
 from faultflow.scan.reports import hash_file, utc_timestamp
+from faultflow.scan.site_resolution import build_site_key_index
 
 ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
@@ -208,11 +210,33 @@ mode = {mode}
     return path
 
 
-def _install_wrapped_scan_workspace(tmp_path: Path, mode: str = "intest") -> Runner:
+def _q_feeds_wrapper_and_core_json() -> dict[str, Any]:
+    """The fixture with u0.Q[10] read straight by the wrapper output __wo_Q and
+    also by the core gate g1, whose output core_q[11] now leaves through a
+    second wrapper output __wo_R -> R[7]. Net 10's branch into __wo_Q reaches
+    only that cell's capture; the flop's pseudo-input, which replaces net 10 in
+    the view, also reaches g1."""
+    data = _generic_wrapped_scan_json()
+    module = data["modules"][TOP]
+    module["ports"]["R"] = {"direction": "output", "bits": [7]}
+    module["netnames"]["R"] = {"hide_name": 0, "bits": [7], "attributes": {}}
+    cells = module["cells"]
+    cells["__wo_Q"]["connections"]["FROM_CORE"] = [10]
+    cells["__wo_R"] = {
+        **cells["__wo_Q"],
+        "connections": {"FROM_CORE": [11], "TO_SYS": [7]},
+    }
+    return data
+
+
+def _install_wrapped_scan_workspace(
+    tmp_path: Path,
+    mode: str = "intest",
+    netlist: dict[str, Any] | None = None,
+) -> Runner:
+    design = _generic_wrapped_scan_json() if netlist is None else netlist
     source = tmp_path / f"{TOP}.json"
-    source.write_text(
-        json.dumps(_generic_wrapped_scan_json(), indent=2) + "\n", "utf-8"
-    )
+    source.write_text(json.dumps(design, indent=2) + "\n", "utf-8")
     cfg_path = _write_config(tmp_path / "config.ofs", source, mode=mode)
     cfg = load_config(cfg_path, TOP)
     # Keep the process CWD at the repo root (so the relative coverage schema path
@@ -222,9 +246,7 @@ def _install_wrapped_scan_workspace(tmp_path: Path, mode: str = "intest") -> Run
 
     # The generic scanned JSON the manifest points at IS our hand-built fixture.
     generic = cfg.scan_json_path
-    generic.write_text(
-        json.dumps(_generic_wrapped_scan_json(), indent=2) + "\n", "utf-8"
-    )
+    generic.write_text(json.dumps(design, indent=2) + "\n", "utf-8")
     techmap = cfg.generated_scripts_dir / "faultflow_scanff_map.v"
     techmap.write_text("// test techmap\n", encoding="utf-8")
 
@@ -329,6 +351,41 @@ def test_intest_scan_fusion_yields_real_coverage(
             (campaign_id,),
         ).fetchone()[0]
         assert orphan == 0
+
+
+@pytest.mark.golden
+def test_intest_grades_a_scan_flops_wrapper_branch_at_the_observe_buffer(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """u0.Q's branch into the wrapper output __wo_Q is graded at the fused
+    view's branch into that cell's observe buffer: the pseudo-input's stem
+    would also reach g1 and __wo_R, and a pseudo-input branch into the
+    removed cell doesn't exist (boundary_map_missing)."""
+    runner = _install_wrapped_scan_workspace(
+        tmp_path, netlist=_q_feeds_wrapper_and_core_json()
+    )
+
+    runner.sim(scan=True)
+
+    view_path = runner.cfg.intermediate_dir / "scan_atpg_view.json"
+    view = json.loads(view_path.read_text(encoding="utf-8"))
+    ppi = view["modules"][TOP]["cells"]["$wbobserve___wo_Q"]["connections"]["A"][0]
+    view_index = build_site_key_index(_load_core(), view_path, CELL_MAP, "fail")
+    observe = view_index[f"net:{ppi}:branch:$wbobserve___wo_Q:A"]
+    assert observe != view_index[f"net:{ppi}:stem"]
+    with connect(runner.cfg.db_path) as conn:
+        graded = {
+            int(row[0])
+            for row in conn.execute(
+                "SELECT atpg_compiled_net_index FROM faults"
+                " WHERE campaign_id = ? AND fault_site_key = ?",
+                (
+                    _scan_campaign_id(runner.cfg.db_path),
+                    "net:10:branch:__wo_Q:FROM_CORE",
+                ),
+            )
+        }
+    assert graded == {observe}
 
 
 @pytest.mark.golden

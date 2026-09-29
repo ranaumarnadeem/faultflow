@@ -511,9 +511,16 @@ def test_ff_to_ff_d_observe_follows_rewired_pin() -> None:
     module = view["modules"]["tiny_ff_to_ff"]
     ppi_a_bit = module["ports"][port_map["ff_a"]["ppi_port"]]["bits"][0]
 
+    # In the generic netlist A's Q net has two sites, A.Q and B.D, so B's
+    # capture reads a branch of it (decided on the generic netlist, whatever
+    # order A and B are processed in) -- and that branch reads A's PPI.
+    branch_b = module["cells"]["$ffbranch_ff_b"]
+    assert branch_b["connections"]["A"] == [ppi_a_bit]
     observe_b = module["cells"]["$ffobserve_ff_b"]
-    assert observe_b["connections"]["A"] == [ppi_a_bit]
-    assert port_map["ff_b"]["boundary"]["d_observe_net_id"] == ppi_a_bit
+    assert observe_b["connections"]["A"] == branch_b["connections"]["Y"]
+    assert port_map["ff_b"]["boundary"]["d_observe_net_id"] == (
+        branch_b["connections"]["Y"][0]
+    )
     # The stale data_net (10) must not be what B observes.
     assert port_map["ff_b"]["boundary"]["d_observe_net_id"] != 10
 

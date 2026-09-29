@@ -40,7 +40,7 @@ DATA_PIN = "D"
 #   set   variant ($scanff_s): SET_B,   captured value 1 when active.
 SCAN_RESET_TYPES = frozenset({"$scanff_r_faultflow", "\\$scanff_r_faultflow"})
 SCAN_SET_TYPES = frozenset({"$scanff_s_faultflow", "\\$scanff_s_faultflow"})
-ATPG_VIEW_SCHEMA_VER = "scan-atpg-view-observe-buf-1"
+ATPG_VIEW_SCHEMA_VER = "scan-atpg-view-observe-buf-2"
 # In an opaque view (_model_blackboxes_opaque) a tie cell named with the first
 # prefix drives each blackbox output, and a dangling reader named with the
 # second reads each net a blackbox input read. The view's blackbox-transparent
@@ -347,20 +347,6 @@ class _BitIndex:
             self._net_locs.setdefault(new_bit, set()).update(moved_nets)
 
 
-def _consumers_of_net(cells: dict[str, Any], net_bit: int) -> list[tuple[str, str]]:
-    consumers: list[tuple[str, str]] = []
-    for instance, cell in cells.items():
-        if not isinstance(cell, dict):
-            continue
-        conns = cell.get("connections", {})
-        if not isinstance(conns, dict):
-            continue
-        for pin, bits in conns.items():
-            if net_bit in _all_int_bits(bits):
-                consumers.append((str(instance), str(pin)))
-    return consumers
-
-
 def _add_internal_buf_cell(
     cells: dict[str, Any],
     instance: str,
@@ -427,6 +413,7 @@ def _add_ctrl_branch(
     *,
     instance: str,
     control: tuple[str, str, int],
+    generic_net: int,
     next_id: int,
     index: "_BitIndex | None" = None,
 ) -> tuple[int, str, int]:
@@ -437,6 +424,10 @@ def _add_ctrl_branch(
     fault on it models the generic netlist's control-pin branch fault (consumer
     = the scan FF, pin RESET_B/SET_B; the FF cell is removed from the reduced
     view).  Mirrors the D-observe boundary's dedicated-net mechanism.
+
+    The site key names the control net as the generic netlist does
+    (`generic_net`): a scan flop driving the control -- a reset synchronizer
+    -- may already have rewired the live pin to its pseudo-input.
     """
     _kind, pin, control_net = control
     control_branch_net = next_id
@@ -451,7 +442,7 @@ def _add_ctrl_branch(
     )
     control_site_key = canonical_site_key(
         SiteProvenance(
-            yosys_net_id=control_net,
+            yosys_net_id=generic_net,
             kind="branch",
             consumer_instance=instance,
             input_pin=pin,
@@ -523,20 +514,25 @@ def _resolve_d_observe_boundary(
     *,
     instance: str,
     d_net: int,
+    generic_d_net: int,
+    shared: bool,
     next_id: int,
     index: "_BitIndex | None" = None,
 ) -> tuple[int, str, int, int]:
-    """Return (observe_input_net, d_boundary_site_key, next_id, d_observe_net_id)."""
-    consumer_count = (
-        index.consumer_count(d_net)
-        if index is not None
-        else len(_consumers_of_net(cells, d_net))
-    )
+    """Return (observe_input_net, d_boundary_site_key, next_id, d_observe_net_id).
+
+    `d_net` is the D pin as currently wired, `generic_d_net` as the generic
+    netlist wires it: a flop processed earlier may have rewired D to its own
+    pseudo-input, but the site key must name the generic net. `shared` says
+    the generic D net has other sites than this D pin -- decided on the
+    generic netlist, so the view is the same whatever order flops are
+    processed in. A shared D gets a branch buffer that only this flop's
+    capture reads."""
     observe_input = d_net
-    d_boundary_site_key = stem_site_key(d_net)
+    d_boundary_site_key = stem_site_key(generic_d_net)
     d_observe_net_id = d_net
 
-    if consumer_count > 1:
+    if shared:
         d_branch_bit = next_id
         next_id += 1
         branch_instance = f"$ffbranch_{instance}"
@@ -552,7 +548,7 @@ def _resolve_d_observe_boundary(
         d_observe_net_id = d_branch_bit
         d_boundary_site_key = canonical_site_key(
             SiteProvenance(
-                yosys_net_id=d_net,
+                yosys_net_id=generic_d_net,
                 kind="branch",
                 consumer_instance=instance,
                 input_pin=DATA_PIN,
@@ -633,6 +629,63 @@ def _model_blackboxes_opaque(module: dict[str, Any], instances: Sequence[str]) -
             "connections": {"A": [bit], "Y": [next_id]},
         }
         next_id += 1
+
+
+def _branch_flop_outputs(
+    module: dict[str, Any], pseudo_port_map: dict[str, dict[str, Any]]
+) -> None:
+    """Give a flop output's single reader a branch of its own when the flop
+    output also drives a primary output.
+
+    In the generic netlist that reader's pin is a branch: the flop's Q also
+    feeds the next flop's scan-in. The view has no scan-in, so the reader
+    would share one net with the output port, and a fault on its branch
+    would be graded where the output sees it too. A buffer between the net
+    and the output port keeps the two apart."""
+    cells = module.get("cells", {})
+    ports = module.get("ports", {})
+    netnames = module.get("netnames", {})
+    q_drives = {
+        int(entry["q_drive_net_id"]): instance
+        for instance, entry in pseudo_port_map.items()
+    }
+    # A flop output is driven by its PPI or its control mux; every other
+    # site on it reads it.
+    readers: dict[int, int] = {}
+    for cell in cells.values():
+        if not isinstance(cell, dict):
+            continue
+        directions = cell.get("port_directions") or {}
+        for pin, bits in cell.get("connections", {}).items():
+            if directions.get(pin) == "output":
+                continue
+            for bit in _all_int_bits(bits):
+                if bit in q_drives:
+                    readers[bit] = readers.get(bit, 0) + 1
+    next_id = _next_net_id(module)
+    for net, instance in sorted(q_drives.items(), key=lambda item: item[1]):
+        if readers.get(net, 0) != 1:
+            continue
+        outputs = [
+            name
+            for name, port in ports.items()
+            if isinstance(port, dict)
+            and port.get("direction") == "output"
+            and not str(name).startswith(PPO_PREFIX)
+            and net in _all_int_bits(port.get("bits"))
+        ]
+        if not outputs:
+            continue
+        branch = next_id
+        next_id += 1
+        _add_internal_buf_cell(
+            cells, f"$ffqpo_{instance}", D_BRANCH_BUF_CELL, net, branch
+        )
+        for name in outputs:
+            for table in (ports, netnames):
+                entry = table.get(name)
+                if isinstance(entry, dict) and isinstance(entry.get("bits"), list):
+                    entry["bits"] = [branch if b == net else b for b in entry["bits"]]
 
 
 def make_blackbox_transparent(view: dict[str, Any], top: str) -> bool:
@@ -738,6 +791,10 @@ def build_scan_atpg_view(
     # Incremental bit -> location index so per-FF net rewiring and consumer counts
     # touch only each net's actual sites, not a full-module scan every iteration.
     bit_index = _BitIndex(module)
+    # The same over the untouched generic netlist: site keys and branch
+    # decisions follow it, whatever order the flops are processed in.
+    source_index = _BitIndex(source_module)
+    source_cells = source_module.get("cells", {})
 
     for record in records:
         instance = str(record["instance"])
@@ -746,6 +803,7 @@ def build_scan_atpg_view(
             raise ScanError(f"scan cell missing from generic JSON: {instance}")
         if cell.get("type") not in SCAN_CELL_TYPES:
             raise ScanError(f"{instance}: expected scan FF cell type")
+        source_cell = source_cells.get(instance, {})
 
         q_net = int(record["q_net"])
         record_clock_net = int(record.get("clock_net", -1))
@@ -756,10 +814,14 @@ def build_scan_atpg_view(
         control_branch_net: int | None = None
         control_site_key: str | None = None
         if control is not None:
+            generic_control = _async_capture_control(source_cell)
             control_branch_net, control_site_key, next_id = _add_ctrl_branch(
                 cells,
                 instance=instance,
                 control=control,
+                generic_net=(
+                    generic_control[2] if generic_control is not None else control[2]
+                ),
                 next_id=next_id,
                 index=bit_index,
             )
@@ -791,6 +853,7 @@ def build_scan_atpg_view(
         # d_net within this same iteration. Reading it only once, before that
         # rewrite, would tap the stale (soon-orphaned) net instead of the PPI.
         d_net = _current_data_net(cell, int(record["data_net"]))
+        generic_d_net = _current_data_net(source_cell, int(record["data_net"]))
 
         # Create PPO only for FFs in the active domain (or always when single-domain).
         ppo_is_active = active_clock_net is None or record_clock_net == active_clock_net
@@ -808,6 +871,8 @@ def build_scan_atpg_view(
                     cells,
                     instance=instance,
                     d_net=d_net,
+                    generic_d_net=generic_d_net,
+                    shared=source_index.consumer_count(generic_d_net) > 1,
                     next_id=next_id,
                     index=bit_index,
                 )
@@ -861,6 +926,9 @@ def build_scan_atpg_view(
             "ppi_port": ppi_port,
             "ppo_port": ppo_port,
             "ppi_net_id": ppi_bit,
+            # The net the flop's readers read: the PPI, or for an async flop
+            # the control mux's output.
+            "q_drive_net_id": q_drive,
             "ppo_net_id": ppo_bit,
             "original_q_net": net_name_by_bit.get(q_net) or str(q_net),
             "original_d_net": net_name_by_bit.get(d_net) or str(d_net),
@@ -873,6 +941,7 @@ def build_scan_atpg_view(
     clock_nets_list = manifest_clock_net_ids(manifest)
     _drop_dangling_scan_ports(module, manifest, clock_nets_list)
     _model_blackboxes_opaque(module, blackbox_instances)
+    _branch_flop_outputs(module, pseudo_port_map)
 
     attrs = module.setdefault("attributes", {})
     if isinstance(attrs, dict):

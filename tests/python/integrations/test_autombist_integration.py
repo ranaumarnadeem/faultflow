@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from scan_credit import credit_not_reproduced
 
 from faultflow.config import load_config
 from faultflow.integrations.autombist import (
@@ -134,9 +135,10 @@ def test_blackbox_design_runs_the_full_scan_flow_under_the_default_policy(
     # An exported LOS pattern doesn't carry its launch-shift scan-in bits, so
     # only stuck-at and LOC patterns can be replayed from the file.
     if launch != "los":
-        _assert_unload_independent_of_memory(
-            load_config(ofs, top), patterns, loc=launch == "loc"
-        )
+        cfg = load_config(ofs, top)
+        _assert_unload_independent_of_memory(cfg, patterns, loc=launch == "loc")
+        # Every fault the reduced view credits, the full protocol detects.
+        assert credit_not_reproduced(cfg, patterns, loc=launch == "loc") == []
 
 
 def _assert_categories_add_up(report: dict[str, Any], categories: set[str]) -> None:
@@ -655,3 +657,4 @@ def test_a_wrapped_design_runs_the_scan_flow_on_two_clock_domains(
     assert "IJTAG network-integrity patterns are not generated" in text
 
     _assert_unload_independent_of_memory(cfg, patterns, loc=False)
+    assert credit_not_reproduced(cfg, patterns) == []
