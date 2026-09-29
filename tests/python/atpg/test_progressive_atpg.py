@@ -56,39 +56,6 @@ def _four_fault_campaign(db: Path) -> tuple[int, dict[int, int]]:
     return cid, ids
 
 
-def test_precertify_redundant_batches_and_guards(tmp_path: Path) -> None:
-    """Preflight Phase B pre-certifies canceling-path stems as redundant. It
-    must (a) run as ONE batched transaction, not a fresh autocommit connection
-    per fault (~51 ms/fault on /mnt/c), and (b) never touch faults that are
-    detected (simulation evidence beats the structural claim), excluded, or
-    collapsed -- Phase B's id set is derived from net ids over ALL campaign
-    faults, so without guards it clobbers all of them and NULLs the detection."""
-    from faultflow.runner.progressive_atpg import _precertify_redundant
-
-    db = tmp_path / "faultflow.sqlite"
-    _cid, ids = _four_fault_campaign(db)
-
-    marked = _precertify_redundant(str(db), frozenset(ids.values()), "model-x")
-
-    assert marked == 1
-    conn = connect(db)
-    status_by_net = {
-        int(r["net_id"]): str(r["status"])
-        for r in conn.execute("SELECT net_id, status FROM faults")
-    }
-    model_n1 = conn.execute(
-        "SELECT redundancy_model_id FROM faults WHERE net_id = 1"
-    ).fetchone()[0]
-    conn.close()
-    assert status_by_net == {
-        1: "redundant",
-        2: "detected",
-        3: "excluded",
-        4: "undetected",
-    }
-    assert model_n1 == "model-x"
-
-
 def test_mark_fault_redundant_never_overwrites_detected(
     tmp_path: Path, require_cpp_core: None
 ) -> None:

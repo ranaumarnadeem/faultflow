@@ -326,7 +326,7 @@ COMMAND_HELP = {
         " this many slots per wave for easy (small-cone) faults while the"
         " rest tackle hard faults simultaneously. Set to 0 to disable."
         " atpg.preflight (true/false) enables OT reconvergence pre-ordering"
-        " and pre-certification (default true); atpg.preflight_tech overrides"
+        " (default true); atpg.preflight_tech overrides"
         " the auto-detected PDK tech tag (sky130/osu035) passed to it."
         " atpg.random_vectors (default 64) is the random-fill budget per round;"
         " atpg.random_stop_coverage (default 85.0) stops random-fill grading"

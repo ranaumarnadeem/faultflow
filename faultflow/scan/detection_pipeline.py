@@ -410,51 +410,6 @@ def _termination_sweep_q_stems(
     return int(cur.rowcount)
 
 
-def _mark_preflight_redundant(
-    db_path: str,
-    campaign_id: int,
-    stem_ids: frozenset[int],
-    redundancy_model: str,
-    q_stem_site_keys: frozenset[str],
-    core: Any,
-) -> int:
-    """Mark SA0/SA1 faults at canceling-path stems UNSAT without any SAT call.
-
-    Reuses the same core.mark_fault_redundant / core.mark_fault_protocol_unresolved
-    paths the round loop uses, so DB state stays consistent.
-    Returns the count of faults pre-certified.
-    """
-    if not stem_ids:
-        return 0
-    placeholders = ",".join("?" for _ in stem_ids)
-    with connect(db_path) as conn:
-        init_schema(conn)
-        rows = conn.execute(
-            f"""
-            SELECT id, fault_site_key
-            FROM faults
-            WHERE campaign_id = ?
-              AND status = 'undetected'
-              AND exclusion = 'none'
-              AND collapsed_into IS NULL
-              AND net_id IN ({placeholders})
-            """,
-            (campaign_id, *sorted(stem_ids)),
-        ).fetchall()
-    count = 0
-    for row in rows:
-        fault_id = int(row["id"])
-        site_key = str(row["fault_site_key"])
-        if site_key in q_stem_site_keys:
-            core.mark_fault_protocol_unresolved(db_path, fault_id)
-        else:
-            core.mark_fault_redundant(db_path, fault_id, redundancy_model)
-        count += 1
-    if count:
-        log.info("atpg   preflight Phase B: pre-certified %d faults as UNSAT", count)
-    return count
-
-
 def _protocol_fault_sim_kwargs(
     ctx: ScanPipelineContext, pattern: Any
 ) -> dict[str, object]:
@@ -1895,12 +1850,13 @@ def run_progressive_scan_atpg(
     else:
         _solve_kind = "scan_stuck_at"
 
-    # OT structural reconvergence preflight (cfg.atpg.preflight, stuck-at only).
-    # Phase A: reconvergent-site faults are sorted last and their SAT timeout tier
-    # is bumped by 1 so the short (2 s) tier is skipped — these faults are likely
-    # hard or near-redundant and waste the short budget.
-    # Phase B: faults at canceling-path stems are marked UNSAT without any SAT call.
-    # Falls back silently if opentest is not on PATH or the preflight subprocess fails.
+    # OT structural reconvergence preflight (cfg.atpg.preflight, stuck-at only):
+    # reconvergent-site faults are sorted last and their SAT timeout tier is
+    # bumped by 1 so the short (2 s) tier is skipped -- these faults are likely
+    # hard and waste the short budget. Ordering only: a reconvergent stem is no
+    # redundancy proof (its faults, and each branch's, can be testable), so every
+    # verdict still comes from SAT. Falls back silently if opentest is not on
+    # PATH or the preflight subprocess fails.
     _preflight: PreflightData | None = None
     _reconv_ids: frozenset[int] = frozenset()
     if cfg.atpg.preflight and not transition:
@@ -1918,23 +1874,7 @@ def run_progressive_scan_atpg(
             )
             if _preflight:
                 _reconv_ids = _preflight.fanout_yosys_ids
-                log.info(
-                    "atpg   preflight: %d reconvergent stems, %d canceling stems",
-                    len(_preflight.fanout_yosys_ids),
-                    len(_preflight.redundant_stem_ids),
-                )
-                # A canceling stem in the view may be blocked only by an
-                # opaque blackbox: with a twin, leave those faults to SAT and
-                # the UNSAT branch's blackbox check instead.
-                if _preflight.redundant_stem_ids and blackbox_twin is None:
-                    _mark_preflight_redundant(
-                        effective_db_path,
-                        campaign_id,
-                        _preflight.redundant_stem_ids,
-                        redundancy_model,
-                        scan_ctx.q_stem_site_keys,
-                        core,
-                    )
+                log.info("atpg   preflight: %d reconvergent stems", len(_reconv_ids))
 
     _easy_reserve = cfg.atpg.easy_fault_reserve
     if _parallel and _easy_reserve > 0 and cfg.atpg.workers >= 4:

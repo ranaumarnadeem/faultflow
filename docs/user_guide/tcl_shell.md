@@ -136,7 +136,7 @@ See [Test-point insertion](testpoints.md) for the full workflow.
 | `atpg.workers` | Parallel SAT worker processes (positive integer); prefer the `WORKERS` command |
 | `atpg.easy_fault_reserve` | Easy/hard worker split, only applied when `workers >= 4` (non-negative integer) |
 | `atpg.incremental_sat` | Enable incremental-SAT (IFC) solving (bool) |
-| `atpg.preflight` | Enable OpenTestability structural reconvergence pre-ordering and pre-certification (bool) |
+| `atpg.preflight` | Enable OpenTestability structural reconvergence pre-ordering (bool) |
 | `fault_model.collapsing` | Enable/disable fault collapsing for this session (bool) |
 | `fault_model.include_clock_faults` | Count clock-net faults in the denominator (bool) |
 | `fault_model.include_reset_faults` | Grade async reset/set-tree faults via implication instead of excluding them (bool); fingerprinted, so toggling it forces a fresh campaign |

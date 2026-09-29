@@ -24,6 +24,7 @@ tests/
 │   ├── campaign_fixtures.py  Campaign setup helpers (imported by test files)
 │   ├── soc2_fixtures.py      SoC 2-block hierarchical test fixture data
 │   ├── db_v3_helpers.py      Database schema helpers
+│   ├── preflight_fixtures.py Reconvergent netlist + a fake OpenTestability preflight
 │   │
 │   ├── cli/              Shell and CLI command tests
 │   ├── sim/              Core simulation flow tests
@@ -283,6 +284,8 @@ wsl -e bash -c "cd /mnt/c/Users/Potato/Desktop/faultflow && source venv/bin/acti
   - `campaign_fixtures.py` — campaign and flow setup helpers
   - `soc2_fixtures.py` — SoC 2-block hierarchical test data
   - `db_v3_helpers.py` — database schema and initialization helpers
+  - `preflight_fixtures.py` — a reconvergent netlist and a fake OpenTestability
+    `_preflight` that answers with real OT's records for it
 
 ### C++ Tests
 

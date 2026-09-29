@@ -273,8 +273,8 @@ class AtpgConfig:
     # The coordinator merges detected sets; the DB writer remains single-threaded.
     workers: int = 1
     # Run OT structural reconvergence analysis before ATPG (requires opentest on PATH).
-    # Phase A: reconvergent-site faults are sorted last and skip the short timeout tier.
-    # Phase B: canceling-path stems are marked UNSAT without any SAT call.
+    # Reconvergent-site faults are sorted last and skip the short timeout tier.
+    # Ordering only: redundancy is still decided by SAT alone.
     # Falls back silently when opentest is unavailable.
     preflight: bool = True
     # PDK tech tag passed to opentest _preflight. Empty string = auto-detect from

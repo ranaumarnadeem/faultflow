@@ -439,40 +439,6 @@ def _accept_and_simulate_transition(
     return {int(row["fault_id"]) for row in detections}
 
 
-def _precertify_redundant(
-    db_path: str, fault_ids: "frozenset[int] | set[int]", redundancy_model_id: str
-) -> int:
-    """Preflight Phase B: mark canceling-path faults redundant in ONE guarded,
-    batched transaction.
-
-    Only active faults are eligible: a fault the simulator already DETECTED is
-    empirical ground truth (the structural claim lost), and excluded/collapsed
-    faults sit outside the denominator -- Phase B's id set is derived from net
-    ids over ALL campaign faults, so the guards are load-bearing, not
-    defensive. One connection + one transaction replaces the previous fresh
-    autocommit connection per fault (~51 ms/fault on /mnt/c)."""
-    if not fault_ids:
-        return 0
-    conn = connect(db_path)
-    try:
-        cur = conn.executemany(
-            """
-            UPDATE faults
-            SET status = 'redundant', redundancy_model_id = ?,
-                detected_by_vector = NULL
-            WHERE id = ?
-              AND status = 'undetected'
-              AND exclusion = 'none'
-              AND collapsed_into IS NULL
-            """,
-            [(redundancy_model_id, int(fid)) for fid in sorted(fault_ids)],
-        )
-        conn.commit()
-        return int(cur.rowcount)
-    finally:
-        conn.close()
-
-
 # NOTE: no termination sweep here. protocol_unresolved is a scan-protocol
 # concept; the scan pipeline marks its own q-stem faults with a site-key-scoped
 # sweep (faultflow/scan/detection_pipeline.py::_termination_sweep_q_stems).
@@ -695,10 +661,10 @@ def run_progressive_native_atpg(
             )
             _parallel = False
 
-    # OT structural reconvergence preflight (cfg.atpg.preflight).
-    # Phase A: reconvergent-site faults sorted last + tier bumped to skip the
-    # short timeout tier.
-    # Phase B: canceling-path stems marked UNSAT directly (no SAT call needed).
+    # OT structural reconvergence preflight (cfg.atpg.preflight): reconvergent-
+    # site faults sorted last + tier bumped to skip the short timeout tier.
+    # Ordering only: a reconvergent stem is no redundancy proof (its faults, and
+    # each branch's, can be testable), so every verdict still comes from SAT.
     # Falls back silently if opentest is not on PATH.
     _preflight: PreflightData | None = None
     _reconv_fault_ids: frozenset[int] = frozenset()
@@ -716,7 +682,7 @@ def run_progressive_native_atpg(
                 _tech,
             )
             if _preflight:
-                # Build fault_id → net_id mapping from DB (one query, reused below).
+                # Build fault_id → net_id mapping from DB (one query).
                 with connect(effective_db_path) as conn:
                     _fid_to_netid: dict[int, int] = {
                         int(r["id"]): int(r["net_id"])
@@ -737,29 +703,10 @@ def run_progressive_native_atpg(
                     for fid, nid in _fid_to_netid.items()
                     if nid in _preflight.fanout_yosys_ids
                 )
-                _redundant_fault_ids = frozenset(
-                    fid
-                    for fid, nid in _fid_to_netid.items()
-                    if nid in _preflight.redundant_stem_ids
-                )
                 log.info(
-                    "atpg   preflight: %d reconvergent stems, %d canceling stems",
+                    "atpg   preflight: %d reconvergent stems",
                     len(_preflight.fanout_yosys_ids),
-                    len(_preflight.redundant_stem_ids),
                 )
-                # Phase B: pre-certify canceling-path faults as UNSAT -- one
-                # guarded batched txn (never touches detected/excluded/collapsed
-                # faults; see _precertify_redundant).
-                if _redundant_fault_ids:
-                    _b_count = _precertify_redundant(
-                        effective_db_path, _redundant_fault_ids, redundancy_model
-                    )
-                    if _b_count:
-                        log.info(
-                            "atpg   preflight Phase B: pre-certified %d faults"
-                            " as UNSAT",
-                            _b_count,
-                        )
 
     _easy_reserve = cfg.atpg.easy_fault_reserve
     if _parallel and _easy_reserve > 0 and cfg.atpg.workers >= 4:
