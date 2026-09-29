@@ -160,6 +160,8 @@ There is no silent-skip option.
 | `scan_out` | `scan_out` | Scan output port base name |
 | `scan_enable` | `scan_en` | Scan enable port name |
 | `run_techmap` | `true` | Run the Sky130 scan-cell techmap after stitching |
+| `nonscan_cells` | (none) | Instance-name globs, e.g. `u_tap__*, u_sib_*`: flip-flops left out of scan on purpose, like a JTAG TAP and its IJTAG network that `ff.py jtag` tests through TCK. Each must hold still for the whole scan test: either a `hold` input keeps its clear or preset active, and the scan view ties its output at the value that forces, or its clock is held and nothing free can reset it, and its output is unknown, masked like an unknown blackbox output. Anything else is an error. Their faults, and those only they see, are `excluded_jtag` |
+| `hold` | (none) | `input:0\|1` list, e.g. `trst_n:0, tck:0`: inputs held at that value in every scan pattern, e.g. to keep a non-scan TAP in reset. Not a scan port or scan clock, and not a value that clears or presets scan flops. A fault only the held values block is `hold_unresolved` |
 
 ## `[testpoint]`
 
@@ -208,7 +210,7 @@ Written by `ff.py autombist-generate` (see [External tools](../external_tools.md
 
 | Key | Format | Meaning |
 |---|---|---|
-| `manifest` | path | The autoMBIST instance manifest the netlist was built from. The coverage report then breaks detected faults, the denominator and `blackbox_unresolved` down by the manifest's instance categories. Report-only: not part of the campaign fingerprint |
+| `manifest` | path | The autoMBIST instance manifest the netlist was built from. The coverage report then breaks detected faults, the denominator, `blackbox_unresolved` and `hold_unresolved` down by the manifest's instance categories. Report-only: not part of the campaign fingerprint |
 
 ## `[jtag]`
 

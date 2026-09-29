@@ -189,7 +189,7 @@ COMMAND_HELP = {
     "autombist_generate": CommandHelp(
         "Project",
         "autombist_generate -config PATH -out PATH [-autombist_cmd CMD] "
-        "-liberty PATH -cell_lib PATH [-test_access]",
+        "-liberty PATH -cell_lib PATH [-test_access [-tap_nonscan]]",
         "Generate a FaultFlow synthesis from an autoMBIST manifest",
         "Runs `autombist generate --emit-manifest` (or the command given by "
         "-autombist_cmd, e.g. 'python3 -m autombist.cli'), synthesizes each "
@@ -202,7 +202,10 @@ COMMAND_HELP = {
         "wrap-test-access`, which puts the control/status ports behind a JTAG "
         "TAP and an IJTAG network, and synthesizes that wrapped design; its "
         "clocks (the MBIST clock and tck) are declared in the session, and "
-        "scan insertion needs a chain per clock (add_scan -chains 2).",
+        "scan insertion needs a chain per clock (add_scan -chains 2). "
+        "-tap_nonscan keeps that TAP and IJTAG network out of scan instead, "
+        "held in reset (trst_n and tck at 0), leaving one clock and one chain "
+        "(add_scan -chains 1); `ff.py jtag` grades their faults through TCK.",
         "autoMBIST installed and reachable via -autombist_cmd (or on PATH); "
         "for -test_access, warptap importable by autoMBIST.",
         "autombist_generate -config mbist.yml -out build -liberty "

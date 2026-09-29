@@ -113,11 +113,24 @@ The glue's own non-library cells must be exactly the listed instances.
 The TAP and its network run on `tck`/`trst_n`, the MBIST logic on `clk`/`rst_n`: two
 clock domains. The `.ofs` declares both in `[clocks]` and asks for one scan chain per
 domain; scan insertion scans every flop of both, and holds `trst_n` inactive like
-`rst_n`.
+`rst_n`. Scan patterns then grade the TAP and the network like any other logic, and
+`ff.py jtag` (below) adds JTAG credit on top.
+
+**TAP non-scan (`--tap-nonscan`, `-tap_nonscan` in the shell).** A production flow keeps
+the TAP out of scan and tests it with JTAG patterns alone. With `--test-access
+--tap-nonscan`, the `.ofs` does that: `[scan] nonscan_cells` names the JTAG-category
+instances, and `[scan] hold = trst_n:0, tck:0` keeps the TAP and the network in reset
+through the whole scan test, which leaves `clk` as the only scan clock and one chain. The
+scan view ties each of their flops at the value its reset forces. Scan leaves their
+faults to `ff.py jtag` (`excluded_jtag`), with the faults only they see -- the TAP's
+inputs, the decode that selects the network -- and the stuck-ats that would release a
+tied flop. `ff.py jtag` grades them, and its `combined` block counts every one. A fault
+the held values alone block, like MBIST logic a TDR held at its reset value gates, is
+`hold_unresolved` (Tessent's AU.PC): undetected and in the denominator, not redundant.
 
 **Coverage by category.** With `[autombist] manifest` set, the coverage report breaks
-detected faults, the denominator and `blackbox_unresolved` down by the manifest's
-instance categories (`autombist_categories` in `coverage_report.json`, a table in
+detected faults, the denominator, `blackbox_unresolved` and `hold_unresolved` down by
+the manifest's instance categories (`autombist_categories` in `coverage_report.json`, a table in
 `coverage.rpt`): memory, mbist_controller, self_repair, diagnosis, repair_remap and, for a
 wrapped design, jtag_tap, ijtag_sib, ijtag_tdr, ijtag_scan_mux. A fault belongs to the
 instance of the cell it sits on; what no instance owns — the wrapper's own logic, its
@@ -132,13 +145,8 @@ the scan coverage (`jtag` and `combined`, per category too). The program is buil
 warptap's `build_integrity_program` from the network the manifest describes (it needs
 warptap with `warptap.tap_integrity`), or read from a `warptap-tck-program` file.
 
-```{admonition} Known limitation: TAP non-scan operation
+```{admonition} warptap 0.0.2 and earlier
 :class: warning
-
-faultflow scans the TAP and the IJTAG network's flops like any other logic, so scan
-patterns grade their faults too, and `ff.py jtag` adds JTAG credit on top. Running the
-TAP non-scan, with only the JTAG program testing it, is not modeled yet. The
-`coverage.rpt` of a wrapped design notes this.
 
 The IJTAG network is the data register of EXTEST: its top-level SIBs are selected by a
 decode of the TAP's instruction, so reading or writing it needs EXTEST loaded, and

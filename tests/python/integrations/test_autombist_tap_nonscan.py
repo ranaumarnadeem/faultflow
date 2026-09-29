@@ -1,6 +1,7 @@
-"""The JTAG-wrapped autoMBIST fixture with its TAP and IJTAG network run non-scan
-([scan] nonscan_cells for the JTAG-category instances, [scan] hold = trst_n:0, tck:0):
-scan ties them in reset and leaves their faults to JTAG, and ff.py jtag grades them.
+"""The JTAG-wrapped autoMBIST fixture built with its TAP and IJTAG network non-scan
+(synthesize_from_manifest(tap_nonscan=True): [scan] nonscan_cells for the
+JTAG-category instances, [scan] hold = trst_n:0, tck:0): scan ties them in reset and
+leaves their faults to JTAG, and ff.py jtag grades them.
 
 The TCK program is the fixture input_demo_8x16_scn4m_jtag_program.json, so these
 tests run without warptap."""
@@ -19,10 +20,7 @@ from faultflow.integrations.autombist import (
     load_autombist_manifest,
     synthesize_from_manifest,
 )
-from faultflow.integrations.autombist_coverage import (
-    JTAG_CATEGORIES,
-    instance_categories,
-)
+from faultflow.integrations.autombist_coverage import JTAG_CATEGORIES
 from scan_credit import credit_not_reproduced
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -36,25 +34,6 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(shutil.which("yosys") is None, reason="needs Yosys on PATH"),
 ]
-
-
-def _nonscan_ofs(ofs: Path) -> None:
-    """The built .ofs, set up for a non-scan TAP: one scan clock, one chain."""
-    manifest = load_autombist_manifest(JTAG_FIXTURE / "manifest.json")
-    globs = sorted(
-        f"{path}__*"
-        for path, category in instance_categories(manifest).items()
-        if category in JTAG_CATEGORIES
-    )
-    text = ofs.read_text(encoding="utf-8")
-    text = text.replace("ports = clk, tck", "ports = clk")
-    text = text.replace(
-        "[scan]\nchains = 2",
-        "[scan]\nchains = 1\n"
-        f"nonscan_cells = {', '.join(globs)}\nhold = trst_n:0, tck:0",
-    )
-    assert "nonscan_cells" in text
-    ofs.write_text(text, encoding="utf-8")
 
 
 @pytest.fixture(scope="module")
@@ -71,9 +50,12 @@ def scanned(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str, Path]:
         out=work / "synth",
         liberty=SKY130_LIBERTY,
         cell_lib=SKY130_CELL_MAP,
+        tap_nonscan=True,
     )
     top, ofs = result.top_module, result.ofs_path
-    _nonscan_ofs(ofs)
+    # tck clocks no scan flop: one clock domain, one chain.
+    cfg = load_config(ofs, top)
+    assert ([c.port for c in cfg.clocks], cfg.scan.chains) == (["clk"], 1)
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(work)
         for step in (
@@ -100,6 +82,9 @@ def test_scan_leaves_the_tap_and_the_network_to_jtag(
     report = _report(scanned)
     summary = report["summary"]
     assert summary["excluded_jtag"] > 0
+    # MBIST logic a TDR held at its reset value gates: untestable by scan with
+    # the TAP in reset, not redundant.
+    assert summary["hold_unresolved"] > 0
     categories = report["autombist_categories"]
     for category in JTAG_CATEGORIES & set(categories):
         assert categories[category]["denominator"] == 0, category

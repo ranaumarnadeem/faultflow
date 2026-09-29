@@ -33,7 +33,10 @@ parameter-specialized (``$paramod$<hash>\\march_c_top``), plus warptap's TAP,
 SIB and TDR cells. Each distinct "separate" module is synthesized once from
 that file, the glue is the same file with those modules blackboxed, and the
 memory stays the base manifest's blackbox stub. The TAP and its IJTAG network
-run on tck/trst_n, the MBIST logic on clk/rst_n: a two-clock-domain design.
+run on tck/trst_n, the MBIST logic on clk/rst_n: a two-clock-domain design --
+or, with ``tap_nonscan``, one: the .ofs keeps the TAP and the network out of
+scan ([scan] nonscan_cells) and holds them in reset ([scan] hold), and ff.py
+jtag grades them through TCK instead.
 """
 
 from __future__ import annotations
@@ -47,7 +50,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from faultflow.config import ConfigError
+from faultflow.config import ConfigError, JtagConfig
 from faultflow.project.assemble import AssembleError, block_stub_verilog, compose_soc
 from faultflow.scan.stitch import scan_clock_domains
 
@@ -837,6 +840,8 @@ def write_ofs(
     clock_ports: tuple[str, ...] = (),
     scan_chains: int | None = None,
     manifest: Path | None = None,
+    nonscan_cells: tuple[str, ...] = (),
+    scan_holds: tuple[tuple[str, int], ...] = (),
 ) -> Path:
     """Write a fresh `.ofs` for the composed netlist. `.ofs` paths resolve
     against the CWD, not the .ofs file's own directory (`config.py::_path`) --
@@ -844,10 +849,10 @@ def write_ofs(
     of the caller's cwd. Deliberately no `top =` line: no `.ofs` in this
     codebase carries one, `top` is always a separate CLI/API argument.
 
-    `clock_ports` are declared in `[clocks]`, and `scan_chains` in `[scan]`.
-    `manifest`, the autoMBIST manifest the netlist was built from, goes in
-    `[autombist]`: the coverage report breaks coverage down by its instance
-    categories.
+    `clock_ports` are declared in `[clocks]`, and `scan_chains`,
+    `nonscan_cells` and `scan_holds` in `[scan]`. `manifest`, the autoMBIST
+    manifest the netlist was built from, goes in `[autombist]`: the coverage
+    report breaks coverage down by its instance categories.
     """
     lines = [
         "[design]",
@@ -861,8 +866,13 @@ def write_ofs(
     ]
     if clock_ports:
         lines.extend(["[clocks]", f"ports = {', '.join(clock_ports)}", ""])
-    if scan_chains is not None:
-        lines.extend(["[scan]", f"chains = {scan_chains}", ""])
+    scan = [f"chains = {scan_chains}"] if scan_chains is not None else []
+    if nonscan_cells:
+        scan.append(f"nonscan_cells = {', '.join(nonscan_cells)}")
+    if scan_holds:
+        scan.append("hold = " + ", ".join(f"{port}:{v}" for port, v in scan_holds))
+    if scan:
+        lines.extend(["[scan]", *scan, ""])
     if manifest is not None:
         lines.extend(["[autombist]", f"manifest = {manifest.resolve()}", ""])
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -871,12 +881,13 @@ def write_ofs(
 
 
 def _clock_domains(
-    netlist: Path, top: str, cell_lib: Path
+    netlist: Path, top: str, cell_lib: Path, nonscan_cells: Sequence[str] = ()
 ) -> tuple[tuple[str, ...], int]:
-    """The input ports clocking the netlist's scan flops, in clock-net order,
-    and how many clock domains those flops form. A domain clocked from inside
-    the design has no port to name; scan insertion reports it."""
-    domains = scan_clock_domains(netlist, cell_lib, top)
+    """The input ports clocking the netlist's scan flops -- all but those
+    `nonscan_cells` names -- in clock-net order, and how many clock domains
+    those flops form. A domain clocked from inside the design has no port to
+    name; scan insertion reports it."""
+    domains = scan_clock_domains(netlist, cell_lib, top, nonscan_cells)
     ports = json.loads(netlist.read_text(encoding="utf-8"))["modules"][top]["ports"]
     by_net = {
         port["bits"][0]: name
@@ -885,6 +896,34 @@ def _clock_domains(
     }
     names = tuple(by_net[net] for net in sorted(domains) if net in by_net)
     return names, max(1, len(domains))
+
+
+def tap_nonscan_settings(
+    manifest: AutombistManifest,
+) -> tuple[tuple[str, ...], tuple[tuple[str, int], ...]]:
+    """[scan] nonscan_cells and [scan] hold that run a JTAG-wrapped design's TAP
+    and IJTAG network non-scan: a glob per JTAG-category instance, whose cells the
+    composed netlist names `<instance path>__<cell>`, and the TAP held in reset
+    with its clock off -- trst_n clears every one of their flops."""
+    from faultflow.integrations.autombist_coverage import (
+        JTAG_CATEGORIES,
+        instance_categories,
+    )
+
+    if manifest.test_access is None:
+        raise AutombistManifestError(
+            "a TAP runs non-scan only in a design wrapped for JTAG access "
+            "(test_access)"
+        )
+    globs = tuple(
+        sorted(
+            f"{path}__*"
+            for path, category in instance_categories(manifest).items()
+            if category in JTAG_CATEGORIES
+        )
+    )
+    tap = JtagConfig()
+    return globs, ((tap.trst_n, 0), (tap.tck, 0))
 
 
 @dataclass(frozen=True)
@@ -901,6 +940,9 @@ class AutombistSynthesisResult:
     scan_chains: int | None = None
     # The manifest the design was built from, named in the .ofs [autombist].
     manifest_path: Path | None = None
+    # With the TAP non-scan: the .ofs [scan] nonscan_cells and hold.
+    nonscan_cells: tuple[str, ...] = ()
+    scan_holds: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1003,12 +1045,19 @@ def synthesize_from_manifest(
     out: Path,
     liberty: Path,
     cell_lib: Path,
+    tap_nonscan: bool = False,
 ) -> AutombistSynthesisResult:
     """Steps 2-6: plan_blocks -> synthesize each block -> synthesize glue ->
     compose_soc -> write .ofs. No autoMBIST subprocess invocation -- this is
     the entry point for callers that already have a manifest (e.g. the
     fixture-based integration test). A design wrapped for JTAG access is built
-    from its `test_access` block instead of `instances`."""
+    from its `test_access` block instead of `instances`; `tap_nonscan` writes
+    its .ofs to run the TAP and the IJTAG network non-scan
+    (tap_nonscan_settings)."""
+    nonscan_cells: tuple[str, ...] = ()
+    scan_holds: tuple[tuple[str, int], ...] = ()
+    if tap_nonscan:
+        nonscan_cells, scan_holds = tap_nonscan_settings(manifest)
     workdir = out / "autombist_synth"
     if manifest.test_access is not None:
         composition = _compose_wrapped(
@@ -1032,8 +1081,9 @@ def synthesize_from_manifest(
     if manifest.test_access is not None:
         # The TAP runs on its own clock, so the design has two clock domains
         # at least, and a scan chain never spans two: one chain per domain.
+        # Non-scan, the TAP's clock clocks no scan flop: one domain.
         clock_ports, scan_chains = _clock_domains(
-            composed_json_path, composition.top, cell_lib
+            composed_json_path, composition.top, cell_lib, nonscan_cells
         )
     ofs_path = out / f"{composition.top}.ofs"
     write_ofs(
@@ -1046,6 +1096,8 @@ def synthesize_from_manifest(
         clock_ports=clock_ports,
         scan_chains=scan_chains,
         manifest=manifest.path,
+        nonscan_cells=nonscan_cells,
+        scan_holds=scan_holds,
     )
 
     instance_counts: dict[str, int] = {}
@@ -1062,6 +1114,8 @@ def synthesize_from_manifest(
         clock_ports=clock_ports,
         scan_chains=scan_chains,
         manifest_path=manifest.path,
+        nonscan_cells=nonscan_cells,
+        scan_holds=scan_holds,
     )
 
 
@@ -1073,11 +1127,15 @@ def run_autombist_generate(
     liberty: Path,
     cell_lib: Path,
     test_access: bool = False,
+    tap_nonscan: bool = False,
 ) -> AutombistSynthesisResult:
     """Steps 1-6 in full: invoke autoMBIST -> load its manifest ->
     synthesize_from_manifest. This is what the CLI and Tcl handlers call.
     With `test_access`, autoMBIST first wraps the generated design for JTAG
-    access, and the wrapped design is what gets synthesized."""
+    access, and the wrapped design is what gets synthesized; `tap_nonscan`
+    then runs its TAP and IJTAG network non-scan."""
+    if tap_nonscan and not test_access:
+        raise ConfigError("the TAP runs non-scan only with test access")
     manifest_path = invoke_autombist_generate(config, out, cmd=autombist_cmd)
     if test_access:
         invoke_autombist_wrap_test_access(manifest_path.parent, cmd=autombist_cmd)
@@ -1088,5 +1146,9 @@ def run_autombist_generate(
             f"{manifest_path}"
         )
     return synthesize_from_manifest(
-        manifest, out=out, liberty=liberty, cell_lib=cell_lib
+        manifest,
+        out=out,
+        liberty=liberty,
+        cell_lib=cell_lib,
+        tap_nonscan=tap_nonscan,
     )

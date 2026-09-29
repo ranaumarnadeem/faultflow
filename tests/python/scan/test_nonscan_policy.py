@@ -192,3 +192,21 @@ def test_sim_scan_takes_the_nonscan_flops_for_full_scan(
 
     assert isinstance(ineligible, list)
     assert [ff["reason"] for ff in ineligible] == ["nonscan_policy"]
+
+
+@pytest.mark.unit
+def test_a_shell_session_keeps_the_policy_across_a_reload(tmp_path: Path) -> None:
+    """autombist_generate -tap_nonscan sets it in the Tcl session: every config
+    the session materializes carries it, and so does its checkpoint."""
+    from faultflow.shell.session import ProjectSession
+
+    session = ProjectSession(output_root=tmp_path / "output")
+    session.read_netlist(_netlist(tmp_path), TOP)
+    session.use_lib_cells("sky130")
+    session.set_scan_nonscan(("u_tap__*",), (("trst_n", 0),))
+
+    reloaded = ProjectSession(output_root=tmp_path / "output")
+    reloaded.load_session(TOP)
+    for each in (session, reloaded):
+        scan = each.materialize_config().scan
+        assert (scan.nonscan_cells, scan.hold) == (("u_tap__*",), (("trst_n", 0),))

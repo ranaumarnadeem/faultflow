@@ -210,6 +210,10 @@ every bit it expects; either failure refuses the run and writes nothing. The inp
 program doesn't drive are held, at 0 or at the level that keeps a flop's reset active
 (`[jtag] hold` overrides).
 
+With the TAP non-scan (`[scan] nonscan_cells`), the faults scan left to JTAG
+(`excluded_jtag`) are graded too, and the `combined` block counts every one of them,
+detected or not.
+
 | Option | Meaning |
 |---|---|
 | `--program FILE` | TCK program to play, instead of `[jtag] program` or building one |

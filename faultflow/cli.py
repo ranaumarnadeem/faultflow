@@ -235,6 +235,14 @@ def _parser() -> argparse.ArgumentParser:
         "wrap-test-access, which needs warptap) and synthesize the wrapped "
         "design",
     )
+    autombist_p.add_argument(
+        "--tap-nonscan",
+        dest="tap_nonscan",
+        action="store_true",
+        help="With --test-access: keep the TAP and its IJTAG network out of scan, "
+        "held in reset ([scan] nonscan_cells, [scan] hold), for ff.py jtag to "
+        "grade through TCK",
+    )
 
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
@@ -614,6 +622,10 @@ def _handle_autombist_generate(args: object) -> int:
     config = Path(getattr(args, "config"))
     if not config.exists():
         raise ConfigError(f"autoMBIST config not found: {config}")
+    test_access = bool(getattr(args, "test_access", False))
+    tap_nonscan = bool(getattr(args, "tap_nonscan", False))
+    if tap_nonscan and not test_access:
+        raise ConfigError("--tap-nonscan needs --test-access")
     cmd = tuple(shlex.split(str(getattr(args, "autombist_cmd"))))
     result = run_autombist_generate(
         config,
@@ -621,7 +633,8 @@ def _handle_autombist_generate(args: object) -> int:
         autombist_cmd=cmd,
         liberty=Path(getattr(args, "liberty")),
         cell_lib=Path(getattr(args, "cell_lib")),
-        test_access=bool(getattr(args, "test_access", False)),
+        test_access=test_access,
+        tap_nonscan=tap_nonscan,
     )
     counts = ", ".join(f"{k}={v}" for k, v in sorted(result.instance_counts.items()))
     print(
@@ -632,6 +645,12 @@ def _handle_autombist_generate(args: object) -> int:
         print(
             f"clocks: {', '.join(result.clock_ports)}  "
             f"(scan chains: {result.scan_chains}, one per clock domain)"
+        )
+    if result.nonscan_cells:
+        print(
+            f"non-scan: {len(result.nonscan_cells)} TAP/IJTAG instances, held by "
+            + ", ".join(f"{port}:{v}" for port, v in result.scan_holds)
+            + "; ff.py jtag grades them after sim --scan"
         )
     print(
         f"run: python3 ff.py sim --scan --top {result.top_module} -c {result.ofs_path}"

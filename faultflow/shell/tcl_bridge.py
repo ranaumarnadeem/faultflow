@@ -662,11 +662,16 @@ proc {name} {{args}} {{
         }
         kwargs: dict[str, str] = {}
         test_access = False
+        tap_nonscan = False
         idx = 0
         while idx < len(args):
             flag = args[idx]
             if flag == "-test_access":
                 test_access = True
+                idx += 1
+                continue
+            if flag == "-tap_nonscan":
+                tap_nonscan = True
                 idx += 1
                 continue
             if flag not in flag_to_key:
@@ -690,6 +695,12 @@ proc {name} {{args}} {{
                     "CONFIG",
                     "MISSING_ARG",
                 )
+        if tap_nonscan and not test_access:
+            raise ShellError(
+                "autombist_generate: -tap_nonscan needs -test_access",
+                "CONFIG",
+                "INVALID_OPTION",
+            )
 
         cmd = tuple(shlex.split(kwargs.pop("autombist_cmd", "autombist")))
         result = run_autombist_generate(
@@ -699,6 +710,7 @@ proc {name} {{args}} {{
             liberty=Path(kwargs["liberty"]),
             cell_lib=Path(kwargs["cell_lib"]),
             test_access=test_access,
+            tap_nonscan=tap_nonscan,
         )
         self.session.load_json(result.composed_json_path, result.top_module)
         for inst in result.blackbox_instances:
@@ -707,6 +719,8 @@ proc {name} {{args}} {{
             self.session.add_clock(port)
         if result.manifest_path is not None:
             self.session.set_autombist_manifest(result.manifest_path)
+        if result.nonscan_cells:
+            self.session.set_scan_nonscan(result.nonscan_cells, result.scan_holds)
         message = (
             f"autombist synthesis: {result.ofs_path} "
             f"(top={result.top_module}, blocks={result.block_count})"
@@ -715,6 +729,11 @@ proc {name} {{args}} {{
             message += (
                 f"; clocks {', '.join(result.clock_ports)}: "
                 f"add_scan -chains {result.scan_chains}"
+            )
+        if result.nonscan_cells:
+            message += (
+                f"; TAP and IJTAG network non-scan "
+                f"({len(result.nonscan_cells)} instances), graded by ff.py jtag"
             )
         return message
 

@@ -65,6 +65,10 @@ class ProjectSession:
         # The autoMBIST manifest the loaded design was built from: its
         # coverage report breaks coverage down by instance category.
         self.autombist_manifest: Path | None = None
+        # [scan] nonscan_cells and [scan] hold: the TAP and IJTAG network an
+        # autoMBIST design runs non-scan (autombist_generate -tap_nonscan).
+        self.scan_nonscan_cells: tuple[str, ...] = ()
+        self.scan_holds: tuple[tuple[str, int], ...] = ()
 
     @property
     def checkpoint_path(self) -> Path:
@@ -95,6 +99,9 @@ class ProjectSession:
         snap["test_mode"] = self.test_mode
         if self.autombist_manifest is not None:
             snap["autombist_manifest"] = str(self.autombist_manifest)
+        if self.scan_nonscan_cells or self.scan_holds:
+            snap["scan_nonscan_cells"] = list(self.scan_nonscan_cells)
+            snap["scan_holds"] = [[port, value] for port, value in self.scan_holds]
         return snap
 
     def checkpoint(self) -> tuple[Path, str]:
@@ -163,6 +170,15 @@ class ProjectSession:
 
     def set_autombist_manifest(self, path: Path) -> None:
         self.autombist_manifest = path
+        if self.top is not None:
+            self.checkpoint()
+
+    def set_scan_nonscan(
+        self, cells: tuple[str, ...], holds: tuple[tuple[str, int], ...]
+    ) -> None:
+        """Keep the flops `cells` names out of scan, held by `holds`."""
+        self.scan_nonscan_cells = cells
+        self.scan_holds = holds
         if self.top is not None:
             self.checkpoint()
 
@@ -538,6 +554,15 @@ class ProjectSession:
                         verify_use_power_pins=parse_bool_value(value, key),
                     ),
                 )
+        if self.scan_nonscan_cells or self.scan_holds:
+            cfg = replace(
+                cfg,
+                scan=replace(
+                    cfg.scan,
+                    nonscan_cells=self.scan_nonscan_cells,
+                    hold=self.scan_holds,
+                ),
+            )
         return cfg
 
     def synthesize(self) -> OperationResult:
@@ -1035,6 +1060,12 @@ class ProjectSession:
         self.test_mode = str(data.get("test_mode", "functional"))
         manifest = data.get("autombist_manifest")
         self.autombist_manifest = Path(str(manifest)) if manifest else None
+        self.scan_nonscan_cells = tuple(
+            str(glob) for glob in data.get("scan_nonscan_cells", [])
+        )
+        self.scan_holds = tuple(
+            (str(row[0]), int(row[1])) for row in data.get("scan_holds", [])
+        )
         if resume and self.scan_inserted:
             cfg = self.materialize_config()
             if not cfg.scan_manifest_path.exists():
@@ -1083,3 +1114,5 @@ class ProjectSession:
         self.declared_blackbox.clear()
         self.test_mode = "functional"
         self.autombist_manifest = None
+        self.scan_nonscan_cells = ()
+        self.scan_holds = ()
