@@ -137,6 +137,7 @@ def category_coverage(
     cell_map_json: Path,
     top: str,
     categories: dict[str, str],
+    jtag_detected: frozenset[int] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Per category: detected, denominator and blackbox_unresolved, counted as
     db.summary counts them, over the faults of `campaign_id`. `netlist_json`
@@ -144,15 +145,22 @@ def category_coverage(
     scan campaign. The categories -- GLUE included -- add up to the summary.
 
     Scan patterns grade the TAP and the IJTAG network like any other logic:
-    their flops are scanned. The patterns a production flow uses for them --
-    the TAP running non-scan, network-integrity tests played through TCK --
-    are not generated."""
+    their flops are scanned. `jtag_detected` (fault ids ff.py jtag's
+    network-integrity program detected) adds combined_detected,
+    combined_denominator and combined_coverage_percent: scan and JTAG credit
+    together, a scan-redundant fault JTAG detects counting as detected."""
     _, module = _top_module(_load_json(netlist_json), top)
     owners = _Owners(module, categories)
     drivers = _drivers(module, _load_json(cell_map_json))
     counts: dict[str, dict[str, Any]] = {}
+    # The fault id is read only to match JTAG detections.
+    jtag_columns = (
+        ", id, (exclusion = 'none' AND collapsed_into IS NULL) AS eligible"
+        if jtag_detected is not None
+        else ""
+    )
     for row in conn.execute(
-        """
+        f"""
         SELECT fault_site_key, net_id,
           (exclusion = 'none' AND collapsed_into IS NULL
            AND status != 'redundant') AS counted,
@@ -160,6 +168,7 @@ def category_coverage(
            AND collapsed_into IS NULL) AS detected,
           (blackbox_unresolved = 1 AND exclusion = 'none'
            AND collapsed_into IS NULL AND status != 'detected') AS unresolved
+          {jtag_columns}
         FROM faults
         WHERE campaign_id = ?
         """,
@@ -173,9 +182,20 @@ def category_coverage(
         entry["denominator"] += int(row[2])
         entry["detected"] += int(row[3])
         entry["blackbox_unresolved"] += int(row[4])
+        if jtag_detected is not None:
+            by_jtag = int(row[5]) in jtag_detected and bool(row[6])
+            entry.setdefault("combined_detected", 0)
+            entry.setdefault("combined_denominator", 0)
+            entry["combined_detected"] += int(bool(row[3]) or by_jtag)
+            entry["combined_denominator"] += int(bool(row[2]) or by_jtag)
     for entry in counts.values():
         denominator = entry["denominator"]
         entry["coverage_percent"] = (
             100.0 * entry["detected"] / denominator if denominator else None
         )
+        if "combined_detected" in entry:
+            combined = entry["combined_denominator"]
+            entry["combined_coverage_percent"] = (
+                100.0 * entry["combined_detected"] / combined if combined else None
+            )
     return dict(sorted(counts.items()))

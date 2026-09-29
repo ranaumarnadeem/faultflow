@@ -123,13 +123,22 @@ wrapped design, jtag_tap, ijtag_sib, ijtag_tdr, ijtag_scan_mux. A fault belongs 
 instance of the cell it sits on; what no instance owns — the wrapper's own logic, its
 ports, constant nets — counts as `glue`, so the categories add up to the totals.
 
-```{admonition} Known limitation: TAP and IJTAG network test
+**The TAP and the IJTAG network over JTAG.** `ff.py jtag` (the shell's `run_jtag`)
+plays the network-integrity program a production flow uses -- IDCODE, the instruction
+register's capture and length, BYPASS and every unimplemented opcode, each SIB opened
+alone, each control TDR written and read back, a TMS reset -- through the TAP of the
+scanned netlist, grades the scan campaign's faults at TDO, and reports the credit beside
+the scan coverage (`jtag` and `combined`, per category too). The program is built by
+warptap's `build_integrity_program` from the network the manifest describes (it needs
+warptap with `warptap.tap_integrity`), or read from a `warptap-tck-program` file.
+
+```{admonition} Known limitation: TAP non-scan operation
 :class: warning
 
-faultflow scans the TAP and the IJTAG network's flops like any other logic and grades
-their faults with scan patterns. It does not run the TAP non-scan, and does not generate
-the network-integrity patterns a production flow plays through TCK (instruction-register
-capture, SIB and TDR shift-through). The `coverage.rpt` of a wrapped design notes this.
+faultflow scans the TAP and the IJTAG network's flops like any other logic, so scan
+patterns grade their faults too, and `ff.py jtag` adds JTAG credit on top. Running the
+TAP non-scan, with only the JTAG program testing it, is not modeled yet. The
+`coverage.rpt` of a wrapped design notes this.
 
 The IJTAG network is the data register of EXTEST: its top-level SIBs are selected by a
 decode of the TAP's instruction, so reading or writing it needs EXTEST loaded, and

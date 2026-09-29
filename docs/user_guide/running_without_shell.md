@@ -190,6 +190,34 @@ python3 ff.py scan-techmap --top <top> -c config.ofs
 
 Regenerate the Sky130 techmap output from the scanned JSON.
 
+## `jtag`
+
+```bash
+python3 ff.py jtag --top <top> -c config.ofs [--program FILE] [--verify] [--force]
+```
+
+Grade the scan campaign's stuck-at faults with a JTAG network-integrity program played
+through the TAP of the scanned netlist and compared at TDO, and report the credit beside
+the scan coverage (the `jtag` and `combined` blocks, see [Outputs](outputs.md)). Needs a
+completed `sim --scan`; stuck-at only, and not with `[compression]` or `[compaction]`.
+
+The program is a `warptap-tck-program` JSON file (`--program` or `[jtag] program`), or,
+for a design built from an autoMBIST manifest with `test_access`, it's built from that
+network with warptap's `build_integrity_program`. Before grading, faultflow proves TDO
+can't see an unknown value (every TAP flop reset by `trst_n`, every other flop held in
+reset, blackbox outputs cut off) and checks the netlist's own TDO against the program on
+every bit it expects; either failure refuses the run and writes nothing. The inputs the
+program doesn't drive are held, at 0 or at the level that keeps a flop's reset active
+(`[jtag] hold` overrides).
+
+| Option | Meaning |
+|---|---|
+| `--program FILE` | TCK program to play, instead of `[jtag] program` or building one |
+| `--verify` | Also replay the program on the techmapped netlist in Icarus Verilog, four-state, and require the golden TDO at every shift |
+| `--force` | Grade again when an identical grade (program, netlist, holds) is recorded |
+| `--threads N` | Grading threads (default: `[simulation] sim_threads`) |
+| `--export FILE` | Write the TCK program played |
+
 ## `rule_check`
 
 ```bash
@@ -275,6 +303,7 @@ side.
 | Scan ATPG | `add_scan` + `check_scan` + `run_atpg -scan` | `sim --scan` |
 | Scan status | `status -scan` | `scan-status` / `status --scan` |
 | Regenerate techmap | `write_netlist -scan -techmap` | `scan-techmap` |
+| JTAG network-integrity grade | `run_jtag` | `jtag` |
 | Status | `status` | `status` |
 | INTEST | `set_testmode intest` + scan flow + `run_atpg -scan` | `intest` |
 | EXTEST | `add_blackbox` ... + `set_testmode extest` + `run_atpg` | `extest` |

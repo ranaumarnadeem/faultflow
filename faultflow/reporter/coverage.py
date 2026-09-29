@@ -433,10 +433,12 @@ def _autombist_categories(
     cfg: FaultflowConfig,
     campaign_id: int,
     campaign_type: str,
+    jtag_detected: frozenset[int] | None = None,
 ) -> dict[str, Any] | None:
     """Coverage by autoMBIST instance category, for a netlist built from an
     autoMBIST manifest ([autombist] manifest). A scan campaign's fault sites
-    name the scan ATPG view's nets and cells."""
+    name the scan ATPG view's nets and cells. With JTAG results, each category
+    also counts scan and JTAG credit together."""
     if cfg.autombist_manifest is None:
         return None
     from faultflow.integrations.autombist import load_autombist_manifest
@@ -456,26 +458,63 @@ def _autombist_categories(
         cell_map_json=cfg.cell_lib,
         top=cfg.top,
         categories=instance_categories(load_autombist_manifest(cfg.autombist_manifest)),
+        jtag_detected=jtag_detected,
     )
 
 
-def _category_lines(categories: dict[str, Any]) -> list[str]:
+def _category_lines(categories: dict[str, Any], jtag: bool) -> list[str]:
     from faultflow.integrations.autombist_coverage import JTAG_CATEGORIES
 
     lines = ["autombist categories (detected / denominator, blackbox_unresolved):"]
     for name, entry in categories.items():
         percent = entry["coverage_percent"]
-        lines.append(
+        line = (
             f"  {name:17s} {entry['detected']:6d} / {entry['denominator']:<6d} "
             f"{entry['blackbox_unresolved']:6d}  "
             + ("n/a" if percent is None else f"{percent:.3f}%")
         )
+        if "combined_detected" in entry:
+            combined = entry["combined_coverage_percent"]
+            line += (
+                f"  with jtag {entry['combined_detected']} / "
+                f"{entry['combined_denominator']} "
+                + ("n/a" if combined is None else f"{combined:.3f}%")
+            )
+        lines.append(line)
     if JTAG_CATEGORIES & set(categories):
         lines.append(
             "  note: scan patterns grade the TAP and the IJTAG network like any "
-            "other logic; TAP non-scan operation and IJTAG network-integrity "
-            "patterns are not generated"
+            "other logic"
+            + (
+                ", and ff.py jtag's network-integrity program graded them "
+                "through TCK too (with jtag)"
+                if jtag
+                else "; TAP non-scan operation is not modeled, and the IJTAG "
+                "network-integrity patterns are not graded (ff.py jtag grades them)"
+            )
         )
+    return lines
+
+
+def _jtag_lines(jtag: dict[str, Any], combined: dict[str, Any]) -> list[str]:
+    def percent(value: float | None) -> str:
+        return "n/a" if value is None else f"{value:.3f}"
+
+    lines = [
+        f"jtag (TCK program, {jtag['tck_periods']} periods, "
+        f"{len(jtag['tests'])} tests):",
+        f"  graded:              {jtag['graded']}",
+        f"  detected:            {jtag['detected']}",
+        f"  detected_only_jtag:  {jtag['detected_only_by_jtag']}",
+        f"  reset_path_ungraded: {jtag['reset_path_ungraded']}",
+        f"  scan_redundant_conflicts: {len(jtag['scan_redundant_conflicts'])}",
+        "combined (scan + jtag):",
+        f"  denominator:         {combined['denominator']}",
+        f"  detected:            {combined['detected']}",
+        f"  redundant:           {combined['redundant']}",
+        f"  fault_coverage_%:    {percent(combined['fault_coverage_percent'])}",
+        f"  test_coverage_%:     {percent(combined['test_coverage_percent'])}",
+    ]
     return lines
 
 
@@ -569,8 +608,17 @@ def write_reports(
         run = cast(dict[str, Any], report["run"])
         run["scan_mode"] = True
         run["scan_manifest_hash"] = scan_context.get("manifest_hash", "")
+    from faultflow.jtag import store as jtag_store
+
+    jtag_blocks = jtag_store.report_blocks(conn, campaign_id, data)
+    jtag_detected: frozenset[int] | None = None
+    if jtag_blocks is not None:
+        report["jtag"], report["combined"] = jtag_blocks
+        jtag_run = jtag_store.latest_run(conn, campaign_id)
+        assert jtag_run is not None
+        jtag_detected = jtag_store.detected_fault_ids(conn, int(jtag_run["id"]))
     categories = _autombist_categories(
-        conn, cfg, campaign_id, str(fp.get("campaign_type", ""))
+        conn, cfg, campaign_id, str(fp.get("campaign_type", "")), jtag_detected
     )
     if categories is not None:
         report["autombist_categories"] = categories
@@ -646,8 +694,11 @@ def write_reports(
     for _rk, _rv in sorted(cast(dict[str, int], report["reason_summary"]).items()):
         txt.append(f"  {_rk}: {_rv}")
     txt.append("")
+    if jtag_blocks is not None:
+        txt.extend(_jtag_lines(*jtag_blocks))
+        txt.append("")
     if categories is not None:
-        txt.extend(_category_lines(categories))
+        txt.extend(_category_lines(categories, jtag_blocks is not None))
         txt.append("")
     txt.append("undetected faults:")
     for fault in cast(list[dict[str, Any]], report["undetected_faults"]):

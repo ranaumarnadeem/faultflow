@@ -103,6 +103,7 @@ See [Test-point insertion](testpoints.md) for the full workflow.
 | Command | Summary |
 |---|---|
 | `run_atpg [-sa] [-scan] [-tf broadside\|los] [-serial_ref] [-max ROUNDS] [-target PERCENT] [-export-patterns PATH]` | Run native SAT ATPG. Combinational stuck-at by default; `-sa` is an accepted no-op (stuck-at is already the default). `-scan` runs scan-protocol ATPG (needs a fresh `add_scan` + `check_scan`). `-tf broadside` or `-tf los` switches to transition-fault ATPG (`los` is scan-only). `-serial_ref` runs isolated serial-reference diagnostics without updating production coverage. `-export-patterns PATH` writes scan pattern JSON (input to `retarget`). |
+| `run_jtag [-program PATH] [-verify] [-force] [-threads N] [-export PATH]` | Grade the scan campaign's faults with a JTAG network-integrity program played through the TAP (needs `run_atpg -scan` first); the batch CLI's `jtag`. The credit is reported beside the scan coverage. |
 | `status [-scan]` | Show coverage, classification, terminal reason, and timing. `-scan` reads the scan campaign. |
 | `report` | Regenerate the unified report (`report.rpt`) |
 

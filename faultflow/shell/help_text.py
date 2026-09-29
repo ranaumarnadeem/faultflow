@@ -219,6 +219,21 @@ COMMAND_HELP = {
         "A synthesized design and selected PDK profile.",
         "add_scan -chains 4 -SI scan_in -SO scan_out -SE scan_en",
     ),
+    "run_jtag": CommandHelp(
+        "Run",
+        "run_jtag [-program PATH] [-verify] [-force] [-threads N] [-export PATH]",
+        "Grade faults with a JTAG network-integrity program",
+        "Plays a TCK program through the TAP of the scanned netlist and grades the "
+        "scan campaign's stuck-at faults at TDO, after proving TDO X-free and "
+        "checking the netlist's own TDO against the program. The program is "
+        "-program PATH (warptap-tck-program JSON), [jtag] program, or built from "
+        "the [autombist] manifest with warptap. The credit is reported beside the "
+        "scan coverage (jtag and combined). -verify also replays the program on "
+        "the techmapped netlist in Icarus Verilog; -force grades again when an "
+        "identical grade is recorded; -export writes the program played.",
+        "A completed scan ATPG run (run_atpg -scan).",
+        "run_jtag -verify",
+    ),
     "check_scan": CommandHelp(
         "Scan",
         "check_scan [-structural]",

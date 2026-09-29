@@ -220,8 +220,67 @@
           "detected": { "type": "integer", "minimum": 0 },
           "denominator": { "type": "integer", "minimum": 0 },
           "blackbox_unresolved": { "type": "integer", "minimum": 0 },
-          "coverage_percent": { "type": ["number", "null"] }
+          "coverage_percent": { "type": ["number", "null"] },
+          "combined_detected": { "type": "integer", "minimum": 0 },
+          "combined_denominator": { "type": "integer", "minimum": 0 },
+          "combined_coverage_percent": { "type": ["number", "null"] }
         }
+      }
+    },
+    "jtag": {
+      "description": "The latest ff.py jtag grade of this campaign's faults: a TCK program played through the TAP and compared at TDO",
+      "type": "object",
+      "required": [
+        "program_digest",
+        "tck_periods",
+        "tests",
+        "graded",
+        "reset_path_ungraded",
+        "detected",
+        "detected_by_test",
+        "detected_only_by_jtag",
+        "scan_redundant_conflicts",
+        "holds"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "program_digest": { "type": "string" },
+        "tck_periods": { "type": "integer", "minimum": 1 },
+        "tests": { "type": "array", "items": { "type": "string" } },
+        "graded": { "type": "integer", "minimum": 0 },
+        "reset_path_ungraded": { "type": "integer", "minimum": 0 },
+        "detected": { "type": "integer", "minimum": 0 },
+        "detected_by_test": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "detected_only_by_jtag": { "type": "integer", "minimum": 0 },
+        "scan_redundant_conflicts": { "type": "array", "items": { "type": "string" } },
+        "holds": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0, "maximum": 1 }
+        }
+      }
+    },
+    "combined": {
+      "description": "Scan and JTAG credit together: detected by either; redundant only if scan proved it and JTAG did not detect it",
+      "type": "object",
+      "required": [
+        "structural_eligible",
+        "denominator",
+        "detected",
+        "redundant",
+        "fault_coverage_percent",
+        "test_coverage_percent"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "structural_eligible": { "type": "integer", "minimum": 0 },
+        "denominator": { "type": "integer", "minimum": 0 },
+        "detected": { "type": "integer", "minimum": 0 },
+        "redundant": { "type": "integer", "minimum": 0 },
+        "fault_coverage_percent": { "type": ["number", "null"] },
+        "test_coverage_percent": { "type": ["number", "null"] }
       }
     }
   }

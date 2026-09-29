@@ -27,6 +27,7 @@ class TclBridge:
             "add_scan": self._add_scan,
             "check_scan": self._check_scan,
             "run_atpg": self._run_atpg,
+            "run_jtag": self._run_jtag,
             "status": self._status,
             "report": self._report,
             "write_netlist": self._write_netlist,
@@ -307,6 +308,32 @@ proc {name} {{args}} {{
         return self.session.run_atpg(
             scan=scan, transition_model=transition_model, **options
         )
+
+    def _run_jtag(self, args: list[str]) -> Any:
+        usage = (
+            "usage: run_jtag [-program PATH] [-verify] [-force] [-threads N] "
+            "[-export PATH]"
+        )
+        options: dict[str, Any] = {}
+        index = 0
+        while index < len(args):
+            key = args[index]
+            if key in ("-verify", "-force"):
+                options[key[1:]] = True
+                index += 1
+            elif key in ("-program", "-export") and index + 1 < len(args):
+                name = "program_path" if key == "-program" else "export"
+                options[name] = Path(args[index + 1])
+                index += 2
+            elif key == "-threads" and index + 1 < len(args):
+                try:
+                    options["sim_threads"] = int(args[index + 1])
+                except ValueError:
+                    raise ShellError(usage, "CONFIG", "INVALID_OPTION")
+                index += 2
+            else:
+                raise ShellError(usage, "CONFIG", "INVALID_OPTION")
+        return self.session.run_jtag(**options)
 
     def _check_scan(self, args: list[str]) -> Any:
         structural_only = False

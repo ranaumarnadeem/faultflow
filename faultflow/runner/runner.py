@@ -2664,6 +2664,18 @@ class Runner:
                     f" generated={run['atpg_generated_vectors']}"
                     f" accepted={run['atpg_accepted_vectors']}"
                 )
+            from faultflow.jtag.store import report_blocks
+
+            jtag_blocks = report_blocks(conn, campaign_id, data)
+            if jtag_blocks is not None:
+                jtag, combined = jtag_blocks
+                combined_cov = combined["test_coverage_percent"]
+                atpg_note += (
+                    f" jtag_detected={jtag['detected']}"
+                    f" jtag_only={jtag['detected_only_by_jtag']}"
+                    " combined_coverage="
+                    + ("n/a" if combined_cov is None else f"{combined_cov:.3f}%")
+                )
             return (
                 f"top={self.cfg.top} scan_mode={str(scan).lower()} coverage={cov_text} "
                 f"detected={data['detected']} denominator={data['denominator']} "

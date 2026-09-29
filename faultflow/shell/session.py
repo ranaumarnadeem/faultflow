@@ -771,6 +771,33 @@ class ProjectSession:
         self._refresh_report()
         return result
 
+    def run_jtag(self, **options: Any) -> OperationResult:
+        """ff.py jtag: grade the scan campaign's faults with a JTAG
+        network-integrity program (faultflow.jtag.command)."""
+        if self.top is None:
+            raise precondition("run read_netlist first", "NO_DESIGN")
+        if not self.scan_inserted:
+            raise precondition("run add_scan first", "SCAN_REQUIRED")
+        from faultflow.jtag.command import run_jtag
+
+        cfg = self.materialize_config()
+        try:
+            outcome = run_jtag(cfg, **options)
+        except RuntimeError as exc:
+            raise ShellError(str(exc), "RUNNER", "JTAG_FAILED") from exc
+        self._refresh_report()
+        return OperationResult(
+            operation="jtag",
+            top=cfg.top,
+            message=outcome.message(cfg.top),
+            metrics={
+                "graded": outcome.graded,
+                "detected": outcome.detected,
+                "reset_path_ungraded": outcome.reset_path,
+                "periods": outcome.periods,
+            },
+        )
+
     def status(self, *, scan: bool = False) -> OperationResult:
         return self.service.status(self.materialize_config(), scan=scan)
 

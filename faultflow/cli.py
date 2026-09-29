@@ -296,6 +296,40 @@ def _parser() -> argparse.ArgumentParser:
     )
     add_common(scan_techmap)
 
+    jtag = sub.add_parser(
+        "jtag",
+        help=(
+            "Grade the scan campaign's faults with a JTAG network-integrity "
+            "program played through the TAP"
+        ),
+    )
+    add_common(jtag)
+    jtag.add_argument(
+        "--program",
+        type=Path,
+        help=(
+            "warptap-tck-program JSON to play (default: [jtag] program, else "
+            "built from the [autombist] manifest with warptap)"
+        ),
+    )
+    jtag.add_argument(
+        "--verify",
+        action="store_true",
+        help=(
+            "Also replay the program on the techmapped netlist in Icarus Verilog "
+            "(four-state) and require the golden TDO"
+        ),
+    )
+    jtag.add_argument(
+        "--force",
+        action="store_true",
+        help="Grade again even if an identical grade is recorded",
+    )
+    jtag.add_argument(
+        "--threads", type=int, help="Grading threads (default: [simulation])"
+    )
+    jtag.add_argument("--export", type=Path, help="Write the TCK program played")
+
     scan_compress = sub.add_parser(
         "scan-compress",
         help="Insert scan test-pattern compression (ring generator + phase shifter)",
@@ -502,6 +536,18 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "scan-techmap":
             print(service.regenerate_scan_techmap(cfg).message)
+        elif args.command == "jtag":
+            from faultflow.jtag.command import run_jtag
+
+            outcome = run_jtag(
+                cfg,
+                program_path=args.program,
+                force=args.force,
+                sim_threads=args.threads,
+                export=args.export,
+                verify=args.verify,
+            )
+            print(outcome.message(cfg.top))
         elif args.command == "scan-compress":
             print(service.scan_compress(cfg).message)
         elif args.command == "scan-compact":

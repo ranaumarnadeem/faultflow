@@ -654,7 +654,7 @@ def test_a_wrapped_design_runs_the_scan_flow_on_two_clock_domains(
         {"glue", "ijtag_sib", "ijtag_tdr", "jtag_tap", "mbist_controller", "memory"},
     )
     text = cfg.coverage_report_path.read_text(encoding="utf-8")
-    assert "IJTAG network-integrity patterns are not generated" in text
+    assert "network-integrity patterns are not graded (ff.py jtag grades them)" in text
 
     _assert_unload_independent_of_memory(cfg, patterns, loc=False)
     assert credit_not_reproduced(cfg, patterns) == []

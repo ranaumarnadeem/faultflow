@@ -350,6 +350,30 @@ class ClockSpec:
 
 
 @dataclass(frozen=True)
+class JtagConfig:
+    """``ff.py jtag`` ([jtag]): grading the scan campaign's faults with a JTAG
+    network-integrity program played through the TAP and compared at TDO. The TAP
+    ports; ``hold``, what to hold other inputs at (overriding the defaults the
+    X-isolation proof settles); ``program``, a warptap-tck-program file, else one is
+    built from the [autombist] manifest with warptap; the TAP's IR width and IDCODE
+    (``None``: no IDCODE register); the program's sentinel ``margin``; and whether
+    to test every unimplemented opcode. Report-only: not fingerprinted -- a JTAG
+    grade keys itself to its program, ports, holds and netlist."""
+
+    tck: str = "tck"
+    tms: str = "tms"
+    tdi: str = "tdi"
+    trst_n: str = "trst_n"
+    tdo: str = "tdo"
+    hold: tuple[tuple[str, int], ...] = ()
+    program: Path | None = None
+    ir_width: int = 4
+    idcode: int | None = 0x1A5A5003
+    margin: int = 8
+    exhaustive_opcodes: bool = True
+
+
+@dataclass(frozen=True)
 class TestpointConfig:
     opentest: Path = Path("opentest")
     metric: str = "scoap"
@@ -395,6 +419,7 @@ class FaultflowConfig:
     # built from (ff.py autombist-generate). The coverage report then breaks
     # coverage down by instance category. Report-only: not fingerprinted.
     autombist_manifest: Path | None = None
+    jtag: JtagConfig = JtagConfig()
 
     @property
     def blackbox_x_instances(self) -> tuple[str, ...]:
@@ -534,6 +559,58 @@ def _parse_clocks(parser: ConfigParser) -> tuple[ClockSpec, ...]:
             off_states[port] = int(val)
 
     return tuple(ClockSpec(port=p, off_state=off_states.get(p, 0)) for p in ports)
+
+
+def _parse_jtag(parser: ConfigParser) -> JtagConfig:
+    if not parser.has_section("jtag"):
+        return JtagConfig()
+    defaults = JtagConfig()
+    ports = {
+        name: parser.get("jtag", name, fallback=getattr(defaults, name)).strip()
+        for name in ("tck", "tms", "tdi", "trst_n", "tdo")
+    }
+    if len(set(ports.values())) != len(ports) or not all(ports.values()):
+        raise ConfigError(f"[jtag] TAP ports must be distinct and non-empty: {ports}")
+    hold: list[tuple[str, int]] = []
+    for token in parser.get("jtag", "hold", fallback="").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        port, _, value = token.partition(":")
+        if not port.strip() or value.strip() not in {"0", "1"}:
+            raise ConfigError(f"[jtag] hold entry '{token}' must be '<input>:<0|1>'")
+        hold.append((port.strip(), int(value)))
+    if len({p for p, _ in hold}) != len(hold):
+        raise ConfigError("[jtag] hold names an input twice")
+    idcode_raw = parser.get("jtag", "idcode", fallback="").strip().lower()
+    idcode: int | None = defaults.idcode
+    if idcode_raw == "none":
+        idcode = None
+    elif idcode_raw:
+        try:
+            idcode = int(idcode_raw, 0)
+        except ValueError:
+            raise ConfigError(
+                f"[jtag] idcode must be an integer or 'none': {idcode_raw}"
+            )
+        if not 0 <= idcode < (1 << 32) or not idcode & 1:
+            raise ConfigError("[jtag] idcode must be a 32-bit value with bit 0 set")
+    config = JtagConfig(
+        hold=tuple(hold),
+        program=_optional_path(parser, "jtag", "program"),
+        ir_width=_int(parser, "jtag", "ir_width", defaults.ir_width),
+        idcode=idcode,
+        margin=_int(parser, "jtag", "margin", defaults.margin),
+        exhaustive_opcodes=_bool(
+            parser, "jtag", "exhaustive_opcodes", defaults.exhaustive_opcodes
+        ),
+        **ports,
+    )
+    if config.ir_width < 2:
+        raise ConfigError("[jtag] ir_width must be at least 2")
+    if config.margin < 1:
+        raise ConfigError("[jtag] margin must be at least 1")
+    return config
 
 
 def add_clock_to_config(path: str | Path, port: str, *, off_state: int = 0) -> None:
@@ -833,6 +910,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         test_mode=test_mode,
         wbr_model=wbr_model,
         autombist_manifest=_autombist_manifest(parser),
+        jtag=_parse_jtag(parser),
     )
 
 

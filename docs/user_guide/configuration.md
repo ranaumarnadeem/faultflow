@@ -210,6 +210,22 @@ Written by `ff.py autombist-generate` (see [External tools](../external_tools.md
 |---|---|---|
 | `manifest` | path | The autoMBIST instance manifest the netlist was built from. The coverage report then breaks detected faults, the denominator and `blackbox_unresolved` down by the manifest's instance categories. Report-only: not part of the campaign fingerprint |
 
+## `[jtag]`
+
+Used by `ff.py jtag` / `run_jtag` (see [Running without the shell](running_without_shell.md)).
+Every key is optional; the defaults fit a TAP warptap inserted. Report-only: not part of the
+campaign fingerprint (a JTAG grade keys itself to its program, netlist and holds).
+
+| Key | Format | Default | Meaning |
+|---|---|---|---|
+| `tck`, `tms`, `tdi`, `trst_n`, `tdo` | port names | the same | The TAP's ports |
+| `hold` | `input:0\|1` list, e.g. `rst_n:0, test_mode:0` | — | What to hold other inputs at, over the defaults (0, or the level that keeps a flop's reset active) |
+| `program` | path | — | A `warptap-tck-program` JSON file to play; without it, one is built from the `[autombist] manifest` with warptap |
+| `ir_width` | integer ≥ 2 | `4` | The TAP's instruction-register width, for a built program |
+| `idcode` | 32-bit integer (bit 0 set), or `none` | `0x1A5A5003` | The TAP's IDCODE value, for a built program; `none` for a TAP without one |
+| `margin` | integer ≥ 1 | `8` | Sentinel bits fed past each register's length in a built program |
+| `exhaustive_opcodes` | boolean | `true` | Test every unimplemented opcode in a built program |
+
 ## Notes on legacy and inert keys
 
 ```{note}

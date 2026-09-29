@@ -48,7 +48,9 @@ Its top-level structure is:
 | `run` | Per-run statistics, including ATPG round counts and timing |
 | `per_node` | Per-net fault counts and detection status |
 | `undetected_faults` | The remaining undetected/redundant faults |
-| `autombist_categories` | Only with `[autombist] manifest`: `detected`, `denominator`, `blackbox_unresolved` and `coverage_percent` per autoMBIST instance category, `glue` holding what no instance owns; they add up to the `summary` totals. `coverage.rpt` shows the same as a table. See [External tools](../external_tools.md) |
+| `autombist_categories` | Only with `[autombist] manifest`: `detected`, `denominator`, `blackbox_unresolved` and `coverage_percent` per autoMBIST instance category, `glue` holding what no instance owns; they add up to the `summary` totals. After `ff.py jtag`, also `combined_detected`, `combined_denominator` and `combined_coverage_percent` (scan and JTAG credit together). `coverage.rpt` shows the same as a table. See [External tools](../external_tools.md) |
+| `jtag` | Only after `ff.py jtag`: the latest JTAG network-integrity grade of this campaign's faults -- the program (`program_digest`, `tck_periods`, `tests`), `graded`, `detected`, `detected_by_test` (each fault credited to the first test that detects it), `detected_only_by_jtag`, `reset_path_ungraded` (faults that could keep a flop out of reset, which a two-valued grade can't judge), `scan_redundant_conflicts` (scan-redundant faults JTAG detects; expected empty) and the `holds` used. The `summary` block is unchanged |
+| `combined` | Only after `ff.py jtag`: scan and JTAG credit together -- `detected` by either, `redundant` only if scan proved it and JTAG didn't detect it, and the two coverage figures over them. The Policy-3 totals hold with these numbers too |
 
 ### The `summary` block
 
@@ -103,7 +105,9 @@ same-stem `.bench` sidecar that fixes the primary-input order.
 The campaign database under `.faultflow/`. It holds the fault list, per-fault
 detection records, generated vectors, run metadata, and timing — and is shared by the
 combinational and scan campaigns. `status` reads its current state; `--clean` deletes
-it.
+it. `ff.py jtag` keeps its grades in two side tables, `jtag_runs` and
+`jtag_detections`, keyed to the scan campaign's fault rows: a new scan campaign has new
+fault rows, so an older JTAG grade simply stops applying.
 
 ```{warning}
 The database uses the default (rollback) SQLite journal mode, not WAL. WAL is not
