@@ -708,6 +708,11 @@ void mark_fault_blackbox_unresolved_py(const std::string& db_path,
   db::mark_fault_blackbox_unresolved(db_path, fault_id);
 }
 
+void mark_fault_hold_unresolved_py(const std::string& db_path,
+                                   int64_t fault_id) {
+  db::mark_fault_hold_unresolved(db_path, fault_id);
+}
+
 void complete_run_with_atpg_py(const std::string& db_path, int64_t run_id,
                                double coverage_percent,
                                const std::string& terminal_reason, int rounds,
@@ -1287,6 +1292,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
   m.def("mark_fault_blackbox_unresolved",
         &faultflow::mark_fault_blackbox_unresolved_py, py::arg("db_path"),
         py::arg("fault_id"));
+  m.def("mark_fault_hold_unresolved", &faultflow::mark_fault_hold_unresolved_py,
+        py::arg("db_path"), py::arg("fault_id"));
   m.def("complete_run_with_atpg", &faultflow::complete_run_with_atpg_py,
         py::arg("db_path"), py::arg("run_id"), py::arg("coverage_percent"),
         py::arg("terminal_reason"), py::arg("rounds"), py::arg("sat"),

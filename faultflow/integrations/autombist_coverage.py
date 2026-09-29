@@ -139,8 +139,9 @@ def category_coverage(
     categories: dict[str, str],
     jtag_detected: frozenset[int] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Per category: detected, denominator and blackbox_unresolved, counted as
-    db.summary counts them, over the faults of `campaign_id`. `netlist_json`
+    """Per category: detected, denominator, blackbox_unresolved and
+    hold_unresolved, counted as db.summary counts them, over the faults of
+    `campaign_id`. `netlist_json`
     is the netlist the campaign's fault sites name: the scan ATPG view for a
     scan campaign. The categories -- GLUE included -- add up to the summary.
 
@@ -171,7 +172,9 @@ def category_coverage(
           (status = 'detected' AND exclusion = 'none'
            AND collapsed_into IS NULL) AS detected,
           (blackbox_unresolved = 1 AND exclusion = 'none'
-           AND collapsed_into IS NULL AND status != 'detected') AS unresolved
+           AND collapsed_into IS NULL AND status != 'detected') AS unresolved,
+          (hold_unresolved = 1 AND exclusion = 'none'
+           AND collapsed_into IS NULL AND status != 'detected') AS held
           {jtag_columns}
         FROM faults
         WHERE campaign_id = ?
@@ -181,18 +184,25 @@ def category_coverage(
         owner = _owner(str(row[0]), int(row[1]), owners, drivers)
         category = categories.get(owner, GLUE) if owner is not None else GLUE
         entry = counts.setdefault(
-            category, {"detected": 0, "denominator": 0, "blackbox_unresolved": 0}
+            category,
+            {
+                "detected": 0,
+                "denominator": 0,
+                "blackbox_unresolved": 0,
+                "hold_unresolved": 0,
+            },
         )
         entry["denominator"] += int(row[2])
         entry["detected"] += int(row[3])
         entry["blackbox_unresolved"] += int(row[4])
+        entry["hold_unresolved"] += int(row[5])
         if jtag_detected is not None:
-            by_jtag = int(row[5]) in jtag_detected and bool(row[6])
+            by_jtag = int(row[6]) in jtag_detected and bool(row[7])
             entry.setdefault("combined_detected", 0)
             entry.setdefault("combined_denominator", 0)
             entry["combined_detected"] += int(bool(row[3]) or by_jtag)
             entry["combined_denominator"] += int(
-                bool(row[2]) or by_jtag or bool(row[7])
+                bool(row[2]) or by_jtag or bool(row[8])
             )
     for entry in counts.values():
         denominator = entry["denominator"]

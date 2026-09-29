@@ -68,6 +68,11 @@ NONSCAN_SINK_PREFIX = "$nssink_"
 HOLD_TIE_PREFIX = "$nshold_"
 NONSCAN_INSTANCE_ATTR = "faultflow_nonscan"
 NONSCAN_X_ATTR = "faultflow_nonscan_x"
+# The view's hold twin (make_nonscan_free) feeds each of those ties from an input
+# port named with the first prefix and observes each reader through an output port
+# named with the second. The C++ held_real_pis skips the first prefix too.
+NONSCAN_FREE_PORT_PREFIX = "__nsfree_"
+NONSCAN_OBSERVE_PORT_PREFIX = "__nsobs_"
 # Top-module attribute of a scan ATPG view: space-separated net ids of output
 # bits nothing may observe (x_mask.py). Mirrors kUnobservedNetsAttr in
 # src/core/ir/normalized_graph/normalized_graph.hpp, which drops them from
@@ -772,42 +777,87 @@ def make_blackbox_transparent(view: dict[str, Any], top: str) -> bool:
     """
     _, module = _top_module(view, top)
     cells = module.get("cells", {})
-    ties = sorted(name for name in cells if name.startswith(BLACKBOX_TIE_PREFIX))
-    sinks = sorted(name for name in cells if name.startswith(BLACKBOX_SINK_PREFIX))
+    ties = {
+        name: BLACKBOX_FREE_PORT_PREFIX + name[len(BLACKBOX_TIE_PREFIX) :]
+        for name in cells
+        if name.startswith(BLACKBOX_TIE_PREFIX)
+    }
+    sinks = {
+        name: BLACKBOX_OBSERVE_PORT_PREFIX + name[len(BLACKBOX_SINK_PREFIX) :]
+        for name in cells
+        if name.startswith(BLACKBOX_SINK_PREFIX)
+    }
     if not ties and not sinks:
         return False
     attributes = module.get("attributes")
     if isinstance(attributes, dict):
         attributes.pop(UNOBSERVED_NETS_ATTR, None)
+    _free_and_observe(module, ties, sinks, "blackbox twin")
+    return True
+
+
+def make_nonscan_free(view: dict[str, Any], top: str) -> bool:
+    """Turn a scan ATPG view that models non-scan cells (_model_nonscan) into its
+    hold twin, in place: every non-scan tie -- a forced flop's output, an X
+    source's, a held input's -- becomes a buffer fed by its own new input port, so
+    SAT may give it any value, and every non-scan flop pin's reader drives a new
+    output port, so SAT may observe it. An X source's tie stops being one; what
+    else is unknown, the caller masks. Returns False, leaving the view untouched,
+    if the view models no non-scan cell.
+
+    Only ties and ports change, so every fault site keeps its site key. A fault
+    UNSAT in the view but SAT in its hold twin has a test only if the held inputs,
+    and the non-scan flops they keep in reset, were free: it is untestable because
+    of [scan] hold (Tessent's AU.PC), not redundant. Like the blackbox twin, it
+    serves that classification alone.
+    """
+    _, module = _top_module(view, top)
+    cells = module.get("cells", {})
+    ties = {
+        name: NONSCAN_FREE_PORT_PREFIX + name.lstrip("$")
+        for name in cells
+        if name.startswith((NONSCAN_TIE_PREFIX, NONSCAN_X_PREFIX, HOLD_TIE_PREFIX))
+    }
+    sinks = {
+        name: NONSCAN_OBSERVE_PORT_PREFIX + name[len(NONSCAN_SINK_PREFIX) :]
+        for name in cells
+        if name.startswith(NONSCAN_SINK_PREFIX)
+    }
+    if not ties and not sinks:
+        return False
+    for name in ties:
+        cells[name].get("attributes", {}).pop(NONSCAN_X_ATTR, None)
+    _free_and_observe(module, ties, sinks, "hold twin")
+    return True
+
+
+def _free_and_observe(
+    module: dict[str, Any], ties: dict[str, str], sinks: dict[str, str], twin: str
+) -> None:
+    """Make each tie cell of `ties` a buffer fed by a new input port, named as
+    `ties` maps it, and give each dangling reader of `sinks` a new output port,
+    named as `sinks` maps it."""
+    cells = module.get("cells", {})
     ports = module.setdefault("ports", {})
     netnames = module.setdefault("netnames", {})
 
     def add_port(name: str, direction: str, bit: int) -> None:
         if name in ports or name in netnames:
-            raise ScanError(f"blackbox twin port name {name!r} is already taken")
+            raise ScanError(f"{twin} port name {name!r} is already taken")
         ports[name] = {"direction": direction, "bits": [bit]}
         netnames[name] = {"hide_name": 0, "bits": [bit], "attributes": {}}
 
     next_id = _next_net_id(module)
-    for name in ties:
-        add_port(
-            BLACKBOX_FREE_PORT_PREFIX + name[len(BLACKBOX_TIE_PREFIX) :],
-            "input",
-            next_id,
-        )
+    for name, port in sorted(ties.items()):
+        add_port(port, "input", next_id)
         tie = cells[name]
         tie["type"] = OBSERVE_BUF_CELL
         tie["port_directions"] = {"A": "input", "Y": "output"}
         tie["connections"] = {"A": [next_id], "Y": tie["connections"]["Y"]}
         next_id += 1
-    for name in sinks:
+    for name, port in sorted(sinks.items()):
         (bit,) = cells[name]["connections"]["Y"]
-        add_port(
-            BLACKBOX_OBSERVE_PORT_PREFIX + name[len(BLACKBOX_SINK_PREFIX) :],
-            "output",
-            bit,
-        )
-    return True
+        add_port(port, "output", bit)
 
 
 def build_scan_atpg_view(

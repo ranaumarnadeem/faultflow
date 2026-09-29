@@ -302,6 +302,7 @@ class FlowService:
             "compression_unresolved": data.get("compression_unresolved", 0),
             "compaction_unresolved": data.get("compaction_unresolved", 0),
             "blackbox_unresolved": data.get("blackbox_unresolved", 0),
+            "hold_unresolved": data.get("hold_unresolved", 0),
             "fault_coverage_percent": data["fault_coverage_percent"],
             "test_coverage_percent": data["test_coverage_percent"],
             "vectors": run.get("vector_count", 0),

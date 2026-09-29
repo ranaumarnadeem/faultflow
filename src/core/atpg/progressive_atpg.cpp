@@ -364,7 +364,8 @@ std::vector<uint32_t> held_real_pis(const ParsedGraph& parsed,
       continue;
     }
     if (name.rfind(ppi_prefix, 0) == 0 ||
-        name.rfind(kBlackboxFreePortPrefix, 0) == 0) {
+        name.rfind(kBlackboxFreePortPrefix, 0) == 0 ||
+        name.rfind(kNonscanFreePortPrefix, 0) == 0) {
       continue;
     }
     for (int bit : port.bits) {

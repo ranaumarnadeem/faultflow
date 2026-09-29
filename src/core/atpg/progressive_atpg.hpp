@@ -181,7 +181,11 @@ std::vector<int64_t> simulate_transition_tentative_from_preloaded(
 // `__bbfree_*` inputs are not held: they stand for blackbox outputs in the
 // blackbox-transparent twin of a scan ATPG view (faultflow/scan/atpg_view.py),
 // and a memory's output can change between the launch and capture edges.
+// Nor are `__nsfree_*` inputs, which stand for held inputs and non-scan flop
+// outputs in the view's hold twin: that twin asks whether a test exists with
+// them free, which includes changing between the two edges.
 constexpr char kBlackboxFreePortPrefix[] = "__bbfree_";
+constexpr char kNonscanFreePortPrefix[] = "__nsfree_";
 std::vector<uint32_t> held_real_pis(const ParsedGraph& parsed,
                                     const CompiledSimGraph& cg);
 

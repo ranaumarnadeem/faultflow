@@ -21,6 +21,10 @@ scan flop's clear or preset in its active level.
 A stuck-at on a forcing control's traced path can release a forced flop in the faulty
 machine, which a tie can't show: :attr:`NonscanSetup.release_faults` lists those (site
 key, fault type) pairs, which scan leaves to JTAG.
+
+A fault the ties alone make untestable -- glue logic a TDR held at its reset value
+gates, say -- is hold_unresolved, not redundant: SAT finds a test on the view's hold
+twin (atpg_view.make_nonscan_free), where they are free.
 """
 
 from __future__ import annotations

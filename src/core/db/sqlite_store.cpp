@@ -234,6 +234,7 @@ CREATE TABLE IF NOT EXISTS faults (
     compression_unresolved INTEGER NOT NULL DEFAULT 0,
     compaction_unresolved INTEGER NOT NULL DEFAULT 0,
     blackbox_unresolved INTEGER NOT NULL DEFAULT 0,
+    hold_unresolved INTEGER NOT NULL DEFAULT 0,
     UNIQUE (campaign_id, fault_site_key, fault_type),
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
 );
@@ -657,6 +658,16 @@ void mark_fault_blackbox_unresolved(const std::string& db_path,
   SQLite::Statement q(
       db, "UPDATE faults SET blackbox_unresolved=1 WHERE id=? AND status "
           "!= 'detected'");
+  q.bind(1, fault_id);
+  q.exec();
+}
+
+void mark_fault_hold_unresolved(const std::string& db_path, int64_t fault_id) {
+  SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
+  SQLite::Statement q(db,
+                      "UPDATE faults SET hold_unresolved=1 WHERE id=? AND status "
+                      "!= 'detected'");
   q.bind(1, fault_id);
   q.exec();
 }

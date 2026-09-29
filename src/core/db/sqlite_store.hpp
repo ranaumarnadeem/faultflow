@@ -11,7 +11,7 @@
 
 namespace faultflow::db {
 
-constexpr int kSchemaUserVersion = 9;
+constexpr int kSchemaUserVersion = 10;
 
 struct CoverageSummary {
   int64_t total_raw_faults = 0;
@@ -149,6 +149,14 @@ void mark_fault_compaction_unresolved(const std::string& db_path,
 // not an exclusion, the fault stays in the coverage denominator.
 void mark_fault_blackbox_unresolved(const std::string& db_path,
                                     int64_t fault_id);
+
+// A scan fault that is UNSAT in the scan ATPG view (the [scan] hold inputs,
+// and the non-scan flops they keep in reset, tied: what the scan protocol
+// sees) but SAT once those are free and the non-scan flops' inputs observed:
+// a test exists only if the holds were lifted, so it is untestable because of
+// them (Tessent's AU.PC), not redundant. Same guard and same character as
+// mark_fault_blackbox_unresolved.
+void mark_fault_hold_unresolved(const std::string& db_path, int64_t fault_id);
 
 void invalidate_stale_redundant(const std::string& db_path,
                                 int64_t campaign_id,

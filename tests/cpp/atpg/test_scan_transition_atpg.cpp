@@ -242,8 +242,10 @@ TEST_CASE("held_real_pis holds every bit of a multi-bit real PI",
 
 // A `__bbfree_*` input stands for a blackbox output in the blackbox-transparent
 // twin of a scan ATPG view. A memory's output can change between the launch
-// and capture edges, so it must not be held like a real PI.
-TEST_CASE("held_real_pis does not hold blackbox-free ports",
+// and capture edges, so it must not be held like a real PI. Nor may a
+// `__nsfree_*` input of the hold twin: it stands for a held input or a
+// non-scan flop's output, set free.
+TEST_CASE("held_real_pis does not hold a twin's free ports",
           "[scan_transition][atpg]") {
   const ParsedGraph pg = ParsedGraph::from_json_string(R"({
     "modules": {"view": {
@@ -252,14 +254,18 @@ TEST_CASE("held_real_pis does not hold blackbox-free ports",
         "A": {"direction": "input", "bits": [2]},
         "__ppi_ff0": {"direction": "input", "bits": [3]},
         "__bbfree_u_mem_dout_0": {"direction": "input", "bits": [4]},
+        "__nsfree_nstie0_u_tap__st": {"direction": "input", "bits": [7]},
         "__ppo_ff0": {"direction": "output", "bits": [5]},
-        "Y": {"direction": "output", "bits": [6]}
+        "Y": {"direction": "output", "bits": [6]},
+        "Z": {"direction": "output", "bits": [8]}
       },
       "cells": {
         "g0": {"type": "sky130_fd_sc_hd__xor2_1",
                "connections": {"A": [2], "B": [3], "X": [5]}},
         "g1": {"type": "sky130_fd_sc_hd__and2_1",
-               "connections": {"A": [4], "B": [3], "X": [6]}}
+               "connections": {"A": [4], "B": [3], "X": [6]}},
+        "g2": {"type": "sky130_fd_sc_hd__and2_1",
+               "connections": {"A": [7], "B": [3], "X": [8]}}
       }
     }}
   })");

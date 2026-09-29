@@ -53,6 +53,7 @@ def _campaign_lines(title: str, data: dict[str, Any] | None) -> list[str]:
         f"compression_unresolved: {summary_data.get('compression_unresolved', 0)}",
         f"compaction_unresolved: {summary_data.get('compaction_unresolved', 0)}",
         f"blackbox_unresolved: {summary_data.get('blackbox_unresolved', 0)}",
+        f"hold_unresolved: {summary_data.get('hold_unresolved', 0)}",
         f"fault_coverage_percent: {summary_data.get('fault_coverage_percent')}",
         f"test_coverage_percent: {coverage_text}",
         f"terminal_reason: {run.get('atpg_terminal_reason') or 'n/a'}",

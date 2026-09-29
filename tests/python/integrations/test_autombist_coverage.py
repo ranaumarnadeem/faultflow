@@ -83,10 +83,10 @@ def _db(faults: list[tuple[str, int, str, int]]) -> sqlite3.Connection:
     conn.execute(
         "CREATE TABLE faults (campaign_id INTEGER, fault_site_key TEXT, net_id INTEGER,"
         " status TEXT, exclusion TEXT, collapsed_into INTEGER,"
-        " blackbox_unresolved INTEGER)"
+        " blackbox_unresolved INTEGER, hold_unresolved INTEGER)"
     )
     conn.executemany(
-        "INSERT INTO faults VALUES (1, ?, ?, ?, 'none', NULL, ?)",
+        "INSERT INTO faults VALUES (1, ?, ?, ?, 'none', NULL, ?, 0)",
         faults,
     )
     return conn
@@ -140,6 +140,7 @@ def test_a_fault_is_counted_for_the_instance_it_sits_in(
             "detected": 1,
             "denominator": 1,
             "blackbox_unresolved": 0,
+            "hold_unresolved": 0,
             "coverage_percent": 100.0,
         }
     }
@@ -155,10 +156,14 @@ def test_categories_count_the_way_the_summary_does(tmp_path: Path) -> None:
             ("net:13:stem", 13, "undetected", 0),
         ]
     )
-    # An excluded fault and a collapsed one.
+    # An excluded fault and a collapsed one, and one only the holds block.
     conn.executemany(
-        "INSERT INTO faults VALUES (1, 'net:11:stem', 11, 'undetected', ?, ?, 0)",
+        "INSERT INTO faults VALUES (1, 'net:11:stem', 11, 'undetected', ?, ?, 0, 0)",
         [("clock", None), ("none", 7)],
+    )
+    conn.execute(
+        "INSERT INTO faults VALUES (1, 'net:13:stem', 13, 'undetected', 'none', NULL,"
+        " 0, 1)"
     )
 
     counts = category_coverage(
@@ -175,14 +180,16 @@ def test_categories_count_the_way_the_summary_does(tmp_path: Path) -> None:
     assert counts == {
         "ijtag_sib": {
             "detected": 0,
-            "denominator": 1,
+            "denominator": 2,
             "blackbox_unresolved": 0,
+            "hold_unresolved": 1,
             "coverage_percent": 0.0,
         },
         "mbist_controller": {
             "detected": 1,
             "denominator": 2,
             "blackbox_unresolved": 1,
+            "hold_unresolved": 0,
             "coverage_percent": 50.0,
         },
     }

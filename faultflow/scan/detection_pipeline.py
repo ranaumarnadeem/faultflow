@@ -48,7 +48,9 @@ from faultflow.runner.runner import RunnerError
 from faultflow.scan.atpg_view import (
     PPI_PREFIX,
     PPO_PREFIX,
+    UNOBSERVED_NETS_ATTR,
     make_blackbox_transparent,
+    make_nonscan_free,
 )
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.manifest import manifest_clock_net_ids
@@ -77,6 +79,8 @@ from faultflow.scan.ring_generator import (
 from faultflow.scan.verify import reduced_protocol_matches
 from faultflow.scan.x_mask import (
     XMask,
+    apply_x_mask,
+    compute_x_mask,
     launch_mode_key,
     recorded_x_mask,
     x_source_nets,
@@ -335,6 +339,7 @@ def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_Faul
           AND compression_unresolved = 0
           AND compaction_unresolved = 0
           AND blackbox_unresolved = 0
+          AND hold_unresolved = 0
         ORDER BY id
         """,
         (campaign_id,),
@@ -557,36 +562,32 @@ def _is_compaction_only_rejected(reasons: set[str] | None) -> bool:
 
 
 @dataclass(frozen=True)
-class _BlackboxTwin:
-    """The blackbox-transparent twin of the scan ATPG view (atpg_view.
-    make_blackbox_transparent) and each fault site's compiled net index in
+class _Twin:
+    """A twin of the scan ATPG view that frees what the view ties -- the hold
+    twin (atpg_view.make_nonscan_free) or the blackbox-transparent one
+    (make_blackbox_transparent) -- and each fault site's compiled net index in
     it."""
 
     json_path: str
     net_index_by_site: dict[str, int]
 
 
-def _build_blackbox_twin(
+def _mapped_twin(
     core: Any,
     scan_ctx: ScanPipelineContext,
-    reduced_json_path: str,
+    view: dict[str, Any],
+    twin_path: Path,
     generic_cell_map: str,
     reduced_cell_map: str,
     unsupported: str,
     blackbox_instances: list[str],
     execution_map: dict[str, int],
-) -> _BlackboxTwin | None:
-    """None unless the view models a blackbox. The twin is written beside the
-    view and mapped by the same build_scan_execution_map. Only ties and ports
-    differ between the two, so both must map exactly the same fault sites --
-    anything else is a bug in the twin, raised here rather than mid-round."""
-    if not blackbox_instances:
-        return None
-    reduced = Path(reduced_json_path)
-    view = json.loads(reduced.read_text(encoding="utf-8"))
-    if not make_blackbox_transparent(view, str(scan_ctx.manifest["top"])):
-        return None
-    twin_path = reduced.with_name(f"{reduced.stem}_bbtransparent.json")
+    what: str,
+) -> _Twin:
+    """Write the twin `view` beside the view and map it by the same
+    build_scan_execution_map. Only ties, ports and the mask differ between the
+    two, so both must map exactly the same fault sites -- anything else is a
+    bug in the twin, raised here rather than mid-round."""
     twin_path.write_text(json.dumps(view) + "\n", encoding="utf-8")
     twin_map, _ = build_scan_execution_map(
         core,
@@ -601,16 +602,100 @@ def _build_blackbox_twin(
         blackbox_instances=blackbox_instances,
     )
     if twin_map.keys() != execution_map.keys():
-        raise ScanError(
-            "blackbox-transparent view maps different fault sites than the scan "
-            "ATPG view"
-        )
-    return _BlackboxTwin(str(twin_path), twin_map)
+        raise ScanError(f"{what} maps different fault sites than the scan ATPG view")
+    return _Twin(str(twin_path), twin_map)
 
 
-def _testable_through_blackboxes(
+def _build_hold_twin(
     core: Any,
-    twin: _BlackboxTwin,
+    scan_ctx: ScanPipelineContext,
+    reduced_json_path: str,
+    generic_cell_map: str,
+    reduced_cell_map: str,
+    unsupported: str,
+    blackbox_instances: list[str],
+    execution_map: dict[str, int],
+) -> _Twin | None:
+    """None unless the view models non-scan cells. Blackboxes stay opaque in the
+    hold twin, so what their unknown outputs reach stays unobserved: the mask is
+    recomputed for them alone, the non-scan flops no longer being unknown."""
+    if scan_ctx.nonscan is None:
+        return None
+    reduced = Path(reduced_json_path)
+    view = json.loads(reduced.read_text(encoding="utf-8"))
+    top = str(scan_ctx.manifest["top"])
+    if not make_nonscan_free(view, top):
+        return None
+    twin_path = reduced.with_name(f"{reduced.stem}_holdfree.json")
+    _, module = _top_module(view, top)
+    module.get("attributes", {}).pop(UNOBSERVED_NETS_ATTR, None)
+    x_instances = scan_ctx.cfg.blackbox_x_instances
+    if x_instances:
+        twin_path.write_text(json.dumps(view) + "\n", encoding="utf-8")
+        mask = compute_x_mask(
+            core,
+            twin_path,
+            top=top,
+            cell_map=reduced_cell_map,
+            unsupported=unsupported,
+            x_instances=x_instances,
+            launch_mode=scan_ctx.x_mask.launch_mode,
+            functional_output_order=(),
+        )
+        apply_x_mask(view, top, mask)
+    return _mapped_twin(
+        core,
+        scan_ctx,
+        view,
+        twin_path,
+        generic_cell_map,
+        reduced_cell_map,
+        unsupported,
+        blackbox_instances,
+        execution_map,
+        "hold twin",
+    )
+
+
+def _build_blackbox_twin(
+    core: Any,
+    scan_ctx: ScanPipelineContext,
+    reduced_json_path: str,
+    generic_cell_map: str,
+    reduced_cell_map: str,
+    unsupported: str,
+    blackbox_instances: list[str],
+    execution_map: dict[str, int],
+) -> _Twin | None:
+    """None unless the view models a blackbox. Non-scan cells are set free in it
+    too (make_nonscan_free): tried after the hold twin, it catches a fault only a
+    blackbox and the holds together block."""
+    if not blackbox_instances:
+        return None
+    reduced = Path(reduced_json_path)
+    view = json.loads(reduced.read_text(encoding="utf-8"))
+    top = str(scan_ctx.manifest["top"])
+    if scan_ctx.nonscan is not None:
+        make_nonscan_free(view, top)
+    if not make_blackbox_transparent(view, top):
+        return None
+    return _mapped_twin(
+        core,
+        scan_ctx,
+        view,
+        reduced.with_name(f"{reduced.stem}_bbtransparent.json"),
+        generic_cell_map,
+        reduced_cell_map,
+        unsupported,
+        blackbox_instances,
+        execution_map,
+        "blackbox-transparent view",
+    )
+
+
+def _testable_on_twin(
+    core: Any,
+    twin: _Twin,
     *,
     db_path: str,
     fault_id: int,
@@ -625,13 +710,13 @@ def _testable_through_blackboxes(
     los_couple_ports: list[tuple[str, str]],
     los_head_ports: list[str],
 ) -> bool:
-    """Re-solve a fault that is UNSAT in the scan ATPG view on its
-    blackbox-transparent twin, where blackbox outputs are free and inputs
-    observed: False only if it is UNSAT there too (redundant whatever the
-    blackboxes do). SAT means only driving or observing a blackbox could test
-    it (Tessent's AU.BB). TIMEOUT and UNKNOWN also return True -- whether
-    such a fault is redundant is unknown, a redundant verdict needs a proof,
-    and the fault is untestable in the scan view either way."""
+    """Re-solve a fault that is UNSAT in the scan ATPG view on a twin of it,
+    where what the view ties is free and what it leaves unread observed: False
+    only if it is UNSAT there too. SAT means only what the twin frees could test
+    it: the holds (Tessent's AU.PC), or a blackbox (AU.BB). TIMEOUT and UNKNOWN
+    also return True -- whether such a fault is redundant is unknown, a
+    redundant verdict needs a proof, and the fault is untestable in the scan
+    view either way."""
     index = twin.net_index_by_site[site_key]
     if los:
         solved = core.solve_scan_los_transition_fault_atpg(
@@ -1695,8 +1780,9 @@ def run_progressive_scan_atpg(
     )
     if scan_ctx.x_mask.nets:
         log.info(
-            "atpg   blackbox outputs of unknown value reach %d observation points "
-            "(%d scan flops, %d outputs): unobserved, don't-care in every pattern",
+            "atpg   unknown values (blackbox outputs, frozen non-scan flops) reach "
+            "%d observation points (%d scan flops, %d outputs): unobserved, "
+            "don't-care in every pattern",
             len(scan_ctx.x_mask.nets),
             len(scan_ctx.x_mask.ppo_ports),
             len(scan_ctx.x_mask.outputs),
@@ -1786,10 +1872,11 @@ def run_progressive_scan_atpg(
             ),
         )
     core.invalidate_stale_redundant(effective_db_path, campaign_id, redundancy_model)
-    # With blackboxes opaque in the view, UNSAT alone can't tell a redundant
-    # fault from one only a blackbox could test, by driving its outputs or
-    # observing its inputs: the UNSAT branch re-solves on this twin, which can.
-    blackbox_twin = _build_blackbox_twin(
+    # With blackboxes opaque and non-scan cells tied in the view, UNSAT alone
+    # can't tell a redundant fault from one only lifting the holds, or a
+    # blackbox, could test: the UNSAT branch re-solves on these twins, in this
+    # order, which can.
+    twin_args = (
         core,
         scan_ctx,
         reduced_json_path,
@@ -1799,7 +1886,15 @@ def run_progressive_scan_atpg(
         bb,
         execution_map,
     )
-    blackbox_blocked = 0
+    twins = [
+        (label, twin)
+        for label, twin in (
+            ("hold", _build_hold_twin(*twin_args)),
+            ("blackbox", _build_blackbox_twin(*twin_args)),
+        )
+        if twin is not None
+    ]
+    unresolved = {"hold": 0, "blackbox": 0}
 
     generic_site_index = build_site_key_index(
         core, scan_ctx.generic_json, generic_cell_map, unsupported, bb
@@ -2343,33 +2438,38 @@ def run_progressive_scan_atpg(
                     core.mark_fault_compression_unresolved(effective_db_path, fault_id)
                 elif _is_compaction_only_rejected(rejection_reasons.get(fault_id)):
                     core.mark_fault_compaction_unresolved(effective_db_path, fault_id)
-                elif (
-                    blackbox_twin is not None
-                    # UNSAT with patterns blocked isn't a proof to classify.
-                    and not blocked
-                    and _testable_through_blackboxes(
-                        core,
-                        blackbox_twin,
-                        db_path=effective_db_path,
-                        fault_id=fault_id,
-                        site_key=row.fault_site_key,
-                        cell_map=reduced_cell_map,
-                        conflict_limit=cfg.atpg.sat_conflict_limit,
-                        timeout=tier_timeout,
-                        unsupported=unsupported,
-                        cone_restrict=cfg.atpg.cone_restrict,
-                        transition=transition,
-                        los=los,
-                        los_couple_ports=los_couple_ports,
-                        los_head_ports=los_head_ports,
-                    )
-                ):
-                    core.mark_fault_blackbox_unresolved(effective_db_path, fault_id)
-                    blackbox_blocked += 1
                 else:
-                    core.mark_fault_redundant(
-                        effective_db_path, fault_id, redundancy_model
-                    )
+                    untestable = None
+                    # UNSAT with patterns blocked isn't a proof to classify.
+                    for label, twin in [] if blocked else twins:
+                        if _testable_on_twin(
+                            core,
+                            twin,
+                            db_path=effective_db_path,
+                            fault_id=fault_id,
+                            site_key=row.fault_site_key,
+                            cell_map=reduced_cell_map,
+                            conflict_limit=cfg.atpg.sat_conflict_limit,
+                            timeout=tier_timeout,
+                            unsupported=unsupported,
+                            cone_restrict=cfg.atpg.cone_restrict,
+                            transition=transition,
+                            los=los,
+                            los_couple_ports=los_couple_ports,
+                            los_head_ports=los_head_ports,
+                        ):
+                            untestable = label
+                            break
+                    if untestable == "hold":
+                        core.mark_fault_hold_unresolved(effective_db_path, fault_id)
+                    elif untestable == "blackbox":
+                        core.mark_fault_blackbox_unresolved(effective_db_path, fault_id)
+                    else:
+                        core.mark_fault_redundant(
+                            effective_db_path, fault_id, redundancy_model
+                        )
+                    if untestable is not None:
+                        unresolved[untestable] += 1
             elif result == "TIMEOUT":
                 stats.timeout += 1
                 round_tracker.sat_outcomes.append("TIMEOUT")
@@ -2432,11 +2532,17 @@ def run_progressive_scan_atpg(
         _executor.shutdown(wait=False)
 
     log.info("atpg   terminated: %s", terminal)
-    if blackbox_blocked:
+    if unresolved["hold"]:
+        log.info(
+            "atpg   %d faults are testable only with [scan] hold lifted "
+            "(hold_unresolved)",
+            unresolved["hold"],
+        )
+    if unresolved["blackbox"]:
         log.info(
             "atpg   %d faults are testable only through a blackbox "
             "(blackbox_unresolved)",
-            blackbox_blocked,
+            unresolved["blackbox"],
         )
 
     with connect(effective_db_path) as conn:

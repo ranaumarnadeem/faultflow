@@ -142,6 +142,7 @@ def _minimal_valid_report() -> dict[str, Any]:
             "compression_unresolved": 0,
             "compaction_unresolved": 0,
             "blackbox_unresolved": 0,
+            "hold_unresolved": 0,
             "fault_coverage_percent": 100.0,
             "test_coverage_percent": 100.0,
             "coverage_percent": 100.0,
@@ -199,23 +200,26 @@ def test_validate_report_accepts_random_only_terminal_reason() -> None:
 
 
 @pytest.mark.parametrize("sat_outcome", [None, "timeout"])
-def test_undetected_reason_reports_blackbox_unresolved(sat_outcome: str | None) -> None:
-    """blackbox_unresolved outranks a recorded SAT outcome: a fault can time out
-    in one round and be proven UNSAT (then classified) in a later one, and the
-    stale outcome row stays behind."""
+@pytest.mark.parametrize("reason", ["blackbox_unresolved", "hold_unresolved"])
+def test_undetected_reason_reports_an_untestable_class(
+    sat_outcome: str | None, reason: str
+) -> None:
+    """blackbox_unresolved and hold_unresolved outrank a recorded SAT outcome: a
+    fault can time out in one round and be proven UNSAT (then classified) in a
+    later one, and the stale outcome row stays behind."""
     from faultflow.reporter.coverage import _undetected_reason
 
     assert (
-        _undetected_reason(False, False, False, sat_outcome, blackbox_unresolved=True)
-        == "blackbox_unresolved"
+        _undetected_reason(False, False, False, sat_outcome, **{reason: True}) == reason
     )
 
 
-def test_validate_report_accepts_a_blackbox_unresolved_fault() -> None:
+@pytest.mark.parametrize("reason", ["blackbox_unresolved", "hold_unresolved"])
+def test_validate_report_accepts_an_untestable_fault(reason: str) -> None:
     from faultflow.reporter.coverage import _validate_report
 
     report = _minimal_valid_report()
-    report["summary"].update(detected=0, undetected=1, blackbox_unresolved=1)
+    report["summary"].update(detected=0, undetected=1, **{reason: 1})
     for key in ("fault_coverage_percent", "test_coverage_percent", "coverage_percent"):
         report["summary"][key] = 0.0
     report["undetected_faults"] = [
@@ -228,8 +232,9 @@ def test_validate_report_accepts_a_blackbox_unresolved_fault() -> None:
             "protocol_unresolved": False,
             "compression_unresolved": False,
             "compaction_unresolved": False,
-            "blackbox_unresolved": True,
-            "reason": "blackbox_unresolved",
+            "blackbox_unresolved": reason == "blackbox_unresolved",
+            "hold_unresolved": reason == "hold_unresolved",
+            "reason": reason,
         }
     ]
     _validate_report(report)  # must not raise

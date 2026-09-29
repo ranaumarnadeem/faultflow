@@ -25,7 +25,10 @@ frame.
 
 A fault seen only at masked points is not redundant: the view's
 blackbox-transparent twin (atpg_view.make_blackbox_transparent) drops the
-mask, and the UNSAT branch classifies such a fault blackbox_unresolved.
+mask, and the UNSAT branch classifies such a fault blackbox_unresolved. A
+non-scan flop no held input keeps in reset (scan/nonscan.py) is unknown the
+same way; the hold twin (atpg_view.make_nonscan_free) frees it, and a fault only
+it hides is hold_unresolved.
 """
 
 from __future__ import annotations

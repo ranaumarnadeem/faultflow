@@ -76,6 +76,7 @@
         "compression_unresolved",
         "compaction_unresolved",
         "blackbox_unresolved",
+        "hold_unresolved",
         "fault_coverage_percent",
         "test_coverage_percent",
         "coverage_percent"
@@ -102,6 +103,7 @@
         "compression_unresolved": { "type": "integer", "minimum": 0 },
         "compaction_unresolved": { "type": "integer", "minimum": 0 },
         "blackbox_unresolved": { "type": "integer", "minimum": 0 },
+        "hold_unresolved": { "type": "integer", "minimum": 0 },
         "fault_coverage_percent": { "type": "number", "minimum": 0, "maximum": 100 },
         "test_coverage_percent": { "type": "number", "minimum": 0, "maximum": 100 },
         "coverage_percent": { "type": "number", "minimum": 0, "maximum": 100 },
@@ -181,7 +183,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "net_id", "net_name", "fault_type", "fault_site_key", "protocol_unresolved", "compression_unresolved", "compaction_unresolved", "blackbox_unresolved", "reason"],
+        "required": ["id", "net_id", "net_name", "fault_type", "fault_site_key", "protocol_unresolved", "compression_unresolved", "compaction_unresolved", "blackbox_unresolved", "hold_unresolved", "reason"],
         "additionalProperties": false,
         "properties": {
           "id": { "type": "integer", "minimum": 1 },
@@ -193,12 +195,14 @@
           "compression_unresolved": { "type": "boolean" },
           "compaction_unresolved": { "type": "boolean" },
           "blackbox_unresolved": { "type": "boolean" },
+          "hold_unresolved": { "type": "boolean" },
           "reason": {
             "enum": [
               "structurally_unresolved",
               "compression_unresolved",
               "compaction_unresolved",
               "blackbox_unresolved",
+              "hold_unresolved",
               "structurally_uncontrollable",
               "sat_hard",
               "sat_timeout",
@@ -216,12 +220,13 @@
       "type": "object",
       "additionalProperties": {
         "type": "object",
-        "required": ["detected", "denominator", "blackbox_unresolved", "coverage_percent"],
+        "required": ["detected", "denominator", "blackbox_unresolved", "hold_unresolved", "coverage_percent"],
         "additionalProperties": false,
         "properties": {
           "detected": { "type": "integer", "minimum": 0 },
           "denominator": { "type": "integer", "minimum": 0 },
           "blackbox_unresolved": { "type": "integer", "minimum": 0 },
+          "hold_unresolved": { "type": "integer", "minimum": 0 },
           "coverage_percent": { "type": ["number", "null"] },
           "combined_detected": { "type": "integer", "minimum": 0 },
           "combined_denominator": { "type": "integer", "minimum": 0 },

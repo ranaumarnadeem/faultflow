@@ -2752,7 +2752,8 @@ class Runner:
                 f"xdomain={data.get('excluded_cross_domain', 0)}"
                 + (
                     f" excluded_jtag={data['excluded_jtag']}"
-                    if data.get("excluded_jtag")
+                    f" hold_unresolved={data.get('hold_unresolved', 0)}"
+                    if data.get("excluded_jtag") or data.get("hold_unresolved")
                     else ""
                 )
                 + atpg_note

@@ -129,6 +129,7 @@ def _undetected_reason(
     compaction_unresolved: bool,
     sat_outcome: str | None,
     blackbox_unresolved: bool = False,
+    hold_unresolved: bool = False,
 ) -> str:
     """Classify an undetected fault. protocol_unresolved (the simulator could not
     resolve it) is structural; compression_unresolved means every witness SAT
@@ -142,7 +143,9 @@ def _undetected_reason(
     through the compressor/compactor, so it stays counted as undetected
     rather than excluded; blackbox_unresolved means it has a test only if a
     blackbox (memory) could be driven or observed, which no scan test can do
-    (see detection_pipeline._testable_through_blackboxes; Tessent's AU.BB),
+    (see detection_pipeline._testable_on_twin; Tessent's AU.BB), and
+    hold_unresolved that it has one only if the [scan] hold inputs, and the
+    non-scan flops they keep in reset, were free (Tessent's AU.PC), both
     counted the same way;
     a recorded SAT verdict gives timeout/unknown; no record at all means it
     was never SAT-attempted (or its pattern was rejected without a verdict).
@@ -155,6 +158,8 @@ def _undetected_reason(
         return "compaction_unresolved"
     if blackbox_unresolved:
         return "blackbox_unresolved"
+    if hold_unresolved:
+        return "hold_unresolved"
     if sat_outcome == "timeout":
         return "sat_timeout"
     if sat_outcome == "unknown":
@@ -169,7 +174,7 @@ def _undetected_faults(
         """
         SELECT id, net_id, net_name, fault_type, fault_site_key,
                protocol_unresolved, compression_unresolved, compaction_unresolved,
-               blackbox_unresolved
+               blackbox_unresolved, hold_unresolved
         FROM faults
         WHERE campaign_id = ?
           AND status = 'undetected'
@@ -186,6 +191,7 @@ def _undetected_faults(
         co = bool(row["compression_unresolved"])
         cao = bool(row["compaction_unresolved"])
         bbo = bool(row["blackbox_unresolved"])
+        ho = bool(row["hold_unresolved"])
         sat_outcome = outcomes.get(int(row["id"]))
         fault: dict[str, Any] = {
             "id": int(row["id"]),
@@ -197,7 +203,8 @@ def _undetected_faults(
             "compression_unresolved": co,
             "compaction_unresolved": cao,
             "blackbox_unresolved": bbo,
-            "reason": _undetected_reason(po, co, cao, sat_outcome, bbo),
+            "hold_unresolved": ho,
+            "reason": _undetected_reason(po, co, cao, sat_outcome, bbo, ho),
         }
         if sat_outcome in ("timeout", "unknown"):
             fault["sat_outcome"] = sat_outcome
@@ -417,6 +424,7 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         "compression_unresolved",
         "compaction_unresolved",
         "blackbox_unresolved",
+        "hold_unresolved",
         "fault_coverage_percent",
         "test_coverage_percent",
         "coverage_percent",
@@ -469,12 +477,17 @@ def _category_lines(
 ) -> list[str]:
     from faultflow.integrations.autombist_coverage import JTAG_CATEGORIES
 
-    lines = ["autombist categories (detected / denominator, blackbox_unresolved):"]
+    # hold_unresolved only with non-scan cells: it is 0 everywhere without.
+    lines = [
+        "autombist categories (detected / denominator, blackbox_unresolved"
+        + (", hold_unresolved):" if nonscan else "):")
+    ]
     for name, entry in categories.items():
         percent = entry["coverage_percent"]
         line = (
             f"  {name:17s} {entry['detected']:6d} / {entry['denominator']:<6d} "
             f"{entry['blackbox_unresolved']:6d}  "
+            + (f"{entry['hold_unresolved']:6d}  " if nonscan else "")
             + ("n/a" if percent is None else f"{percent:.3f}%")
         )
         if "combined_detected" in entry:
@@ -679,6 +692,7 @@ def write_reports(
             f"compression_unresolved: {data.get('compression_unresolved', 0)}",
             f"compaction_unresolved: {data.get('compaction_unresolved', 0)}",
             f"blackbox_unresolved: {data.get('blackbox_unresolved', 0)}",
+            f"hold_unresolved:     {data.get('hold_unresolved', 0)}",
             f"fault_coverage_%:    {data['fault_coverage_percent']:.3f}",
             f"test_coverage_%:     {data['test_coverage_percent']:.3f}",
             f"coverage_percent:    {data['coverage_percent']:.3f}",
