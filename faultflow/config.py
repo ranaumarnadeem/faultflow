@@ -304,6 +304,11 @@ class ScanConfig:
     scan_out: str = "scan_out"
     scan_enable: str = "scan_en"
     run_techmap: bool = True
+    # Flops left out of scan on purpose (instance-name globs) -- a JTAG TAP and its
+    # IJTAG network, tested through TCK instead -- and inputs held at a constant in
+    # every scan pattern (e.g. trst_n:0 keeping the TAP in reset).
+    nonscan_cells: tuple[str, ...] = ()
+    hold: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -561,6 +566,42 @@ def _parse_clocks(parser: ConfigParser) -> tuple[ClockSpec, ...]:
     return tuple(ClockSpec(port=p, off_state=off_states.get(p, 0)) for p in ports)
 
 
+def _parse_holds(parser: ConfigParser, section: str) -> tuple[tuple[str, int], ...]:
+    """``[<section>] hold = <input>:<0|1>, ...``: inputs held at a constant."""
+    hold: list[tuple[str, int]] = []
+    for token in parser.get(section, "hold", fallback="").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        port, _, value = token.partition(":")
+        if not port.strip() or value.strip() not in {"0", "1"}:
+            raise ConfigError(
+                f"[{section}] hold entry '{token}' must be '<input>:<0|1>'"
+            )
+        hold.append((port.strip(), int(value)))
+    if len({p for p, _ in hold}) != len(hold):
+        raise ConfigError(f"[{section}] hold names an input twice")
+    return tuple(hold)
+
+
+def _parse_scan(parser: ConfigParser) -> ScanConfig:
+    nonscan_cells = tuple(
+        glob.strip()
+        for glob in parser.get("scan", "nonscan_cells", fallback="").split(",")
+        if glob.strip()
+    )
+    return ScanConfig(
+        chains=_int(parser, "scan", "chains", 1),
+        max_chain_length=_optional_int(parser, "scan", "max_chain_length"),
+        scan_in=parser.get("scan", "scan_in", fallback="scan_in"),
+        scan_out=parser.get("scan", "scan_out", fallback="scan_out"),
+        scan_enable=parser.get("scan", "scan_enable", fallback="scan_en"),
+        run_techmap=_bool(parser, "scan", "run_techmap", True),
+        nonscan_cells=nonscan_cells,
+        hold=_parse_holds(parser, "scan"),
+    )
+
+
 def _parse_jtag(parser: ConfigParser) -> JtagConfig:
     if not parser.has_section("jtag"):
         return JtagConfig()
@@ -571,17 +612,7 @@ def _parse_jtag(parser: ConfigParser) -> JtagConfig:
     }
     if len(set(ports.values())) != len(ports) or not all(ports.values()):
         raise ConfigError(f"[jtag] TAP ports must be distinct and non-empty: {ports}")
-    hold: list[tuple[str, int]] = []
-    for token in parser.get("jtag", "hold", fallback="").split(","):
-        token = token.strip()
-        if not token:
-            continue
-        port, _, value = token.partition(":")
-        if not port.strip() or value.strip() not in {"0", "1"}:
-            raise ConfigError(f"[jtag] hold entry '{token}' must be '<input>:<0|1>'")
-        hold.append((port.strip(), int(value)))
-    if len({p for p, _ in hold}) != len(hold):
-        raise ConfigError("[jtag] hold names an input twice")
+    hold = _parse_holds(parser, "jtag")
     idcode_raw = parser.get("jtag", "idcode", fallback="").strip().lower()
     idcode: int | None = defaults.idcode
     if idcode_raw == "none":
@@ -596,7 +627,7 @@ def _parse_jtag(parser: ConfigParser) -> JtagConfig:
         if not 0 <= idcode < (1 << 32) or not idcode & 1:
             raise ConfigError("[jtag] idcode must be a 32-bit value with bit 0 set")
     config = JtagConfig(
-        hold=tuple(hold),
+        hold=hold,
         program=_optional_path(parser, "jtag", "program"),
         ir_width=_int(parser, "jtag", "ir_width", defaults.ir_width),
         idcode=idcode,
@@ -888,14 +919,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             output=_path(parser, "report", "output", "coverage.rpt"),
             threshold=_float(parser, "report", "threshold", 95.0),
         ),
-        scan=ScanConfig(
-            chains=_int(parser, "scan", "chains", 1),
-            max_chain_length=_optional_int(parser, "scan", "max_chain_length"),
-            scan_in=parser.get("scan", "scan_in", fallback="scan_in"),
-            scan_out=parser.get("scan", "scan_out", fallback="scan_out"),
-            scan_enable=parser.get("scan", "scan_enable", fallback="scan_en"),
-            run_techmap=_bool(parser, "scan", "run_techmap", True),
-        ),
+        scan=_parse_scan(parser),
         compression=_compression_config(parser),
         compaction=_compaction_config(parser),
         clocks=clocks,

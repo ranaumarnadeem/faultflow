@@ -7,7 +7,7 @@ import itertools
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from faultflow.scan.errors import ScanError
 
@@ -69,6 +69,7 @@ INELIGIBLE_REASONS = {
     "wbr_scan_cell",
     "unsupported_ff_shape",
     "multiple_clock_nets",
+    "nonscan_policy",  # matched by [scan] nonscan_cells: left out of scan on purpose
 }
 
 
@@ -415,8 +416,12 @@ def _reason_for_ff(
 
 
 def _collect_ffs(
-    module: dict[str, Any], cell_map: dict[str, Any]
+    module: dict[str, Any],
+    cell_map: dict[str, Any],
+    nonscan_cells: Sequence[str] = (),
 ) -> tuple[list[_EligibleFF], list[IneligibleFF]]:
+    """Every flop of ``module``, eligible for scan or not. A flop whose instance name
+    matches a ``nonscan_cells`` glob stays out of scan whatever its shape."""
     cells = module.get("cells", {})
     if not isinstance(cells, dict):
         raise ScanError("top module cells must be an object")
@@ -446,6 +451,9 @@ def _collect_ffs(
             continue
         _, entry = match
         if entry.get("node_type") != "FF":
+            continue
+        if any(fnmatch.fnmatchcase(str(instance), glob) for glob in nonscan_cells):
+            ineligible.append(IneligibleFF(str(instance), cell_type, "nonscan_policy"))
             continue
         ff_meta = entry.get("ff")
         if not isinstance(ff_meta, dict):
@@ -798,12 +806,15 @@ def _build_wrapper_chains(
 
 
 def scan_clock_domains(
-    netlist_json: Path, cell_map_json: Path, top: str
+    netlist_json: Path,
+    cell_map_json: Path,
+    top: str,
+    nonscan_cells: Sequence[str] = (),
 ) -> dict[int, int]:
     """Scan-eligible FF count per clock net: the clock domains stitching
     gives chains of their own."""
     _, module = _top_module(_load_json(netlist_json), top)
-    eligible, _ = _collect_ffs(module, _load_json(cell_map_json))
+    eligible, _ = _collect_ffs(module, _load_json(cell_map_json), nonscan_cells)
     counts: dict[int, int] = {}
     for ff in eligible:
         counts[ff.clock_net] = counts.get(ff.clock_net, 0) + 1
@@ -819,11 +830,12 @@ def plan_scan_json(
     scan_in_base: str = DEFAULT_SCAN_IN,
     scan_out_base: str = DEFAULT_SCAN_OUT,
     scan_enable: str = DEFAULT_SCAN_ENABLE,
+    nonscan_cells: Sequence[str] = (),
 ) -> ScanPlan:
     data = _load_json(netlist_json)
     cell_map = _load_json(cell_map_json)
     top_name, module = _top_module(data, top)
-    eligible, ineligible = _collect_ffs(module, cell_map)
+    eligible, ineligible = _collect_ffs(module, cell_map, nonscan_cells)
     chain_count = _chain_count_from_options(
         _domain_sizes(eligible), scan_chains, max_chain_length
     )
@@ -952,6 +964,7 @@ def stitch_scan_json(
     scan_in_base: str = DEFAULT_SCAN_IN,
     scan_out_base: str = DEFAULT_SCAN_OUT,
     scan_enable: str = DEFAULT_SCAN_ENABLE,
+    nonscan_cells: Sequence[str] = (),
 ) -> ScanStitchResult:
     data = _load_json(netlist_json)
     cell_map = _load_json(cell_map_json)
@@ -959,7 +972,7 @@ def stitch_scan_json(
     stitched = copy.deepcopy(data)
     _, stitched_module = _top_module(stitched, top_name)
 
-    eligible, ineligible = _collect_ffs(stitched_module, cell_map)
+    eligible, ineligible = _collect_ffs(stitched_module, cell_map, nonscan_cells)
     chain_count = _chain_count_from_options(
         _domain_sizes(eligible), scan_chains, max_chain_length
     )

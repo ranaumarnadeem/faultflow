@@ -274,6 +274,18 @@ def rules_scan(manifest: dict[str, Any]) -> list[Violation]:
         for ff in ineligible:
             if not isinstance(ff, dict):
                 continue
+            if ff.get("reason") == "nonscan_policy":
+                # Left out of scan on purpose ([scan] nonscan_cells): not a defect.
+                out.append(
+                    Violation(
+                        "SCAN011",
+                        Severity.INFO,
+                        "non-scan by policy",
+                        f"FF {ff.get('instance')} ({ff.get('cell_type')}) is left out "
+                        "of scan by [scan] nonscan_cells",
+                    )
+                )
+                continue
             out.append(
                 Violation(
                     "SCAN010",

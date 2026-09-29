@@ -376,6 +376,12 @@ class Runner:
             payload["blackbox_output_values"] = [
                 list(pair) for pair in self.cfg.blackbox_output_values
             ]
+        if self.cfg.scan.nonscan_cells or self.cfg.scan.hold:
+            # Which flops stay out of scan and which inputs are held decide the
+            # scan view and which faults scan leaves to JTAG. Keyed only when
+            # set, so a design without them keeps its config_hash.
+            payload["scan_nonscan_cells"] = list(self.cfg.scan.nonscan_cells)
+            payload["scan_hold"] = [list(pair) for pair in self.cfg.scan.hold]
         return payload
 
     def _rendered_yosys_script(self, source: Path | None = None) -> str:
@@ -621,6 +627,7 @@ class Runner:
                     scan_in_base=si_base,
                     scan_out_base=so_base,
                     scan_enable=se_name,
+                    nonscan_cells=self.cfg.scan.nonscan_cells,
                 )
             except ScanError as exc:
                 raise RunnerError(str(exc)) from exc
@@ -642,6 +649,7 @@ class Runner:
                 scan_in_base=si_base,
                 scan_out_base=so_base,
                 scan_enable=se_name,
+                nonscan_cells=self.cfg.scan.nonscan_cells,
             )
             log.info(
                 "scan   inserted  %d chains  %d scan cells  %.1fs",
@@ -1983,6 +1991,10 @@ class Runner:
                 "scan-check is stale for the current generic scanned JSON; "
                 "re-run scan-check"
             )
+        if self.cfg.scan.hold:
+            raise RunnerError(
+                "sim --scan does not apply [scan] hold yet; remove it to run scan ATPG"
+            )
         ineligible = manifest.get("ineligible_ffs", [])
         if isinstance(ineligible, list) and ineligible:
             # WBR scan cells are deliberately routed to the wrapper chain (fused
@@ -1994,6 +2006,16 @@ class Runner:
                 for item in ineligible
                 if isinstance(item, dict) and item.get("reason") != "wbr_scan_cell"
             ]
+            nonscan = sorted(
+                str(item.get("instance", "?"))
+                for item in blockers
+                if item.get("reason") == "nonscan_policy"
+            )
+            if nonscan:
+                raise RunnerError(
+                    "sim --scan does not model non-scan cells ([scan] nonscan_cells) "
+                    f"yet: {', '.join(nonscan)}"
+                )
             wbr_count = len(ineligible) - len(blockers)
             if wbr_count:
                 log.info(
