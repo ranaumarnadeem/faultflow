@@ -13,7 +13,9 @@ The same design wrapped for JTAG access (autoMBIST wrap-test-access) is run
 through real JTAG: EXTEST loaded into the TAP, then test_mode=1 and
 bist_start=1 written over the IJTAG network, with warptap's own PDL
 retargeter producing the TMS/TDI stream. Wrapping makes those two control
-ports JTAG-only, so driving their pins instead must not start the BIST.
+ports JTAG-only, so driving their pins instead must not start the BIST, and
+the network answers only to EXTEST, so the same writes under IDCODE or
+BYPASS must not either.
 """
 
 from __future__ import annotations
@@ -42,6 +44,9 @@ JTAG_FIXTURE = ROOT / "tests/fixtures/autombist/input_demo_8x16_scn4m_jtag"
 SKY130_LIBERTY = ROOT / "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib"
 SKY130_CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 SKY130_MODELS = ROOT / "cells/sky130/sky130_fd_sc_hd.v"
+# warptap's TAP opcodes (4-bit IR).
+OPCODE_EXTEST = 0b0000
+OPCODE_BYPASS = 0b1111
 
 pytestmark = pytest.mark.skipif(
     any(shutil.which(tool) is None for tool in ("yosys", "iverilog", "vvp")),
@@ -316,9 +321,12 @@ def wrapped(
     return manifest.test_access, result.composed_json_path
 
 
-def _jtag_program(access: AutombistTestAccess) -> list[tuple[int, int]]:
-    """TMS/TDI per TCK cycle: load EXTEST, then write test_mode=1 and
-    bist_start=1 through the IJTAG network the manifest describes."""
+def _jtag_program(
+    access: AutombistTestAccess, opcode: int | None = OPCODE_EXTEST
+) -> list[tuple[int, int]]:
+    """TMS/TDI per TCK cycle: load `opcode` (None: keep IDCODE, loaded by the
+    TAP reset), then write test_mode=1 and bist_start=1 through the IJTAG
+    network the manifest describes."""
     if importlib.util.find_spec("warptap") is None:
         pytest.skip("needs warptap importable (e.g. PYTHONPATH=~/warptap/src)")
     # warptap is optional: without it, mypy finds no module to check against.
@@ -365,16 +373,16 @@ def _jtag_program(access: AutombistTestAccess) -> list[tuple[int, int]]:
         pdl.iTarget(control)
         pdl.iWrite(1)
         pdl.iApply()
-    # warptap's TAP: a 4-bit IR, EXTEST = 0. Its IJTAG network shifts on
-    # every DR scan whatever the instruction (the SIBs' select is tied high),
-    # so EXTEST matters for reading the network at TDO; it is loaded first all
-    # the same, as a real test would.
-    ir_ops: list[Any] = [
-        GotoState(TapState.SHIFT_IR),
-        ShiftIR(4, tdi=0),
-        GotoState(TapState.RUN_TEST_IDLE),
-        *pdl.program,
-    ]
+    # warptap's TAP has a 4-bit IR; its IJTAG network is selected only while
+    # EXTEST is loaded.
+    ir_ops: list[Any] = []
+    if opcode is not None:
+        ir_ops += [
+            GotoState(TapState.SHIFT_IR),
+            ShiftIR(4, tdi=opcode),
+            GotoState(TapState.RUN_TEST_IDLE),
+        ]
+    ir_ops += pdl.program
     return [(int(tms), int(tdi)) for tms, tdi in to_cycles(ir_ops)]
 
 
@@ -385,9 +393,10 @@ def _run_jtag_bist(
     *,
     stuck_bit: bool = False,
     pins_only: bool = False,
+    opcode: int | None = OPCODE_EXTEST,
 ) -> tuple[str, str]:
     # PINS_ONLY plays no JTAG; its one-cycle program only sizes the array.
-    program = [(0, 0)] if pins_only else _jtag_program(access)
+    program = [(0, 0)] if pins_only else _jtag_program(access, opcode)
     (work / "jtag.mem").write_text(
         "".join(f"{tms}{tdi}\n" for tms, tdi in program), encoding="utf-8"
     )
@@ -424,5 +433,22 @@ def test_wrapped_control_pins_no_longer_start_the_bist(
     access, composed_json = wrapped
 
     done, _fail = _run_jtag_bist(access, composed_json, tmp_path, pins_only=True)
+
+    assert done == "0"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "opcode", [None, OPCODE_BYPASS], ids=["idcode_after_reset", "bypass"]
+)
+def test_the_jtag_writes_outside_extest_do_not_start_the_bist(
+    wrapped: tuple[AutombistTestAccess, Path], tmp_path: Path, opcode: int | None
+) -> None:
+    """The same writes with IDCODE (the TAP's reset instruction) or BYPASS
+    loaded: the IJTAG network is EXTEST's data register, so the DR scans reach
+    no SIB and the BIST never starts."""
+    access, composed_json = wrapped
+
+    done, _fail = _run_jtag_bist(access, composed_json, tmp_path, opcode=opcode)
 
     assert done == "0"

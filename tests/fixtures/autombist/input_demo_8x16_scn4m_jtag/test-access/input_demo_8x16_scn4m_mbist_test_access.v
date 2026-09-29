@@ -1927,6 +1927,7 @@ module input_demo_8x16_scn4m_mbist(clk, rst_n, test_mode, bist_start, bist_done,
   wire test_mode_pre_bsr;
   wire warptap_capture_dr;
   wire [3:0] warptap_current_instruction;
+  wire warptap_ijtag_select;
   wire warptap_shift_dr;
   wire warptap_sib_bist_done_nested_active;
   wire warptap_sib_bist_done_nested_select;
@@ -1985,6 +1986,7 @@ module input_demo_8x16_scn4m_mbist(clk, rst_n, test_mode, bist_start, bist_done,
     .dout0(func_dout),
     .web0(sram_we)
   );
+  assign warptap_ijtag_select = warptap_current_instruction == 4'h0;
   (* keep = 32'd1 *)
   (* warptap_instrument_name = "bist_done" *)
   (* warptap_sib_name = "sib_bist_done" *)
@@ -1994,7 +1996,7 @@ module input_demo_8x16_scn4m_mbist(clk, rst_n, test_mode, bist_start, bist_done,
     .nested_select(warptap_sib_bist_done_nested_select),
     .nested_si(warptap_sib_bist_done_nested_si),
     .nested_so(warptap_sib_bist_done_nested_so),
-    .select(1'h1),
+    .select(warptap_ijtag_select),
     .shift_dr(warptap_shift_dr),
     .si(warptap_sib_bist_start_so),
     .so(warptap_sib_bist_done_so),
@@ -2023,7 +2025,7 @@ module input_demo_8x16_scn4m_mbist(clk, rst_n, test_mode, bist_start, bist_done,
     .nested_select(warptap_sib_bist_fail_nested_select),
     .nested_si(warptap_sib_bist_fail_nested_si),
     .nested_so(warptap_sib_bist_fail_nested_so),
-    .select(1'h1),
+    .select(warptap_ijtag_select),
     .shift_dr(warptap_shift_dr),
     .si(warptap_sib_bist_done_so),
     .so(warptap_sib_bist_fail_so),
@@ -2052,7 +2054,7 @@ module input_demo_8x16_scn4m_mbist(clk, rst_n, test_mode, bist_start, bist_done,
     .nested_select(warptap_sib_bist_start_nested_select),
     .nested_si(warptap_sib_bist_start_nested_si),
     .nested_so(warptap_sib_bist_start_nested_so),
-    .select(1'h1),
+    .select(warptap_ijtag_select),
     .shift_dr(warptap_shift_dr),
     .si(warptap_sib_test_mode_so),
     .so(warptap_sib_bist_start_so),
@@ -2083,7 +2085,7 @@ module input_demo_8x16_scn4m_mbist(clk, rst_n, test_mode, bist_start, bist_done,
     .nested_select(warptap_sib_test_mode_nested_select),
     .nested_si(warptap_sib_test_mode_nested_si),
     .nested_so(warptap_sib_test_mode_nested_so),
-    .select(1'h1),
+    .select(warptap_ijtag_select),
     .shift_dr(warptap_shift_dr),
     .si(tdi),
     .so(warptap_sib_test_mode_so),
@@ -2332,66 +2334,66 @@ module sib_cell(si, so, nested_so, nested_si, nested_select, nested_active, sele
 endmodule
 
 (* dynports =  1  *)
-(* src = "tap_core.v:12.1-153.10" *)
+(* src = "tap_core.v:18.1-165.10" *)
 (* keep_hierarchy =  1  *)
 (* keep =  1  *)
 module tap_core(tck, tms, tdi, trst_n, tdo, tap_state, current_instruction, capture_dr, shift_dr, update_dr, external_dr_tdo);
-  (* src = "tap_core.v:20.17-20.20" *)
+  (* src = "tap_core.v:26.17-26.20" *)
   input tck;
   wire tck;
-  (* src = "tap_core.v:21.17-21.20" *)
+  (* src = "tap_core.v:27.17-27.20" *)
   input tms;
   wire tms;
-  (* src = "tap_core.v:22.17-22.20" *)
+  (* src = "tap_core.v:28.17-28.20" *)
   input tdi;
   wire tdi;
-  (* src = "tap_core.v:23.17-23.23" *)
+  (* src = "tap_core.v:29.17-29.23" *)
   input trst_n;
   wire trst_n;
-  (* src = "tap_core.v:24.17-24.20" *)
+  (* src = "tap_core.v:30.17-30.20" *)
   output tdo;
   wire tdo;
-  (* src = "tap_core.v:28.23-28.32" *)
+  (* src = "tap_core.v:34.23-34.32" *)
   output [3:0] tap_state;
   reg [3:0] tap_state;
-  (* src = "tap_core.v:29.32-29.51" *)
+  (* src = "tap_core.v:35.32-35.51" *)
   output [3:0] current_instruction;
   reg [3:0] current_instruction;
-  (* src = "tap_core.v:30.17-30.27" *)
+  (* src = "tap_core.v:36.17-36.27" *)
   output capture_dr;
   wire capture_dr;
-  (* src = "tap_core.v:31.17-31.25" *)
+  (* src = "tap_core.v:37.17-37.25" *)
   output shift_dr;
   wire shift_dr;
-  (* src = "tap_core.v:32.17-32.26" *)
+  (* src = "tap_core.v:38.17-38.26" *)
   output update_dr;
   wire update_dr;
-  (* src = "tap_core.v:35.17-35.32" *)
+  (* src = "tap_core.v:41.17-41.32" *)
   input external_dr_tdo;
   wire external_dr_tdo;
-  (* src = "tap_core.v:94.5-132.8" *)
+  (* src = "tap_core.v:100.5-144.8" *)
   wire _000_;
-  (* src = "tap_core.v:94.5-132.8" *)
+  (* src = "tap_core.v:100.5-144.8" *)
   wire [3:0] _001_;
-  (* src = "tap_core.v:94.5-132.8" *)
+  (* src = "tap_core.v:100.5-144.8" *)
   wire [31:0] _002_;
-  (* src = "tap_core.v:94.5-132.8" *)
+  (* src = "tap_core.v:100.5-144.8" *)
   wire [3:0] _003_;
-  (* src = "tap_core.v:68.5-88.8" *)
+  (* src = "tap_core.v:74.5-94.8" *)
   wire [3:0] _004_;
-  (* src = "tap_core.v:94.5-132.8" *)
+  (* src = "tap_core.v:100.5-144.8" *)
   wire [3:0] _005_;
-  (* src = "tap_core.v:138.5-151.8" *)
+  (* src = "tap_core.v:150.5-163.8" *)
   wire _006_;
-  (* src = "tap_core.v:68.5-88.8" *)
+  (* src = "tap_core.v:74.5-94.8" *)
   wire [3:0] _007_;
-  (* src = "tap_core.v:138.5-151.8" *)
+  (* src = "tap_core.v:150.5-163.8" *)
   wire _008_;
-  (* src = "tap_core.v:138.5-151.8" *)
+  (* src = "tap_core.v:150.5-163.8" *)
   wire _009_;
-  (* src = "tap_core.v:138.5-151.8" *)
+  (* src = "tap_core.v:150.5-163.8" *)
   wire _010_;
-  (* src = "tap_core.v:138.5-151.8" *)
+  (* src = "tap_core.v:150.5-163.8" *)
   wire _011_;
   wire _012_;
   wire _013_;
@@ -2403,54 +2405,54 @@ module tap_core(tck, tms, tdi, trst_n, tdo, tap_state, current_instruction, capt
   wire _019_;
   wire _020_;
   wire _021_;
-  wire [31:0] _022_;
+  (* src = "tap_core.v:116.25-116.50" *)
+  wire _022_;
+  (* src = "tap_core.v:118.30-118.63" *)
   wire _023_;
-  (* src = "tap_core.v:104.25-104.50" *)
+  (* src = "tap_core.v:120.44-120.69" *)
   wire _024_;
-  (* src = "tap_core.v:106.30-106.63" *)
+  (* src = "tap_core.v:126.39-126.77" *)
   wire _025_;
-  (* src = "tap_core.v:108.44-108.69" *)
+  (* src = "tap_core.v:128.30-128.68" *)
   wire _026_;
-  (* src = "tap_core.v:114.39-114.77" *)
+  (* src = "tap_core.v:134.39-134.77" *)
   wire _027_;
-  (* src = "tap_core.v:116.30-116.68" *)
+  (* src = "tap_core.v:136.30-136.68" *)
   wire _028_;
-  (* src = "tap_core.v:122.39-122.77" *)
+  (* src = "tap_core.v:151.13-151.30" *)
   wire _029_;
-  (* src = "tap_core.v:124.30-124.68" *)
+  (* src = "tap_core.v:153.22-153.39" *)
   wire _030_;
-  (* src = "tap_core.v:139.13-139.30" *)
+  (* src = "tap_core.v:154.31-154.69" *)
   wire _031_;
-  (* src = "tap_core.v:141.22-141.39" *)
+  (* src = "tap_core.v:156.22-156.60" *)
   wire _032_;
-  (* src = "tap_core.v:142.31-142.69" *)
+  (* src = "tap_core.v:66.26-66.45" *)
   wire _033_;
-  (* src = "tap_core.v:144.22-144.60" *)
+  (* src = "tap_core.v:67.26-67.43" *)
   wire _034_;
-  (* src = "tap_core.v:60.26-60.45" *)
+  (* src = "tap_core.v:68.26-68.44" *)
   wire _035_;
-  (* src = "tap_core.v:61.26-61.43" *)
+  (* src = "tap_core.v:120.30-120.69" *)
   wire _036_;
-  (* src = "tap_core.v:62.26-62.44" *)
+  (* src = "tap_core.v:126.25-126.77" *)
   wire _037_;
-  (* src = "tap_core.v:108.30-108.69" *)
+  (* src = "tap_core.v:134.25-134.77" *)
   wire _038_;
-  (* src = "tap_core.v:114.25-114.77" *)
+  (* src = "tap_core.v:154.17-154.69" *)
   wire _039_;
-  (* src = "tap_core.v:122.25-122.77" *)
+  (* src = "tap_core.v:101.13-101.20" *)
   wire _040_;
-  (* src = "tap_core.v:142.17-142.69" *)
-  wire _041_;
-  (* src = "tap_core.v:95.13-95.20" *)
+  wire [3:0] _041_;
   wire _042_;
   wire [3:0] _043_;
   wire _044_;
-  wire [3:0] _045_;
-  wire _046_;
-  wire [3:0] _047_;
+  wire _045_;
+  wire [3:0] _046_;
+  wire _047_;
   wire _048_;
-  wire _049_;
-  wire [3:0] _050_;
+  wire [3:0] _049_;
+  wire _050_;
   wire _051_;
   wire _052_;
   wire _053_;
@@ -2497,299 +2499,314 @@ module tap_core(tck, tms, tdi, trst_n, tdo, tap_state, current_instruction, capt
   wire _094_;
   wire _095_;
   wire _096_;
-  wire _097_;
-  wire [31:0] _098_;
-  wire _099_;
-  wire [31:0] _100_;
-  wire _101_;
-  wire [31:0] _102_;
+  wire [31:0] _097_;
+  wire _098_;
+  wire [31:0] _099_;
+  wire _100_;
+  wire [31:0] _101_;
+  wire _102_;
   wire _103_;
-  wire _104_;
-  wire [3:0] _105_;
-  wire _106_;
-  wire [3:0] _107_;
-  wire _108_;
-  (* src = "tap_core.v:70.46-70.84" *)
+  wire [3:0] _104_;
+  wire _105_;
+  wire [3:0] _106_;
+  wire _107_;
+  (* src = "tap_core.v:76.46-76.84" *)
+  wire [3:0] _108_;
+  (* src = "tap_core.v:77.46-77.84" *)
   wire [3:0] _109_;
-  (* src = "tap_core.v:71.46-71.84" *)
+  (* src = "tap_core.v:78.46-78.81" *)
   wire [3:0] _110_;
-  (* src = "tap_core.v:72.46-72.81" *)
+  (* src = "tap_core.v:79.46-79.79" *)
   wire [3:0] _111_;
-  (* src = "tap_core.v:73.46-73.79" *)
-  wire [3:0] _112_;
-  (* src = "tap_core.v:74.46-74.79" *)
-  wire [3:0] _113_;
-  (* src = "tap_core.v:75.46-75.79" *)
-  wire [3:0] _114_;
-  (* src = "tap_core.v:76.46-76.79" *)
-  wire [3:0] _115_;
-  (* src = "tap_core.v:77.46-77.79" *)
-  wire [3:0] _116_;
-  (* src = "tap_core.v:78.46-78.84" *)
-  wire [3:0] _117_;
-  (* src = "tap_core.v:79.46-79.81" *)
-  wire [3:0] _118_;
   (* src = "tap_core.v:80.46-80.79" *)
-  wire [3:0] _119_;
+  wire [3:0] _112_;
   (* src = "tap_core.v:81.46-81.79" *)
-  wire [3:0] _120_;
+  wire [3:0] _113_;
   (* src = "tap_core.v:82.46-82.79" *)
-  wire [3:0] _121_;
+  wire [3:0] _114_;
   (* src = "tap_core.v:83.46-83.79" *)
+  wire [3:0] _115_;
+  (* src = "tap_core.v:84.46-84.84" *)
+  wire [3:0] _116_;
+  (* src = "tap_core.v:85.46-85.81" *)
+  wire [3:0] _117_;
+  (* src = "tap_core.v:86.46-86.79" *)
+  wire [3:0] _118_;
+  (* src = "tap_core.v:87.46-87.79" *)
+  wire [3:0] _119_;
+  (* src = "tap_core.v:88.46-88.79" *)
+  wire [3:0] _120_;
+  (* src = "tap_core.v:89.46-89.79" *)
+  wire [3:0] _121_;
+  (* src = "tap_core.v:90.46-90.79" *)
   wire [3:0] _122_;
-  (* src = "tap_core.v:84.46-84.79" *)
+  (* src = "tap_core.v:91.46-91.84" *)
   wire [3:0] _123_;
-  (* src = "tap_core.v:85.46-85.84" *)
-  wire [3:0] _124_;
-  (* src = "tap_core.v:56.9-56.19" *)
+  (* src = "tap_core.v:62.9-62.19" *)
   reg bypass_bit;
-  (* src = "tap_core.v:54.24-54.45" *)
+  (* src = "tap_core.v:60.24-60.45" *)
   wire [3:0] current_instruction_r;
-  (* src = "tap_core.v:55.16-55.28" *)
+  (* src = "tap_core.v:61.16-61.28" *)
   reg [31:0] idcode_shift;
-  (* src = "tap_core.v:53.24-53.32" *)
+  (* src = "tap_core.v:59.24-59.32" *)
   reg [3:0] ir_shift;
-  (* src = "tap_core.v:67.15-67.27" *)
+  (* src = "tap_core.v:73.15-73.27" *)
   wire [3:0] next_state_c;
-  (* src = "tap_core.v:52.15-52.20" *)
+  (* src = "tap_core.v:58.15-58.20" *)
   wire [3:0] state;
   assign _017_ = ~ trst_n;
   assign _018_ = ~ trst_n;
   assign _019_ = ~ trst_n;
   assign _020_ = ~ trst_n;
   assign _021_ = ~ trst_n;
-  assign _022_ = trst_n ? _100_ : idcode_shift;
-  assign _023_ = trst_n ? _091_ : bypass_bit;
-  assign _044_ = ! (* src = "tap_core.v:104.25-104.50" *) ir_shift;
-  assign _108_ = ir_shift == (* src = "tap_core.v:106.30-106.63" *) 4'h2;
-  assign _026_ = ir_shift == (* src = "tap_core.v:108.44-108.69" *) 4'h1;
-  assign _027_ = current_instruction == (* src = "tap_core.v:114.39-114.77" *) 4'h1;
-  assign _094_ = current_instruction == (* src = "tap_core.v:116.30-116.68" *) 4'hf;
-  assign _029_ = current_instruction == (* src = "tap_core.v:122.39-122.77" *) 4'h1;
-  assign _088_ = current_instruction == (* src = "tap_core.v:124.30-124.68" *) 4'hf;
-  assign _086_ = tap_state == (* src = "tap_core.v:139.13-139.30" *) 4'hb;
-  assign _082_ = tap_state == (* src = "tap_core.v:141.22-141.39" *) 4'h4;
-  assign _033_ = current_instruction == (* src = "tap_core.v:142.31-142.69" *) 4'h1;
-  assign _068_ = current_instruction == (* src = "tap_core.v:144.22-144.60" *) 4'hf;
-  assign capture_dr = tap_state == (* src = "tap_core.v:60.26-60.45" *) 4'h3;
-  assign shift_dr = tap_state == (* src = "tap_core.v:61.26-61.43" *) 4'h4;
-  assign update_dr = tap_state == (* src = "tap_core.v:62.26-62.44" *) 4'h8;
-  assign _106_ = $signed(32'd1) && (* src = "tap_core.v:108.30-108.69" *) _026_;
-  assign _103_ = $signed(32'd1) && (* src = "tap_core.v:114.25-114.77" *) _027_;
-  assign _099_ = $signed(32'd1) && (* src = "tap_core.v:122.25-122.77" *) _029_;
-  assign _076_ = $signed(32'd1) && (* src = "tap_core.v:142.17-142.69" *) _033_;
-  assign _042_ = ! (* src = "tap_core.v:95.13-95.20" *) trst_n;
-  (* src = "tap_core.v:94.5-132.8" *)
+  assign _042_ = ! (* src = "tap_core.v:116.25-116.50" *) ir_shift;
+  assign _107_ = ir_shift == (* src = "tap_core.v:118.30-118.63" *) 4'h2;
+  assign _024_ = ir_shift == (* src = "tap_core.v:120.44-120.69" *) 4'h1;
+  assign _025_ = current_instruction == (* src = "tap_core.v:126.39-126.77" *) 4'h1;
+  assign _093_ = current_instruction == (* src = "tap_core.v:128.30-128.68" *) 4'hf;
+  assign _027_ = current_instruction == (* src = "tap_core.v:134.39-134.77" *) 4'h1;
+  assign _087_ = current_instruction == (* src = "tap_core.v:136.30-136.68" *) 4'hf;
+  assign _085_ = tap_state == (* src = "tap_core.v:151.13-151.30" *) 4'hb;
+  assign _081_ = tap_state == (* src = "tap_core.v:153.22-153.39" *) 4'h4;
+  assign _031_ = current_instruction == (* src = "tap_core.v:154.31-154.69" *) 4'h1;
+  assign _067_ = current_instruction == (* src = "tap_core.v:156.22-156.60" *) 4'hf;
+  assign capture_dr = tap_state == (* src = "tap_core.v:66.26-66.45" *) 4'h3;
+  assign shift_dr = tap_state == (* src = "tap_core.v:67.26-67.43" *) 4'h4;
+  assign update_dr = tap_state == (* src = "tap_core.v:68.26-68.44" *) 4'h8;
+  assign _105_ = $signed(32'd1) && (* src = "tap_core.v:120.30-120.69" *) _024_;
+  assign _102_ = $signed(32'd1) && (* src = "tap_core.v:126.25-126.77" *) _025_;
+  assign _098_ = $signed(32'd1) && (* src = "tap_core.v:134.25-134.77" *) _027_;
+  assign _075_ = $signed(32'd1) && (* src = "tap_core.v:154.17-154.69" *) _031_;
+  assign _040_ = ! (* src = "tap_core.v:101.13-101.20" *) trst_n;
+  (* src = "tap_core.v:100.5-144.8" *)
   always @(posedge tck, negedge trst_n)
     if (!trst_n) tap_state <= 4'h0;
     else tap_state <= next_state_c;
-  (* src = "tap_core.v:94.5-132.8" *)
+  (* src = "tap_core.v:100.5-144.8" *)
   always @(posedge tck, negedge trst_n)
     if (!trst_n) ir_shift <= 4'h0;
-    else ir_shift <= _047_;
-  (* src = "tap_core.v:94.5-132.8" *)
+    else ir_shift <= _046_;
+  (* src = "tap_core.v:100.5-144.8" *)
   always @(posedge tck, negedge trst_n)
     if (!trst_n) current_instruction <= 4'h1;
-    else current_instruction <= _045_;
-  (* src = "tap_core.v:94.5-132.8" *)
-  always @(posedge tck)
-    idcode_shift <= _022_;
-  (* src = "tap_core.v:94.5-132.8" *)
-  always @(posedge tck)
-    bypass_bit <= _023_;
-  assign _043_ = _044_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:104.25-104.50|tap_core.v:104.21-111.64" *) 4'h0 : _107_;
-  assign _045_ = _046_ ? (* src = "tap_core.v:102.71-102.71|tap_core.v:100.13-129.20" *) _043_ : current_instruction;
-  assign _046_ = tap_state == (* src = "tap_core.v:102.71-102.71|tap_core.v:100.13-129.20" *) 4'hf;
-  function [3:0] _159_;
+    else current_instruction <= _043_;
+  (* src = "tap_core.v:100.5-144.8" *)
+  always @(posedge tck, negedge trst_n)
+    if (!trst_n) idcode_shift <= 32'd0;
+    else idcode_shift <= _099_;
+  (* src = "tap_core.v:100.5-144.8" *)
+  always @(posedge tck, negedge trst_n)
+    if (!trst_n) bypass_bit <= 1'h0;
+    else bypass_bit <= _090_;
+  assign _041_ = _042_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:116.25-116.50|tap_core.v:116.21-123.64" *) 4'h0 : _106_;
+  function [3:0] _154_;
     input [3:0] a;
     input [7:0] b;
     input [1:0] s;
-    (* src = "tap_core.v:101.60-101.60|tap_core.v:100.13-129.20" *)
+    (* src = "tap_core.v:114.71-114.71|tap_core.v:110.13-141.20" *)
     (* parallel_case *)
     casez (s)
       2'b?1:
-        _159_ = b[3:0];
+        _154_ = b[3:0];
       2'b1?:
-        _159_ = b[7:4];
+        _154_ = b[7:4];
       default:
-        _159_ = a;
+        _154_ = a;
     endcase
   endfunction
-  assign _047_ = _159_(ir_shift, { 4'h1, tdi, ir_shift[3:1] }, { _049_, _048_ });
-  assign _048_ = tap_state == (* src = "tap_core.v:101.60-101.60|tap_core.v:100.13-129.20" *) 4'hb;
-  assign _049_ = tap_state == (* src = "tap_core.v:100.25-100.25|tap_core.v:100.13-129.20" *) 4'ha;
-  function [3:0] _162_;
+  assign _043_ = _154_(current_instruction, { 4'h1, _041_ }, { _045_, _044_ });
+  assign _044_ = tap_state == (* src = "tap_core.v:114.71-114.71|tap_core.v:110.13-141.20" *) 4'hf;
+  assign _045_ = ! (* src = "tap_core.v:110.25-110.25|tap_core.v:110.13-141.20" *) tap_state;
+  function [3:0] _157_;
+    input [3:0] a;
+    input [7:0] b;
+    input [1:0] s;
+    (* src = "tap_core.v:113.60-113.60|tap_core.v:110.13-141.20" *)
+    (* parallel_case *)
+    casez (s)
+      2'b?1:
+        _157_ = b[3:0];
+      2'b1?:
+        _157_ = b[7:4];
+      default:
+        _157_ = a;
+    endcase
+  endfunction
+  assign _046_ = _157_(ir_shift, { 4'h1, tdi, ir_shift[3:1] }, { _048_, _047_ });
+  assign _047_ = tap_state == (* src = "tap_core.v:113.60-113.60|tap_core.v:110.13-141.20" *) 4'hb;
+  assign _048_ = tap_state == (* src = "tap_core.v:112.89-112.89|tap_core.v:110.13-141.20" *) 4'ha;
+  function [3:0] _160_;
     input [3:0] a;
     input [63:0] b;
     input [15:0] s;
     (* full_case = 32'd1 *)
-    (* src = "tap_core.v:84.80-84.80|tap_core.v:69.9-87.16" *)
+    (* src = "tap_core.v:90.80-90.80|tap_core.v:75.9-93.16" *)
     (* parallel_case *)
     casez (s)
       16'b???????????????1:
-        _162_ = b[3:0];
+        _160_ = b[3:0];
       16'b??????????????1?:
-        _162_ = b[7:4];
+        _160_ = b[7:4];
       16'b?????????????1??:
-        _162_ = b[11:8];
+        _160_ = b[11:8];
       16'b????????????1???:
-        _162_ = b[15:12];
+        _160_ = b[15:12];
       16'b???????????1????:
-        _162_ = b[19:16];
+        _160_ = b[19:16];
       16'b??????????1?????:
-        _162_ = b[23:20];
+        _160_ = b[23:20];
       16'b?????????1??????:
-        _162_ = b[27:24];
+        _160_ = b[27:24];
       16'b????????1???????:
-        _162_ = b[31:28];
+        _160_ = b[31:28];
       16'b???????1????????:
-        _162_ = b[35:32];
+        _160_ = b[35:32];
       16'b??????1?????????:
-        _162_ = b[39:36];
+        _160_ = b[39:36];
       16'b?????1??????????:
-        _162_ = b[43:40];
+        _160_ = b[43:40];
       16'b????1???????????:
-        _162_ = b[47:44];
+        _160_ = b[47:44];
       16'b???1????????????:
-        _162_ = b[51:48];
+        _160_ = b[51:48];
       16'b??1?????????????:
-        _162_ = b[55:52];
+        _160_ = b[55:52];
       16'b?1??????????????:
-        _162_ = b[59:56];
+        _160_ = b[59:56];
       16'b1???????????????:
-        _162_ = b[63:60];
+        _160_ = b[63:60];
       default:
-        _162_ = a;
+        _160_ = a;
     endcase
   endfunction
-  assign next_state_c = _162_(4'hx, { _109_, _110_, _111_, _112_, _113_, _114_, _115_, _116_, _117_, _118_, _119_, _120_, _121_, _122_, _123_, _124_ }, { _066_, _065_, _064_, _063_, _062_, _061_, _060_, _059_, _058_, _057_, _056_, _055_, _054_, _053_, _052_, _051_ });
-  assign _051_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:84.80-84.80|tap_core.v:69.9-87.16" *) 4'hf;
-  assign _052_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:83.80-83.80|tap_core.v:69.9-87.16" *) 4'he;
-  assign _053_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:82.80-82.80|tap_core.v:69.9-87.16" *) 4'hd;
-  assign _054_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:81.80-81.80|tap_core.v:69.9-87.16" *) 4'hc;
-  assign _055_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:80.80-80.80|tap_core.v:69.9-87.16" *) 4'hb;
-  assign _056_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:79.82-79.82|tap_core.v:69.9-87.16" *) 4'ha;
-  assign _057_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:78.85-78.85|tap_core.v:69.9-87.16" *) 4'h9;
-  assign _058_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:77.80-77.80|tap_core.v:69.9-87.16" *) 4'h8;
-  assign _059_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:76.80-76.80|tap_core.v:69.9-87.16" *) 4'h7;
-  assign _060_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:75.80-75.80|tap_core.v:69.9-87.16" *) 4'h6;
-  assign _061_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:74.80-74.80|tap_core.v:69.9-87.16" *) 4'h5;
-  assign _062_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:73.80-73.80|tap_core.v:69.9-87.16" *) 4'h4;
-  assign _063_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:72.82-72.82|tap_core.v:69.9-87.16" *) 4'h3;
-  assign _064_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:71.85-71.85|tap_core.v:69.9-87.16" *) 4'h2;
-  assign _065_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:70.85-70.85|tap_core.v:69.9-87.16" *) 4'h1;
-  assign _066_ = ! (* full_case = 32'd1 *) (* src = "tap_core.v:69.21-69.21|tap_core.v:69.9-87.16" *) tap_state;
-  assign _067_ = _068_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:144.22-144.60|tap_core.v:144.18-147.39" *) bypass_bit : external_dr_tdo;
-  assign _069_ = _076_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:142.17-142.69|tap_core.v:142.13-147.39" *) 1'hx : _067_;
-  assign _071_ = _082_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:141.22-141.39|tap_core.v:141.18-150.12" *) _069_ : 1'hx;
-  assign _073_ = _086_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:139.13-139.30|tap_core.v:139.9-150.12" *) 1'hx : _071_;
-  assign _075_ = _076_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:142.17-142.69|tap_core.v:142.13-147.39" *) idcode_shift[0] : _073_;
-  assign _077_ = _082_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:141.22-141.39|tap_core.v:141.18-150.12" *) _075_ : 1'hx;
-  assign _079_ = _086_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:139.13-139.30|tap_core.v:139.9-150.12" *) 1'hx : _077_;
-  assign _081_ = _082_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:141.22-141.39|tap_core.v:141.18-150.12" *) _079_ : 1'h0;
-  assign _083_ = _086_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:139.13-139.30|tap_core.v:139.9-150.12" *) 1'hx : _081_;
-  assign tdo = _086_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:139.13-139.30|tap_core.v:139.9-150.12" *) ir_shift[0] : _083_;
-  assign _087_ = _088_ ? (* src = "tap_core.v:124.30-124.68|tap_core.v:124.26-125.43" *) tdi : bypass_bit;
-  assign _089_ = _099_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:122.25-122.77|tap_core.v:122.21-125.43" *) bypass_bit : _087_;
-  function [0:0] _191_;
+  assign next_state_c = _160_(4'hx, { _108_, _109_, _110_, _111_, _112_, _113_, _114_, _115_, _116_, _117_, _118_, _119_, _120_, _121_, _122_, _123_ }, { _065_, _064_, _063_, _062_, _061_, _060_, _059_, _058_, _057_, _056_, _055_, _054_, _053_, _052_, _051_, _050_ });
+  assign _050_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:90.80-90.80|tap_core.v:75.9-93.16" *) 4'hf;
+  assign _051_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:89.80-89.80|tap_core.v:75.9-93.16" *) 4'he;
+  assign _052_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:88.80-88.80|tap_core.v:75.9-93.16" *) 4'hd;
+  assign _053_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:87.80-87.80|tap_core.v:75.9-93.16" *) 4'hc;
+  assign _054_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:86.80-86.80|tap_core.v:75.9-93.16" *) 4'hb;
+  assign _055_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:85.82-85.82|tap_core.v:75.9-93.16" *) 4'ha;
+  assign _056_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:84.85-84.85|tap_core.v:75.9-93.16" *) 4'h9;
+  assign _057_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:83.80-83.80|tap_core.v:75.9-93.16" *) 4'h8;
+  assign _058_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:82.80-82.80|tap_core.v:75.9-93.16" *) 4'h7;
+  assign _059_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:81.80-81.80|tap_core.v:75.9-93.16" *) 4'h6;
+  assign _060_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:80.80-80.80|tap_core.v:75.9-93.16" *) 4'h5;
+  assign _061_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:79.80-79.80|tap_core.v:75.9-93.16" *) 4'h4;
+  assign _062_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:78.82-78.82|tap_core.v:75.9-93.16" *) 4'h3;
+  assign _063_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:77.85-77.85|tap_core.v:75.9-93.16" *) 4'h2;
+  assign _064_ = tap_state == (* full_case = 32'd1 *) (* src = "tap_core.v:76.85-76.85|tap_core.v:75.9-93.16" *) 4'h1;
+  assign _065_ = ! (* full_case = 32'd1 *) (* src = "tap_core.v:75.21-75.21|tap_core.v:75.9-93.16" *) tap_state;
+  assign _066_ = _067_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:156.22-156.60|tap_core.v:156.18-159.39" *) bypass_bit : external_dr_tdo;
+  assign _068_ = _075_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:154.17-154.69|tap_core.v:154.13-159.39" *) 1'hx : _066_;
+  assign _070_ = _081_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:153.22-153.39|tap_core.v:153.18-162.12" *) _068_ : 1'hx;
+  assign _072_ = _085_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:151.13-151.30|tap_core.v:151.9-162.12" *) 1'hx : _070_;
+  assign _074_ = _075_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:154.17-154.69|tap_core.v:154.13-159.39" *) idcode_shift[0] : _072_;
+  assign _076_ = _081_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:153.22-153.39|tap_core.v:153.18-162.12" *) _074_ : 1'hx;
+  assign _078_ = _085_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:151.13-151.30|tap_core.v:151.9-162.12" *) 1'hx : _076_;
+  assign _080_ = _081_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:153.22-153.39|tap_core.v:153.18-162.12" *) _078_ : 1'h0;
+  assign _082_ = _085_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:151.13-151.30|tap_core.v:151.9-162.12" *) 1'hx : _080_;
+  assign tdo = _085_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:151.13-151.30|tap_core.v:151.9-162.12" *) ir_shift[0] : _082_;
+  assign _086_ = _087_ ? (* src = "tap_core.v:136.30-136.68|tap_core.v:136.26-137.43" *) tdi : bypass_bit;
+  assign _088_ = _098_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:134.25-134.77|tap_core.v:134.21-137.43" *) bypass_bit : _086_;
+  function [0:0] _189_;
     input [0:0] a;
     input [1:0] b;
     input [1:0] s;
-    (* src = "tap_core.v:120.20-120.20|tap_core.v:100.13-129.20" *)
+    (* src = "tap_core.v:132.20-132.20|tap_core.v:110.13-141.20" *)
     (* parallel_case *)
     casez (s)
       2'b?1:
-        _191_ = b[0:0];
+        _189_ = b[0:0];
       2'b1?:
-        _191_ = b[1:1];
+        _189_ = b[1:1];
       default:
-        _191_ = a;
+        _189_ = a;
     endcase
   endfunction
-  assign _091_ = _191_(bypass_bit, { _095_, _089_ }, { _097_, _092_ });
-  assign _092_ = tap_state == (* src = "tap_core.v:120.20-120.20|tap_core.v:100.13-129.20" *) 4'h4;
-  assign _093_ = _094_ ? (* src = "tap_core.v:116.30-116.68|tap_core.v:116.26-117.44" *) 1'h0 : bypass_bit;
-  assign _095_ = _103_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:114.25-114.77|tap_core.v:114.21-117.44" *) bypass_bit : _093_;
-  assign _097_ = tap_state == (* src = "tap_core.v:112.20-112.20|tap_core.v:100.13-129.20" *) 4'h3;
-  assign _098_ = _099_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:122.25-122.77|tap_core.v:122.21-125.43" *) { tdi, idcode_shift[31:1] } : idcode_shift;
-  function [31:0] _197_;
+  assign _090_ = _189_(bypass_bit, { _094_, _088_ }, { _096_, _091_ });
+  assign _091_ = tap_state == (* src = "tap_core.v:132.20-132.20|tap_core.v:110.13-141.20" *) 4'h4;
+  assign _092_ = _093_ ? (* src = "tap_core.v:128.30-128.68|tap_core.v:128.26-129.44" *) 1'h0 : bypass_bit;
+  assign _094_ = _102_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:126.25-126.77|tap_core.v:126.21-129.44" *) bypass_bit : _092_;
+  assign _096_ = tap_state == (* src = "tap_core.v:124.20-124.20|tap_core.v:110.13-141.20" *) 4'h3;
+  assign _097_ = _098_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:134.25-134.77|tap_core.v:134.21-137.43" *) { tdi, idcode_shift[31:1] } : idcode_shift;
+  function [31:0] _195_;
     input [31:0] a;
     input [63:0] b;
     input [1:0] s;
-    (* src = "tap_core.v:120.20-120.20|tap_core.v:100.13-129.20" *)
+    (* src = "tap_core.v:132.20-132.20|tap_core.v:110.13-141.20" *)
     (* parallel_case *)
     casez (s)
       2'b?1:
-        _197_ = b[31:0];
+        _195_ = b[31:0];
       2'b1?:
-        _197_ = b[63:32];
+        _195_ = b[63:32];
       default:
-        _197_ = a;
+        _195_ = a;
     endcase
   endfunction
-  assign _100_ = _197_(idcode_shift, { _102_, _098_ }, { _104_, _101_ });
-  assign _101_ = tap_state == (* src = "tap_core.v:120.20-120.20|tap_core.v:100.13-129.20" *) 4'h4;
-  assign _102_ = _103_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:114.25-114.77|tap_core.v:114.21-117.44" *) 32'd442126339 : idcode_shift;
-  assign _104_ = tap_state == (* src = "tap_core.v:112.20-112.20|tap_core.v:100.13-129.20" *) 4'h3;
-  assign _105_ = _106_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:108.30-108.69|tap_core.v:108.26-111.64" *) 4'h1 : 4'hf;
-  assign _107_ = _108_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:106.30-106.63|tap_core.v:106.26-111.64" *) 4'h2 : _105_;
-  assign _109_ = tms ? (* src = "tap_core.v:70.46-70.84" *) 4'h0 : 4'h1;
-  assign _110_ = tms ? (* src = "tap_core.v:71.46-71.84" *) 4'h2 : 4'h1;
-  assign _111_ = tms ? (* src = "tap_core.v:72.46-72.81" *) 4'h9 : 4'h3;
-  assign _112_ = tms ? (* src = "tap_core.v:73.46-73.79" *) 4'h5 : 4'h4;
-  assign _113_ = tms ? (* src = "tap_core.v:74.46-74.79" *) 4'h5 : 4'h4;
-  assign _114_ = tms ? (* src = "tap_core.v:75.46-75.79" *) 4'h8 : 4'h6;
-  assign _115_ = tms ? (* src = "tap_core.v:76.46-76.79" *) 4'h7 : 4'h6;
-  assign _116_ = tms ? (* src = "tap_core.v:77.46-77.79" *) 4'h8 : 4'h4;
-  assign _117_ = tms ? (* src = "tap_core.v:78.46-78.84" *) 4'h2 : 4'h1;
-  assign _118_ = tms ? (* src = "tap_core.v:79.46-79.81" *) 4'h0 : 4'ha;
-  assign _119_ = tms ? (* src = "tap_core.v:80.46-80.79" *) 4'hc : 4'hb;
-  assign _120_ = tms ? (* src = "tap_core.v:81.46-81.79" *) 4'hc : 4'hb;
-  assign _121_ = tms ? (* src = "tap_core.v:82.46-82.79" *) 4'hf : 4'hd;
-  assign _122_ = tms ? (* src = "tap_core.v:83.46-83.79" *) 4'he : 4'hd;
-  assign _123_ = tms ? (* src = "tap_core.v:84.46-84.79" *) 4'hf : 4'hb;
-  assign _124_ = tms ? (* src = "tap_core.v:85.46-85.84" *) 4'h2 : 4'h1;
-  assign _000_ = _091_;
-  assign _001_[3] = _045_[3];
-  assign _001_[2] = _045_[2];
-  assign _001_[1] = _045_[1];
-  assign _001_[0] = _045_[0];
-  assign _002_[31] = _100_[31];
-  assign _002_[30] = _100_[30];
-  assign _002_[29] = _100_[29];
-  assign _002_[28] = _100_[28];
-  assign _002_[27] = _100_[27];
-  assign _002_[26] = _100_[26];
-  assign _002_[25] = _100_[25];
-  assign _002_[24] = _100_[24];
-  assign _002_[23] = _100_[23];
-  assign _002_[22] = _100_[22];
-  assign _002_[21] = _100_[21];
-  assign _002_[20] = _100_[20];
-  assign _002_[19] = _100_[19];
-  assign _002_[18] = _100_[18];
-  assign _002_[17] = _100_[17];
-  assign _002_[16] = _100_[16];
-  assign _002_[15] = _100_[15];
-  assign _002_[14] = _100_[14];
-  assign _002_[13] = _100_[13];
-  assign _002_[12] = _100_[12];
-  assign _002_[11] = _100_[11];
-  assign _002_[10] = _100_[10];
-  assign _002_[9] = _100_[9];
-  assign _002_[8] = _100_[8];
-  assign _002_[7] = _100_[7];
-  assign _002_[6] = _100_[6];
-  assign _002_[5] = _100_[5];
-  assign _002_[4] = _100_[4];
-  assign _002_[3] = _100_[3];
-  assign _002_[2] = _100_[2];
-  assign _002_[1] = _100_[1];
-  assign _002_[0] = _100_[0];
-  assign _003_[3] = _047_[3];
-  assign _003_[2] = _047_[2];
-  assign _003_[1] = _047_[1];
-  assign _003_[0] = _047_[0];
+  assign _099_ = _195_(idcode_shift, { _101_, _097_ }, { _103_, _100_ });
+  assign _100_ = tap_state == (* src = "tap_core.v:132.20-132.20|tap_core.v:110.13-141.20" *) 4'h4;
+  assign _101_ = _102_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:126.25-126.77|tap_core.v:126.21-129.44" *) 32'd442126339 : idcode_shift;
+  assign _103_ = tap_state == (* src = "tap_core.v:124.20-124.20|tap_core.v:110.13-141.20" *) 4'h3;
+  assign _104_ = _105_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:120.30-120.69|tap_core.v:120.26-123.64" *) 4'h1 : 4'hf;
+  assign _106_ = _107_ ? (* full_case = 32'd1 *) (* src = "tap_core.v:118.30-118.63|tap_core.v:118.26-123.64" *) 4'h2 : _104_;
+  assign _108_ = tms ? (* src = "tap_core.v:76.46-76.84" *) 4'h0 : 4'h1;
+  assign _109_ = tms ? (* src = "tap_core.v:77.46-77.84" *) 4'h2 : 4'h1;
+  assign _110_ = tms ? (* src = "tap_core.v:78.46-78.81" *) 4'h9 : 4'h3;
+  assign _111_ = tms ? (* src = "tap_core.v:79.46-79.79" *) 4'h5 : 4'h4;
+  assign _112_ = tms ? (* src = "tap_core.v:80.46-80.79" *) 4'h5 : 4'h4;
+  assign _113_ = tms ? (* src = "tap_core.v:81.46-81.79" *) 4'h8 : 4'h6;
+  assign _114_ = tms ? (* src = "tap_core.v:82.46-82.79" *) 4'h7 : 4'h6;
+  assign _115_ = tms ? (* src = "tap_core.v:83.46-83.79" *) 4'h8 : 4'h4;
+  assign _116_ = tms ? (* src = "tap_core.v:84.46-84.84" *) 4'h2 : 4'h1;
+  assign _117_ = tms ? (* src = "tap_core.v:85.46-85.81" *) 4'h0 : 4'ha;
+  assign _118_ = tms ? (* src = "tap_core.v:86.46-86.79" *) 4'hc : 4'hb;
+  assign _119_ = tms ? (* src = "tap_core.v:87.46-87.79" *) 4'hc : 4'hb;
+  assign _120_ = tms ? (* src = "tap_core.v:88.46-88.79" *) 4'hf : 4'hd;
+  assign _121_ = tms ? (* src = "tap_core.v:89.46-89.79" *) 4'he : 4'hd;
+  assign _122_ = tms ? (* src = "tap_core.v:90.46-90.79" *) 4'hf : 4'hb;
+  assign _123_ = tms ? (* src = "tap_core.v:91.46-91.84" *) 4'h2 : 4'h1;
+  assign _000_ = _090_;
+  assign _001_[3] = _043_[3];
+  assign _001_[2] = _043_[2];
+  assign _001_[1] = _043_[1];
+  assign _001_[0] = _043_[0];
+  assign _002_[31] = _099_[31];
+  assign _002_[30] = _099_[30];
+  assign _002_[29] = _099_[29];
+  assign _002_[28] = _099_[28];
+  assign _002_[27] = _099_[27];
+  assign _002_[26] = _099_[26];
+  assign _002_[25] = _099_[25];
+  assign _002_[24] = _099_[24];
+  assign _002_[23] = _099_[23];
+  assign _002_[22] = _099_[22];
+  assign _002_[21] = _099_[21];
+  assign _002_[20] = _099_[20];
+  assign _002_[19] = _099_[19];
+  assign _002_[18] = _099_[18];
+  assign _002_[17] = _099_[17];
+  assign _002_[16] = _099_[16];
+  assign _002_[15] = _099_[15];
+  assign _002_[14] = _099_[14];
+  assign _002_[13] = _099_[13];
+  assign _002_[12] = _099_[12];
+  assign _002_[11] = _099_[11];
+  assign _002_[10] = _099_[10];
+  assign _002_[9] = _099_[9];
+  assign _002_[8] = _099_[8];
+  assign _002_[7] = _099_[7];
+  assign _002_[6] = _099_[6];
+  assign _002_[5] = _099_[5];
+  assign _002_[4] = _099_[4];
+  assign _002_[3] = _099_[3];
+  assign _002_[2] = _099_[2];
+  assign _002_[1] = _099_[1];
+  assign _002_[0] = _099_[0];
+  assign _003_[3] = _046_[3];
+  assign _003_[2] = _046_[2];
+  assign _003_[1] = _046_[1];
+  assign _003_[0] = _046_[0];
   assign _004_[3] = next_state_c[3];
   assign _004_[2] = next_state_c[2];
   assign _004_[1] = next_state_c[1];
@@ -2804,41 +2821,41 @@ module tap_core(tck, tms, tdi, trst_n, tdo, tap_state, current_instruction, capt
   assign _007_[1] = next_state_c[1];
   assign _007_[0] = next_state_c[0];
   assign _008_ = tdo;
-  assign _009_ = _083_;
-  assign _010_ = _079_;
-  assign _011_ = _073_;
+  assign _009_ = _082_;
+  assign _010_ = _078_;
+  assign _011_ = _072_;
   assign _012_ = _017_;
   assign _013_ = _018_;
   assign _014_ = _019_;
   assign _015_ = _020_;
   assign _016_ = _021_;
-  assign _024_ = _044_;
-  assign _025_ = _108_;
-  assign _028_ = _094_;
-  assign _030_ = _088_;
-  assign _031_ = _086_;
-  assign _032_ = _082_;
-  assign _034_ = _068_;
-  assign _035_ = capture_dr;
-  assign _036_ = shift_dr;
-  assign _037_ = update_dr;
-  assign _038_ = _106_;
-  assign _039_ = _103_;
-  assign _040_ = _099_;
-  assign _041_ = _076_;
-  assign _050_[3] = next_state_c[3];
-  assign _050_[2] = next_state_c[2];
-  assign _050_[1] = next_state_c[1];
-  assign _050_[0] = next_state_c[0];
-  assign _070_ = _076_;
-  assign _072_ = _082_;
-  assign _074_ = _086_;
-  assign _078_ = _082_;
-  assign _080_ = _086_;
-  assign _084_ = _086_;
-  assign _085_ = tdo;
-  assign _090_ = _099_;
-  assign _096_ = _103_;
+  assign _022_ = _042_;
+  assign _023_ = _107_;
+  assign _026_ = _093_;
+  assign _028_ = _087_;
+  assign _029_ = _085_;
+  assign _030_ = _081_;
+  assign _032_ = _067_;
+  assign _033_ = capture_dr;
+  assign _034_ = shift_dr;
+  assign _035_ = update_dr;
+  assign _036_ = _105_;
+  assign _037_ = _102_;
+  assign _038_ = _098_;
+  assign _039_ = _075_;
+  assign _049_[3] = next_state_c[3];
+  assign _049_[2] = next_state_c[2];
+  assign _049_[1] = next_state_c[1];
+  assign _049_[0] = next_state_c[0];
+  assign _069_ = _075_;
+  assign _071_ = _081_;
+  assign _073_ = _085_;
+  assign _077_ = _081_;
+  assign _079_ = _085_;
+  assign _083_ = _085_;
+  assign _084_ = tdo;
+  assign _089_ = _098_;
+  assign _095_ = _102_;
   assign current_instruction_r[3] = current_instruction[3];
   assign current_instruction_r[2] = current_instruction[2];
   assign current_instruction_r[1] = current_instruction[1];

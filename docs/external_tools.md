@@ -131,9 +131,11 @@ their faults with scan patterns. It does not run the TAP non-scan, and does not 
 the network-integrity patterns a production flow plays through TCK (instruction-register
 capture, SIB and TDR shift-through). The `coverage.rpt` of a wrapped design notes this.
 
-Also note that warptap's network shifts on every DR scan, whatever instruction the TAP
-holds: its top-level SIBs' select input is tied high, and the instruction only chooses
-what drives TDO. Loading EXTEST matters for reading the network, not for writing it.
+The IJTAG network is the data register of EXTEST: its top-level SIBs are selected by a
+decode of the TAP's instruction, so reading or writing it needs EXTEST loaded, and
+Test-Logic-Reset (five TMS=1 cycles) deselects it. warptap 0.0.2 and earlier tie that
+select high instead, so their network moves on every DR scan, whatever the instruction
+(two all-ones scans under IDCODE start the BIST); re-wrap a design built with them.
 ```
 
 ## Future and planned integrations
