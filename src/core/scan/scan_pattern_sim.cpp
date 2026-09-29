@@ -2,11 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
-#include <exception>
 #include <stdexcept>
-#include <thread>
 #include <vector>
 
+#include "common/threads.hpp"
 #include "fault/effect/compact_fault.hpp"
 #include "ir/compiled_graph/compiled_graph.hpp"
 #include "ir/compiled_graph/graph_cache.hpp"
@@ -19,17 +18,6 @@
 
 namespace faultflow::scan {
 namespace {
-
-// Resolve a requested grading thread count. <= 0 means auto (hardware
-// concurrency); the Python layer normally resolves this already, so this is a
-// safe floor.
-int effective_sim_threads(int sim_threads) {
-  if (sim_threads > 0) {
-    return sim_threads;
-  }
-  const unsigned hw = std::thread::hardware_concurrency();
-  return hw == 0 ? 1 : static_cast<int>(hw);
-}
 
 static bool clock_off(const ScanPatternRequest& req, size_t i) {
   return i < req.clock_off_states.size() ? req.clock_off_states[i] : false;
@@ -495,47 +483,7 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
     result.batches[static_cast<size_t>(batch_idx)] = std::move(batch);
   };
 
-  const int threads =
-      std::min(effective_sim_threads(sim_threads), batch_count);
-  if (threads <= 1) {
-    for (int batch_idx = 0; batch_idx < batch_count; ++batch_idx) {
-      process_batch(batch_idx);
-    }
-    return result;
-  }
-
-  // Partition [0, batch_count) into contiguous batch-index ranges, one per
-  // thread (threads-1 workers + the caller). A range that throws is captured and
-  // the lowest-index failure is rethrown after every thread is joined.
-  const int base = batch_count / threads;
-  const int rem = batch_count % threads;
-  std::vector<std::thread> pool;
-  pool.reserve(static_cast<size_t>(threads - 1));
-  std::vector<std::exception_ptr> errors(static_cast<size_t>(threads));
-  const auto run_range = [&](int t) {
-    try {
-      const int lo = t * base + std::min(t, rem);
-      const int hi = lo + base + (t < rem ? 1 : 0);
-      for (int batch_idx = lo; batch_idx < hi; ++batch_idx) {
-        process_batch(batch_idx);
-      }
-    } catch (...) {
-      errors[static_cast<size_t>(t)] = std::current_exception();
-    }
-  };
-
-  for (int t = 1; t < threads; ++t) {
-    pool.emplace_back(run_range, t);
-  }
-  run_range(0);
-  for (std::thread& th : pool) {
-    th.join();
-  }
-  for (int t = 0; t < threads; ++t) {
-    if (errors[static_cast<size_t>(t)]) {
-      std::rethrow_exception(errors[static_cast<size_t>(t)]);
-    }
-  }
+  parallel_ranges(batch_count, effective_sim_threads(sim_threads), process_batch);
   return result;
 }
 

@@ -21,6 +21,7 @@ add_library(
   scan/compression.cpp
   sim/golden_ref/golden_ref_sim.cpp
   sim/engine/bit_parallel_sim.cpp
+  sim/engine/sequence_grade.cpp
   sim/state/test_vector.cpp
 )
 

@@ -534,6 +534,12 @@ std::vector<std::map<int, bool>> GoldenRefSim::simulate_sequence_with_fault(
   return run_sequence(cg, vec, fault, nullptr);
 }
 
+std::vector<std::map<int, bool>> GoldenRefSim::simulate_sequence_with_fault(
+    const CompiledSimGraph& cg, const TestVector& vec, const CompactFault& fault,
+    const std::vector<int>& sample_yids) const {
+  return run_sequence(cg, vec, fault, &sample_yids);
+}
+
 bool GoldenRefSim::is_sequence_detected(
     const CompiledSimGraph& cg,
     const std::vector<std::map<int, bool>>& fault_free,

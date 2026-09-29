@@ -10,6 +10,7 @@
 
 #include "atpg/fault_solver.hpp"
 #include "atpg/sat_atpg.hpp"
+#include "common/threads.hpp"
 #include "common/types.hpp"
 #include "db/sqlite_store.hpp"
 #include "fault/collapser/fault_collapser.hpp"
@@ -203,16 +204,6 @@ struct GradeRangeResult {
   std::vector<ActiveFaultRecord> still_active;  // carry-forward, ascending
   int64_t batch_fault_calls = 0;                // thread-local instrumentation tally
 };
-
-// Resolve the requested thread count. <= 0 means "auto" (hardware concurrency);
-// the Python layer normally resolves this already, so this is just a safe floor.
-int effective_sim_threads(int sim_threads) {
-  if (sim_threads > 0) {
-    return sim_threads;
-  }
-  const unsigned hw = std::thread::hardware_concurrency();
-  return hw == 0 ? 1 : static_cast<int>(hw);
-}
 
 // Grade active[range_begin, range_end) — a whole number of 63-fault batches (the
 // final partial batch lands in the last non-empty slice) — by calling

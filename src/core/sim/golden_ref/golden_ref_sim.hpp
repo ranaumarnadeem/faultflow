@@ -55,6 +55,12 @@ class GoldenRefSim {
       const CompiledSimGraph& cg, const TestVector& vec,
       const CompactFault& fault) const;
 
+  // The faulty-machine counterpart of the sample_yids fast path: the scalar
+  // oracle for sequence grading on a chosen set of outputs.
+  std::vector<std::map<int, bool>> simulate_sequence_with_fault(
+      const CompiledSimGraph& cg, const TestVector& vec, const CompactFault& fault,
+      const std::vector<int>& sample_yids) const;
+
   bool is_sequence_detected(
       const CompiledSimGraph& cg,
       const std::vector<std::map<int, bool>>& fault_free,

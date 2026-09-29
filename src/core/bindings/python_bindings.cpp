@@ -21,6 +21,7 @@
 #include "ir/normalized_graph/normalized_graph.hpp"
 #include "ir/parsed_graph/parsed_graph.hpp"
 #include "sim/engine/bit_parallel_sim.hpp"
+#include "sim/engine/sequence_grade.hpp"
 #include "sim/golden_ref/golden_ref_sim.hpp"
 #include "sim/state/test_vector.hpp"
 #include "scan/compression.hpp"
@@ -859,6 +860,43 @@ py::dict simulate_scan_protocol_faults_py(
   return out;
 }
 
+// Stuck-at grading over one multi-cycle input sequence, observing only
+// observe_outputs at the sampled cycles (grade_sequence_faults). faults are
+// (compiled net index, 0 = SA0 / 1 = SA1). Returns {"golden": the fault-free
+// observed values per sampled cycle, "first_sample": per fault, the first
+// sampled cycle that differs, or -1}.
+py::dict simulate_sequence_faults_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::vector<std::string>& input_order,
+    const std::vector<std::vector<bool>>& cycles, const std::vector<bool>& sample,
+    const std::vector<std::string>& observe_outputs,
+    const std::vector<std::pair<uint32_t, uint8_t>>& faults,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances, int sim_threads,
+    bool reference, bool initial_ff_value) {
+  SequenceGradeRequest request;
+  request.input_order = input_order;
+  request.cycles = cycles;
+  request.sample = sample;
+  request.observe_outputs = observe_outputs;
+  request.initial_ff_value = initial_ff_value;
+  request.faults.reserve(faults.size());
+  for (const auto& [net_index, fault_type] : faults) {
+    request.faults.push_back(SequenceFaultSpec{net_index, fault_type});
+  }
+  SequenceGradeResult result;
+  {
+    py::gil_scoped_release release;
+    result = grade_sequence_faults(json_path, cell_map_path, request,
+                                   unsupported_policy, blackbox_instances,
+                                   sim_threads, reference);
+  }
+  py::dict out;
+  out["golden"] = result.golden;
+  out["first_sample"] = result.first_sample;
+  return out;
+}
+
 // Adapter for scan::solve_xor_broadcast (src/core/scan/compression.hpp) -- a
 // fixed GF(2) linear solve: given a fanout map (each row = the set of
 // channel/register-bit indices XORed into one internal position) and a sparse
@@ -1286,6 +1324,13 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("capture_diffs") = false,
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("unload_mask") = std::map<int, std::vector<bool>>{});
+  m.def("simulate_sequence_faults", &faultflow::simulate_sequence_faults_py,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("input_order"),
+        py::arg("cycles"), py::arg("sample"), py::arg("observe_outputs"),
+        py::arg("faults"), py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("sim_threads") = 1, py::arg("reference") = false,
+        py::arg("initial_ff_value") = false);
   m.def("list_site_keys", &faultflow::list_site_keys_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{});

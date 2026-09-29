@@ -10,6 +10,7 @@ add_executable(
   scan/test_scan_multiclock_stagger.cpp
   scan/test_scan_compression.cpp
   sim/test_bit_parallel.cpp
+  sim/test_sequence_grade.cpp
   sim/test_blackbox_boundary.cpp
   sim/test_wbr_modes.cpp
   sim/test_wbr_scan_cell.cpp
