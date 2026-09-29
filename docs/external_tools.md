@@ -138,12 +138,17 @@ ports, constant nets — counts as `glue`, so the categories add up to the total
 
 **The TAP and the IJTAG network over JTAG.** `ff.py jtag` (the shell's `run_jtag`)
 plays the network-integrity program a production flow uses -- IDCODE, the instruction
-register's capture and length, BYPASS and every unimplemented opcode, each SIB opened
-alone, each control TDR written and read back, a TMS reset -- through the TAP of the
-scanned netlist, grades the scan campaign's faults at TDO, and reports the credit beside
-the scan coverage (`jtag` and `combined`, per category too). The program is built by
-warptap's `build_integrity_program` from the network the manifest describes (it needs
-warptap with `warptap.tap_integrity`), or read from a `warptap-tck-program` file.
+register's capture and length, BYPASS and every unimplemented opcode, every TAP state
+transition with each TAP register held in Pause at 0 and at 1, each SIB opened alone, the
+network held still under SAMPLE/PRELOAD and through Pause, each control TDR written and
+read back, a TMS reset -- through the TAP of the scanned netlist, grades the scan
+campaign's faults at TDO, and reports the credit beside the scan coverage (`jtag` and
+`combined`, per category too). The program is built by warptap's
+`build_integrity_program` from the network the manifest describes (it needs warptap with
+`warptap.tap_integrity`), or read from a `warptap-tck-program` file. What it leaves
+undetected in the TAP is mostly beyond any TCK sequence: a register's behaviour under
+another instruction (every read starts with a capture), decodes of opcodes the TAP never
+latches, and TDO outside the shift states.
 
 ```{admonition} warptap 0.0.2 and earlier
 :class: warning
