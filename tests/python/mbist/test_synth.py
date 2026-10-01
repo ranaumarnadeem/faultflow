@@ -15,6 +15,7 @@ import pytest
 from faultflow.mbist.insert import InsertResult, mbist_insert
 from faultflow.mbist.synth import SynthesizedChip, synthesize_inserted
 from mbist_chip import CHIP, MODEL, ROOT, chip_copy
+from warptap_helpers import skip_unless_warptap
 
 LIBERTY = ROOT / "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib"
 SKY130_MODELS = ROOT / "cells/sky130/sky130_fd_sc_hd.v"
@@ -29,21 +30,37 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def synthesized(
-    tmp_path_factory: pytest.TempPathFactory,
-) -> tuple[InsertResult, SynthesizedChip]:
-    tmp = tmp_path_factory.mktemp("synth")
-    result = mbist_insert(chip_copy(tmp), "chip_top", out=tmp / "out")
-    chip = synthesize_inserted(
+def _synthesize(tmp: Path, result: InsertResult) -> SynthesizedChip:
+    return synthesize_inserted(
         result.rtl,
         "chip_top",
         {m.instance: (m.shell, m.collar) for m in result.memories},
         libs=[CHIP / "macros/input_demo_8x16_scn4m.v"],
         liberty=LIBERTY,
         workdir=tmp / "synth",
+        top_leaves=None if result.jtag is None else result.jtag.instances(),
     )
-    return result, chip
+
+
+@pytest.fixture(scope="module")
+def synthesized(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> tuple[InsertResult, SynthesizedChip]:
+    tmp = tmp_path_factory.mktemp("synth")
+    result = mbist_insert(chip_copy(tmp), "chip_top", out=tmp / "out")
+    return result, _synthesize(tmp, result)
+
+
+@pytest.fixture(scope="module")
+def synthesized_jtag(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> tuple[InsertResult, SynthesizedChip]:
+    """The chip inserted with jtag: the TAP and the network are DFT too."""
+    skip_unless_warptap()
+    tmp = tmp_path_factory.mktemp("synth_jtag")
+    spec = chip_copy(tmp, lambda t: t.replace("jtag: false", "jtag: {tck_max_mhz: 10}"))
+    result = mbist_insert(spec, "chip_top", out=tmp / "out")
+    return result, _synthesize(tmp, result)
 
 
 def _cells(netlist: dict, top: str) -> dict:
@@ -64,12 +81,14 @@ def test_the_memories_sit_inside_their_shells(
     )
 
 
+@pytest.mark.parametrize("chip_fixture", ["synthesized", "synthesized_jtag"])
 def test_every_frozen_block_is_its_standalone_netlist_cell_for_cell(
-    synthesized: tuple[InsertResult, SynthesizedChip],
+    chip_fixture: str, request: pytest.FixtureRequest
 ) -> None:
     """Nothing re-synthesized a frozen block: under each instance prefix the
     composed chip has exactly the standalone netlist's cells."""
-    _, chip = synthesized
+    result, chip = request.getfixturevalue(chip_fixture)
+    shells = {m.instance for m in result.memories}
     composed = _cells(json.loads(chip.composed_json.read_text("utf-8")), chip.top)
     assert chip.frozen, "no frozen blocks"
     for prefix, module in chip.frozen.items():
@@ -80,13 +99,26 @@ def test_every_frozen_block_is_its_standalone_netlist_cell_for_cell(
             for name, cell in composed.items()
             if name.startswith(prefix + "__")
         }
-        if "__" in prefix:  # a leaf: its cells, and nothing nested under it
+        if prefix not in shells:  # a leaf: its cells, and nothing nested under it
             assert spliced.keys() == own.keys(), prefix
         else:  # a shell: its own cells, its leaves' among them
             assert set(own) <= set(spliced), prefix
         assert Counter(c["type"] for k, c in spliced.items() if k in own) == Counter(
             c["type"] for c in own.values()
         ), prefix
+
+
+def test_the_tap_and_the_network_are_frozen_blocks(
+    synthesized_jtag: tuple[InsertResult, SynthesizedChip],
+) -> None:
+    """Every instance warptap added -- TAP, SIBs, TDR bits, the TDRs' clear
+    synchronizer -- is synthesized alone and spliced in, not optimized with the
+    user's logic."""
+    result, chip = synthesized_jtag
+    assert result.jtag is not None
+    network = result.jtag.instances()
+    assert {"tap_core", "sib_cell", "tck_reset_sync"} <= set(network.values())
+    assert {cell: chip.frozen.get(cell) for cell in network} == network
 
 
 def _gate_verilog(chip: SynthesizedChip, work: Path) -> Path:

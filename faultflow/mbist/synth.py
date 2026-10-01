@@ -7,8 +7,9 @@ The DFT is synthesized frozen and nested:
    synchronizers -- is synthesized alone.
 2. Every shell is synthesized with its leaves and the memory macro as
    blackboxes, and the leaves' netlists are spliced in: one frozen shell.
-3. The user's logic is synthesized with the shells as blackboxes, and the
-   frozen shells are spliced in.
+3. The user's logic is synthesized with the shells, and the top's own DFT
+   instances (the JTAG TAP, SIBs and TDRs, each synthesized alone), as
+   blackboxes, and those netlists are spliced in.
 
 No Yosys pass runs on a spliced netlist again, so nothing optimizes across a
 DFT boundary. A spliced cell is named `<instance>__<cell>`: the controller of
@@ -19,7 +20,7 @@ memory `u_core0.u_mem__u_collar.u_sram`.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -154,12 +155,15 @@ def synthesize_inserted(
     libs: Sequence[Path],
     liberty: Path,
     workdir: Path,
+    top_leaves: Mapping[str, str] | None = None,
 ) -> SynthesizedChip:
     """Synthesize the design mbist-insert wrote (`rtl`, top `top`), DFT frozen
     and nested. `shells` maps every shell instance path to its (shell module,
-    collar module); `libs` are the design's macro stubs."""
+    collar module); `top_leaves` every other DFT instance of the top (the JTAG
+    network's: JtagInsertion.instances()) to its module; `libs` are the
+    design's macro stubs."""
+    top_leaves = dict(top_leaves or {})
     modules = _elaborated(rtl, libs, top, workdir / "elaborated.json")
-    shell_modules = {module for module, _ in shells.values()}
     standalone: dict[str, Path] = {}
     frozen: dict[str, str] = {}
 
@@ -195,21 +199,29 @@ def synthesize_inserted(
         standalone[shell] = out
         shell_leaf_paths[shell] = leaves
 
-    # 3. The user's logic around the shells.
+    # 3. The user's logic around the shells and the top's own DFT instances.
+    for module in sorted(set(top_leaves.values())):
+        if module not in leaf_json:
+            out = workdir / "leaves" / f"leaf{len(leaf_json)}.json"
+            leaf_json[module] = _synthesize(rtl, libs, module, (), liberty, out)
+            standalone[module] = out
+    blocks = {p: composed_shells[m] for p, (m, _) in shells.items()}
+    blocks.update({p: leaf_json[m] for p, m in top_leaves.items()})
+    block_module = {p: m for p, (m, _) in shells.items()}
+    block_module.update(top_leaves)
     glue_out = workdir / f"{top}.glue.json"
-    glue = _synthesize(rtl, libs, top, sorted(shell_modules), liberty, glue_out)
+    glue = _synthesize(
+        rtl, libs, top, sorted(set(block_module.values())), liberty, glue_out
+    )
     cells = _cells_of(glue, top)
     lost = sorted(
-        p for p, (m, _) in shells.items() if cells.get(p, {}).get("type") != m
+        p for p, m in block_module.items() if cells.get(p, {}).get("type") != m
     )
     if lost:
-        raise InsertError(f"synthesis of {top} lost the shell instances {lost}")
+        raise InsertError(f"synthesis of {top} lost the DFT instances {lost}")
     baseline = set(_check(glue_out, top, liberty))
     composed = compose_soc(
-        glue_json=glue,
-        soc_top=top,
-        blocks={p: composed_shells[m] for p, (m, _) in shells.items()},
-        block_module={p: m for p, (m, _) in shells.items()},
+        glue_json=glue, soc_top=top, blocks=blocks, block_module=block_module
     )
     composed_json = workdir / f"{top}_composed.json"
     composed_json.write_text(json.dumps(composed, indent=1), encoding="utf-8")
@@ -225,6 +237,7 @@ def synthesize_inserted(
         frozen[path] = shell
         for leaf_path, module in shell_leaf_paths[shell].items():
             frozen[f"{path}__{leaf_path}"] = module
+    frozen.update(top_leaves)
     macros = {name for name, m in modules.items() if _is_blackbox(m)}
     memories = tuple(
         sorted(

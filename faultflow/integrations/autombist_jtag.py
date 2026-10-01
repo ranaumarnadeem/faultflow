@@ -28,6 +28,9 @@ class PortInstrument(Protocol):
     @property
     def width(self) -> int: ...
 
+    @property
+    def capture_sync(self) -> bool: ...  # a status port captured through 2 TCK flops
+
 
 def warptap_available() -> bool:
     return importlib.util.find_spec("warptap") is not None
@@ -42,9 +45,9 @@ def _require_warptap(what: str) -> None:
 
 def instrument_specs(instruments: Sequence[PortInstrument]) -> list[Any]:
     """warptap InstrumentSpecs for ports behind the IJTAG network, in the given
-    order: a control port is a WRITE TDR, a status port a READ TDR, bound bit for
-    bit to the port of its name. The network wrap-test-access builds is made of
-    these."""
+    order: a control port is a WRITE TDR, a status port a READ TDR (capturing
+    through a synchronizer when it asks for capture_sync), bound bit for bit to
+    the port of its name. The network wrap-test-access builds is made of these."""
     _require_warptap("building IJTAG instruments")
     # warptap is optional: without it, mypy finds no module to check against.
     from warptap.icl_model import (  # type: ignore[import-not-found]
@@ -64,6 +67,13 @@ def instrument_specs(instruments: Sequence[PortInstrument]) -> list[Any]:
                 f"instrument {ins.name!r}: role must be 'control' or 'status', "
                 f"got {ins.role!r}"
             )
+        if ins.capture_sync and ins.role != "status":
+            raise AutombistJtagError(
+                f"instrument {ins.name!r}: only a status port captures, so only one "
+                "can have capture_sync"
+            )
+        # Only when asked for: a warptap without capture_sync takes the others.
+        sync: dict[str, Any] = {"capture_sync": True} if ins.capture_sync else {}
         specs.append(
             InstrumentSpec(
                 ins.name,
@@ -71,6 +81,7 @@ def instrument_specs(instruments: Sequence[PortInstrument]) -> list[Any]:
                 capture_value=0,
                 direction=directions[ins.role],
                 signal_bits=tuple(SignalBinding(ins.name, b) for b in range(ins.width)),
+                **sync,
             )
         )
     return specs

@@ -159,8 +159,12 @@ def test_control_ports_are_write_tdrs_and_status_ports_read_tdrs() -> None:
 
     specs = instrument_specs(
         [
-            SimpleNamespace(name="core0_ram_test_mode", role="control", width=1),
-            SimpleNamespace(name="core0_ram_bist_fail", role="status", width=2),
+            SimpleNamespace(
+                name="core0_ram_test_mode", role="control", width=1, capture_sync=False
+            ),
+            SimpleNamespace(
+                name="core0_ram_bist_fail", role="status", width=2, capture_sync=True
+            ),
         ]
     )
     assert [s.direction for s in specs] == [
@@ -171,14 +175,23 @@ def test_control_ports_are_write_tdrs_and_status_ports_read_tdrs() -> None:
         SignalBinding("core0_ram_bist_fail", 0),
         SignalBinding("core0_ram_bist_fail", 1),
     )
+    assert [s.capture_sync for s in specs] == [False, True]
 
 
-def test_an_unknown_instrument_role_is_refused() -> None:
+@pytest.mark.parametrize(
+    ("role", "capture_sync", "match"),
+    [("clock", False, "role"), ("control", True, "only a status port")],
+)
+def test_an_instrument_warptap_cant_build_is_refused(
+    role: str, capture_sync: bool, match: str
+) -> None:
     skip_unless_warptap()
     from faultflow.integrations.autombist_jtag import (
         AutombistJtagError,
         instrument_specs,
     )
 
-    with pytest.raises(AutombistJtagError, match="role"):
-        instrument_specs([SimpleNamespace(name="x", role="clock", width=1)])
+    with pytest.raises(AutombistJtagError, match=match):
+        instrument_specs(
+            [SimpleNamespace(name="x", role=role, width=1, capture_sync=capture_sync)]
+        )

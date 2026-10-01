@@ -105,19 +105,26 @@ class AutombistTestAccessInstance:
 class AutombistTestAccessInstrument:
     """One wrapped port: a control port becomes JTAG-only, a status port stays
     readable at its pin and is only tapped. Listed in scan-chain order, TDI
-    side first; `sib` and `tdr_bits` are instance paths."""
+    side first; `sib` and `tdr_bits` are instance paths. A status port with
+    `capture_sync` is captured through two TCK flops."""
 
     name: str
     role: str  # "control" | "status"
     width: int
     sib: str
     tdr_bits: tuple[str, ...]
+    capture_sync: bool = False
 
 
 @dataclass(frozen=True)
 class AutombistTestAccess:
     """The manifest's `test_access` block for a design wrapped with a JTAG TAP
-    and an IJTAG network (`autombist wrap-test-access`)."""
+    and an IJTAG network (`autombist wrap-test-access`, or mbist-insert).
+
+    `network_instruction`/`network_opcode` are the instruction that selects the
+    network: EXTEST (0) unless the block says otherwise, as every block written
+    before the field existed means. `chip_reset` names the chip reset the
+    control TDRs also clear on (None: they clear on TRST only)."""
 
     top_module: str
     output_verilog: Path
@@ -125,6 +132,12 @@ class AutombistTestAccess:
     instances: tuple[AutombistTestAccessInstance, ...]
     instruments: tuple[AutombistTestAccessInstrument, ...]
     icl_path: Path | None = None
+    bsdl_path: Path | None = None
+    network_instruction: str = "EXTEST"
+    network_opcode: int = 0
+    chip_reset: str | None = None
+    chip_reset_active_low: bool = True
+    idcode_value: int | None = None
 
 
 @dataclass(frozen=True)
@@ -264,6 +277,9 @@ def _load_test_access(
             raise AutombistManifestError(
                 f"{at}: names instances not in {where}.instances: {unknown}"
             )
+        capture_sync = entry.get("capture_sync", False)
+        if not isinstance(capture_sync, bool):
+            raise AutombistManifestError(f"{at}: capture_sync must be true or false")
         instruments.append(
             AutombistTestAccessInstrument(
                 name=str(_req(entry, "name", at)),
@@ -271,9 +287,23 @@ def _load_test_access(
                 width=width,
                 sib=sib,
                 tdr_bits=tuple(str(b) for b in tdr_bits),
+                capture_sync=capture_sync,
             )
         )
 
+    bsdl_raw = raw.get("bsdl_path")
+    instruction = raw.get("network_instruction", "EXTEST")
+    opcode = raw.get("network_opcode", 0 if instruction == "EXTEST" else None)
+    if not isinstance(instruction, str) or not instruction:
+        raise AutombistManifestError(f"{where}.network_instruction must be a name")
+    if isinstance(opcode, bool) or not isinstance(opcode, int) or opcode < 0:
+        raise AutombistManifestError(
+            f"{where}.network_opcode must be the opcode of {instruction} (an integer)"
+        )
+    idcode = raw.get("idcode_value")
+    if idcode is not None and (isinstance(idcode, bool) or not isinstance(idcode, int)):
+        raise AutombistManifestError(f"{where}.idcode_value must be an integer")
+    reset_port, reset_active_low = _chip_reset(raw.get("chip_reset"), where)
     return AutombistTestAccess(
         top_module=top_module,
         output_verilog=output_verilog,
@@ -281,7 +311,32 @@ def _load_test_access(
         instances=tuple(instances),
         instruments=tuple(instruments),
         icl_path=icl_path,
+        bsdl_path=(
+            None if bsdl_raw is None else _resolve(root, bsdl_raw, f"{where}.bsdl")
+        ),
+        network_instruction=instruction,
+        network_opcode=opcode,
+        chip_reset=reset_port,
+        chip_reset_active_low=reset_active_low,
+        idcode_value=idcode,
     )
+
+
+def _chip_reset(raw: Any, where: str) -> tuple[str | None, bool]:
+    """`test_access.chip_reset`, {port, active: low|high}: (port, active low),
+    or (None, True) without one."""
+    if raw is None:
+        return None, True
+    if not isinstance(raw, dict) or not isinstance(raw.get("port"), str):
+        raise AutombistManifestError(
+            f"{where}.chip_reset must be {{port: <input>, active: low|high}}"
+        )
+    active = raw.get("active", "low")
+    if active not in ("low", "high"):
+        raise AutombistManifestError(
+            f"{where}.chip_reset.active must be 'low' or 'high', got {active!r}"
+        )
+    return str(raw["port"]), active == "low"
 
 
 def load_autombist_manifest(path: str | Path) -> AutombistManifest:

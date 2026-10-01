@@ -276,6 +276,63 @@ def test_test_access_block_is_parsed(tmp_path: Path) -> None:
     assert (go.sib, go.tdr_bits) == ("warptap_sib_go", ("warptap_sib_go_inst_0",))
 
 
+def test_a_block_without_the_newer_fields_selects_the_network_with_extest(
+    tmp_path: Path,
+) -> None:
+    """A block written before the network's instruction was recorded means EXTEST
+    (opcode 0), control TDRs cleared by TRST only and status captured directly."""
+    access = load_autombist_manifest(_write(tmp_path, _wrapped(tmp_path))).test_access
+    assert access is not None
+    assert (access.network_instruction, access.network_opcode) == ("EXTEST", 0)
+    assert (access.chip_reset, access.chip_reset_active_low) == (None, True)
+    assert access.idcode_value is None and access.bsdl_path is None
+    assert [i.capture_sync for i in access.instruments] == [False]
+
+
+def test_the_network_instruction_and_the_chip_reset_are_parsed(tmp_path: Path) -> None:
+    data = _wrapped(
+        tmp_path,
+        network_instruction="IJTAG_ACCESS",
+        network_opcode=12,
+        chip_reset={"port": "rst", "active": "high"},
+        idcode_value=0x5CA1AB1F,
+        bsdl_path="top.bsd",
+    )
+    data["test_access"]["instruments"][0]["capture_sync"] = False
+    access = load_autombist_manifest(_write(tmp_path, data)).test_access
+    assert access is not None
+    assert (access.network_instruction, access.network_opcode) == ("IJTAG_ACCESS", 12)
+    assert (access.chip_reset, access.chip_reset_active_low) == ("rst", False)
+    assert access.idcode_value == 0x5CA1AB1F
+    assert access.bsdl_path == tmp_path / "top.bsd"
+
+
+@pytest.mark.parametrize(
+    ("changes", "match"),
+    [
+        ({"network_instruction": "IJTAG_ACCESS"}, "network_opcode must be the opcode"),
+        ({"network_opcode": -1}, "network_opcode"),
+        ({"network_opcode": True}, "network_opcode"),
+        ({"network_instruction": ""}, "network_instruction must be a name"),
+        ({"chip_reset": "rst"}, "chip_reset must be"),
+        ({"chip_reset": {"port": "rst", "active": "lo"}}, "'low' or 'high'"),
+        ({"idcode_value": "0x1"}, "idcode_value must be an integer"),
+    ],
+)
+def test_a_bad_network_field_is_rejected(
+    tmp_path: Path, changes: dict[str, Any], match: str
+) -> None:
+    with pytest.raises(AutombistManifestError, match=match):
+        load_autombist_manifest(_write(tmp_path, _wrapped(tmp_path, **changes)))
+
+
+def test_capture_sync_is_true_or_false(tmp_path: Path) -> None:
+    data = _wrapped(tmp_path)
+    data["test_access"]["instruments"][0]["capture_sync"] = "yes"
+    with pytest.raises(AutombistManifestError, match="capture_sync"):
+        load_autombist_manifest(_write(tmp_path, data))
+
+
 def test_a_memory_entry_may_name_its_own_stub(tmp_path: Path) -> None:
     data = _wrapped(tmp_path)
     data["test_access"]["instances"][0]["sources"] = ["other_bbox.v"]

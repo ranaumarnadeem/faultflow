@@ -10,8 +10,12 @@ every memory the insertion file configures, keeping the design's hierarchy.
 6. Merge the shells' modules into the design (no name may collide), give every
    configured path its own module copies, swap each macro for its shell and
    thread the test ports up and the chip reset down.
-7. Write the design back with Yosys, and elaborate it again: `check` may report
+7. With jtag, put the test ports behind a TAP and an IJTAG network (jtag.py)
+   and remove them: the chip gains the TAP's five pins only.
+8. Write the design back with Yosys, and elaborate it again: `check` may report
    no problem the original design didn't have.
+9. Write the SDC of the crossings inserted, the manifest (read back to check
+   it; with JTAG, its network rebuilt too) and, with JTAG, the ICL and BSDL.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from faultflow.integrations.autombist import (
+    AutombistManifestError,
     CheckProblem,
     _quote,
     _run_yosys,
@@ -31,6 +36,16 @@ from faultflow.integrations.autombist import (
     load_autombist_manifest,
 )
 from faultflow.mbist.autombist_config import CollarConfig, load_collar_config
+from faultflow.mbist.jtag import (
+    TAP_PORTS,
+    WARPTAP_MODULES,
+    JtagInsertion,
+    TestPort,
+    check_names,
+    insert_network,
+    write_descriptions,
+)
+from faultflow.mbist.manifest import ShellRecord, chip_manifest, macro_sources
 from faultflow.mbist.netlist import (
     InsertError,
     _is_blackbox,
@@ -39,6 +54,7 @@ from faultflow.mbist.netlist import (
     uniquify_path,
     verify_pins,
 )
+from faultflow.mbist.sdc import crossings, rtl_sdc
 from faultflow.mbist.shell import (
     LIBRARY_VERILOG,
     CollarPort,
@@ -46,6 +62,7 @@ from faultflow.mbist.shell import (
     shell_verilog,
 )
 from faultflow.mbist.spec import DesignSources, MbistSpec, MemorySpec, load_mbist_spec
+from faultflow.mbist.synth import shell_leaves
 from faultflow.mbist.yosys import elaborate
 
 # Cells a design written back by Yosys can't carry faithfully, or that FaultFlow
@@ -61,7 +78,9 @@ class InsertedMemory:
     instance: str  # also the shell's instance path
     shell: str
     collar: str
-    top_ports: dict[str, str]  # collar port -> top port
+    # collar port -> its top port; with JTAG, the instrument of that name (the
+    # port itself is gone, its net keeps the name)
+    top_ports: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -71,6 +90,12 @@ class InsertResult:
     top: str
     memories: tuple[InsertedMemory, ...]
     copies: dict[str, str] = field(default_factory=dict)  # copy -> original
+    manifest: Path | None = None
+    sdc: Path | None = None
+    # With JTAG:
+    jtag: JtagInsertion | None = None
+    icl: Path | None = None
+    bsdl: Path | None = None
 
 
 @dataclass
@@ -165,15 +190,34 @@ def _groups(spec: MbistSpec) -> list[_Group]:
     return list(groups.values())
 
 
-def _collar_sources(manifest_path: Path) -> tuple[str, list[Path]]:
-    """The collar module autoMBIST generated, and its RTL (without the memory's
-    blackbox stub: the design's own stub stands in for it)."""
+@dataclass(frozen=True)
+class _Shell:
+    module: str
+    ports: tuple[CollarPort, ...]
+    # autoMBIST's category of each instance in the collar, and the memory's.
+    categories: dict[str, str]
+    memory_instance: str
+
+
+def _collar_sources(manifest_path: Path) -> tuple[str, list[Path], dict[str, str], str]:
+    """The collar module autoMBIST generated, its RTL (without the memory's
+    blackbox stub: the design's own stub stands in for it), the category of
+    each instance in it, and the memory's instance."""
     manifest = load_autombist_manifest(manifest_path)
     sources = [manifest.wrapper]
     for instance in manifest.instances:
         if instance.hierarchy_hint == "separate":
             sources.extend(p for p in instance.sources if p not in sources)
-    return manifest.top_module, sources
+    categories = {i.hierarchical_path: i.category for i in manifest.instances}
+    memories = [
+        i.hierarchical_path for i in manifest.instances if i.category == "memory"
+    ]
+    if len(memories) != 1:
+        raise InsertError(
+            f"autoMBIST's manifest {manifest_path} lists {len(memories)} memories, "
+            "not one"
+        )
+    return manifest.top_module, sources, categories, memories[0]
 
 
 def _elaborate_files(
@@ -260,19 +304,21 @@ def _build_shells(
     modules: Modules,
     macro_cells: dict[str, dict[str, Any]],
     work: Path,
-) -> tuple[Modules, dict[str, tuple[str, tuple[CollarPort, ...]]]]:
-    """The modules every shell needs, and each memory's shell and its ports."""
+) -> tuple[Modules, dict[str, _Shell]]:
+    """The modules every shell needs, and each memory's shell."""
     library = work / "faultflow_mbist_library.v"
     library.parent.mkdir(parents=True, exist_ok=True)
     library.write_text(LIBRARY_VERILOG, encoding="utf-8")
     added: Modules = {}
-    shells: dict[str, tuple[str, tuple[CollarPort, ...]]] = {}
+    shells: dict[str, _Shell] = {}
     for k, group in enumerate(groups):
         gen = work / f"gen{k}"
         manifest_path = invoke_autombist_generate(
             group.config.path, gen, cmd=spec.autombist_cmd, algo=group.algo
         )
-        collar_module, sources = _collar_sources(manifest_path)
+        collar_module, sources, categories, memory_instance = _collar_sources(
+            manifest_path
+        )
         alone = _elaborate_files(sources, spec.design, collar_module, gen / "collar")
         ports = collar_ports(alone[collar_module])
         variants: dict[tuple[Any, ...], list[MemorySpec]] = {}
@@ -305,7 +351,9 @@ def _build_shells(
                     raise InsertError(f"two different generated modules named {name}")
                 added.setdefault(name, module)
             for memory in members:
-                shells[memory.name] = (shell_name, ports)
+                shells[memory.name] = _Shell(
+                    shell_name, ports, categories, memory_instance
+                )
     return added, shells
 
 
@@ -344,19 +392,15 @@ def mbist_insert(
     taken: Iterable[str] = (),
 ) -> InsertResult:
     """Insert the collars of the insertion file's memories into the design
-    under `top`, writing `<out>/<top>_mbist.v` and `<out>/insertion.json`.
-    `taken` names cells (a liberty's, say) no module mbist-insert creates may
-    be named after."""
+    under `top`, writing into `out`: `<top>_mbist.v`, `<top>_mbist.sdc`,
+    `manifest.json`, `insertion.json` and, with JTAG, `<top>_mbist.icl` and
+    `<top>_mbist.bsd`. `taken` names cells (a liberty's, say) no module
+    mbist-insert creates may be named after."""
     spec = load_mbist_spec(spec_path)
     if not spec.memories:
         raise InsertError("the insertion file configures no memory")
     if spec.reset is None:
         raise InsertError("mbist-insert needs the chip reset: reset: {port, active}")
-    if spec.jtag:
-        raise InsertError(
-            "jtag: true isn't supported yet; with jtag: false the test ports "
-            "become chip pins"
-        )
     out.mkdir(parents=True, exist_ok=True)
     work = out / "work"
 
@@ -364,6 +408,11 @@ def mbist_insert(
     design = elaborate(spec.design, top, workdir=work / "design")
     _refuse_unsupported(design.netlist)
     modules: Modules = design.netlist["modules"]
+    taken_names = set(taken)
+    if spec.jtag is not None:
+        check_names(modules, top, taken_names)
+        # No module mbist-insert names may take a name the network needs.
+        taken_names |= set(WARPTAP_MODULES)
 
     # Every memory found and its pins verified before anything is generated.
     macro_cells: dict[str, dict[str, Any]] = {}
@@ -376,7 +425,6 @@ def mbist_insert(
             macro_cells[memory.name] = modules[parent]["cells"][cell]
 
     added, shells = _build_shells(spec, groups, modules, macro_cells, work)
-    taken_names = set(taken)
     added = _plain_names(added, set(modules) | taken_names)
     for name, module in added.items():
         if name in modules:
@@ -387,37 +435,75 @@ def mbist_insert(
                 "needs for the inserted logic"
             )
         if name in taken_names:
-            raise InsertError(f"{name} is a liberty cell name; mbist-insert needs it")
+            raise InsertError(
+                f"{name} is a liberty cell's or the JTAG network's name; mbist-insert "
+                "needs it"
+            )
         modules[name] = module
 
     inserted: list[InsertedMemory] = []
     copies: dict[str, str] = {}
+    records: list[ShellRecord] = []
+    sdc_shells: list[tuple[tuple[str, ...], tuple[CollarPort, ...]]] = []
+    test_ports: list[TestPort] = []
     for group in groups:
         for memory in group.memories:
             chain, made = uniquify_path(
                 modules, top, locate(modules, top, memory.instance), taken_names
             )
             copies.update(made)
-            shell_name, ports = shells[memory.name]
+            shell = shells[memory.name]
             threaded = swap_and_thread(
                 modules,
                 chain,
                 memory,
                 group.config,
-                shell_name,
-                ports,
+                shell.module,
+                shell.ports,
                 reset_port=spec.reset.port,
                 reset_active_low=spec.reset.active_low,
             )
+            collar = modules[shell.module]["cells"]["u_collar"]["type"]
             inserted.append(
                 InsertedMemory(
                     memory=memory.name,
                     instance=threaded.shell_path,
-                    shell=shell_name,
-                    collar=modules[shell_name]["cells"]["u_collar"]["type"],
+                    shell=shell.module,
+                    collar=collar,
                     top_ports=threaded.top_ports,
                 )
             )
+            records.append(
+                ShellRecord(
+                    path=threaded.shell_path,
+                    leaves=shell_leaves(modules, shell.module, collar),
+                    collar_categories=shell.categories,
+                    memory_instance=shell.memory_instance,
+                    macro=group.config.memory_name,
+                    macro_sources=macro_sources(
+                        group.config.memory_name,
+                        [*spec.design.libs, *spec.design.sources],
+                    ),
+                )
+            )
+            sdc_shells.append((tuple(cell for _, cell in chain), shell.ports))
+            for port in shell.ports:
+                if port.kind in ("control", "status", "done"):
+                    role = "control" if port.kind == "control" else "status"
+                    test_ports.append(
+                        TestPort(
+                            threaded.top_ports[port.name],
+                            role,
+                            port.width,
+                            capture_sync=role == "status",
+                        )
+                    )
+
+    jtag: JtagInsertion | None = None
+    if spec.jtag is not None:
+        jtag = insert_network(
+            design.netlist, top, test_ports, reset=spec.reset, jtag=spec.jtag
+        )
 
     merged = work / f"{top}_mbist.json"
     merged.write_text(json.dumps(design.netlist), encoding="utf-8")
@@ -430,32 +516,96 @@ def mbist_insert(
     )
     _recheck(spec.design, rtl, top, design.problems, copies, work / "recheck")
 
+    icl = bsdl = None
+    if jtag is not None and spec.jtag is not None:
+        icl, bsdl = write_descriptions(jtag, spec.jtag, top, out)
+    sdc = out / f"{top}_mbist.sdc"
+    sdc.write_text(rtl_sdc(rtl.name, crossings(sdc_shells, jtag)), encoding="utf-8")
+    manifest = out / "manifest.json"
+    data = chip_manifest(
+        top,
+        rtl,
+        records,
+        root=out,
+        jtag=jtag,
+        top_cells=modules[top].get("cells", {}),
+        reset=spec.reset,
+        icl=icl,
+        bsdl=bsdl,
+    )
+    manifest.write_text(
+        json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    _read_back(manifest, jtag)
+
     report = out / "insertion.json"
-    report.write_text(
-        json.dumps(
+    summary: dict[str, Any] = {
+        "top": top,
+        "rtl": str(rtl),
+        "sdc": str(sdc),
+        "manifest": str(manifest),
+        "memories": [
             {
-                "top": top,
-                "rtl": str(rtl),
-                "memories": [
-                    {
-                        "name": m.memory,
-                        "instance": m.instance,
-                        "shell": m.shell,
-                        "collar": m.collar,
-                        "top_ports": m.top_ports,
-                    }
-                    for m in inserted
-                ],
-                "module_copies": copies,
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+                "name": m.memory,
+                "instance": m.instance,
+                "shell": m.shell,
+                "collar": m.collar,
+                "top_ports": m.top_ports,
+            }
+            for m in inserted
+        ],
+        "module_copies": copies,
+    }
+    if jtag is not None:
+        summary["jtag"] = {
+            "icl": str(icl),
+            "bsdl": str(bsdl),
+            "network_instruction": "IJTAG_ACCESS",
+            "network_opcode": jtag.opcode,
+            "idcode": jtag.idcode,
+            "instruments": [p.name for p in jtag.ports],
+        }
+    report.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     return InsertResult(
-        rtl=rtl, report=report, top=top, memories=tuple(inserted), copies=copies
+        rtl=rtl,
+        report=report,
+        top=top,
+        memories=tuple(inserted),
+        copies=copies,
+        manifest=manifest,
+        sdc=sdc,
+        jtag=jtag,
+        icl=icl,
+        bsdl=bsdl,
     )
+
+
+def _read_back(manifest: Path, jtag: JtagInsertion | None) -> None:
+    """Read the manifest written as FaultFlow will; with JTAG, rebuild its
+    network, which must be the one inserted."""
+    try:
+        loaded = load_autombist_manifest(manifest)
+    except AutombistManifestError as exc:
+        raise InsertError(f"the manifest written can't be read back: {exc}") from exc
+    if jtag is None:
+        return
+    from faultflow.integrations.autombist_jtag import (
+        AutombistJtagError,
+        rebuild_network,
+    )
+
+    if loaded.test_access is None:
+        raise InsertError("the manifest written has no test_access block")
+    try:
+        graph, _root = rebuild_network(loaded.test_access)
+    except AutombistJtagError as exc:
+        raise InsertError(
+            f"the manifest's network isn't the one inserted: {exc}"
+        ) from exc
+    if graph != jtag.graph:
+        raise InsertError(
+            "the network rebuilt from the manifest isn't the one inserted"
+        )
 
 
 def ofs_liberty(ofs: Path) -> Path | None:
@@ -483,12 +633,21 @@ def insert_command(
     result = mbist_insert(spec, top, out=out or Path(f"mbist_{top}"), taken=taken)
     lines = [
         f"inserted {len(result.memories)} memories into {top}: {result.rtl}",
+        f"manifest: {result.manifest}",
+        f"SDC of the crossings inserted: {result.sdc}",
         f"report: {result.report}",
     ]
+    kind = "test ports" if result.jtag is None else "instruments"
     for memory in result.memories:
         lines.append(
-            f"  {memory.memory}: {memory.instance} ({memory.shell}); test ports "
+            f"  {memory.memory}: {memory.instance} ({memory.shell}); {kind} "
             + ", ".join(memory.top_ports.values())
+        )
+    if result.jtag is not None:
+        lines.append(
+            f"JTAG: a TAP on {', '.join(TAP_PORTS)}; IJTAG_ACCESS "
+            f"({result.jtag.opcode:04b}) selects the network; ICL {result.icl}, "
+            f"BSDL {result.bsdl}"
         )
     if result.copies:
         lines.append(

@@ -90,12 +90,6 @@ CASES = [
         "no instance at 'u_core9.u_mem'",
     ),
     (
-        "JTAG access, not supported yet",
-        lambda t: t.replace("jtag: false", "jtag: true"),
-        None,
-        "jtag: true isn't supported yet",
-    ),
-    (
         "no chip reset",
         lambda t: t.replace("reset: {port: rst_n, active: low}\n", ""),
         None,

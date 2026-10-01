@@ -7,7 +7,7 @@ design:
   include_dirs: [rtl/include]
   defines: [SYNTHESIS]
 reset: {port: rst_n, active: low}
-jtag: true
+jtag: {tck_max_mhz: 20}                    # or false: the test ports become pins
 autombist_cmd: autombist
 memory_patterns: ["*sram*"]                # memory macro types list-memories lists
 schedule: [[core0_ram], [top_ram]]         # steps run in order; default one per step
@@ -23,6 +23,11 @@ memories:
 
 Paths are relative to the insertion file. A JSON file needs nothing extra; a YAML
 file needs PyYAML.
+
+`jtag` puts the test ports behind a JTAG TAP. Its BSDL states the fastest TCK the
+chip takes, which only its timing says, so `tck_max_mhz` is required; `idcode`
+(the TAP's IDCODE, default warptap's placeholder) and `bsdl_entity` (the BSDL's
+entity name, default the top module's) are optional.
 """
 
 from __future__ import annotations
@@ -80,6 +85,17 @@ class ResetSpec:
 
 
 @dataclass(frozen=True)
+class JtagSpec:
+    """The TAP mbist-insert adds: the fastest TCK (the BSDL's TAP_SCAN_CLOCK),
+    the IDCODE (None: warptap's placeholder) and the BSDL entity name (None:
+    the top module's)."""
+
+    tck_max_mhz: float
+    idcode: int | None = None
+    bsdl_entity: str | None = None
+
+
+@dataclass(frozen=True)
 class MemorySpec:
     name: str
     instance: str
@@ -96,7 +112,7 @@ class MbistSpec:
     path: Path
     design: DesignSources
     reset: ResetSpec | None = None
-    jtag: bool = False
+    jtag: JtagSpec | None = None
     autombist_cmd: tuple[str, ...] = ("autombist",)
     memory_patterns: tuple[str, ...] = ("*",)
     memories: tuple[MemorySpec, ...] = ()
@@ -190,6 +206,33 @@ def _reset(raw: Any) -> ResetSpec | None:
     if active not in ("low", "high"):
         raise MbistSpecError(f"reset.active must be 'low' or 'high', got {active!r}")
     return ResetSpec(port=port, active_low=active == "low")
+
+
+def _jtag(raw: Any) -> JtagSpec | None:
+    if raw is None or raw is False:
+        return None
+    if raw is True:
+        raise MbistSpecError(
+            "jtag: true doesn't say how fast TCK may run, which the BSDL must state "
+            "and only the chip's timing knows: write jtag: {tck_max_mhz: N}"
+        )
+    jtag = _mapping(raw, "jtag", ("tck_max_mhz", "idcode", "bsdl_entity"))
+    mhz = jtag.get("tck_max_mhz")
+    if isinstance(mhz, bool) or not isinstance(mhz, (int, float)) or not mhz > 0:
+        raise MbistSpecError(
+            f"jtag.tck_max_mhz must be a number above 0 (MHz), got {mhz!r}"
+        )
+    idcode = jtag.get("idcode")
+    if idcode is not None:
+        idcode = _tie_value(idcode, "jtag.idcode")
+        if idcode >= 1 << 32 or not idcode & 1:
+            raise MbistSpecError(
+                f"jtag.idcode {idcode:#x} must be 32 bits with bit 0 set (IEEE 1149.1)"
+            )
+    entity = jtag.get("bsdl_entity")
+    if entity is not None and (not isinstance(entity, str) or not _NAME.match(entity)):
+        raise MbistSpecError(f"jtag.bsdl_entity must be an identifier, got {entity!r}")
+    return JtagSpec(tck_max_mhz=float(mhz), idcode=idcode, bsdl_entity=entity)
 
 
 def _tie_value(value: Any, where: str) -> int:
@@ -295,9 +338,7 @@ def load_mbist_spec(path: str | Path) -> MbistSpec:
     root = spec_path.parent
     if "design" not in data:
         raise MbistSpecError(f"{spec_path}: design is required")
-    jtag = data.get("jtag", False)
-    if not isinstance(jtag, bool):
-        raise MbistSpecError(f"jtag must be true or false, got {jtag!r}")
+    jtag = _jtag(data.get("jtag"))
     cmd = data.get("autombist_cmd", "autombist")
     if not isinstance(cmd, str) or not shlex.split(cmd):
         raise MbistSpecError("autombist_cmd must be a command, e.g. 'autombist'")
