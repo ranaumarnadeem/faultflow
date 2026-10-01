@@ -79,6 +79,50 @@ def test_autombist_generate_cli_writes_a_usable_ofs(
     assert cfg.netlist.exists()
 
 
+@pytest.mark.parametrize("algo", [None, "march-raw"])
+def test_autombist_generate_passes_algo_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, algo: str | None
+) -> None:
+    from types import SimpleNamespace
+
+    import faultflow.integrations.autombist as autombist
+
+    seen: dict[str, object] = {}
+
+    def run(config, out, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(
+            ofs_path=out / "d.ofs",
+            top_module="d",
+            block_count=1,
+            instance_counts={},
+            scan_chains=None,
+            clock_ports=(),
+            nonscan_cells=(),
+            scan_holds=(),
+        )
+
+    monkeypatch.setattr(autombist, "run_autombist_generate", run)
+    config_path = tmp_path / "cfg.yml"
+    config_path.write_text("memory_name: unused\n", encoding="utf-8")
+    argv = [
+        "autombist-generate",
+        "--config",
+        str(config_path),
+        "--out",
+        str(tmp_path / "out"),
+        "--liberty",
+        str(SKY130_LIBERTY),
+        "--cell-lib",
+        str(SKY130_CELL_MAP),
+    ]
+    if algo is not None:
+        argv += ["--algo", algo]
+
+    assert main(argv) == 0
+    assert seen["algo"] == algo
+
+
 def test_autombist_generate_rejects_missing_config(tmp_path: Path) -> None:
     missing = tmp_path / "nope.yml"
     with pytest.raises(SystemExit) as exc:

@@ -215,6 +215,13 @@ def _parser() -> argparse.ArgumentParser:
         help="Command prefix to invoke autoMBIST, e.g. 'python3 -m autombist.cli'",
     )
     autombist_p.add_argument(
+        "--algo",
+        default=None,
+        help="MBIST algorithm, passed to autombist generate --algo (march-c, "
+        "march-raw, march-1r1w, march-2rw, march-x, mats-plus, checkerboard); "
+        "autoMBIST's default without it",
+    )
+    autombist_p.add_argument(
         "--liberty",
         type=Path,
         required=True,
@@ -635,6 +642,7 @@ def _handle_autombist_generate(args: object) -> int:
         cell_lib=Path(getattr(args, "cell_lib")),
         test_access=test_access,
         tap_nonscan=tap_nonscan,
+        algo=getattr(args, "algo", None),
     )
     counts = ", ".join(f"{k}={v}" for k, v in sorted(result.instance_counts.items()))
     print(

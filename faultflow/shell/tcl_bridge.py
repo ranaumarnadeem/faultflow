@@ -657,6 +657,7 @@ proc {name} {{args}} {{
             "-config": "config",
             "-out": "out",
             "-autombist_cmd": "autombist_cmd",
+            "-algo": "algo",
             "-liberty": "liberty",
             "-cell_lib": "cell_lib",
         }
@@ -711,6 +712,7 @@ proc {name} {{args}} {{
             cell_lib=Path(kwargs["cell_lib"]),
             test_access=test_access,
             tap_nonscan=tap_nonscan,
+            algo=kwargs.get("algo"),
         )
         self.session.load_json(result.composed_json_path, result.top_module)
         for inst in result.blackbox_instances:

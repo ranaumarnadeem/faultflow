@@ -90,6 +90,39 @@ def test_tcl_autombist_generate_missing_required_flag_errors(tmp_path: Path) -> 
     assert "MISSING_ARG" in str(exc.value) or "required" in str(exc.value)
 
 
+def test_tcl_autombist_generate_passes_algo_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import faultflow.integrations.autombist as autombist
+
+    seen: dict[str, object] = {}
+
+    class Stop(Exception):
+        pass
+
+    def run(config, out, **kwargs):
+        seen.update(kwargs)
+        raise Stop
+
+    monkeypatch.setattr(autombist, "run_autombist_generate", run)
+    bridge = TclBridge(ProjectSession(output_root=tmp_path / "output"))
+    with pytest.raises(Stop):
+        bridge.call(
+            "autombist_generate",
+            "-config",
+            "cfg.yml",
+            "-out",
+            str(tmp_path / "out"),
+            "-algo",
+            "march-x",
+            "-liberty",
+            "lib.lib",
+            "-cell_lib",
+            "cells.json",
+        )
+    assert seen["algo"] == "march-x"
+
+
 def test_tcl_autombist_generate_unknown_option_errors(tmp_path: Path) -> None:
     session = ProjectSession(output_root=tmp_path / "output")
     bridge = TclBridge(session)

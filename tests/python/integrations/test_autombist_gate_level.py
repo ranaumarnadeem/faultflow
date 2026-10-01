@@ -34,9 +34,12 @@ from faultflow.integrations.autombist import (
     AutombistTestAccess,
     _check_composed_netlist_drivers,
     load_autombist_manifest,
+    parse_check_problems,
     synthesize_from_manifest,
 )
-from faultflow.integrations.autombist_jtag import rebuild_network, warptap_available
+from faultflow.integrations.autombist_jtag import rebuild_network
+from faultflow.project.assemble import AssembleError
+from warptap_helpers import skip_unless_warptap
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURE = ROOT / "tests/fixtures/autombist/input_demo_8x16_scn4m"
@@ -234,6 +237,47 @@ def test_a_wrong_but_driven_connection_fails_the_bist(
     assert (done, fail) == ("1", "1")
 
 
+@pytest.mark.integration
+def test_the_driver_check_fails_on_an_undriven_net_unless_the_baseline_has_it(
+    composed: tuple[AutombistManifest, Path], tmp_path: Path
+) -> None:
+    """A problem the design had before composition is in the baseline and
+    passes; the same problem without the baseline fails, named."""
+    manifest, composed_json = composed
+    data = json.loads(composed_json.read_text(encoding="utf-8"))
+    module = data["modules"][manifest.top_module]
+    used = [
+        b
+        for net in module["netnames"].values()
+        for b in net["bits"]
+        if isinstance(b, int)
+    ]
+    dangling = max(used) + 1
+    module["cells"]["u_sram"]["connections"]["addr0"][0] = dangling
+    module["netnames"]["dangling_addr"] = {
+        "hide_name": 0,
+        "bits": [dangling],
+        "attributes": {},
+    }
+    mutated = tmp_path / "mutated.json"
+    mutated.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(AssembleError, match=r"\(1 new problems\).*dangling_addr"):
+        _check_composed_netlist_drivers(
+            manifest, mutated, liberty=SKY130_LIBERTY, workdir=tmp_path
+        )
+    log = (tmp_path / "composed_check.log").read_text(encoding="utf-8")
+    (problem,) = parse_check_problems(log)
+    assert "dangling_addr" in problem.message
+    _check_composed_netlist_drivers(
+        manifest,
+        mutated,
+        liberty=SKY130_LIBERTY,
+        workdir=tmp_path,
+        baseline=frozenset({problem.message}),
+    )
+
+
 # The wrapped design on two clocks: clk for the MBIST logic, tck for the TAP
 # and its IJTAG network. The control pins stay 0, so the BIST can start only
 # over JTAG -- unless PINS_ONLY drives them to 1 and plays no JTAG at all.
@@ -327,8 +371,7 @@ def _jtag_program(
     """TMS/TDI per TCK cycle: load `opcode` (None: keep IDCODE, loaded by the
     TAP reset), then write test_mode=1 and bist_start=1 through the IJTAG
     network the manifest describes."""
-    if not warptap_available():
-        pytest.skip("needs warptap importable (e.g. PYTHONPATH=~/warptap/src)")
+    skip_unless_warptap()
     # warptap is optional: without it, mypy finds no module to check against.
     from warptap.pdl_interpreter import (  # type: ignore[import-not-found]
         PDLInterpreter,

@@ -189,10 +189,11 @@ COMMAND_HELP = {
     "autombist_generate": CommandHelp(
         "Project",
         "autombist_generate -config PATH -out PATH [-autombist_cmd CMD] "
-        "-liberty PATH -cell_lib PATH [-test_access [-tap_nonscan]]",
+        "[-algo NAME] -liberty PATH -cell_lib PATH [-test_access [-tap_nonscan]]",
         "Generate a FaultFlow synthesis from an autoMBIST manifest",
         "Runs `autombist generate --emit-manifest` (or the command given by "
-        "-autombist_cmd, e.g. 'python3 -m autombist.cli'), synthesizes each "
+        "-autombist_cmd, e.g. 'python3 -m autombist.cli'; -algo passes its "
+        "--algo, e.g. march-raw, autoMBIST's default otherwise), synthesizes each "
         "distinct test-instrument instance standalone plus the wrapper glue "
         "(memories and instruments as blackboxes), splices the real block "
         "netlists back in, and loads the composed design into this session "

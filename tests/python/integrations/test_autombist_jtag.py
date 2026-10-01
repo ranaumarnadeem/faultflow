@@ -22,7 +22,7 @@ from faultflow.integrations.autombist import (
     load_autombist_manifest,
     synthesize_from_manifest,
 )
-from faultflow.integrations.autombist_jtag import warptap_available
+from warptap_helpers import skip_unless_warptap
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = ROOT / "tests/fixtures/autombist"
@@ -226,13 +226,12 @@ def test_verify_replays_the_program_on_the_techmapped_netlist(
     assert "verified=true" in capsys.readouterr().out
 
 
-@pytest.mark.skipif(not warptap_available(), reason="needs warptap importable")
 def test_without_a_program_one_is_built_from_the_manifest(
     scanned: tuple[Path, str, Path],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    pytest.importorskip("warptap.tap_integrity")
+    skip_unless_warptap("warptap.tap_integrity")
     exported = tmp_path / "program.json"
     assert _run(scanned, monkeypatch, "--force", "--export", str(exported)) == 0
     program = json.loads(exported.read_text(encoding="utf-8"))

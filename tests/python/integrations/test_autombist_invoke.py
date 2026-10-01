@@ -77,6 +77,48 @@ def test_invokes_expected_argv_with_custom_cmd_prefix(
     assert calls[0][:3] == ["python3", "-m", "autombist.cli"]
 
 
+def test_algo_is_passed_as_generate_algo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stem = tmp_path / "out" / "mydesign"
+    stem.mkdir(parents=True)
+    (stem / "manifest.json").write_text("{}", encoding="utf-8")
+    run, calls = _fake_run()
+    monkeypatch.setattr(subprocess, "run", run)
+
+    invoke_autombist_generate(tmp_path / "cfg.yml", tmp_path / "out", algo="march-raw")
+
+    assert calls[0][-3:] == ["--emit-manifest", "--algo", "march-raw"]
+
+
+def test_run_autombist_generate_passes_its_algo_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import faultflow.integrations.autombist as autombist
+
+    seen: dict[str, object] = {}
+
+    def generate(config, out, cmd=("autombist",), *, algo=None):
+        seen["algo"] = algo
+        return out / "d" / "manifest.json"
+
+    monkeypatch.setattr(autombist, "invoke_autombist_generate", generate)
+    monkeypatch.setattr(autombist, "load_autombist_manifest", lambda path: "manifest")
+    monkeypatch.setattr(
+        autombist, "synthesize_from_manifest", lambda manifest, **kwargs: "result"
+    )
+
+    result = run_autombist_generate(
+        tmp_path / "cfg.yml",
+        tmp_path / "out",
+        liberty=tmp_path / "lib.lib",
+        cell_lib=tmp_path / "cells.json",
+        algo="mats-plus",
+    )
+
+    assert (result, seen) == ("result", {"algo": "mats-plus"})
+
+
 def test_nonzero_exit_raises_with_stderr(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

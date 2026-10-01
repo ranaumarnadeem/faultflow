@@ -451,10 +451,16 @@ def plan_blocks(manifest: AutombistManifest) -> tuple[Block, ...]:
 
 
 def invoke_autombist_generate(
-    config: Path, out: Path, cmd: Sequence[str] = ("autombist",)
+    config: Path,
+    out: Path,
+    cmd: Sequence[str] = ("autombist",),
+    *,
+    algo: str | None = None,
 ) -> Path:
     """Run `<cmd> generate --config <config> --out <out> --emit-manifest` and
-    return the path to the single manifest.json it writes.
+    return the path to the single manifest.json it writes. `algo` adds
+    `--algo <algo>` (march-c, march-raw, ...); without it autoMBIST uses its
+    default.
 
     `cmd` is a command PREFIX (e.g. `("autombist",)` or `("python3", "-m",
     "autombist.cli")`), not a single binary-name string -- the two forms are
@@ -472,6 +478,7 @@ def invoke_autombist_generate(
             "--out",
             str(out),
             "--emit-manifest",
+            *(["--algo", algo] if algo is not None else []),
         ],
         capture_output=True,
         text=True,
@@ -560,16 +567,67 @@ def _run_yosys(
         raise AssembleError(f"{error_message}; see {log_path}")
 
 
+@dataclass(frozen=True)
+class CheckProblem:
+    """One problem Yosys's `check` pass reported: its warning line, without
+    "Warning: ", and the indented lines under it (a net's drivers, a loop's
+    cells). The message names the net by module and wire, so it is the same
+    from one synthesis run to the next; the details name cells, which aren't."""
+
+    message: str
+    details: tuple[str, ...] = ()
+
+
+_CHECK_PASS = re.compile(r"^\d+(?:\.\d+)*\. Executing CHECK pass\b")
+_CHECK_DONE = re.compile(r"^Found and reported (\d+) problems?\.")
+
+
+def parse_check_problems(log: str) -> tuple[CheckProblem, ...]:
+    """The problems the CHECK pass in a Yosys log reported, in order. Raises
+    AssembleError if the log has no finished CHECK pass, or if the count Yosys
+    printed isn't the number of warnings parsed -- a format this parser doesn't
+    know, which must not pass as fewer problems."""
+    lines = log.splitlines()
+    start = next((i for i, line in enumerate(lines) if _CHECK_PASS.match(line)), None)
+    if start is None:
+        raise AssembleError("the Yosys log has no CHECK pass")
+    problems: list[CheckProblem] = []
+    message: str | None = None
+    details: list[str] = []
+    for line in lines[start + 1 :]:
+        if message is not None and line.startswith((" ", "\t")):
+            details.append(line.strip())
+            continue
+        if message is not None:
+            problems.append(CheckProblem(message, tuple(details)))
+            message, details = None, []
+        done = _CHECK_DONE.match(line)
+        if done:
+            if int(done.group(1)) != len(problems):
+                raise AssembleError(
+                    f"Yosys reported {done.group(1)} check problems, but "
+                    f"{len(problems)} were parsed from its log"
+                )
+            return tuple(problems)
+        if line.startswith("Warning: "):
+            message = line[len("Warning: ") :].strip()
+    raise AssembleError("the Yosys CHECK pass in the log did not finish")
+
+
 def _check_composed_netlist_drivers(
     manifest: AutombistManifest,
     composed_json_path: Path,
     *,
     liberty: Path,
     workdir: Path,
+    baseline: frozenset[str] = frozenset(),
 ) -> None:
     """Guard against a repeat of compose_soc's silent-connection-loss class of
-    bug: run Yosys `check -assert` on the FINAL composed netlist and raise if
-    it reports ANY "used but has no driver" or multiple-driver problem.
+    bug: run Yosys `check` on the FINAL composed netlist and raise if it
+    reports ANY problem -- a "used but has no driver" or multiple-driver net,
+    say -- other than those in `baseline`: the CheckProblem messages of
+    problems the design already had before composition, which composition
+    isn't to blame for.
 
     Each blackbox (memory) instance's own real source is loaded via
     `read_verilog -lib` so `check` knows its port directions -- "separate"
@@ -602,19 +660,26 @@ def _check_composed_netlist_drivers(
         [
             f"read_json {_quote(composed_json_path)}",
             f"hierarchy -top {top}",
-            "check -assert",
+            "check",
         ]
     )
+    log_path = workdir / "composed_check.log"
     _run_yosys(
         script_lines,
-        log_path=workdir / "composed_check.log",
+        log_path=log_path,
         script_path=workdir / "composed_check.tcl",
-        error_message=(
-            "composed netlist has undriven or multiply-driven nets: either the "
-            "wrapper leaves a block input unconnected (it floats), or "
-            "compose_soc dropped a connection"
-        ),
+        error_message="the driver check of the composed netlist failed to run",
     )
+    problems = parse_check_problems(log_path.read_text(encoding="utf-8"))
+    new = [p for p in problems if p.message not in baseline]
+    if new:
+        shown = "; ".join(p.message for p in new[:10])
+        more = f" (and {len(new) - 10} more)" if len(new) > 10 else ""
+        raise AssembleError(
+            f"composed netlist fails Yosys check ({len(new)} new problems): "
+            "either the wrapper leaves a block input unconnected (it floats), or "
+            f"compose_soc dropped a connection: {shown}{more}; see {log_path}"
+        )
 
 
 def synthesize_block(block: Block, *, liberty: Path, workdir: Path) -> Path:
@@ -898,13 +963,21 @@ def _clock_domains(
     return names, max(1, len(domains))
 
 
+def literal_glob(text: str) -> str:
+    """`text` as an fnmatch pattern that matches only itself. An instance path
+    from a generate block, `u_core.g[0].u_mem`, would otherwise read `[0]` as a
+    character set: it would match `u_core.g0.u_mem` and miss itself."""
+    return re.sub(r"([*?\[])", r"[\1]", text)
+
+
 def tap_nonscan_settings(
     manifest: AutombistManifest,
 ) -> tuple[tuple[str, ...], tuple[tuple[str, int], ...]]:
     """[scan] nonscan_cells and [scan] hold that run a JTAG-wrapped design's TAP
     and IJTAG network non-scan: a glob per JTAG-category instance, whose cells the
-    composed netlist names `<instance path>__<cell>`, and the TAP held in reset
-    with its clock off -- trst_n clears every one of their flops."""
+    composed netlist names `<instance path>__<cell>` (the path matched
+    literally), and the TAP held in reset with its clock off -- trst_n clears
+    every one of their flops."""
     from faultflow.integrations.autombist_coverage import (
         JTAG_CATEGORIES,
         instance_categories,
@@ -917,7 +990,7 @@ def tap_nonscan_settings(
         )
     globs = tuple(
         sorted(
-            f"{path}__*"
+            f"{literal_glob(path)}__*"
             for path, category in instance_categories(manifest).items()
             if category in JTAG_CATEGORIES
         )
@@ -1128,15 +1201,17 @@ def run_autombist_generate(
     cell_lib: Path,
     test_access: bool = False,
     tap_nonscan: bool = False,
+    algo: str | None = None,
 ) -> AutombistSynthesisResult:
     """Steps 1-6 in full: invoke autoMBIST -> load its manifest ->
     synthesize_from_manifest. This is what the CLI and Tcl handlers call.
     With `test_access`, autoMBIST first wraps the generated design for JTAG
     access, and the wrapped design is what gets synthesized; `tap_nonscan`
-    then runs its TAP and IJTAG network non-scan."""
+    then runs its TAP and IJTAG network non-scan. `algo` picks autoMBIST's
+    MBIST algorithm (its default without it)."""
     if tap_nonscan and not test_access:
         raise ConfigError("the TAP runs non-scan only with test access")
-    manifest_path = invoke_autombist_generate(config, out, cmd=autombist_cmd)
+    manifest_path = invoke_autombist_generate(config, out, cmd=autombist_cmd, algo=algo)
     if test_access:
         invoke_autombist_wrap_test_access(manifest_path.parent, cmd=autombist_cmd)
     manifest = load_autombist_manifest(manifest_path)

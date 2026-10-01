@@ -88,7 +88,8 @@ python3 ff.py autombist-generate --config mbist.yml --out build \
 ```
 
 This runs `autombist generate --emit-manifest` (`--autombist-cmd` names another command,
-e.g. `'python3 -m autombist'`), then builds the design from the manifest: every distinct
+e.g. `'python3 -m autombist'`; `--algo` picks the MBIST algorithm, e.g. `march-raw`,
+autoMBIST's default otherwise), then builds the design from the manifest: every distinct
 instrument synthesized once on its own, the wrapper synthesized with the instruments and
 the memory as blackboxes, and the instruments' netlists spliced back in. It writes the
 composed netlist and a `.ofs` for it: `[blackbox] instances` names the memories, and
