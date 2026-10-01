@@ -54,6 +54,14 @@ from faultflow.mbist.netlist import (
     uniquify_path,
     verify_pins,
 )
+from faultflow.mbist.program import (
+    ProgramMemory,
+    clock_port,
+    render_pdl,
+    render_vectors,
+    retarget,
+    run_steps,
+)
 from faultflow.mbist.sdc import crossings, rtl_sdc
 from faultflow.mbist.shell import (
     LIBRARY_VERILOG,
@@ -96,6 +104,10 @@ class InsertResult:
     jtag: JtagInsertion | None = None
     icl: Path | None = None
     bsdl: Path | None = None
+    pdl: Path | None = None  # the BIST program
+    vectors: Path | None = None  # ... as TCK and clock vectors
+    program_memories: tuple[ProgramMemory, ...] = ()
+    schedule: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass
@@ -153,6 +165,22 @@ def _without_attributes(value: Any) -> Any:
     return value
 
 
+_SRC = re.compile(r"^(.*):(\d+)\.\d+-(\d+)\.\d+$")
+
+
+def _source_text(module: dict[str, Any]) -> str | None:
+    """The source text a module was elaborated from (its src attribute: a file
+    and a line range), or None when that can't be read."""
+    found = _SRC.match(str(module.get("attributes", {}).get("src", "")))
+    if found is None:
+        return None
+    try:
+        lines = Path(found.group(1)).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return "\n".join(lines[int(found.group(2)) - 1 : int(found.group(3))])
+
+
 def _same_module(a: dict[str, Any], b: dict[str, Any]) -> bool:
     if _is_blackbox(a) and _is_blackbox(b):
         ports = lambda m: {  # noqa: E731
@@ -160,7 +188,17 @@ def _same_module(a: dict[str, Any], b: dict[str, Any]) -> bool:
             for k, p in m.get("ports", {}).items()
         }
         return ports(a) == ports(b)
-    return _without_attributes(a) == _without_attributes(b)
+    if _without_attributes(a) == _without_attributes(b):
+        return True
+    # Elaborated in two runs -- FaultFlow's library for two collars, or a module
+    # two autoMBIST runs both generate -- one module differs only in the names
+    # Yosys makes up. The same source text with the same parameters is the same.
+    text = _source_text(a)
+    return (
+        text is not None
+        and text == _source_text(b)
+        and a.get("parameter_default_values") == b.get("parameter_default_values")
+    )
 
 
 def _groups(spec: MbistSpec) -> list[_Group]:
@@ -197,6 +235,21 @@ class _Shell:
     # autoMBIST's category of each instance in the collar, and the memory's.
     categories: dict[str, str]
     memory_instance: str
+    # autoMBIST's bound on the BIST's length in clk cycles, if it states one.
+    bist_bound: int | None = None
+
+
+_MAX_CYCLES = re.compile(r"`define\s+MBIST_MAX_CYCLES\s+(\d+)")
+
+
+def _bist_bound(generated: Path, collar_module: str) -> int | None:
+    """autoMBIST's bound on the collar's BIST length, in clk cycles: what its
+    generated testbench (tb/tb_<collar>.sv) times out at, MBIST_MAX_CYCLES."""
+    testbench = generated / "tb" / f"tb_{collar_module}.sv"
+    if not testbench.is_file():
+        return None
+    found = _MAX_CYCLES.search(testbench.read_text(encoding="utf-8", errors="replace"))
+    return int(found.group(1)) if found else None
 
 
 def _collar_sources(manifest_path: Path) -> tuple[str, list[Path], dict[str, str], str]:
@@ -319,6 +372,7 @@ def _build_shells(
         collar_module, sources, categories, memory_instance = _collar_sources(
             manifest_path
         )
+        bound = _bist_bound(manifest_path.parent, collar_module)
         alone = _elaborate_files(sources, spec.design, collar_module, gen / "collar")
         ports = collar_ports(alone[collar_module])
         variants: dict[tuple[Any, ...], list[MemorySpec]] = {}
@@ -352,7 +406,7 @@ def _build_shells(
                 added.setdefault(name, module)
             for memory in members:
                 shells[memory.name] = _Shell(
-                    shell_name, ports, categories, memory_instance
+                    shell_name, ports, categories, memory_instance, bound
                 )
     return added, shells
 
@@ -446,6 +500,7 @@ def mbist_insert(
     records: list[ShellRecord] = []
     sdc_shells: list[tuple[tuple[str, ...], tuple[CollarPort, ...]]] = []
     test_ports: list[TestPort] = []
+    program_memories: list[ProgramMemory] = []
     for group in groups:
         for memory in group.memories:
             chain, made = uniquify_path(
@@ -498,6 +553,17 @@ def mbist_insert(
                             capture_sync=role == "status",
                         )
                     )
+            if spec.jtag is not None:
+                parent, cell_name = chain[-1]
+                clk = modules[parent]["cells"][cell_name]["connections"]["clk"]
+                program_memories.append(
+                    _program_memory(
+                        memory.name,
+                        threaded.top_ports,
+                        clock_port(modules, chain, clk),
+                        shell.bist_bound,
+                    )
+                )
 
     jtag: JtagInsertion | None = None
     if spec.jtag is not None:
@@ -516,9 +582,12 @@ def mbist_insert(
     )
     _recheck(spec.design, rtl, top, design.problems, copies, work / "recheck")
 
-    icl = bsdl = None
+    icl = bsdl = pdl = vectors = None
     if jtag is not None and spec.jtag is not None:
         icl, bsdl = write_descriptions(jtag, spec.jtag, top, out)
+        pdl, vectors = write_program(
+            jtag, program_memories, spec.schedule, top, out, icl=icl, bsdl=bsdl
+        )
     sdc = out / f"{top}_mbist.sdc"
     sdc.write_text(rtl_sdc(rtl.name, crossings(sdc_shells, jtag)), encoding="utf-8")
     manifest = out / "manifest.json"
@@ -560,6 +629,8 @@ def mbist_insert(
         summary["jtag"] = {
             "icl": str(icl),
             "bsdl": str(bsdl),
+            "bist_pdl": str(pdl),
+            "bist_vectors": str(vectors),
             "network_instruction": "IJTAG_ACCESS",
             "network_opcode": jtag.opcode,
             "idcode": jtag.idcode,
@@ -577,7 +648,63 @@ def mbist_insert(
         jtag=jtag,
         icl=icl,
         bsdl=bsdl,
+        pdl=pdl,
+        vectors=vectors,
+        program_memories=tuple(program_memories),
+        schedule=spec.schedule,
     )
+
+
+def _program_memory(
+    name: str, instruments: dict[str, str], clock: str | None, bound: int | None
+) -> ProgramMemory:
+    if clock is None:
+        raise InsertError(
+            f"memory {name!r}: its clock comes from logic, not a chip input, so the "
+            "BIST program has no clock to run (iRunLoop -sck)"
+        )
+    if bound is None:
+        raise InsertError(
+            f"memory {name!r}: autoMBIST's testbench (tb/tb_<collar>.sv) states no "
+            "bound on the BIST's length (MBIST_MAX_CYCLES), which the BIST program "
+            "runs the clock for"
+        )
+    return ProgramMemory(name, dict(instruments), clock, bound)
+
+
+def write_program(
+    jtag: JtagInsertion,
+    memories: Sequence[ProgramMemory],
+    schedule: Sequence[Sequence[str]],
+    top: str,
+    out: Path,
+    *,
+    icl: Path | None = None,
+    bsdl: Path | None = None,
+) -> tuple[Path, Path]:
+    """`<out>/<top>_run_mbist.pdl` and `<top>_run_mbist.vec`: the BIST program
+    for `memories` over the inserted network, and its vectors."""
+    steps = run_steps(memories, schedule)
+    vectors = retarget(jtag.graph, jtag.root, steps, opcode=jtag.opcode)
+    clocks = sorted({m.clock for m in memories})
+    pdl = out / f"{top}_run_mbist.pdl"
+    vec = out / f"{top}_run_mbist.vec"
+    pdl.write_text(
+        render_pdl(
+            top,
+            steps,
+            schedule=schedule,
+            widths={p.name: p.width for p in jtag.ports},
+            opcode=jtag.opcode,
+            clocks=clocks,
+            icl=None if icl is None else icl.name,
+            bsdl=None if bsdl is None else bsdl.name,
+            vectors=vec.name,
+        ),
+        encoding="utf-8",
+    )
+    vec.write_text(render_vectors(vectors, clocks), encoding="utf-8")
+    return pdl, vec
 
 
 def _read_back(manifest: Path, jtag: JtagInsertion | None) -> None:
@@ -649,6 +776,7 @@ def insert_command(
             f"({result.jtag.opcode:04b}) selects the network; ICL {result.icl}, "
             f"BSDL {result.bsdl}"
         )
+        lines.append(f"BIST program: {result.pdl} (vectors {result.vectors})")
     if result.copies:
         lines.append(
             "module copies: "

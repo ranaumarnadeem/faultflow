@@ -14,7 +14,7 @@ import pytest
 
 from faultflow.mbist.insert import InsertResult, mbist_insert
 from faultflow.mbist.synth import SynthesizedChip, synthesize_inserted
-from mbist_chip import CHIP, MODEL, ROOT, chip_copy
+from mbist_chip import CHIP, MODEL, ROOT, chip_copy, play_jtag_program
 from warptap_helpers import skip_unless_warptap
 
 LIBERTY = ROOT / "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib"
@@ -283,3 +283,30 @@ endmodule
     assert cycles(gate) == cycles(original)
     # The memories were exercised: their outputs carry data, not only x.
     assert len({line.split()[5] for line in cycles(original)}) > 10
+
+
+def test_the_gate_level_chip_runs_the_bist_program_over_jtag(
+    synthesized_jtag: tuple[InsertResult, SynthesizedChip], tmp_path: Path
+) -> None:
+    """The program mbist-insert wrote, checked at TDO against the synthesized
+    chip: every BIST passes on good memories; with a bit of top_ram stuck, that
+    memory's fail read alone fails (reads go core0_ram, bank0_ram, top_ram:
+    done then fail each)."""
+    result, chip = synthesized_jtag
+    assert result.vectors is not None
+    gate = _gate_verilog(chip, tmp_path)
+    vectors = result.vectors.read_text(encoding="utf-8")
+    sources = [gate, MODEL, SKY130_MODELS]
+    good = play_jtag_program(
+        sources, vectors, tmp_path / "good", defines=("-DFUNCTIONAL",)
+    )
+    assert good.failures == 0, good.out
+    stuck = """
+    defparam dut.\\u_mem_top__u_collar.u_sram .STUCK_ADDR = 9;
+    defparam dut.\\u_mem_top__u_collar.u_sram .STUCK_BIT = 6;
+    defparam dut.\\u_mem_top__u_collar.u_sram .STUCK_VALUE = 0;
+"""
+    bad = play_jtag_program(
+        sources, vectors, tmp_path / "stuck", defparams=stuck, defines=("-DFUNCTIONAL",)
+    )
+    assert bad.mismatches == [6], bad.out
