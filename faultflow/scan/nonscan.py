@@ -14,6 +14,13 @@ whole test. Each must be one of:
 - *frozen*: its clock is held or constant and no free input can clear or preset it.
   Its value is unknown, so its output is an X source, masked like an unknown blackbox
   output.
+- *settled*: a scan clock keeps clocking it, the holds keep its clear and preset
+  inactive, and its D traces to holds, constants and other settled flops -- a reset
+  synchronizer with the chip reset held inactive. It reaches its D's value a known
+  number of clock pulses into the test, and the view ties it there; every pattern
+  starts with that many pulses, its *preamble* (:attr:`NonscanSetup.preamble`). Its
+  own fault sites are reset faults (:func:`settled_sites`): scan can't test them, and
+  they are the reset of what it feeds.
 
 Anything else refuses. ``[scan] hold`` inputs are held in every cycle of every scan
 pattern; the view ties them (their port removed), so ATPG can't assign them either. A
@@ -22,7 +29,8 @@ scan flop's clear or preset in its active level.
 
 A stuck-at on a forcing control's traced path can release a forced flop in the faulty
 machine, which a tie can't show: :attr:`NonscanSetup.release_faults` lists those (site
-key, fault type) pairs, which scan leaves to JTAG.
+key, fault type) pairs, which scan leaves to JTAG. A glob may select settled flops or
+others, not both: the logic a glob selects beside JTAG's flops is JTAG's.
 
 A fault the ties alone make untestable -- glue logic a TDR held at its reset value
 gates, say -- is hold_unresolved, not redundant: SAT finds a test on the view's hold
@@ -35,19 +43,32 @@ import fnmatch
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from faultflow.control_trace import Netlist, TraceError, port_bits, release_faults
+from faultflow.control_trace import (
+    Flop,
+    Netlist,
+    TraceError,
+    port_bits,
+    release_faults,
+)
 from faultflow.scan.errors import ScanError
 from faultflow.scan.manifest import manifest_clock_net_ids
 
 NONSCAN_REASON = "nonscan_policy"
+# The nets the C++ core gives a constant bit (common/types.hpp; x and z read as 0).
+CONST_NETS = {"0": -1, "x": -1, "z": -1, "1": -2}
+
+
+Pins = tuple[tuple[str, int], ...]  # (pin, net)
 
 
 @dataclass(frozen=True)
 class NonscanFlop:
     instance: str
     q: int  # its output net
-    value: int | None  # the forced value, or None: an X source
+    value: int | None  # the value the view ties it to, or None: an X source
     inputs: tuple[tuple[str, int], ...]  # (pin, net) of each input pin
+    settle: int = 0  # settled: scan-clock pulses until it holds `value`
+    tied: tuple[tuple[str, int], ...] = ()  # (pin, constant's net) of each tied pin
 
 
 @dataclass(frozen=True)
@@ -61,9 +82,27 @@ class NonscanSetup:
     def x_sources(self) -> tuple[int, ...]:
         return tuple(f.q for f in self.flops if f.value is None)
 
+    @property
+    def settled(self) -> tuple[NonscanFlop, ...]:
+        return tuple(f for f in self.flops if f.settle)
+
+    @property
+    def preamble(self) -> int:
+        """The scan-clock pulses every pattern starts with: the settled flops'
+        longest settling."""
+        return max((f.settle for f in self.flops), default=0)
+
     def owns(self, cell: str) -> bool:
-        """Whether ``cell`` is part of the non-scan logic: a match for a glob."""
-        return any(fnmatch.fnmatchcase(cell, glob) for glob in self.globs)
+        """Whether ``cell`` is part of the non-scan logic JTAG tests: a match for a
+        glob that selects no settled flop."""
+        settled = {f.instance for f in self.settled}
+        if cell in settled:
+            return False
+        return any(
+            fnmatch.fnmatchcase(cell, glob)
+            for glob in self.globs
+            if not any(fnmatch.fnmatchcase(s, glob) for s in settled)
+        )
 
 
 def nonscan_instances(manifest: Mapping[str, Any]) -> list[str]:
@@ -132,6 +171,7 @@ def analyze_nonscan(
 
     result: list[NonscanFlop] = []
     release: set[tuple[str, str]] = set()
+    unsettled: list[tuple[str, Pins, Pins]] = []
     for instance in sorted(wanted):
         flop = flops[instance]
         entry = netlist.entry(instance) or {}
@@ -160,23 +200,127 @@ def analyze_nonscan(
             and len(bits) == 1
             and isinstance(bits[0], int)
         )
+        tied = tuple(
+            (pin, CONST_NETS[bits[0]])
+            for pin, bits in sorted(cell["connections"].items())
+            if directions[pin] == "input" and len(bits) == 1 and bits[0] in CONST_NETS
+        )
         if forcing:
             control, found = forcing[0]
             release |= release_faults(found)
-            result.append(NonscanFlop(instance, flop.q, control.value, inputs))
+            result.append(
+                NonscanFlop(instance, flop.q, control.value, inputs, tied=tied)
+            )
             continue
         if netlist.forced(instance, flop.clock_pin, held) is None:
-            raise ScanError(
-                f"non-scan flop {instance}: no held input keeps it in reset and its "
-                "clock isn't held, so it would change during a scan test"
-            )
-        result.append(NonscanFlop(instance, flop.q, None, inputs))
+            unsettled.append((instance, inputs, tied))
+            continue
+        result.append(NonscanFlop(instance, flop.q, None, inputs, tied=tied))
+    result += _settle(netlist, flops, unsettled, held, manifest)
+    _check_globs(globs, result)
     return NonscanSetup(
-        flops=tuple(result),
+        flops=tuple(sorted(result, key=lambda f: f.instance)),
         holds=held,
         globs=tuple(globs),
         release_faults=frozenset(release),
     )
+
+
+def _settle(
+    netlist: Netlist,
+    flops: Mapping[str, Flop],
+    candidates: list[tuple[str, Pins, Pins]],
+    held: Mapping[str, int],
+    manifest: Mapping[str, Any],
+) -> list[NonscanFlop]:
+    """The settled flops among ``candidates`` -- non-scan flops nothing holds still
+    -- by induction: a plain flop a scan clock clocks, whose D is held (by the holds,
+    a constant or flops settled already), settles one pulse after its D does.
+    Refuses any other."""
+    scan_clocks = set(manifest_clock_net_ids(dict(manifest)))
+    settled: dict[int, int] = {}  # q net -> value
+    depth: dict[int, int] = {}  # q net -> pulses to settle
+    found: list[NonscanFlop] = []
+    pending = list(candidates)
+    while pending:
+        progress = False
+        for instance, inputs, tied in list(pending):
+            flop = flops[instance]
+            ff = (netlist.entry(instance) or {}).get("ff", {})
+            clock = flop.clock.steps[-1][0] if flop.clock.steps else None
+            if flop.clock.port is None or clock not in scan_clocks:
+                continue
+            if "enable" in ff or "scan" in ff:
+                continue
+            data = netlist.forced(instance, str(ff.get("data", "D")), held, settled)
+            if data is None:
+                continue
+            settle = 1 + max(
+                (depth[step[0]] for step in data.steps if step[0] in depth), default=0
+            )
+            settled[flop.q], depth[flop.q] = data.value, settle
+            found.append(
+                NonscanFlop(instance, flop.q, data.value, inputs, settle, tied)
+            )
+            pending.remove((instance, inputs, tied))
+            progress = True
+        if not progress:
+            raise ScanError(
+                f"non-scan flop {pending[0][0]}: no held input keeps it in reset and "
+                "its clock isn't held, so it would change during a scan test -- "
+                "unless a scan clock settles it: a plain flop whose D traces to "
+                "holds, constants and other settled flops"
+            )
+    return found
+
+
+def _check_globs(globs: Sequence[str], flops: Sequence[NonscanFlop]) -> None:
+    """A glob selects settled flops or others, not both (the logic beside the
+    others is JTAG's: NonscanSetup.owns)."""
+    for glob in globs:
+        hits = [f for f in flops if fnmatch.fnmatchcase(f.instance, glob)]
+        settled = sorted(f.instance for f in hits if f.settle)
+        other = sorted(f.instance for f in hits if not f.settle)
+        if settled and other:
+            raise ScanError(
+                f"[scan] nonscan_cells {glob} selects flops a scan clock settles "
+                f"({settled[0]}) and flops it doesn't ({other[0]}); give each its "
+                "own glob"
+            )
+
+
+def settled_sites(
+    generic_rows: Sequence[Mapping[str, Any]], setup: NonscanSetup
+) -> set[str]:
+    """The settled flops' own fault sites: each output's stem, and each input pin,
+    tied to a constant or not -- its branch, or the net's stem where the pin is the
+    net's only reader. They
+    are reset faults (``excluded_reset``): scan can't test them -- the flops settle
+    before the test, outside it -- and they reset what they feed."""
+    if not setup.settled:
+        return set()
+    branches: dict[tuple[int, str, str], str] = {}
+    stems: dict[int, str] = {}
+    for row in generic_rows:
+        net = int(row["yosys_net_id"])
+        if str(row["kind"]) == "branch":
+            consumer = str(row.get("consumer_instance", ""))
+            key = (net, consumer, str(row.get("input_pin", "")))
+            branches[key] = str(row["site_key"])
+        else:
+            stems[net] = str(row["site_key"])
+    branched = {net for net, _, _ in branches}
+    sites: set[str] = set()
+    for flop in setup.settled:
+        if flop.q in stems:
+            sites.add(stems[flop.q])
+        for pin, net in flop.inputs + flop.tied:
+            branch = branches.get((net, flop.instance, pin))
+            if branch is not None:
+                sites.add(branch)
+            elif net not in branched and net in stems:
+                sites.add(stems[net])
+    return sites
 
 
 def jtag_sites(
@@ -189,7 +333,7 @@ def jtag_sites(
     blackbox_instances: Sequence[str] = (),
 ) -> set[str]:
     """The fault sites of the stitched ``module`` that scan leaves to JTAG (exclusion
-    ``jtag``, graded by ``ff.py jtag``):
+    ``jtag``, graded by ``ff.py jtag``) -- settled flops, and their globs, aside:
 
     1. the non-scan logic's own: a branch into a cell a glob matches, or a stem
        such a cell drives -- unless it reaches nothing at all, which scan proves
@@ -200,7 +344,7 @@ def jtag_sites(
        decode that selects its network.
     """
     netlist = Netlist(module, cell_map)
-    nonscan_flops = {flop.instance for flop in setup.flops}
+    nonscan_flops = {flop.instance for flop in setup.flops if not flop.settle}
     boxes = set(blackbox_instances)
     readers: dict[int, list[str]] = {}
     for instance, cell in netlist.cells.items():

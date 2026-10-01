@@ -161,7 +161,15 @@ TestVector build_scan_pattern_vector(const ParsedGraph& parsed,
     throw std::runtime_error("scan input/output port count mismatch");
   }
 
+  if (request.preamble_cycles < 0) {
+    throw std::runtime_error("preamble_cycles must be >= 0");
+  }
+
   TestVector vec;
+  for (int pulse = 0; pulse < request.preamble_cycles; ++pulse) {
+    append_clock_pulse(vec, parsed, request.clock_ports, request.clock_off_states,
+                       base_values(request), false, false);
+  }
   for (int offset = 0; offset < request.max_chain_length; ++offset) {
     std::map<std::string, bool> values = base_values(request);
     values[request.scan_enable_port] = true;

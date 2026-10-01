@@ -159,6 +159,11 @@ class ScanPattern:
     # (faultflow.scan.x_mask) -- True where it is compared. Same convention as
     # retarget.transform.SocScanPattern.unload_mask. None compares every bit.
     unload_mask: dict[int, list[bool]] | None = None
+    # Scan-clock pulses before the load, scan enable off and the holds applied,
+    # that settle the non-scan flops the scan clock keeps clocking (a reset
+    # synchronizer: faultflow.scan.nonscan). A tester gives them once, before the
+    # first load; a replay of one pattern gives them before its load.
+    preamble_cycles: int = 0
 
 
 def _chain_lengths(manifest: dict[str, Any]) -> dict[int, int]:

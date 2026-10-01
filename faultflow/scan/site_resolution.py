@@ -295,11 +295,13 @@ def apply_scan_execution_map(
     *,
     jtag_sites: set[str] | frozenset[str] = frozenset(),
     jtag_faults: frozenset[tuple[str, str]] = frozenset(),
+    reset_sites: set[str] | frozenset[str] = frozenset(),
 ) -> None:
     """Write the view site of every fault ATPG grades and the exclusion of every
-    fault it doesn't. ``jtag_sites`` (both faults of each site) and ``jtag_faults``
-    ((site key, "sa0"/"sa1") pairs) are left to JTAG (scan/nonscan.py): only an
-    uncollapsed fault nothing else excludes is tagged, so it is counted once."""
+    fault it doesn't. ``reset_sites`` (both faults of each site: a settled non-scan
+    flop's, scan/nonscan.py) are reset faults; ``jtag_sites`` (both faults of each
+    site) and ``jtag_faults`` ((site key, "sa0"/"sa1") pairs) are left to JTAG. Each
+    tags only an uncollapsed fault nothing else excludes, so it is counted once."""
     conn.execute(
         "UPDATE faults SET atpg_compiled_net_index = NULL WHERE campaign_id = ?",
         (campaign_id,),
@@ -326,6 +328,16 @@ def apply_scan_execution_map(
             (exclusion, exclusion, campaign_id, key)
             for key, exclusion in exclusions.items()
         ],
+    )
+    conn.executemany(
+        """
+        UPDATE faults
+        SET exclusion = 'reset', excluded = 'reset', status = 'excluded',
+            atpg_compiled_net_index = NULL
+        WHERE campaign_id = ? AND fault_site_key = ?
+          AND exclusion = 'none' AND collapsed_into IS NULL
+        """,
+        [(campaign_id, key) for key in sorted(reset_sites)],
     )
     jtag_update = """
         UPDATE faults

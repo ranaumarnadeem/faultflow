@@ -26,13 +26,18 @@ from faultflow.scan.x_mask import _net_of_name, recorded_x_mask
 
 
 def credit_not_reproduced(
-    cfg: Any, patterns_path: Path, *, loc: bool = False
+    cfg: Any,
+    patterns_path: Path,
+    *,
+    loc: bool = False,
+    preamble: int | None = None,
 ) -> list[tuple[str, str]]:
     """The (site key, fault type) of each fault the latest scan campaign
     credits that none of the exported patterns in `patterns_path` detects in
     the full protocol. `loc` replays launch-on-capture patterns (two capture
     pulses); launch-on-shift patterns don't carry their launch shift and
-    can't be replayed from the file."""
+    can't be replayed from the file. Each pattern is replayed after its own
+    preamble, or `preamble` clock pulses when given."""
     core = _load_core()
     assert core is not None
     top = cfg.top
@@ -89,6 +94,7 @@ def credit_not_reproduced(
             loc_two_capture=loc,
             blackbox_instances=blackboxes,
             unload_mask=pattern.unload_mask or {},
+            preamble_cycles=(pattern.preamble_cycles if preamble is None else preamble),
         )
         for batch in result["batches"]:
             for lane in batch["lanes"]:

@@ -42,6 +42,11 @@ def scan_pattern_to_dict(pattern: ScanPattern) -> dict[str, Any]:
             if pattern.unload_mask is not None
             else None
         ),
+        **(
+            {"preamble_cycles": pattern.preamble_cycles}
+            if pattern.preamble_cycles
+            else {}
+        ),
     }
 
 
@@ -65,4 +70,5 @@ def scan_pattern_from_dict(data: dict[str, Any]) -> ScanPattern:
             else None
         ),
         unload_mask=_int_keyed(unload_mask) if unload_mask is not None else None,
+        preamble_cycles=int(data.get("preamble_cycles", 0)),
     )

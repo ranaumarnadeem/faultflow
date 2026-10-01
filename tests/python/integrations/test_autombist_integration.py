@@ -215,6 +215,7 @@ def _assert_unload_independent_of_memory(
             unsupported_policy="fail",
             loc_two_capture=loc,
             blackbox_instances=blackboxes,
+            preamble_cycles=pattern.preamble_cycles,
         )
         return {int(k): list(v) for k, v in dict(result["unload_seqs"]).items()}
 

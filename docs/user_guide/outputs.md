@@ -99,7 +99,10 @@ The reliable ways to get generated vectors out are the campaign database
 [Running without the shell](running_without_shell.md)). When a `[blackbox]`
 output of unknown value reaches a scan flop, each exported pattern carries an
 `unload_mask` parallel to `expected_unload` (per chain, `true` = compare): a
-`false` bit is don't-care, since that flop captured the unknown value. External vectors supplied
+`false` bit is don't-care, since that flop captured the unknown value. When a
+non-scan flop settles during the test (a reset synchronizer, see `[scan]
+nonscan_cells`), each pattern carries `preamble_cycles`: the scan-clock pulses,
+scan enable off and the holds applied, to give before the first load. External vectors supplied
 with `sim --ext` use the same plain-text format as `patterns.test` and require a
 same-stem `.bench` sidecar that fixes the primary-input order.
 

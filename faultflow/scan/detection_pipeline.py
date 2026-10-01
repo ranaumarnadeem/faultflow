@@ -70,7 +70,7 @@ from faultflow.scan.care_bits import extract_scan_care_bits
 from faultflow.scan.compaction import CompactionMap, build_compactor_fanout
 from faultflow.scan.compression import CompressionMap, build_broadcast_fanout
 from faultflow.scan.errors import ScanError
-from faultflow.scan.nonscan import NonscanSetup, jtag_sites
+from faultflow.scan.nonscan import NonscanSetup, jtag_sites, settled_sites
 from faultflow.scan.ring_generator import (
     bitmask_to_index_list,
     care_bit_rows,
@@ -472,6 +472,7 @@ def _protocol_fault_sim_kwargs(
         "capture_pi_values": gate_pi_values,
         "blackbox_instances": list(ctx.cfg.blackbox_instances),
         "unload_mask": pattern.unload_mask or {},
+        "preamble_cycles": pattern.preamble_cycles,
     }
 
 
@@ -492,15 +493,18 @@ def _observed_outputs(ctx: ScanPipelineContext) -> list[str]:
 def _serialize(
     ctx: ScanPipelineContext, serialize_input: dict[str, bool]
 ) -> ScanPattern:
-    """serialize_vector, with the X-masked expected bits marked don't-care and
-    the held inputs, which the view ties rather than lists, at their values."""
-    return serialize_vector(
+    """serialize_vector, with the X-masked expected bits marked don't-care, the
+    held inputs, which the view ties rather than lists, at their values, and the
+    preamble that settles the non-scan flops the scan clock settles."""
+    pattern = serialize_vector(
         {**serialize_input, **ctx.input_holds},
         ctx.pseudo_port_map,
         ctx.manifest,
         masked_ppo_ports=ctx.x_mask.ppo_ports,
         masked_outputs=ctx.x_mask.outputs,
     )
+    preamble = ctx.nonscan.preamble if ctx.nonscan is not None else 0
+    return replace(pattern, preamble_cycles=preamble) if preamble else pattern
 
 
 def _reject_compression_unsatisfiable(
@@ -1835,27 +1839,34 @@ def run_progressive_scan_atpg(
     # Non-scan cells: their own faults, and what only they see, are left to
     # JTAG (ff.py jtag) -- tagged before any SAT, which would otherwise call
     # them redundant -- and so are the stuck-ats that could release a flop the
-    # view ties in reset.
+    # view ties in reset. A settled flop's own faults are reset faults.
     jtag_keys: set[str] = set()
+    reset_keys: set[str] = set()
     if scan_ctx.nonscan is not None:
         top_name = str(scan_ctx.manifest.get("top", cfg.top))
         _, generic_module = _top_module(
             json.loads(scan_ctx.generic_json.read_text(encoding="utf-8")), top_name
         )
+        site_rows = list(
+            core.list_site_keys(
+                str(scan_ctx.generic_json), generic_cell_map, unsupported, bb
+            )
+        )
         jtag_keys = jtag_sites(
-            list(
-                core.list_site_keys(
-                    str(scan_ctx.generic_json), generic_cell_map, unsupported, bb
-                )
-            ),
+            site_rows,
             generic_module,
             json.loads(Path(generic_cell_map).read_text(encoding="utf-8")),
             scan_ctx.nonscan,
             tdo=cfg.jtag.tdo,
             blackbox_instances=bb,
         )
+        reset_keys = settled_sites(site_rows, scan_ctx.nonscan)
         log.info(
-            "non-scan: %d fault sites left to JTAG (excluded_jtag)", len(jtag_keys)
+            "non-scan: %d fault sites left to JTAG (excluded_jtag), %d of settled "
+            "flops (excluded_reset); %d-pulse preamble",
+            len(jtag_keys),
+            len(reset_keys),
+            scan_ctx.nonscan.preamble,
         )
     with connect(effective_db_path) as conn:
         init_schema(conn)
@@ -1870,6 +1881,7 @@ def run_progressive_scan_atpg(
                 if scan_ctx.nonscan is not None
                 else frozenset()
             ),
+            reset_sites=reset_keys,
         )
     core.invalidate_stale_redundant(effective_db_path, campaign_id, redundancy_model)
     # With blackboxes opaque and non-scan cells tied in the view, UNSAT alone

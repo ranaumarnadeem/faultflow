@@ -42,6 +42,11 @@ struct ScanPatternRequest {
   // FUNCTIONAL (default) keeps wrapper cells transparent. Carried onto the built
   // TestVector so the sequential sims pick the mode-aware evaluator.
   TestMode test_mode = TestMode::FUNCTIONAL;
+  // Clock pulses before the load -- scan_enable off, every other input at its
+  // capture value -- so the non-scan flops a scan clock settles (a reset
+  // synchronizer with the chip reset held inactive) hold their value before the
+  // first shift. Fault-inactive and unsampled, like the load. 0: none.
+  int preamble_cycles = 0;
 };
 
 // Returns true if clock i should be pulsed during the launch/capture window.
