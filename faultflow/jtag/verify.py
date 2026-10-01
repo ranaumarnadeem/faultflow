@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from faultflow.config import FaultflowConfig
+from faultflow.jtag.grade import driven_columns
 from faultflow.jtag.program import TckProgram
 from faultflow.jtag.xcheck import JtagSetup
 
@@ -34,32 +35,48 @@ def _bit_ref(port: str, index: int, width: int, offset: int) -> str:
 
 
 def _stubs(module: Mapping[str, Any], blackbox: set[str]) -> str:
-    """A port-only module for each blackboxed cell type: its outputs float (Z)."""
-    stubs: dict[str, str] = {}
+    """A port-only module for each blackboxed cell type: its outputs float (Z). It has
+    every pin and parameter any instance of the type connects or overrides."""
+    ports: dict[str, dict[str, str]] = {}
+    params: dict[str, dict[str, None]] = {}
     for instance, cell in module.get("cells", {}).items():
         if instance not in blackbox:
             continue
         cell_type = str(cell["type"]).lstrip("\\")
-        if cell_type in stubs:
-            continue
-        ports = []
         for pin, bits in cell.get("connections", {}).items():
             direction = cell.get("port_directions", {}).get(pin, "input")
             width = f"[{len(bits) - 1}:0] " if len(bits) > 1 else ""
-            ports.append(f"    {direction} wire {width}{_escaped(pin)}")
-        # Declare what the instance overrides; the values don't matter to a stub.
-        params = ", ".join(
-            f"parameter {_escaped(name)} = 0" for name in cell.get("parameters", {})
+            ports.setdefault(cell_type, {}).setdefault(
+                pin, f"    {direction} wire {width}{_escaped(pin)}"
+            )
+        # The values don't matter to a stub.
+        params.setdefault(cell_type, {}).update(
+            dict.fromkeys(cell.get("parameters", {}))
         )
-        header = f"module {_escaped(cell_type)}" + (f" #({params})" if params else "")
-        stubs[cell_type] = header + " (\n" + ",\n".join(ports) + "\n);\nendmodule\n"
-    return "\n".join(stubs.values())
+    stubs = []
+    for cell_type, pins in ports.items():
+        declared = ", ".join(f"parameter {_escaped(p)} = 0" for p in params[cell_type])
+        header = f"module {_escaped(cell_type)}" + (
+            f" #({declared})" if declared else ""
+        )
+        stubs.append(header + " (\n" + ",\n".join(pins.values()) + "\n);\nendmodule\n")
+    return "\n".join(stubs)
+
+
+def _rows(program: TckProgram, setup: JtagSetup) -> list[str]:
+    """One row per TCK period: each driven input's value, then whether it shifts."""
+    columns = list(driven_columns(program, setup).values())
+    return [
+        "".join(column[i] for column in columns) + program.shift[i]
+        for i in range(len(program))
+    ]
 
 
 def _testbench(
     module: Mapping[str, Any], top: str, program: TckProgram, setup: JtagSetup
 ) -> str:
     ports = setup.ports
+    columns = driven_columns(program, setup)
     decls: list[str] = []
     conns: list[str] = []
     holds: list[str] = []
@@ -82,22 +99,25 @@ def _testbench(
     decl_text = "\n".join(decls)
     conn_text = ",\n".join(conns)
     hold_text = "\n".join(holds)
-    driven = ", ".join(_escaped(p) for p in (ports.tms, ports.tdi, ports.trst_n))
+    # The driven inputs are single-bit ports (xcheck.analyze requires it).
+    driven = ", ".join(_escaped(name) for name in columns)
+    last = len(columns)
     tck = _escaped(ports.tck)
-    # Each row: TMS, TDI, TRST_N for the period, then whether it's a shift (sampled).
+    # Each row: TMS, TDI, TRST_N (and a pulsed chip reset) for the period, then
+    # whether it's a shift (sampled).
     return f"""`timescale 1ns/1ps
 module faultflow_jtag_tb;
 {decl_text}
     {_escaped(top)} dut (
 {conn_text}
     );
-    reg [3:0] jtag_rows [0:{len(program) - 1}];
+    reg [{last}:0] jtag_rows [0:{len(program) - 1}];
     integer i;
     initial begin
         $readmemb("jtag_program.mem", jtag_rows);
 {hold_text}
         for (i = 0; i < {len(program)}; i = i + 1) begin
-            {{{driven}}} = jtag_rows[i][3:1];
+            {{{driven}}} = jtag_rows[i][{last}:1];
             {tck} = 1'b0;
             #10;
             if (jtag_rows[i][0]) $display("TDO %0d %b", i, {_escaped(ports.tdo)});
@@ -129,23 +149,45 @@ def verify_on_gate_level(
         raise JtagVerifyError(
             "--verify needs [simulation] verilog_models (the PDK models)"
         )
+    top = str(manifest["top"])
+    data = json.loads(Path(str(manifest["generic_json"])).read_text(encoding="utf-8"))
+    replay_on_gate_level(
+        Path(sky),
+        data["modules"][top],
+        top,
+        program,
+        setup,
+        golden,
+        models=models,
+        blackbox=set(cfg.blackbox_instances),
+    )
+
+
+def replay_on_gate_level(
+    netlist: Path,
+    module: Mapping[str, Any],
+    top: str,
+    program: TckProgram,
+    setup: JtagSetup,
+    golden: list[int],
+    *,
+    models: Path,
+    blackbox: set[str],
+) -> None:
+    """Play ``program`` on the gate-level Verilog ``netlist`` (``module``: its top, from
+    the netlist's JSON) with the PDK ``models`` and each ``blackbox`` instance a
+    port-only stub, and require TDO to be ``golden`` at every shift."""
     for tool in ("iverilog", "vvp"):
         if shutil.which(tool) is None:
             raise JtagVerifyError(f"--verify needs {tool} on PATH")
-    top = str(manifest["top"])
-    data = json.loads(Path(str(manifest["generic_json"])).read_text(encoding="utf-8"))
-    module = data["modules"][top]
-    rows = [
-        f"{program.tms[i]}{program.tdi[i]}{program.trst_n[i]}{program.shift[i]}"
-        for i in range(len(program))
-    ]
+    rows = _rows(program, setup)
     with tempfile.TemporaryDirectory(prefix="faultflow-jtag-verify-") as tmp:
         work = Path(tmp)
         (work / "jtag_program.mem").write_text("\n".join(rows) + "\n", encoding="utf-8")
         tb = work / "tb.v"
         tb.write_text(_testbench(module, top, program, setup), encoding="utf-8")
         stubs = work / "stubs.v"
-        stubs.write_text(_stubs(module, set(cfg.blackbox_instances)), encoding="utf-8")
+        stubs.write_text(_stubs(module, blackbox), encoding="utf-8")
         sim = work / "sim.vvp"
         compiled = subprocess.run(
             [
@@ -155,7 +197,7 @@ def verify_on_gate_level(
                 "-o",
                 str(sim),
                 str(tb),
-                sky,
+                str(netlist),
                 str(stubs),
                 str(models),
             ],

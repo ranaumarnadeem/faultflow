@@ -2,26 +2,37 @@
 
 Grading a TCK program with the two-valued simulator is exact only when every value
 that can reach TDO is known -- in the fault-free machine and in every faulty one. This
-module establishes that structurally, or refuses:
+module establishes that structurally, or refuses. Pins are traced with
+:mod:`faultflow.control_trace`: through buffers and inverters, and through an AND- or
+OR-type gate an input holds at its controlling value.
 
-- A *TAP flop* is clocked from ``tck`` (through buffers and inverters only). Each must
-  be forced by ``trst_n`` at 0 -- its clear or preset traced to ``trst_n`` through
-  buffers and inverters, at the right polarity -- so the program's TRST lead-in sets it.
-- Every other flop must be *frozen*: clocked from a held input or a constant. It's
-  known if a held input or constant keeps its clear or preset active; otherwise its
-  output is an X source. Blackbox outputs are X sources too.
+- A *TAP flop* is clocked from ``tck`` (through buffers and inverters). Each must be
+  forced by ``trst_n`` at 0 -- its clear or preset held active by ``trst_n`` at 0
+  alone -- so the program's TRST lead-in sets it.
+- Every other flop whose clock the holds keep still is *frozen*. One is a known
+  constant when its clear or preset is held active by a held input, a constant, the
+  chip reset (below), or the output of a flop already known -- the reset synchronizer
+  in front of a collar, say -- while nothing can clear or preset it to another value.
+  An unknown frozen flop's output is an X source; so is the output of a flop clocked
+  from logic, and every blackbox output.
 - The X closure -- forward through combinational logic and through any TAP flop an X
   can reach (on any pin) -- must not reach ``tdo``.
 
 Stuck-at faults can't add connectivity, so the closure holds in every faulty machine.
-What a fault *can* do is keep a flop out of reset: a stuck-at on a traced reset path at
-the level that makes the control inactive. :attr:`JtagSetup.reset_path_faults` lists
-those (site key, fault type) pairs; the grader leaves them ungraded. The same stuck-at
-at the active level holds the flop in reset, which is deterministic, and is graded.
+What a fault *can* do is keep a flop out of reset: a stuck-at on a forcing path at
+the level that releases it -- up a chain of known flops, too, since a flop that misses
+its reset releases those it resets. :attr:`JtagSetup.reset_path_faults` lists those
+(site key, fault type) pairs; the grader leaves them ungraded. The same stuck-at at
+the forcing level holds the flop in reset, which is deterministic, and is graded.
 
 Holds: every input except ``tck``/``tms``/``tdi``/``trst_n`` is held for the whole
 program, at 0 unless a frozen flop's reset needs its input active (e.g. an active-high
 reset held at 1); explicit holds override. Clocks held at 0 give no edges.
+
+The chip reset (:class:`ChipReset`) is the exception: when the control TDRs also clear
+on it (warptap's chip_reset), holding it active would keep them at 0, so the program
+pulses it during its TRST lead-in and then holds it inactive. A frozen flop it resets
+keeps its reset value afterwards, its clock held.
 """
 
 from __future__ import annotations
@@ -31,8 +42,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from faultflow.coverage.site_key import SiteProvenance, canonical_site_key
-from faultflow.scan.stitch import _lookup_cell
+from faultflow.control_trace import (
+    Flop,
+    Netlist,
+    TraceError,
+    port_bits,
+    release_faults,
+)
 
 
 class JtagSetupError(RuntimeError):
@@ -52,194 +68,52 @@ class JtagPorts:
 
 
 @dataclass(frozen=True)
-class Trace:
-    """Where a flop pin's net comes from, through buffers and inverters only: an input
-    port bit (``port``), a constant, or neither (logic). ``steps`` walks from the pin
-    back: (net, the cell reading it, that cell's pin, inverted between this net and the
-    pin)."""
+class ChipReset:
+    """The chip reset input the program pulses during its TRST lead-in, then holds
+    inactive."""
 
-    port: str | None
-    const: int | None
-    inverted: bool
-    steps: tuple[tuple[int, str, str, bool], ...]
-
-    def value_at_pin(self, source_value: int) -> int:
-        return source_value ^ int(self.inverted)
-
-
-@dataclass(frozen=True)
-class Control:
-    kind: str  # "clear" | "preset"
-    active: int  # the pin value that forces the flop
-    trace: Trace
-
-
-@dataclass(frozen=True)
-class Flop:
-    instance: str
-    q: int
-    clock: Trace
-    controls: tuple[Control, ...]
+    port: str
+    active: int  # the level that resets
 
 
 @dataclass(frozen=True)
 class JtagSetup:
     ports: JtagPorts
     input_order: tuple[str, ...]  # every input port bit, "name" or "name[i]"
-    holds: dict[str, int]  # every input bit except tck/tms/tdi/trst_n
+    holds: dict[str, int]  # every input bit except tck/tms/tdi/trst_n (and the pulse)
     tap_flops: tuple[str, ...]
     frozen_known: tuple[str, ...]
     x_sources: tuple[int, ...]
     reset_path_faults: frozenset[tuple[str, str]]  # (fault site key, "sa0"/"sa1")
+    pulse: ChipReset | None = None
 
 
-def _one_net(value: Any) -> int | str | None:
-    if not isinstance(value, list) or len(value) != 1:
+def _known_value(
+    net: Netlist,
+    flop: Flop,
+    pulsed: Mapping[str, int],
+    released: Mapping[str, int],
+    known: Mapping[int, int],
+) -> tuple[int, set[tuple[str, str]]] | None:
+    """A frozen flop's value once reset, with the faults that would release it -- or
+    None if it isn't known: no control holds it, both do, or the other control could
+    clear or preset it after the chip reset's pulse."""
+    holding = []
+    for control in flop.controls:
+        found = net.forced(flop.instance, control.pin, pulsed, known)
+        if found is not None and found.value == control.active:
+            holding.append((control, found))
+    if len(holding) != 1:
         return None
-    bit = value[0]
-    return bit if isinstance(bit, (int, str)) else None
-
-
-def _port_bits(module: Mapping[str, Any], direction: str) -> list[tuple[str, int]]:
-    """(bit name, net) of every port bit in ``direction``, in netlist order."""
-    bits: list[tuple[str, int]] = []
-    for name, port in module.get("ports", {}).items():
-        if not isinstance(port, dict) or port.get("direction") != direction:
+    control, found = holding[0]
+    for other in flop.controls:
+        if other is control:
             continue
-        single = len(port.get("bits", [])) == 1
-        for index, net in enumerate(port.get("bits", [])):
-            if isinstance(net, int):
-                bits.append((name if single else f"{name}[{index}]", net))
-    return bits
-
-
-class _Netlist:
-    def __init__(self, module: Mapping[str, Any], cell_map: Mapping[str, Any]) -> None:
-        self.cells: dict[str, dict[str, Any]] = dict(module.get("cells", {}))
-        self.cell_map = cell_map
-        self.input_net_names = {net: name for name, net in _port_bits(module, "input")}
-        self.drivers: dict[int, tuple[str, str]] = {}
-        for instance, cell in self.cells.items():
-            entry = self.entry(instance)
-            for pin, bits in cell.get("connections", {}).items():
-                if self.direction(instance, pin, entry) != "output":
-                    continue
-                for bit in bits:
-                    if isinstance(bit, int):
-                        self.drivers[bit] = (instance, pin)
-
-    def entry(self, instance: str) -> dict[str, Any] | None:
-        found = _lookup_cell(
-            dict(self.cell_map), str(self.cells[instance].get("type", ""))
-        )
-        return found[1] if found is not None else None
-
-    def direction(self, instance: str, pin: str, entry: dict[str, Any] | None) -> str:
-        directions = self.cells[instance].get("port_directions", {})
-        if isinstance(directions, dict) and pin in directions:
-            return str(directions[pin])
-        if entry is not None and pin in entry.get("outputs", {}):
-            return "output"
-        return "input"
-
-    def trace(self, net: Any, consumer: str, pin: str) -> Trace:
-        steps: list[tuple[int, str, str, bool]] = []
-        inverted = False
-        seen: set[int] = set()
-        while True:
-            if isinstance(net, str):
-                if net in ("0", "1"):
-                    return Trace(None, int(net), inverted, tuple(steps))
-                return Trace(None, None, inverted, tuple(steps))  # x/z
-            steps.append((net, consumer, pin, inverted))
-            if net in self.input_net_names:
-                return Trace(self.input_net_names[net], None, inverted, tuple(steps))
-            if net in seen or net not in self.drivers:
-                return Trace(None, None, inverted, tuple(steps))
-            seen.add(net)
-            driver, _out = self.drivers[net]
-            entry = self.entry(driver) or {}
-            gate = entry.get("gate_type")
-            if entry.get("node_type") == "CONST" or gate in ("CONST0", "CONST1"):
-                return Trace(None, int(gate == "CONST1"), inverted, tuple(steps))
-            if entry.get("node_type") != "GATE" or gate not in ("BUF", "INV"):
-                return Trace(None, None, inverted, tuple(steps))
-            inputs = entry.get("inputs", [])
-            if len(inputs) != 1:
-                return Trace(None, None, inverted, tuple(steps))
-            inverted ^= gate == "INV"
-            consumer, pin = driver, str(inputs[0])
-            net = _one_net(self.cells[driver].get("connections", {}).get(pin))
-
-    def flops(self) -> list[Flop]:
-        flops: list[Flop] = []
-        for instance, cell in self.cells.items():
-            entry = self.entry(instance)
-            if entry is None:
-                continue
-            if entry.get("node_type") == "LATCH":
-                raise JtagSetupError(f"{instance} is a latch; faultflow has no latches")
-            if entry.get("node_type") != "FF":
-                continue
-            ff = entry.get("ff", {})
-            conns = cell.get("connections", {})
-            q = _one_net(conns.get(ff.get("output", "Q")))
-            if not isinstance(q, int):
-                raise JtagSetupError(f"flop {instance} has no single-bit output net")
-            clock_pin = str(ff.get("clock", "CLK"))
-            controls = []
-            for kind in ("clear", "preset"):
-                spec = ff.get(kind)
-                if not isinstance(spec, dict):
-                    continue
-                control_pin = str(spec["pin"])
-                controls.append(
-                    Control(
-                        kind=kind,
-                        active=(
-                            0 if str(spec.get("level", "LOW")).upper() == "LOW" else 1
-                        ),
-                        trace=self.trace(
-                            _one_net(conns.get(control_pin)), instance, control_pin
-                        ),
-                    )
-                )
-            flops.append(
-                Flop(
-                    instance=instance,
-                    q=q,
-                    clock=self.trace(
-                        _one_net(conns.get(clock_pin)), instance, clock_pin
-                    ),
-                    controls=tuple(controls),
-                )
-            )
-        return flops
-
-
-def _held_value(trace: Trace, holds: Mapping[str, int]) -> int | None:
-    """The value a traced pin is held at, or None."""
-    if trace.const is not None:
-        return trace.value_at_pin(trace.const)
-    if trace.port is not None and trace.port in holds:
-        return trace.value_at_pin(holds[trace.port])
-    return None
-
-
-def _reset_path_faults(control: Control) -> set[tuple[str, str]]:
-    """The stuck-ats on ``control``'s traced path that keep the flop out of reset: at
-    each net, the value that puts the pin at its inactive level."""
-    faults: set[tuple[str, str]] = set()
-    for net, consumer, pin, inverted in control.trace.steps:
-        stuck = f"sa{(1 - control.active) ^ int(inverted)}"
-        faults.add(
-            (canonical_site_key(SiteProvenance(yosys_net_id=net, kind="stem")), stuck)
-        )
-        branch = SiteProvenance(
-            yosys_net_id=net, kind="branch", consumer_instance=consumer, input_pin=pin
-        )
-        faults.add((canonical_site_key(branch), stuck))
-    return faults
+        for values in (pulsed, released):
+            held = net.forced(flop.instance, other.pin, values, known)
+            if held is None or held.value == other.active:
+                return None
+    return control.value, release_faults(found)
 
 
 def analyze(
@@ -252,17 +126,18 @@ def analyze(
     holds: Mapping[str, int],
     unsupported: str,
     blackbox_instances: Sequence[str] = (),
+    chip_reset: ChipReset | None = None,
 ) -> JtagSetup:
     """Classify every flop, settle the holds, and prove TDO X-free -- or raise
     :class:`JtagSetupError` naming what breaks it."""
     data = json.loads(Path(netlist_path).read_text(encoding="utf-8"))
     module = data["modules"][top]
     cell_map = json.loads(Path(cell_map_path).read_text(encoding="utf-8"))
-    net = _Netlist(module, cell_map)
+    net = Netlist(module, cell_map)
 
-    inputs = _port_bits(module, "input")
+    inputs = port_bits(module, "input")
     input_names = [name for name, _ in inputs]
-    outputs = dict(_port_bits(module, "output"))
+    outputs = dict(port_bits(module, "output"))
     missing = [p for p in ports.driven() if p not in input_names]
     if missing:
         raise JtagSetupError(f"{top} has no single-bit input port {missing[0]!r}")
@@ -276,28 +151,49 @@ def analyze(
         raise JtagSetupError(
             f"the TCK program drives {driven_held}; they can't be held"
         )
+    pulsed_port = None if chip_reset is None else chip_reset.port
+    if chip_reset is not None:
+        if chip_reset.port not in input_names:
+            raise JtagSetupError(
+                f"{top} has no single-bit input port {chip_reset.port!r} (the chip "
+                "reset the control TDRs clear on)"
+            )
+        if chip_reset.port in ports.driven():
+            raise JtagSetupError(
+                f"the chip reset {chip_reset.port} is a TAP port the program drives"
+            )
+        if chip_reset.port in holds:
+            raise JtagSetupError(
+                f"the TCK program pulses the chip reset {chip_reset.port} and then "
+                "holds it inactive; it can't be held"
+            )
 
-    flops = net.flops()
+    try:
+        flops = net.flops()
+    except TraceError as exc:
+        raise JtagSetupError(str(exc)) from exc
     tap: list[Flop] = []
-    frozen: list[Flop] = []
+    others: list[Flop] = []
     for flop in flops:
         if flop.clock.port == ports.tck:
             tap.append(flop)
-        elif flop.clock.const is not None or (
-            flop.clock.port is not None and flop.clock.port not in ports.driven()
-        ):
-            frozen.append(flop)
-        else:
+        elif flop.clock.port is not None and flop.clock.port in ports.driven():
             raise JtagSetupError(
                 f"flop {flop.instance}'s clock is neither {ports.tck} nor a held input "
                 "(traced through buffers and inverters)"
             )
+        else:
+            others.append(flop)
 
     # Default holds: 0, or the level that forces a frozen flop's reset.
     settled: dict[str, int] = {
-        name: 0 for name in input_names if name not in ports.driven()
+        name: 0
+        for name in input_names
+        if name not in ports.driven() and name != pulsed_port
     }
-    for flop in frozen:
+    for flop in others:
+        if flop.clock.const is None and flop.clock.port not in settled:
+            continue
         for control in flop.controls:
             if control.trace.port is not None and control.trace.port in settled:
                 settled[control.trace.port] = control.active ^ int(
@@ -306,31 +202,55 @@ def analyze(
                 break
     settled.update({name: int(value) & 1 for name, value in holds.items()})
 
+    # A clock the holds keep still gives no edges; any other is logic's, and its flop
+    # an X source.
+    frozen = [
+        f for f in others if net.forced(f.instance, f.clock_pin, settled) is not None
+    ]
+    unclocked = [f for f in others if f not in frozen]
+
+    # trst_n alone: a TAP flop a held input keeps in reset never runs.
     reset_faults: set[tuple[str, str]] = set()
+    in_trst = {ports.trst_n: 0}
     for flop in tap:
-        trst = [
-            c
-            for c in flop.controls
-            if c.trace.port == ports.trst_n and c.trace.value_at_pin(0) == c.active
+        forcing = [
+            found
+            for control in flop.controls
+            if (found := net.forced(flop.instance, control.pin, in_trst)) is not None
+            and found.value == control.active
         ]
-        if not trst:
+        if not forcing:
             raise JtagSetupError(
                 f"TAP flop {flop.instance} isn't forced by {ports.trst_n}=0 (through "
-                "buffers and inverters): its state after the TRST lead-in is unknown"
+                "buffers, inverters and gates it holds): its state after the TRST "
+                "lead-in is unknown"
             )
-        for control in trst:
-            reset_faults |= _reset_path_faults(control)
+        for found in forcing:
+            reset_faults |= release_faults(found)
 
-    known: list[str] = []
-    x_sources: set[int] = set()
-    for flop in frozen:
-        active = [c for c in flop.controls if _held_value(c.trace, settled) == c.active]
-        if active:
-            known.append(flop.instance)
-            for control in active:
-                reset_faults |= _reset_path_faults(control)
-        else:
-            x_sources.add(flop.q)
+    # Known frozen flops, by induction: reset by the holds, the chip reset or a flop
+    # already known.
+    pulsed = dict(settled)
+    released = dict(settled)
+    if chip_reset is not None:
+        pulsed[chip_reset.port] = chip_reset.active
+        released[chip_reset.port] = 1 - chip_reset.active
+    known_q: dict[int, int] = {}
+    pending = list(frozen)
+    while True:
+        progress = False
+        for flop in list(pending):
+            held = _known_value(net, flop, pulsed, released, known_q)
+            if held is None:
+                continue
+            known_q[flop.q], faults = held
+            reset_faults |= faults
+            pending.remove(flop)
+            progress = True
+        if not progress:
+            break
+
+    x_sources = {flop.q for flop in pending} | {flop.q for flop in unclocked}
     blackboxed = set(blackbox_instances)
     for instance in blackboxed & set(net.cells):
         for pin, bits in net.cells[instance].get("connections", {}).items():
@@ -353,9 +273,10 @@ def analyze(
         input_order=tuple(input_names),
         holds=settled,
         tap_flops=tuple(f.instance for f in tap),
-        frozen_known=tuple(known),
+        frozen_known=tuple(f.instance for f in frozen if f.q in known_q),
         x_sources=tuple(sorted(x_sources)),
         reset_path_faults=frozenset(reset_faults),
+        pulse=chip_reset,
     )
 
 
@@ -381,8 +302,9 @@ def _x_closure(
         if tdo_net in set(reach["observable"]):
             raise JtagSetupError(
                 f"an unknown value can reach {tdo_name}: X sources "
-                f"{sorted(sources)[:8]} (blackbox outputs and frozen flops no held "
-                "input keeps in reset) reach it through logic or TAP flops"
+                f"{sorted(sources)[:8]} (blackbox outputs, flops clocked from logic "
+                "and frozen flops nothing keeps in reset) reach it through logic or "
+                "TAP flops"
             )
         fresh = {q for q, _pin in reach["flop_inputs"] if q in tap_qs} - x_flops
         if not fresh:

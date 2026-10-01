@@ -203,12 +203,21 @@ completed `sim --scan`; stuck-at only, and not with `[compression]` or `[compact
 
 The program is a `warptap-tck-program` JSON file (`--program` or `[jtag] program`), or,
 for a design built from an autoMBIST manifest with `test_access`, it's built from that
-network with warptap's `build_integrity_program`. Before grading, faultflow proves TDO
-can't see an unknown value (every TAP flop reset by `trst_n`, every other flop held in
-reset, blackbox outputs cut off) and checks the netlist's own TDO against the program on
-every bit it expects; either failure refuses the run and writes nothing. The inputs the
-program doesn't drive are held, at 0 or at the level that keeps a flop's reset active
-(`[jtag] hold` overrides).
+network with warptap's `build_integrity_program`, reaching the network the way the
+manifest's TAP does -- EXTEST, or a dedicated IJTAG_ACCESS instruction (`mbist-insert`)
+-- and reading the manifest's IDCODE. A program file must reach the network the same
+way. Before grading, faultflow proves TDO can't see an unknown value and checks the
+netlist's own TDO against the program on every bit it expects; either failure refuses
+the run and writes nothing. The proof: every TAP flop is reset by `trst_n` at 0; every
+other flop sits still at a known reset value, or its output can't reach TDO; blackbox
+outputs can't either. A reset is followed through buffers, inverters and any AND/OR-type
+gate an input holds at its controlling value (`trst_n & clr_n` at `trst_n` = 0), and up
+a chain of flops (a reset synchronizer resetting a collar).
+
+The inputs the program doesn't drive are held, at 0 or at the level that keeps a flop's
+reset active (`[jtag] hold` overrides) -- except the chip reset of a manifest whose
+control TDRs also clear on it: holding it active would keep them at 0, so the program
+pulses it during its TRST lead-in, then holds it inactive.
 
 With the TAP non-scan (`[scan] nonscan_cells`), the faults scan left to JTAG
 (`excluded_jtag`) are graded too, and the `combined` block counts every one of them,

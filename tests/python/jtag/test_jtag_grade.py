@@ -12,12 +12,14 @@ import pytest
 from faultflow.jtag.grade import (
     FaultRow,
     JtagGradeError,
+    driven_columns,
     golden_gate,
     grade_faults,
     sim_cycles,
 )
 from faultflow.jtag.program import TapParams, TckProgram
-from faultflow.jtag.xcheck import JtagPorts, analyze
+from faultflow.jtag.verify import _rows, _stubs, _testbench
+from faultflow.jtag.xcheck import ChipReset, JtagPorts, JtagSetup, analyze
 from faultflow.runner.runner import _load_core
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -196,3 +198,75 @@ def test_bit_parallel_and_reference_grading_agree(tmp_path, require_cpp_core):
     fast = grade_faults(*args, unsupported="fail", sim_threads=2)
     slow = grade_faults(*args, unsupported="fail", reference=True)
     assert fast == slow
+
+
+def _pulsing() -> JtagSetup:
+    """A chip with rst_n pulsed and clk held."""
+    return JtagSetup(
+        ports=JtagPorts(),
+        input_order=("tck", "tms", "tdi", "trst_n", "rst_n", "clk"),
+        holds={"clk": 0},
+        tap_flops=(),
+        frozen_known=(),
+        x_sources=(),
+        reset_path_faults=frozenset(),
+        pulse=ChipReset("rst_n", 0),
+    )
+
+
+def test_a_pulsed_chip_reset_is_active_through_the_trst_lead_in() -> None:
+    """_program starts with two periods of TRST_N low: rst_n is 0 in both, 1 after."""
+    program, setup = _program(), _pulsing()
+    cycles, _ = sim_cycles(program, setup)
+    after = len(program) - 2
+    assert [row[4] for row in cycles] == [False] * 4 + [True] * (2 * after)
+    assert not any(row[5] for row in cycles)  # clk held
+    assert driven_columns(program, setup)["rst_n"] == "00" + "1" * after
+    with pytest.raises(JtagGradeError, match="doesn't start with TRST_N low"):
+        sim_cycles(_program(trst=False), setup)
+
+
+def test_the_gate_level_replay_drives_the_pulse_with_the_tap_inputs() -> None:
+    program, setup = _program(), _pulsing()
+    module = {
+        "ports": {
+            **{
+                name: {"direction": "input", "bits": [2 + i]}
+                for i, name in enumerate(setup.input_order)
+            },
+            "tdo": {"direction": "output", "bits": [20]},
+        }
+    }
+    bench = _testbench(module, "chip", program, setup)
+    assert "reg [4:0] jtag_rows" in bench
+    assert "{tms, tdi, trst_n, rst_n} = jtag_rows[i][4:1];" in bench
+    assert "clk = 1'b0;" in bench and "rst_n = 1'b" not in bench
+    # tms, tdi, trst_n, rst_n, then whether the period shifts.
+    assert _rows(program, setup)[:3] == ["00000", "00000", "00110"]
+
+
+def test_a_blackbox_stub_takes_every_instances_pins_and_parameters() -> None:
+    """One memory type, instantiated bare and with overrides (a collar's), one pin
+    left unconnected on one of them: the stub has all of them."""
+
+    def memory(params: dict[str, str], pins: dict[str, list[int]]) -> dict[str, Any]:
+        directions = {pin: "output" if pin == "dout" else "input" for pin in pins}
+        return {
+            "type": "sram",
+            "parameters": params,
+            "port_directions": directions,
+            "connections": pins,
+        }
+
+    module = {
+        "cells": {
+            "u_bare": memory({}, {"clk": [2], "addr": [3, 4]}),
+            "u_collar.u_sram": memory(
+                {"ADDR_WIDTH": "2"}, {"clk": [2], "addr": [5, 6], "dout": [7]}
+            ),
+        }
+    }
+    stub = _stubs(module, {"u_bare", "u_collar.u_sram"})
+    assert stub.count("module sram") == 1
+    assert "#(parameter ADDR_WIDTH = 0)" in stub
+    assert "input wire [1:0] addr" in stub and "output wire dout" in stub

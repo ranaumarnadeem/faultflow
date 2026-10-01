@@ -3,7 +3,8 @@
 Each TCK period is two simulator cycles: TCK low (TMS/TDI/TRST_N applied, TDO sampled
 on a shift period -- before the rising edge, as a tester strobes it), then TCK high (the
 rising edge). Every other input is held (:mod:`faultflow.jtag.xcheck` settles the holds
-and proves TDO X-free).
+and proves TDO X-free), except a chip reset the setup pulses: active through the
+program's TRST lead-in, inactive after it.
 
 The golden gate comes first: the netlist's own fault-free TDO must match the program on
 every care bit, and be the same from all-0 and all-1 initial flop states. Faults are
@@ -42,6 +43,33 @@ class JtagGrade:
     reset_path: tuple[int, ...]  # fault ids left ungraded: they can keep a flop unreset
 
 
+def trst_lead_in(program: TckProgram) -> int:
+    """The program's TRST lead-in: how many TCK periods it starts with TRST_N low."""
+    return len(program.trst_n) - len(program.trst_n.lstrip("0"))
+
+
+def driven_columns(program: TckProgram, setup: JtagSetup) -> dict[str, str]:
+    """Each input the program drives, by port bit, with its value in every TCK period
+    (``0``/``1``): TMS, TDI, TRST_N, and the chip reset if the setup pulses it."""
+    ports = setup.ports
+    columns = {
+        ports.tms: program.tms,
+        ports.tdi: program.tdi,
+        ports.trst_n: program.trst_n,
+    }
+    pulse = setup.pulse
+    if pulse is not None:
+        lead = trst_lead_in(program)
+        if lead == 0:
+            raise JtagGradeError(
+                f"the TCK program doesn't start with TRST_N low: the chip reset "
+                f"{pulse.port} is pulsed during that lead-in"
+            )
+        active, inactive = str(pulse.active), str(1 - pulse.active)
+        columns[pulse.port] = active * lead + inactive * (len(program) - lead)
+    return columns
+
+
 def sim_cycles(
     program: TckProgram, setup: JtagSetup
 ) -> tuple[list[list[bool]], list[bool]]:
@@ -50,16 +78,18 @@ def sim_cycles(
     base = [False] * len(setup.input_order)
     for name, value in setup.holds.items():
         base[index[name]] = bool(value)
-    ports = setup.ports
+    columns = [
+        (index[name], bits) for name, bits in driven_columns(program, setup).items()
+    ]
+    tck = index[setup.ports.tck]
     cycles: list[list[bool]] = []
     sample: list[bool] = []
     for period in range(len(program)):
         row = list(base)
-        row[index[ports.tms]] = program.tms[period] == "1"
-        row[index[ports.tdi]] = program.tdi[period] == "1"
-        row[index[ports.trst_n]] = program.trst_n[period] == "1"
+        for position, bits in columns:
+            row[position] = bits[period] == "1"
         high = list(row)
-        high[index[ports.tck]] = True
+        high[tck] = True
         cycles += [row, high]
         sample += [program.shift[period] == "1", False]
     return cycles, sample

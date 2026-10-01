@@ -18,6 +18,8 @@ CHIP = ROOT / "tests/fixtures/mbist_chip"
 COLLAR = ROOT / "tests/fixtures/autombist/input_demo_8x16_scn4m"
 COLLAR_MARCH_X = ROOT / "tests/fixtures/autombist/input_demo_8x16_scn4m_march_x"
 MODEL = CHIP / "sim/input_demo_8x16_scn4m_model.v"
+LIBERTY = ROOT / "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib"
+SKY130_MODELS = ROOT / "cells/sky130/sky130_fd_sc_hd.v"
 
 
 def chip_copy(
@@ -190,3 +192,22 @@ def play_jtag_program(
         ),
         out,
     )
+
+
+def gate_verilog(composed_json: Path, work: Path) -> Path:
+    """A synthesized (composed) chip netlist as gate-level Verilog, in `work`."""
+    gate = work / "gate.v"
+    work.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "yosys",
+            "-q",
+            "-p",
+            f"read_liberty -lib {LIBERTY}; read_json {composed_json}; "
+            f"write_verilog -noattr {gate}",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return gate

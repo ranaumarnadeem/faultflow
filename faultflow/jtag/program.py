@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -26,9 +26,13 @@ class JtagProgramError(ValueError):
 
 @dataclass(frozen=True)
 class TapParams:
+    """The TAP a program targets. ``ijtag_access_opcode``: the instruction that selects
+    the network, for a TAP built with one (warptap's IJTAG_ACCESS); None, EXTEST."""
+
     ir_width: int
     has_idcode: bool
     idcode_value: int
+    ijtag_access_opcode: int | None = None
 
 
 @dataclass(frozen=True)
@@ -62,14 +66,17 @@ class TckProgram:
         return [i for i, bit in enumerate(self.shift) if bit == "1"]
 
     def to_json(self) -> dict[str, Any]:
+        tap: dict[str, Any] = {
+            "ir_width": self.tap.ir_width,
+            "has_idcode": self.tap.has_idcode,
+            "idcode_value": self.tap.idcode_value,
+        }
+        if self.tap.ijtag_access_opcode is not None:
+            tap["ijtag_access_opcode"] = self.tap.ijtag_access_opcode
         return {
             "format": PROGRAM_FORMAT,
             "version": PROGRAM_VERSION,
-            "tap": {
-                "ir_width": self.tap.ir_width,
-                "has_idcode": self.tap.has_idcode,
-                "idcode_value": self.tap.idcode_value,
-            },
+            "tap": tap,
             "tests": [
                 {"name": name, "start": start, "stop": stop}
                 for name, start, stop in self.tests
@@ -94,15 +101,17 @@ class TckProgram:
         try:
             columns = {c: str(data[c]) for c in _COLUMNS}
             tap = data["tap"]
+            access = tap.get("ijtag_access_opcode")
             params = TapParams(
                 ir_width=int(tap["ir_width"]),
                 has_idcode=bool(tap["has_idcode"]),
                 idcode_value=int(tap["idcode_value"]),
+                ijtag_access_opcode=None if access is None else int(access),
             )
             tests = tuple(
                 (str(t["name"]), int(t["start"]), int(t["stop"])) for t in data["tests"]
             )
-        except (KeyError, TypeError, ValueError) as exc:
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
             raise JtagProgramError(f"malformed TCK program: {exc}") from exc
         count = len(columns["tms"])
         if count == 0:
@@ -147,12 +156,15 @@ def program_from_warptap(
     idcode_value: int,
     margin: int,
     exhaustive_opcodes: bool,
+    ijtag_access_opcode: int | None = None,
 ) -> TckProgram:
     """warptap's integrity program for a network it describes (needs warptap
-    importable, with ``warptap.tap_integrity``)."""
+    importable, with ``warptap.tap_integrity``), reached through IJTAG_ACCESS at
+    ``ijtag_access_opcode``, or EXTEST if None."""
     try:
         from warptap.tap_integrity import (  # type: ignore[import-not-found]
             TapConfig,
+            TapIntegrityError,
             build_integrity_program,
         )
     except ImportError as exc:
@@ -160,13 +172,27 @@ def program_from_warptap(
             "building the JTAG integrity program needs warptap with tap_integrity "
             "importable; pass a program file instead"
         ) from exc
-    program = build_integrity_program(
-        graph,
-        root,
-        tap=TapConfig(
-            ir_width=ir_width, has_idcode=has_idcode, idcode_value=idcode_value
-        ),
-        margin=margin,
-        exhaustive_opcodes=exhaustive_opcodes,
-    )
+    params: dict[str, Any] = {
+        "ir_width": ir_width,
+        "has_idcode": has_idcode,
+        "idcode_value": idcode_value,
+    }
+    if ijtag_access_opcode is not None:
+        if "ijtag_access_opcode" not in {f.name for f in fields(TapConfig)}:
+            raise JtagProgramError(
+                "the installed warptap can't build a program for a network behind "
+                "IJTAG_ACCESS (it predates ijtag_access_opcode); update it, or pass a "
+                "program file"
+            )
+        params["ijtag_access_opcode"] = ijtag_access_opcode
+    try:
+        program = build_integrity_program(
+            graph,
+            root,
+            tap=TapConfig(**params),
+            margin=margin,
+            exhaustive_opcodes=exhaustive_opcodes,
+        )
+    except TapIntegrityError as exc:
+        raise JtagProgramError(f"warptap can't build the program: {exc}") from exc
     return TckProgram.from_json(program.to_json())

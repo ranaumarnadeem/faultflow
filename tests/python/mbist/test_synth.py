@@ -12,13 +12,16 @@ from pathlib import Path
 
 import pytest
 
-from faultflow.mbist.insert import InsertResult, mbist_insert
-from faultflow.mbist.synth import SynthesizedChip, synthesize_inserted
-from mbist_chip import CHIP, MODEL, ROOT, chip_copy, play_jtag_program
-from warptap_helpers import skip_unless_warptap
+from faultflow.mbist.insert import InsertResult
+from faultflow.mbist.synth import SynthesizedChip
+from mbist_chip import (
+    CHIP,
+    MODEL,
+    SKY130_MODELS,
+    gate_verilog,
+    play_jtag_program,
+)
 
-LIBERTY = ROOT / "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib"
-SKY130_MODELS = ROOT / "cells/sky130/sky130_fd_sc_hd.v"
 MEMORIES = ("core0_ram", "bank0_ram", "top_ram")
 
 pytestmark = [
@@ -28,39 +31,6 @@ pytestmark = [
         reason="needs Yosys and Icarus Verilog on PATH",
     ),
 ]
-
-
-def _synthesize(tmp: Path, result: InsertResult) -> SynthesizedChip:
-    return synthesize_inserted(
-        result.rtl,
-        "chip_top",
-        {m.instance: (m.shell, m.collar) for m in result.memories},
-        libs=[CHIP / "macros/input_demo_8x16_scn4m.v"],
-        liberty=LIBERTY,
-        workdir=tmp / "synth",
-        top_leaves=None if result.jtag is None else result.jtag.instances(),
-    )
-
-
-@pytest.fixture(scope="module")
-def synthesized(
-    tmp_path_factory: pytest.TempPathFactory,
-) -> tuple[InsertResult, SynthesizedChip]:
-    tmp = tmp_path_factory.mktemp("synth")
-    result = mbist_insert(chip_copy(tmp), "chip_top", out=tmp / "out")
-    return result, _synthesize(tmp, result)
-
-
-@pytest.fixture(scope="module")
-def synthesized_jtag(
-    tmp_path_factory: pytest.TempPathFactory,
-) -> tuple[InsertResult, SynthesizedChip]:
-    """The chip inserted with jtag: the TAP and the network are DFT too."""
-    skip_unless_warptap()
-    tmp = tmp_path_factory.mktemp("synth_jtag")
-    spec = chip_copy(tmp, lambda t: t.replace("jtag: false", "jtag: {tck_max_mhz: 10}"))
-    result = mbist_insert(spec, "chip_top", out=tmp / "out")
-    return result, _synthesize(tmp, result)
 
 
 def _cells(netlist: dict, top: str) -> dict:
@@ -122,21 +92,7 @@ def test_the_tap_and_the_network_are_frozen_blocks(
 
 
 def _gate_verilog(chip: SynthesizedChip, work: Path) -> Path:
-    gate = work / "gate.v"
-    work.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "yosys",
-            "-q",
-            "-p",
-            f"read_liberty -lib {LIBERTY}; read_json {chip.composed_json}; "
-            f"write_verilog -noattr {gate}",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return gate
+    return gate_verilog(chip.composed_json, work)
 
 
 def _simulate(sources: list[Path], tb: str, work: Path) -> str:

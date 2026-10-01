@@ -237,3 +237,6 @@ def test_without_a_program_one_is_built_from_the_manifest(
     program = json.loads(exported.read_text(encoding="utf-8"))
     assert program["format"] == "warptap-tck-program"
     assert [t["name"] for t in program["tests"]][0] == "reset_instruction"
+    # The manifest names no network instruction: EXTEST, the very program the
+    # fixture holds.
+    assert program == json.loads(PROGRAM.read_text(encoding="utf-8"))

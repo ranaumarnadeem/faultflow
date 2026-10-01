@@ -8,6 +8,11 @@ indices -- are used as they are. In order: the X-isolation proof
 (:func:`faultflow.jtag.grade.golden_gate`), then the faults; the credit lands in side
 tables (:mod:`faultflow.jtag.store`) and the coverage report is rewritten with ``jtag``
 and ``combined`` blocks. A refusal writes nothing.
+
+A design built from an autoMBIST manifest with a ``test_access`` block says how its
+TAP reaches the network (EXTEST, or a dedicated IJTAG_ACCESS instruction), its
+IDCODE, and the chip reset its control TDRs also clear on: the program is built for
+that TAP, and that reset is pulsed during the program's TRST lead-in.
 """
 
 from __future__ import annotations
@@ -17,9 +22,9 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from faultflow.config import FaultflowConfig
+from faultflow.config import FaultflowConfig, JtagConfig
 from faultflow.jtag.grade import FaultRow, golden_gate, grade_faults
 from faultflow.jtag.program import (
     JtagProgramError,
@@ -28,7 +33,12 @@ from faultflow.jtag.program import (
     program_from_warptap,
 )
 from faultflow.jtag.store import latest_run, record_run, run_key
-from faultflow.jtag.xcheck import JtagPorts, JtagSetup, analyze
+from faultflow.jtag.xcheck import ChipReset, JtagPorts, JtagSetup, analyze
+
+if TYPE_CHECKING:
+    from faultflow.integrations.autombist import AutombistTestAccess
+
+EXTEST_OPCODE = 0  # IEEE 1149.1: all zeros
 
 
 class JtagError(RuntimeError):
@@ -90,27 +100,66 @@ def _require_scan_campaign(conn: Any) -> int:
     return int(campaign_id)
 
 
-def _program(cfg: FaultflowConfig, program_path: Path | None) -> TckProgram:
-    path = program_path or cfg.jtag.program
-    if path is not None:
-        return load_program(path)
+def _test_access(cfg: FaultflowConfig) -> AutombistTestAccess | None:
+    """The [autombist] manifest's test_access block, if there is one."""
     if cfg.autombist_manifest is None:
-        raise JtagError(
-            "no TCK program: pass --program, set [jtag] program, or build the design "
-            "from an autoMBIST manifest with test_access ([autombist] manifest)"
-        )
+        return None
     from faultflow.integrations.autombist import load_autombist_manifest
+
+    return load_autombist_manifest(cfg.autombist_manifest).test_access
+
+
+def network_access_opcode(access: AutombistTestAccess) -> int | None:
+    """The opcode of the IJTAG_ACCESS instruction the manifest's network is behind, or
+    None for EXTEST -- which a manifest without the field means."""
+    name = access.network_instruction
+    if name == "EXTEST":
+        if access.network_opcode != EXTEST_OPCODE:
+            raise JtagError(
+                f"the manifest's network is behind EXTEST at opcode "
+                f"{access.network_opcode:b}; EXTEST is all zeros"
+            )
+        return None
+    if name == "IJTAG_ACCESS":
+        return access.network_opcode
+    raise JtagError(
+        f"the manifest's network is behind {name}; ff.py jtag programs EXTEST and "
+        "IJTAG_ACCESS"
+    )
+
+
+def chip_reset_of(access: AutombistTestAccess | None) -> ChipReset | None:
+    """The chip reset the program pulses: the one the manifest's control TDRs also
+    clear on, if any."""
+    if access is None or access.chip_reset is None:
+        return None
+    return ChipReset(access.chip_reset, 0 if access.chip_reset_active_low else 1)
+
+
+def tap_idcode(jtag: JtagConfig, access: AutombistTestAccess | None) -> int | None:
+    """The IDCODE the program reads: the manifest's when it records the TAP's, else
+    [jtag] idcode. A [jtag] idcode set against the manifest's is refused."""
+    if access is None or access.idcode_value is None:
+        return jtag.idcode
+    if jtag.idcode_given and jtag.idcode != access.idcode_value:
+        given = "none" if jtag.idcode is None else f"0x{jtag.idcode:08X}"
+        raise JtagError(
+            f"[jtag] idcode {given} contradicts the manifest, whose TAP has IDCODE "
+            f"0x{access.idcode_value:08X}"
+        )
+    return access.idcode_value
+
+
+def manifest_program(access: AutombistTestAccess, jtag: JtagConfig) -> TckProgram:
+    """warptap's integrity program for the network the manifest describes, reached the
+    way its TAP reaches it."""
     from faultflow.integrations.autombist_jtag import (
         AutombistJtagError,
         rebuild_network,
     )
 
-    access = load_autombist_manifest(cfg.autombist_manifest).test_access
-    if access is None:
-        raise JtagError(
-            f"{cfg.autombist_manifest} has no test_access block: the design has no TAP "
-            "to build a TCK program for"
-        )
+    opcode = network_access_opcode(access)
+    idcode = tap_idcode(jtag, access)
     try:
         graph, root = rebuild_network(access)
     except AutombistJtagError as exc:
@@ -118,12 +167,47 @@ def _program(cfg: FaultflowConfig, program_path: Path | None) -> TckProgram:
     return program_from_warptap(
         graph,
         root,
-        ir_width=cfg.jtag.ir_width,
-        has_idcode=cfg.jtag.idcode is not None,
-        idcode_value=cfg.jtag.idcode if cfg.jtag.idcode is not None else 1,
-        margin=cfg.jtag.margin,
-        exhaustive_opcodes=cfg.jtag.exhaustive_opcodes,
+        ir_width=jtag.ir_width,
+        has_idcode=idcode is not None,
+        idcode_value=idcode if idcode is not None else 1,
+        margin=jtag.margin,
+        exhaustive_opcodes=jtag.exhaustive_opcodes,
+        ijtag_access_opcode=opcode,
     )
+
+
+def _instruction(opcode: int | None, ir_width: int) -> str:
+    return "EXTEST" if opcode is None else f"IJTAG_ACCESS ({opcode:0{ir_width}b})"
+
+
+def _program(
+    cfg: FaultflowConfig,
+    program_path: Path | None,
+    access: AutombistTestAccess | None,
+) -> TckProgram:
+    path = program_path or cfg.jtag.program
+    if path is not None:
+        program = load_program(path)
+        expected = None if access is None else network_access_opcode(access)
+        if access is not None and program.tap.ijtag_access_opcode != expected:
+            width = program.tap.ir_width
+            raise JtagError(
+                f"the TCK program {path} reaches the network with "
+                f"{_instruction(program.tap.ijtag_access_opcode, width)}, the "
+                f"manifest's TAP with {_instruction(expected, width)}"
+            )
+        return program
+    if cfg.autombist_manifest is None:
+        raise JtagError(
+            "no TCK program: pass --program, set [jtag] program, or build the design "
+            "from an autoMBIST manifest with test_access ([autombist] manifest)"
+        )
+    if access is None:
+        raise JtagError(
+            f"{cfg.autombist_manifest} has no test_access block: the design has no TAP "
+            "to build a TCK program for"
+        )
+    return manifest_program(access, cfg.jtag)
 
 
 def _file_digest(path: Path) -> str:
@@ -168,8 +252,9 @@ def run_jtag(
     cell_map = resolve_scan_cell_map(cfg)
     unsupported = cfg.simulation.unsupported_cells
     blackbox = list(cfg.blackbox_instances)
+    access = _test_access(cfg)
     try:
-        program = _program(cfg, program_path)
+        program = _program(cfg, program_path, access)
     except JtagProgramError as exc:
         raise JtagError(str(exc)) from exc
     if export is not None:
@@ -190,6 +275,7 @@ def run_jtag(
         holds=dict(jcfg.hold),
         unsupported=unsupported,
         blackbox_instances=blackbox,
+        chip_reset=chip_reset_of(access),
     )
     golden = golden_gate(
         core,

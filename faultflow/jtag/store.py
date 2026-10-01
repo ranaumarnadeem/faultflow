@@ -58,18 +58,18 @@ def _tables_exist(conn: sqlite3.Connection) -> bool:
 def run_key(
     program: TckProgram, netlist_hash: str, setup: JtagSetup, blackbox: list[str]
 ) -> str:
-    """What makes two JTAG grades the same grade: the program, the netlist, the ports
-    and holds, and the blackboxes."""
-    text = json.dumps(
-        {
-            "program": program.digest(),
-            "netlist": netlist_hash,
-            "ports": list(setup.ports.driven()) + [setup.ports.tdo],
-            "holds": sorted(setup.holds.items()),
-            "blackbox": sorted(blackbox),
-        },
-        sort_keys=True,
-    )
+    """What makes two JTAG grades the same grade: the program, the netlist, the ports,
+    holds and pulsed chip reset, and the blackboxes."""
+    key: dict[str, Any] = {
+        "program": program.digest(),
+        "netlist": netlist_hash,
+        "ports": list(setup.ports.driven()) + [setup.ports.tdo],
+        "holds": sorted(setup.holds.items()),
+        "blackbox": sorted(blackbox),
+    }
+    if setup.pulse is not None:
+        key["pulse"] = [setup.pulse.port, setup.pulse.active]
+    text = json.dumps(key, sort_keys=True)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 

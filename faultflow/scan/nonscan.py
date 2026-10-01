@@ -6,9 +6,11 @@ IJTAG network, run non-scan and tested through TCK by ``ff.py jtag``. The scan v
 one combinational frame between load and unload, so such a flop must hold still for the
 whole test. Each must be one of:
 
-- *forced*: a held input or a constant keeps its clear or preset active, traced through
-  buffers and inverters only. Its output is the value that control forces, and the view
-  ties it there (``$faultflow_tie0``/``$faultflow_tie1``).
+- *forced*: a held input or a constant keeps its clear or preset active -- traced
+  through buffers, inverters and gates a held input sets at its controlling value
+  (:mod:`faultflow.control_trace`), like a TDR bit cleared through
+  ``trst_n & clr_n`` with ``trst_n`` held at 0. Its output is the value that control
+  forces, and the view ties it there (``$faultflow_tie0``/``$faultflow_tie1``).
 - *frozen*: its clock is held or constant and no free input can clear or preset it.
   Its value is unknown, so its output is an X source, masked like an unknown blackbox
   output.
@@ -33,13 +35,7 @@ import fnmatch
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from faultflow.jtag.xcheck import (
-    JtagSetupError,
-    _held_value,
-    _Netlist,
-    _port_bits,
-    _reset_path_faults,
-)
+from faultflow.control_trace import Netlist, TraceError, port_bits, release_faults
 from faultflow.scan.errors import ScanError
 from faultflow.scan.manifest import manifest_clock_net_ids
 
@@ -85,7 +81,7 @@ def _check_holds(
     holds: Mapping[str, int],
     scan_reset_holds: Mapping[str, bool],
 ) -> None:
-    inputs = dict(_port_bits(module, "input"))
+    inputs = dict(port_bits(module, "input"))
     ports = module.get("ports", {})
     scan_ports = {
         str(manifest.get("scan_enable", "")),
@@ -125,10 +121,10 @@ def analyze_nonscan(
     held = dict(holds)
     _check_holds(module, manifest, held, scan_reset_holds)
     wanted = set(nonscan_instances(manifest))
-    netlist = _Netlist(module, cell_map)
+    netlist = Netlist(module, cell_map)
     try:
         flops = {flop.instance: flop for flop in netlist.flops()}
-    except JtagSetupError as exc:
+    except TraceError as exc:
         raise ScanError(str(exc)) from exc
     missing = sorted(wanted - set(flops))
     if missing:
@@ -139,17 +135,16 @@ def analyze_nonscan(
     for instance in sorted(wanted):
         flop = flops[instance]
         entry = netlist.entry(instance) or {}
-        ff = entry.get("ff", {})
         forcing = []
         for control in flop.controls:
-            value = _held_value(control.trace, held)
-            if value is None:
+            found = netlist.forced(instance, control.pin, held)
+            if found is None:
                 raise ScanError(
                     f"non-scan flop {instance}: its {control.kind} isn't held, so a "
                     "scan pattern could change it; hold the input that drives it"
                 )
-            if value == control.active:
-                forcing.append(control)
+            if found.value == control.active:
+                forcing.append((control, found))
         if len(forcing) > 1:
             raise ScanError(
                 f"non-scan flop {instance}: clear and preset both held active"
@@ -166,13 +161,11 @@ def analyze_nonscan(
             and isinstance(bits[0], int)
         )
         if forcing:
-            control = forcing[0]
-            # What the simulator forces: the cell map's value, 0 if it names none.
-            forced = int(ff.get(control.kind, {}).get("value", 0))
-            release |= _reset_path_faults(control)
-            result.append(NonscanFlop(instance, flop.q, forced, inputs))
+            control, found = forcing[0]
+            release |= release_faults(found)
+            result.append(NonscanFlop(instance, flop.q, control.value, inputs))
             continue
-        if _held_value(flop.clock, held) is None:
+        if netlist.forced(instance, flop.clock_pin, held) is None:
             raise ScanError(
                 f"non-scan flop {instance}: no held input keeps it in reset and its "
                 "clock isn't held, so it would change during a scan test"
@@ -206,7 +199,7 @@ def jtag_sites(
        scan flop, another output or a blackbox -- like a TAP's own inputs and the
        decode that selects its network.
     """
-    netlist = _Netlist(module, cell_map)
+    netlist = Netlist(module, cell_map)
     nonscan_flops = {flop.instance for flop in setup.flops}
     boxes = set(blackbox_instances)
     readers: dict[int, list[str]] = {}

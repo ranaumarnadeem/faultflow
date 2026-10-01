@@ -361,9 +361,11 @@ class JtagConfig:
     ports; ``hold``, what to hold other inputs at (overriding the defaults the
     X-isolation proof settles); ``program``, a warptap-tck-program file, else one is
     built from the [autombist] manifest with warptap; the TAP's IR width and IDCODE
-    (``None``: no IDCODE register); the program's sentinel ``margin``; and whether
-    to test every unimplemented opcode. Report-only: not fingerprinted -- a JTAG
-    grade keys itself to its program, ports, holds and netlist."""
+    (``None``: no IDCODE register; ``idcode_given``: set in the file, where a
+    manifest that records the TAP's IDCODE otherwise wins); the program's sentinel
+    ``margin``; and whether to test every unimplemented opcode. Report-only: not
+    fingerprinted -- a JTAG grade keys itself to its program, ports, holds and
+    netlist."""
 
     tck: str = "tck"
     tms: str = "tms"
@@ -374,6 +376,7 @@ class JtagConfig:
     program: Path | None = None
     ir_width: int = 4
     idcode: int | None = 0x1A5A5003
+    idcode_given: bool = False
     margin: int = 8
     exhaustive_opcodes: bool = True
 
@@ -631,6 +634,7 @@ def _parse_jtag(parser: ConfigParser) -> JtagConfig:
         program=_optional_path(parser, "jtag", "program"),
         ir_width=_int(parser, "jtag", "ir_width", defaults.ir_width),
         idcode=idcode,
+        idcode_given=bool(idcode_raw),
         margin=_int(parser, "jtag", "margin", defaults.margin),
         exhaustive_opcodes=_bool(
             parser, "jtag", "exhaustive_opcodes", defaults.exhaustive_opcodes

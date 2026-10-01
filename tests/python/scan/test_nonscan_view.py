@@ -220,3 +220,40 @@ def test_a_hold_that_resets_scan_flops_is_refused() -> None:
     """Scan flops cleared by trst_n need it inactive (1) during the test."""
     with pytest.raises(ScanError, match="would clear or preset scan flops"):
         _analyze([("trst_n", 0), ("tck", 0)], scan_reset_holds={"trst_n": True})
+
+
+@pytest.mark.unit
+def test_a_tdr_bit_cleared_through_trst_n_and_the_chip_reset_is_forced() -> None:
+    """warptap's chip-reset TDR clear, trst_n & clr_n: trst_n held at 0 forces the
+    bit whatever clr_n does, and only trst_n's path can release it."""
+    module = _module()
+    module["ports"]["clr_n"] = {"direction": "input", "bits": [12]}
+    module["cells"]["u_tap__st"] = _flop(DFRTP, CLK=5, D=7, RESET_B=13, Q=8)
+    module["cells"]["u_tap__and"] = {
+        "type": "sky130_fd_sc_hd__and2_1",
+        "port_directions": {"A": "input", "B": "input", "X": "output"},
+        "connections": {"A": [6], "B": [12], "X": [13]},
+    }
+    manifest = {
+        "clock_nets": [2],
+        "scan_inputs": ["scan_in_0"],
+        "scan_enable": "scan_en",
+        "ineligible_ffs": [
+            {"instance": name, "cell_type": "x", "reason": "nonscan_policy"}
+            for name in NONSCAN
+        ],
+    }
+    setup = analyze_nonscan(
+        module,
+        manifest,
+        CELL_MAP,
+        globs=("u_tap__*",),
+        holds=[("trst_n", 0), ("tck", 0)],
+        scan_reset_holds={},
+    )
+    assert {f.instance: f.value for f in setup.flops}["u_tap__st"] == 0
+    assert {
+        ("net:13:branch:u_tap__st:RESET_B", "sa1"),
+        ("net:6:branch:u_tap__and:A", "sa1"),
+    } <= setup.release_faults
+    assert not {k for k, _ in setup.release_faults} & {"net:12:stem"}
