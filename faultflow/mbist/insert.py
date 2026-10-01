@@ -309,6 +309,33 @@ def _build_shells(
     return added, shells
 
 
+def _plain_names(added: Modules, taken: set[str]) -> Modules:
+    """The generated modules, each Yosys-derived name (`$paramod$<hash>\\
+    march_c_top`, `$paramod\\faultflow_mbist_sync2\\WIDTH=...`) replaced by a
+    plain identifier, `<base>__<digest of the derived name>`: the same module
+    gets the same name every time, and synthesis can name it in a script."""
+    import hashlib
+
+    from faultflow.mbist.netlist import _module_base
+
+    renames: dict[str, str] = {}
+    for name in added:
+        if name.startswith("$"):
+            digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+            plain = f"{_module_base(name)}__{digest}"
+            if plain in taken or plain in added:
+                raise InsertError(
+                    f"the generated module {name} would be named {plain}, which is "
+                    "taken"
+                )
+            renames[name] = plain
+    for module in added.values():
+        for cell in module.get("cells", {}).values():
+            if cell.get("type") in renames:
+                cell["type"] = renames[cell["type"]]
+    return {renames.get(name, name): module for name, module in added.items()}
+
+
 def mbist_insert(
     spec_path: str | Path,
     top: str,
@@ -350,6 +377,7 @@ def mbist_insert(
 
     added, shells = _build_shells(spec, groups, modules, macro_cells, work)
     taken_names = set(taken)
+    added = _plain_names(added, set(modules) | taken_names)
     for name, module in added.items():
         if name in modules:
             if _same_module(modules[name], module):
