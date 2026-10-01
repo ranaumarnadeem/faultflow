@@ -16,6 +16,10 @@ every memory the insertion file configures, keeping the design's hierarchy.
    no problem the original design didn't have.
 9. Write the SDC of the crossings inserted, the manifest (read back to check
    it; with JTAG, its network rebuilt too) and, with JTAG, the ICL and BSDL.
+
+Given the design's .ofs, insert_command also synthesizes the result, the DFT
+frozen (synth.py), and writes `<top>_mbist.ofs` for it (ofs.py), ready for
+init, scan, scan-check, sim --scan and ff.py jtag.
 """
 
 from __future__ import annotations
@@ -748,16 +752,35 @@ def ofs_liberty(ofs: Path) -> Path | None:
 
 
 def insert_command(
-    spec: Path, top: str, out: Path | None, ofs: Path | None = None
+    spec: Path,
+    top: str,
+    out: Path | None,
+    ofs: Path | None = None,
+    *,
+    tap_nonscan: bool = False,
 ) -> str:
-    """ff.py mbist-insert / Tcl mbist_insert: run mbist_insert, and say what it
-    did."""
+    """ff.py mbist-insert / Tcl mbist_insert: run mbist_insert -- with the
+    design's .ofs, synthesize the result and write its own .ofs -- and say what
+    it did. `tap_nonscan` runs the TAP and the IJTAG network non-scan."""
+    from faultflow.mbist.ofs import check_base, read_base
+
+    out = out or Path(f"mbist_{top}")
+    loaded = load_mbist_spec(spec)
+    if tap_nonscan and (ofs is None or loaded.jtag is None):
+        raise InsertError(
+            "--tap-nonscan sets the scan test of the TAP mbist-insert adds: it "
+            "needs jtag in the insertion file and the design's .ofs (-c)"
+        )
     taken: frozenset[str] = frozenset()
+    base = None
     if ofs is not None:
+        base = read_base(ofs)
+        if loaded.reset is not None:
+            check_base(base, loaded.reset, tap_nonscan=tap_nonscan)
         liberty = ofs_liberty(ofs)
         if liberty is not None:
             taken = liberty_cells(liberty)
-    result = mbist_insert(spec, top, out=out or Path(f"mbist_{top}"), taken=taken)
+    result = mbist_insert(spec, top, out=out, taken=taken)
     lines = [
         f"inserted {len(result.memories)} memories into {top}: {result.rtl}",
         f"manifest: {result.manifest}",
@@ -782,7 +805,71 @@ def insert_command(
             "module copies: "
             + ", ".join(f"{c} (of {o})" for c, o in result.copies.items())
         )
+    if base is not None and ofs is not None:
+        config = _synthesize_for_flow(
+            result, loaded, base, ofs, out, tap_nonscan=tap_nonscan
+        )
+        lines += [
+            f"synthesized, DFT frozen; its .ofs: {config}",
+            f"run: python3 ff.py init --top {top} -c {config}, then scan, "
+            "scan-check, sim --scan" + (", jtag" if result.jtag is not None else ""),
+        ]
     return "\n".join(lines)
+
+
+def _synthesize_for_flow(
+    result: InsertResult,
+    spec: MbistSpec,
+    base: Any,
+    ofs: Path,
+    out: Path,
+    *,
+    tap_nonscan: bool,
+) -> Path:
+    """Synthesize the inserted design and write its .ofs: `<out>/<top>_mbist.ofs`,
+    its outputs under `<out>/output`."""
+    from faultflow.config import SKY130_CELL_LIB, SKY130_LIBERTY
+    from faultflow.integrations.autombist import _clock_domains, tap_nonscan_settings
+    from faultflow.mbist.ofs import nonscan_globs, scan_holds, write_inserted_ofs
+    from faultflow.mbist.synth import synthesize_inserted
+
+    assert spec.reset is not None and result.manifest is not None
+    repo = Path(__file__).resolve().parents[2]
+
+    def design_path(key: str, default: Path) -> Path:
+        value = base.get("design", key, fallback="").strip()
+        path = Path(value) if value else default
+        return path if path.is_absolute() or path.exists() else repo / path
+
+    liberty = design_path("liberty", SKY130_LIBERTY)
+    cell_lib = design_path("cell_lib", SKY130_CELL_LIB)
+    chip = synthesize_inserted(
+        result.rtl,
+        result.top,
+        {m.instance: (m.shell, m.collar) for m in result.memories},
+        libs=spec.design.libs,
+        liberty=liberty,
+        workdir=out / "synth",
+        top_leaves=None if result.jtag is None else result.jtag.instances(),
+    )
+    jtag_globs: tuple[str, ...] = ()
+    if tap_nonscan:
+        jtag_globs, _ = tap_nonscan_settings(load_autombist_manifest(result.manifest))
+    cells = nonscan_globs([m.instance for m in result.memories], jtag_globs)
+    clock_ports, domains = _clock_domains(chip.composed_json, chip.top, cell_lib, cells)
+    return write_inserted_ofs(
+        out / f"{result.top}_mbist.ofs",
+        base,
+        netlist=chip.composed_json,
+        output_root=out / "output",
+        blackboxes=chip.memories,
+        renamed=[m.instance for m in result.memories],
+        clock_ports=clock_ports,
+        chains=domains,
+        nonscan_cells=cells,
+        holds=scan_holds(spec.reset, tap_nonscan=tap_nonscan),
+        manifest=result.manifest,
+    )
 
 
 def _recheck(

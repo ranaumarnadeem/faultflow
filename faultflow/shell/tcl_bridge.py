@@ -776,6 +776,8 @@ proc {name} {{args}} {{
 
         flags = {"-top": "top", "-spec": "spec", "-out": "out", "-config": "config"}
         values: dict[str, str] = {}
+        tap_nonscan = "-tap_nonscan" in args
+        args = [a for a in args if a != "-tap_nonscan"]
         for idx in range(0, len(args), 2):
             flag = args[idx]
             if flag not in flags:
@@ -797,6 +799,7 @@ proc {name} {{args}} {{
             values["top"],
             Path(values["out"]) if "out" in values else None,
             Path(values["config"]) if "config" in values else None,
+            tap_nonscan=tap_nonscan,
         )
 
     def _set_testmode(self, args: list[str]) -> Any:

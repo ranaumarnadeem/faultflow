@@ -293,7 +293,14 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="The design's .ofs: no inserted module may be named after one of its "
-        "liberty's cells",
+        "liberty's cells; the inserted design is synthesized with its liberty, and "
+        "<top>_mbist.ofs written for it",
+    )
+    insert.add_argument(
+        "--tap-nonscan",
+        action="store_true",
+        help="With jtag and -c: the TAP and the IJTAG network run non-scan in the "
+        "written .ofs (trst_n and tck held at 0), for ff.py jtag to test",
     )
 
     status = sub.add_parser("status", help="Print current coverage status")
@@ -499,7 +506,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "mbist-insert":
             from faultflow.mbist.insert import insert_command
 
-            print(insert_command(args.spec, args.top, args.out, args.config))
+            print(
+                insert_command(
+                    args.spec,
+                    args.top,
+                    args.out,
+                    args.config,
+                    tap_nonscan=args.tap_nonscan,
+                )
+            )
             return 0
         if args.command == "add-clock":
             add_clock_to_config(Path(args.config), args.port, off_state=args.off_state)

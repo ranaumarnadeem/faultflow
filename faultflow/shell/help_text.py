@@ -234,7 +234,7 @@ COMMAND_HELP = {
     ),
     "mbist_insert": CommandHelp(
         "Project",
-        "mbist_insert -top NAME -spec PATH [-out DIR] [-config OFS]",
+        "mbist_insert -top NAME -spec PATH [-out DIR] [-config OFS] [-tap_nonscan]",
         "Insert MBIST into a design's RTL, in place of the configured memories",
         "For every memory the insertion file (-spec) configures, runs `autombist "
         "generate` (once per config and algorithm) and puts the collar, inside a "
@@ -250,10 +250,21 @@ COMMAND_HELP = {
         "design or a cell of the -config .ofs's liberty. The control and status "
         "ports reach the top as <memory>_<port> (test_mode, bist_start, "
         "bist_done, bist_fail); the chip reset (reset: port, active) reaches "
-        "every shell. Writes <top>_mbist.v (written by Yosys) and insertion.json "
-        "in -out (default mbist_<top>), after checking the written design "
-        "elaborates with no Yosys check problem the original didn't have.",
-        "autoMBIST (the file's autombist_cmd), Yosys on PATH, PyYAML.",
+        "every shell. With jtag: {tck_max_mhz: N}, a TAP and an IJTAG network "
+        "take the ports instead (a dedicated IJTAG_ACCESS instruction selects it), "
+        "and the ICL, the TAP-only BSDL and the BIST program (PDL and TCK "
+        "vectors) are written too. Writes <top>_mbist.v (written by Yosys), "
+        "<top>_mbist.sdc, manifest.json and insertion.json in -out (default "
+        "mbist_<top>), after checking the written design elaborates with no "
+        "Yosys check problem the original didn't have. With -config, the design "
+        "is also synthesized, its DFT frozen, and <top>_mbist.ofs written: the "
+        ".ofs given, with the synthesized netlist, outputs under -out, the "
+        "memories blackboxed, each shell's reset synchronizer non-scan and the "
+        "chip reset held inactive in scan (an .ofs that holds it active, or "
+        "names it a scan port or clock, is refused). -tap_nonscan also runs the "
+        "TAP and the network non-scan, trst_n and tck held at 0.",
+        "autoMBIST (the file's autombist_cmd), Yosys on PATH, PyYAML; warptap "
+        "with jtag.",
         "mbist_insert -top chip_top -spec mbist.yml -out build/mbist",
     ),
     "add_scan": CommandHelp(

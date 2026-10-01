@@ -74,6 +74,7 @@ run_techmap = true
 | `liberty` | Sky130 HD `.lib` | Liberty file — used by **Yosys only** |
 | `verilog_models` | — | Behavioral cell models for the iverilog gate (falls back to `[simulation] verilog_models`) |
 | `yosys_ver` | `""` | Yosys version string, recorded in the fingerprint |
+| `output_root` | `output` | Where the campaign's outputs go: `<output_root>/<top>`. The `.ofs` `mbist-insert -c` writes sets its own, so the inserted chip (same top) doesn't share the original's |
 
 ```{note}
 The cell map and Liberty must be a matched pair for the same PDK. The two shipped pairs

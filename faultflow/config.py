@@ -405,6 +405,7 @@ class FaultflowConfig:
     scan: ScanConfig
     compression: CompressionConfig = CompressionConfig()
     compaction: CompactionConfig = CompactionConfig()
+    # [design] output_root: the campaign's outputs go to <output_root>/<top>.
     output_root: Path = Path("output")
     clocks: tuple[ClockSpec, ...] = ()
     blackbox_instances: tuple[str, ...] = ()
@@ -939,6 +940,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         wbr_model=wbr_model,
         autombist_manifest=_autombist_manifest(parser),
         jtag=_parse_jtag(parser),
+        output_root=_optional_path(parser, "design", "output_root") or Path("output"),
     )
 
 
