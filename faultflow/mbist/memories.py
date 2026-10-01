@@ -76,9 +76,11 @@ def _port_order(module: dict[str, Any]) -> list[str]:
     return list(module.get("ports", {}))
 
 
-def _analyze(
+def analyze_pins(
     parent: dict[str, Any], cell_name: str, macro: dict[str, Any]
 ) -> tuple[PinUse, ...]:
+    """How each pin of the instance `cell_name` (of `macro`) is connected in the
+    module `parent` (Yosys JSON), in the macro's port order."""
     cell = parent["cells"][cell_name]
     conns: dict[str, list[Any]] = cell.get("connections", {})
     directions = cell.get("port_directions", {})
@@ -151,7 +153,7 @@ def find_memories(
                 if any(fnmatchcase(ctype, p) for p in patterns):
                     key = (module_name, cell_name)
                     if key not in analyzed:
-                        analyzed[key] = _analyze(module, cell_name, sub)
+                        analyzed[key] = analyze_pins(module, cell_name, sub)
                     found.append(
                         MemoryInstance(path, ctype, module_name, analyzed[key])
                     )

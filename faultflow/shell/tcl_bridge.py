@@ -50,6 +50,7 @@ class TclBridge:
             "retarget": self._retarget,
             "autombist_generate": self._autombist_generate,
             "list_memories": self._list_memories,
+            "mbist_insert": self._mbist_insert,
             "WORKERS": self._workers,
             "set_testmode": self._set_testmode,
             "report_testmode": self._report_testmode,
@@ -769,6 +770,34 @@ proc {name} {{args}} {{
                     f"list_memories: -{required} is required", "CONFIG", "MISSING_ARG"
                 )
         return list_memories(Path(values["spec"]), values["top"], patterns or None)
+
+    def _mbist_insert(self, args: list[str]) -> Any:
+        from faultflow.mbist.insert import insert_command
+
+        flags = {"-top": "top", "-spec": "spec", "-out": "out", "-config": "config"}
+        values: dict[str, str] = {}
+        for idx in range(0, len(args), 2):
+            flag = args[idx]
+            if flag not in flags:
+                raise ShellError(
+                    f"mbist_insert: unknown option {flag!r}", "CONFIG", "INVALID_OPTION"
+                )
+            if idx + 1 >= len(args):
+                raise ShellError(
+                    f"mbist_insert: {flag} requires a value", "CONFIG", "MISSING_ARG"
+                )
+            values[flags[flag]] = args[idx + 1]
+        for required in ("top", "spec"):
+            if required not in values:
+                raise ShellError(
+                    f"mbist_insert: -{required} is required", "CONFIG", "MISSING_ARG"
+                )
+        return insert_command(
+            Path(values["spec"]),
+            values["top"],
+            Path(values["out"]) if "out" in values else None,
+            Path(values["config"]) if "config" in values else None,
+        )
 
     def _set_testmode(self, args: list[str]) -> Any:
         if len(args) != 1:

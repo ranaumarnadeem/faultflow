@@ -18,12 +18,14 @@ memories:
   - name: bank0_ram
     instance: "g_bank[0].u_mem"
     autombist_config: mbist/sram_demo.yml
+    algo: march-c
     tie: {wmask0: 1, csb1: 1, addr1: 0}
     share_clock: [clk1]
     unused_outputs: [dout1]
   - name: top_ram
     instance: u_mem_top
     autombist_config: mbist/sram_demo.yml
+    algo: march-c
     tie: {wmask0: 1, csb1: 1, addr1: 0}
     share_clock: [clk1]
     unused_outputs: [dout1]

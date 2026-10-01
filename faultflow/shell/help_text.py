@@ -232,6 +232,30 @@ COMMAND_HELP = {
         "Yosys on PATH; PyYAML for a YAML insertion file.",
         "list_memories -top chip_top -spec mbist.yml -pattern sky130_sram_*",
     ),
+    "mbist_insert": CommandHelp(
+        "Project",
+        "mbist_insert -top NAME -spec PATH [-out DIR] [-config OFS]",
+        "Insert MBIST into a design's RTL, in place of the configured memories",
+        "For every memory the insertion file (-spec) configures, runs `autombist "
+        "generate` (once per config and algorithm) and puts the collar, inside a "
+        "shell, in place of the memory instance, keeping the design's hierarchy. "
+        "The shell synchronizes the collar's reset and control inputs to its "
+        "clock and delays its done outputs two cycles, so fail is final when done "
+        "rises. The memory's pins outside the collar's roles must be declared in "
+        "the file -- tie (checked against the design's constant), share_clock "
+        "(on the clock pin's net) or unused_outputs (read by nothing) -- and are "
+        "driven inside the collar as the design drove them. A module on the path "
+        "to a memory that is instantiated more than once gets its own copy, "
+        "<module>__mbist_<path>; no new name may collide with a module of the "
+        "design or a cell of the -config .ofs's liberty. The control and status "
+        "ports reach the top as <memory>_<port> (test_mode, bist_start, "
+        "bist_done, bist_fail); the chip reset (reset: port, active) reaches "
+        "every shell. Writes <top>_mbist.v (written by Yosys) and insertion.json "
+        "in -out (default mbist_<top>), after checking the written design "
+        "elaborates with no Yosys check problem the original didn't have.",
+        "autoMBIST (the file's autombist_cmd), Yosys on PATH, PyYAML.",
+        "mbist_insert -top chip_top -spec mbist.yml -out build/mbist",
+    ),
     "add_scan": CommandHelp(
         "Scan",
         "add_scan -chains N [-max_length N] [-SI NAME] [-SO NAME] "

@@ -272,6 +272,30 @@ def _parser() -> argparse.ArgumentParser:
         "replaces the file's memory_patterns",
     )
 
+    insert = sub.add_parser(
+        "mbist-insert",
+        help="Insert MBIST into a design's RTL: an autoMBIST collar, in a shell, "
+        "in place of every memory an insertion file configures",
+    )
+    insert.add_argument("--top", required=True, help="Top module of the design")
+    insert.add_argument(
+        "--spec", type=Path, required=True, help="MBIST insertion file (YAML or JSON)"
+    )
+    insert.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Output directory (default: mbist_<top> in the current directory)",
+    )
+    insert.add_argument(
+        "-c",
+        "--config",
+        type=Path,
+        default=None,
+        help="The design's .ofs: no inserted module may be named after one of its "
+        "liberty's cells",
+    )
+
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
     status.add_argument(
@@ -471,6 +495,11 @@ def main(argv: list[str] | None = None) -> int:
             from faultflow.mbist.memories import list_memories
 
             print(list_memories(args.spec, args.top, args.pattern), end="")
+            return 0
+        if args.command == "mbist-insert":
+            from faultflow.mbist.insert import insert_command
+
+            print(insert_command(args.spec, args.top, args.out, args.config))
             return 0
         if args.command == "add-clock":
             add_clock_to_config(Path(args.config), args.port, off_state=args.off_state)
