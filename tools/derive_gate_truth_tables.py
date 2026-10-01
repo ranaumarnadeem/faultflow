@@ -8,6 +8,9 @@ and NOT a Liberty parser added to the C++ core (CLAUDE.md forbids that; this
 stays a repo-root Python tool, never imported by faultflow/ or src/core/).
 
 Run: python3 tools/derive_gate_truth_tables.py
+
+Its Liberty parser also backs tests/python/test_cell_liberty.py, which checks every
+mapped cell end to end (through the compiler's pin wiring) against Liberty.
 """
 
 from __future__ import annotations
@@ -279,10 +282,10 @@ def tokenize_liberty(expr: str, osu_style: bool) -> list[tuple]:
 
 
 class LibertyExprParser:
-    """Recursive-descent evaluator (NOT > AND > OR precedence), with
-    juxtaposition (two atoms adjacent with no explicit operator) treated as
-    an implicit AND -- evaluates directly against a bit vector rather than
-    generating Python source text, so there is no risk of Python's `not`
+    """Recursive-descent evaluator (NOT > XOR > AND > OR precedence, as Liberty
+    has it), with juxtaposition (two atoms adjacent with no explicit operator)
+    treated as an implicit AND -- evaluates directly against a bit vector rather
+    than generating Python source text, so there is no risk of Python's `not`
     binding more loosely than `&`/`|` silently mis-grouping the formula."""
 
     ATOM_START = {"ID", "LP", "NOT"}
@@ -312,18 +315,25 @@ class LibertyExprParser:
         return left
 
     def parse_and(self) -> bool:
-        left = self.parse_not()
+        left = self.parse_xor()
         while True:
             tok = self.peek()
             if tok is not None and tok[0] == "AND":
                 self.advance()
-                right = self.parse_not()
+                right = self.parse_xor()
                 left = left and right
             elif tok is not None and tok[0] in self.ATOM_START:
-                right = self.parse_not()
+                right = self.parse_xor()
                 left = left and right
             else:
                 break
+        return left
+
+    def parse_xor(self) -> bool:
+        left = self.parse_not()
+        while self.peek() is not None and self.peek()[0] == "XOR":
+            self.advance()
+            left = left != self.parse_not()
         return left
 
     def parse_not(self) -> bool:
