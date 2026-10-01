@@ -251,6 +251,27 @@ def _parser() -> argparse.ArgumentParser:
         "grade through TCK",
     )
 
+    list_mem = sub.add_parser(
+        "list-memories",
+        help="List a design's memory instances and how each pin is connected, "
+        "to help write an MBIST insertion file",
+    )
+    list_mem.add_argument("--top", required=True, help="Top module of the design")
+    list_mem.add_argument(
+        "--spec",
+        type=Path,
+        required=True,
+        help="MBIST insertion file (YAML or JSON): the design's sources, and the "
+        "memories already configured",
+    )
+    list_mem.add_argument(
+        "--pattern",
+        action="append",
+        default=None,
+        help="Memory macro module name glob, e.g. 'sky130_sram_*' (repeatable); "
+        "replaces the file's memory_patterns",
+    )
+
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
     status.add_argument(
@@ -446,6 +467,11 @@ def main(argv: list[str] | None = None) -> int:
             return _handle_retarget(args)
         if args.command == "autombist-generate":
             return _handle_autombist_generate(args)
+        if args.command == "list-memories":
+            from faultflow.mbist.memories import list_memories
+
+            print(list_memories(args.spec, args.top, args.pattern), end="")
+            return 0
         if args.command == "add-clock":
             add_clock_to_config(Path(args.config), args.port, off_state=args.off_state)
             print(

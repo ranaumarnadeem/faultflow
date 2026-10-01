@@ -1,0 +1,21 @@
+# The autoMBIST config the collar fixture tests/fixtures/autombist/input_demo_8x16_scn4m
+# was generated from (openMBIST's config.yml).
+memory_name: "input_demo_8x16_scn4m"
+wrapper_module_name: "input_demo_8x16_scn4m_mbist"
+addr_width: 4
+data_width: 8
+we_active_low: true
+# input_demo_8x16_scn4m.v drives dout0 via a negedge-triggered read with a
+# small explicit delay (completing well within the issue cycle), not the
+# 1-full-cycle synchronous latency most OpenRAM-style macros have -- the
+# default read_latency=1 makes the MBIST FSM check a cycle too late, after
+# the model's own T_HOLD logic has already reset dout0 to X, causing a
+# spurious bist_fail even with no faults injected. Verified empirically.
+read_latency: 0
+ports:
+  clk: "clk0"
+  addr: "addr0"
+  din: "din0"
+  dout: "dout0"
+  we: "web0"
+  csb: "csb0"

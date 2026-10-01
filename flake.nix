@@ -27,6 +27,7 @@
         ps: with ps; [
           jsonschema
           rich
+          pyyaml
           tkinter
         ];
 
@@ -90,6 +91,7 @@
             black
             flake8
             mypy
+            types-pyyaml
             sphinx
             furo
             myst-parser

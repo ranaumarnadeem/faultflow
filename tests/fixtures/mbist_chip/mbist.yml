@@ -1,0 +1,29 @@
+# MBIST insertion file for the fixture chip: three of its five memories.
+# u_core0.u_mem is configured and u_core1.u_mem (the same `core` module) is not,
+# so inserting needs a copy of `core`; g_bank[1].u_mem stays untested too.
+design:
+  sources: [rtl/core.v, rtl/chip_top.v]
+  libs: [macros/input_demo_8x16_scn4m.v]
+reset: {port: rst_n, active: low}
+jtag: false
+memory_patterns: ["input_demo_*"]
+memories:
+  - name: core0_ram
+    instance: u_core0.u_mem
+    autombist_config: mbist/sram_demo.yml
+    algo: march-c
+    tie: {wmask0: 1, csb1: 1, addr1: 0}
+    share_clock: [clk1]
+    unused_outputs: [dout1]
+  - name: bank0_ram
+    instance: "g_bank[0].u_mem"
+    autombist_config: mbist/sram_demo.yml
+    tie: {wmask0: 1, csb1: 1, addr1: 0}
+    share_clock: [clk1]
+    unused_outputs: [dout1]
+  - name: top_ram
+    instance: u_mem_top
+    autombist_config: mbist/sram_demo.yml
+    tie: {wmask0: 1, csb1: 1, addr1: 0}
+    share_clock: [clk1]
+    unused_outputs: [dout1]

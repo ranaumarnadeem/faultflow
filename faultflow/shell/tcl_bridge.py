@@ -49,6 +49,7 @@ class TclBridge:
             "wrap": self._wrap,
             "retarget": self._retarget,
             "autombist_generate": self._autombist_generate,
+            "list_memories": self._list_memories,
             "WORKERS": self._workers,
             "set_testmode": self._set_testmode,
             "report_testmode": self._report_testmode,
@@ -738,6 +739,36 @@ proc {name} {{args}} {{
                 f"({len(result.nonscan_cells)} instances), graded by ff.py jtag"
             )
         return message
+
+    def _list_memories(self, args: list[str]) -> Any:
+        from faultflow.mbist.memories import list_memories
+
+        values: dict[str, str] = {}
+        patterns: list[str] = []
+        idx = 0
+        while idx < len(args):
+            flag = args[idx]
+            if flag not in ("-top", "-spec", "-pattern"):
+                raise ShellError(
+                    f"list_memories: unknown option {flag!r}",
+                    "CONFIG",
+                    "INVALID_OPTION",
+                )
+            if idx + 1 >= len(args):
+                raise ShellError(
+                    f"list_memories: {flag} requires a value", "CONFIG", "MISSING_ARG"
+                )
+            if flag == "-pattern":
+                patterns.append(args[idx + 1])
+            else:
+                values[flag[1:]] = args[idx + 1]
+            idx += 2
+        for required in ("top", "spec"):
+            if required not in values:
+                raise ShellError(
+                    f"list_memories: -{required} is required", "CONFIG", "MISSING_ARG"
+                )
+        return list_memories(Path(values["spec"]), values["top"], patterns or None)
 
     def _set_testmode(self, args: list[str]) -> Any:
         if len(args) != 1:

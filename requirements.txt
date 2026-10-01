@@ -3,8 +3,10 @@
 # The control plane is otherwise Python standard library only (argparse, configparser,
 # subprocess, sqlite3, hashlib, pathlib, dataclasses). jsonschema validates the coverage
 # and oracle JSON reports against schemas/; if it is absent a built-in shape-check runs
-# instead, so this dependency is recommended but not strictly required.
+# instead, so this dependency is recommended but not strictly required. PyYAML reads a
+# YAML MBIST insertion file (ff.py list-memories); a JSON one needs nothing extra.
 #
 # Doc build dependencies are separate, in docs/requirements.txt.
 jsonschema>=4.0
 rich>=13.0
+PyYAML>=6.0

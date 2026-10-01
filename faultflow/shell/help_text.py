@@ -213,6 +213,25 @@ COMMAND_HELP = {
         "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib -cell_lib "
         "cells/sky130/sky130_fd_sc_hd.json",
     ),
+    "list_memories": CommandHelp(
+        "Project",
+        "list_memories -top NAME -spec PATH [-pattern GLOB ...]",
+        "List a design's memory instances, to help write an MBIST insertion file",
+        "Reads the design the MBIST insertion file names (-spec: its sources, "
+        "macro stubs read as blackboxes, defines and include directories), "
+        "elaborated with Yosys under -top, nothing optimized. Lists every "
+        "instance of a blackbox module whose name matches the file's "
+        "memory_patterns (or -pattern, repeatable), by its instance path "
+        "(u_core.g[0].u_mem), and says whether the file configures it. Each pin "
+        "shows its direction, width and connection: a constant, unconnected, "
+        "a net (and any other pin on the same net), or an output nothing reads. "
+        "For an unconfigured memory it prints an insertion-file entry to paste, "
+        "with its constant inputs as tie, a pin sharing another's net as "
+        "share_clock and unread outputs as unused_outputs -- take the pins your "
+        "autoMBIST config gives a role out of those lists. Never writes a file.",
+        "Yosys on PATH; PyYAML for a YAML insertion file.",
+        "list_memories -top chip_top -spec mbist.yml -pattern sky130_sram_*",
+    ),
     "add_scan": CommandHelp(
         "Scan",
         "add_scan -chains N [-max_length N] [-SI NAME] [-SO NAME] "
