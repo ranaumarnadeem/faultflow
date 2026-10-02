@@ -71,6 +71,8 @@ shown by `help`. Run `help <command>` for the live version of this reference, or
 | `report_clocks` | List declared clock domains (port + off-state) |
 | `add_blackbox INSTANCE` | Model an instance as a test boundary: its inputs become observable (pseudo-PO), its outputs controllable (pseudo-PI). The instance itself is not simulated. Repeat calls accumulate; a duplicate is ignored. |
 | `report_blackbox` | List blackboxed instances |
+| `list_memories -top NAME -spec PATH [-pattern GLOB ...]` | List the memory macro instances an MBIST insertion file names, with their pins and an entry to paste ([MBIST insertion](mbist.md)) |
+| `mbist_insert -top NAME -spec PATH [-out DIR] [-config OFS] [-tap_nonscan]` | Insert MBIST into the design's RTL in place of the configured memories; with `-config`, synthesize it and write its `.ofs` ([MBIST insertion](mbist.md)) |
 | `check_cells [-allow PATTERN]...` | Audit every netlist cell type against the selected PDK cell map; report total/uncovered/memory-like types. Report-only — never aborts the session. `-allow` (repeatable) treats a cell-type glob as an intentional blackbox. |
 
 ### Test mode

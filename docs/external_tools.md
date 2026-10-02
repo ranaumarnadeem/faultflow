@@ -79,7 +79,8 @@ present at `venv/bin/nl2bench`.
 autoMBIST generates memory-BIST wrapper RTL for SRAM macros. faultflow grades the logic
 it adds — the MBIST controller, self-repair, diagnosis and repair-remap logic — with a
 scan test, the memory itself staying a blackbox. faultflow only runs autoMBIST as a
-subprocess and reads the files it writes.
+subprocess and reads the files it writes. To put autoMBIST collars into your own chip's
+RTL in place of its memories, see [MBIST insertion](user_guide/mbist.md).
 
 ```bash
 python3 ff.py autombist-generate --config mbist.yml --out build \

@@ -265,6 +265,35 @@ config file so subsequent `init` / `sim` / etc. runs pick it up.
 | `-c`, `--config PATH` | no | `config.ofs` | Config file to edit |
 | `--off {0,1}` | no | `0` | Clock's inactive level (`0`=active-high/posedge, `1`=negedge) |
 
+## `list-memories`
+
+```bash
+python3 ff.py list-memories --top <top> --spec mbist.yml [--pattern GLOB ...]
+```
+
+List the memory macro instances of the design an MBIST insertion file names, to help
+write it: each instance, whether the file configures it, each pin with what drives or
+reads it, and an entry to paste. `--pattern` (repeatable) replaces the file's
+`memory_patterns`. See [MBIST insertion](mbist.md).
+
+## `mbist-insert`
+
+```bash
+python3 ff.py mbist-insert --top <top> --spec mbist.yml [--out DIR] [-c chip.ofs] [--tap-nonscan]
+```
+
+Insert an autoMBIST collar, in a shell, in place of every memory the insertion file
+configures, keeping the design's hierarchy; with `jtag` in the file, behind a TAP and an
+IJTAG network, with the BIST program. With `-c`, also synthesize the result, its DFT
+frozen, and write `<top>_mbist.ofs` for the scan and JTAG flow; `--tap-nonscan` runs the
+TAP and the network non-scan there. See [MBIST insertion](mbist.md).
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--out DIR` | `mbist_<top>` | Where everything is written |
+| `-c`, `--config PATH` | — | The design's `.ofs`: its liberty names cells no new module may take, synthesizes the result, and is merged into `<top>_mbist.ofs` |
+| `--tap-nonscan` | off | With `jtag` and `-c`: the TAP and the network non-scan in the written `.ofs`, `trst_n` and `tck` held at 0 |
+
 ## `run` (OpenTestability oracle mode)
 
 ```bash
