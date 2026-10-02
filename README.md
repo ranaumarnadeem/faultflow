@@ -146,6 +146,33 @@ python3 ff.py scan-check --top <top> -c config.ofs
 python3 ff.py sim --scan --top <top> -c config.ofs
 ```
 
+## Part of an open-source DFT toolchain
+
+| Tool | What it does |
+|---|---|
+| **faultflow** | ATPG and fault simulation for Yosys gate-level netlists |
+| [OpenTestability](https://github.com/ranaumarnadeem/OpenTestability) | SCOAP/COP testability analysis and test point insertion; feeds reconvergence data to faultflow |
+| [autoMBIST](https://github.com/ranaumarnadeem/autoMBIST) | MBIST, BIRA and BISR generation for OpenRAM memories |
+| [warptap](https://github.com/ranaumarnadeem/warptap) | IEEE 1149.1 / 1687 test-access insertion; retargets faultflow scan patterns to JTAG |
+
+## FAQ
+
+**Is there an open-source ATPG tool?**
+Yes. faultflow generates stuck-at and transition test patterns for gate-level netlists using a SAT solver, and reports fault coverage.
+
+**Can I run ATPG on a Yosys netlist?**
+Yes. faultflow reads technology-mapped Yosys output for sky130 HD and OSU035 cell libraries.
+
+**Does faultflow support scan chains?**
+Yes. It inserts full scan, validates chains structurally and runs scan ATPG, including launch-on-capture and launch-on-shift for transition faults.
+
+**What fault coverage does it reach?**
+See Results above and [docs/benchmarking.md](docs/benchmarking.md); for example, 99.969% stuck-at test coverage on picorv32a with 2,441 patterns.
+
+## Citing
+
+Use the "Cite this repository" button on GitHub or [CITATION.cff](CITATION.cff). A paper describing faultflow is under review; this section will link it once published.
+
 ## Build
 
 ```bash
