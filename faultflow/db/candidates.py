@@ -46,10 +46,10 @@ def load_rejection_reasons(
     recorded against it, this campaign, across every round so far.
 
     Used to decide whether a fault's UNSAT verdict is unambiguously
-    attributable to scan compression (every rejection reason is
-    "compression_unsatisfiable") rather than a mix that could also include a
-    genuine functional/verification failure -- see
-    faultflow.scan.detection_pipeline._is_compression_only_rejected.
+    attributable to scan compaction (every rejection reason is
+    "compaction_indistinguishable") rather than a mix that could also include
+    a genuine functional/verification failure -- see
+    faultflow.scan.detection_pipeline._is_compaction_only_rejected.
     """
     rows = conn.execute(
         """

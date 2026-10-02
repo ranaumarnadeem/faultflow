@@ -227,6 +227,18 @@ wraps the scanned design, which becomes the instance `core_inst`.
 | `scan_enable`, `clock` | the design's | `[compression]` only: the scan enable and clock the decompressor uses |
 | `channel_port` | `tdi` / `tdo` | The name of the channel bus. It can't be a port the design already has, and `ff.py jtag` refuses a TAP pin's name. The `.ofs` `mbist-insert -c` writes for a chip with a TAP sets `comp_si` and `comp_so` unless yours sets them |
 
+The decompressor loads every scan cell from one seed of `channels` bits per
+pattern (a channel value at the start of the load, then the ring generator runs),
+so a compressed design can apply only the loads that seed space spans. `sim --scan`
+generates only those: SAT solves with each scan cell tied to its seed bits
+(launching on shift, each chain's launch-shift bit too), random fill draws random
+seeds, and every pattern is graded and exported as the seed's whole scan-in stream
+(`load_care` names every position). A fault some test detects but no load the
+decompressor makes is `compression_unresolved`: undetected, in the denominator,
+never redundant. Only more channels (a wider seed) widen what it can load; how the
+cells are split into chains doesn't. A campaign graded before this can't be resumed:
+re-run with `--clean`.
+
 ## `[jtag]`
 
 Used by `ff.py jtag` / `run_jtag` (see [Running without the shell](running_without_shell.md)).

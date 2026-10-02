@@ -323,12 +323,13 @@ py::dict solve_fault_atpg(
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
     const std::string& test_mode = "", bool cone_restrict = true,
-    bool incremental = false, int64_t net_index_override = -1) {
+    bool incremental = false, int64_t net_index_override = -1,
+    int seed_width = 0, const atpg::SeedRows& seeded_inputs = {}) {
   const atpg::SolveFaultResult result = atpg::solve_fault_for_db(
       json_path, cell_map_path, db_path, fault_id, blocked_patterns,
       conflict_limit, sat_timeout_seconds, unsupported_policy,
       blackbox_instances, test_mode, cone_restrict, incremental,
-      net_index_override);
+      net_index_override, seed_width, seeded_inputs);
   py::dict out;
   out["result"] = result.result;
   out["vector"] = result.vector;
@@ -428,12 +429,14 @@ py::dict solve_scan_transition_fault_atpg(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    bool cone_restrict = true, int64_t net_index_override = -1) {
+    bool cone_restrict = true, int64_t net_index_override = -1,
+    int seed_width = 0, const atpg::SeedRows& seeded_inputs = {}) {
   const atpg::SolveTransitionResult result =
       atpg::solve_scan_transition_fault_for_db(
           json_path, cell_map_path, db_path, fault_id, blocked_patterns,
           conflict_limit, sat_timeout_seconds, unsupported_policy,
-          blackbox_instances, cone_restrict, net_index_override);
+          blackbox_instances, cone_restrict, net_index_override, seed_width,
+          seeded_inputs);
   py::dict out;
   out["result"] = result.result;
   out["launch"] = result.launch;
@@ -449,13 +452,15 @@ py::dict solve_scan_los_transition_fault_atpg(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    bool cone_restrict = true, int64_t net_index_override = -1) {
+    bool cone_restrict = true, int64_t net_index_override = -1,
+    int seed_width = 0, const atpg::SeedRows& seeded_inputs = {},
+    const atpg::SeedRows& seeded_heads = {}) {
   const atpg::SolveTransitionResult result =
       atpg::solve_scan_los_transition_fault_for_db(
           json_path, cell_map_path, db_path, fault_id, couple_ports,
           head_ppi_ports, blocked_patterns, conflict_limit, sat_timeout_seconds,
           unsupported_policy, blackbox_instances, cone_restrict,
-          net_index_override);
+          net_index_override, seed_width, seeded_inputs, seeded_heads);
   py::dict out;
   out["result"] = result.result;
   out["launch"] = result.launch;
@@ -882,13 +887,14 @@ py::dict simulate_sequence_faults_py(
     const std::vector<std::pair<uint32_t, uint8_t>>& faults,
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances, int sim_threads,
-    bool reference, bool initial_ff_value) {
+    bool reference, bool initial_ff_value, const std::vector<bool>& fault_active) {
   SequenceGradeRequest request;
   request.input_order = input_order;
   request.cycles = cycles;
   request.sample = sample;
   request.observe_outputs = observe_outputs;
   request.initial_ff_value = initial_ff_value;
+  request.fault_active = fault_active;
   request.faults.reserve(faults.size());
   for (const auto& [net_index, fault_type] : faults) {
     request.faults.push_back(SequenceFaultSpec{net_index, fault_type});
@@ -1174,7 +1180,9 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("test_mode") = "", py::arg("cone_restrict") = true,
-        py::arg("incremental") = false, py::arg("net_index_override") = -1);
+        py::arg("incremental") = false, py::arg("net_index_override") = -1,
+        py::arg("seed_width") = 0,
+        py::arg("seeded_inputs") = faultflow::atpg::SeedRows{});
   m.def("verify_fault_candidate", &faultflow::verify_fault_candidate,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("vector"),
@@ -1224,7 +1232,9 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("sat_timeout_seconds") = 10,
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("cone_restrict") = true, py::arg("net_index_override") = -1);
+        py::arg("cone_restrict") = true, py::arg("net_index_override") = -1,
+        py::arg("seed_width") = 0,
+        py::arg("seeded_inputs") = faultflow::atpg::SeedRows{});
   m.def("solve_scan_los_transition_fault_atpg",
         &faultflow::solve_scan_los_transition_fault_atpg, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("db_path"), py::arg("fault_id"),
@@ -1233,7 +1243,10 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("sat_timeout_seconds") = 10,
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("cone_restrict") = true, py::arg("net_index_override") = -1);
+        py::arg("cone_restrict") = true, py::arg("net_index_override") = -1,
+        py::arg("seed_width") = 0,
+        py::arg("seeded_inputs") = faultflow::atpg::SeedRows{},
+        py::arg("seeded_heads") = faultflow::atpg::SeedRows{});
   m.def("verify_transition_candidate", &faultflow::verify_transition_candidate,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("launch"), py::arg("capture"),
@@ -1343,7 +1356,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("faults"), py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("sim_threads") = 1, py::arg("reference") = false,
-        py::arg("initial_ff_value") = false);
+        py::arg("initial_ff_value") = false,
+        py::arg("fault_active") = std::vector<bool>{});
   m.def("list_site_keys", &faultflow::list_site_keys_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{});

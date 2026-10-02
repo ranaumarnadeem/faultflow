@@ -22,6 +22,11 @@ TestVector build_vector(const ParsedGraph& parsed, const CompiledSimGraph& cg,
   if (request.sample.size() != request.cycles.size()) {
     throw std::runtime_error("sequence grade: sample needs one flag per cycle");
   }
+  if (!request.fault_active.empty() &&
+      request.fault_active.size() != request.cycles.size()) {
+    throw std::runtime_error(
+        "sequence grade: fault_active needs one flag per cycle (or none)");
+  }
   std::set<int> pi_yids;
   for (int pi : cg.pi_nets) {
     pi_yids.insert(cg.compiled_to_yosys[pi]);
@@ -45,6 +50,7 @@ TestVector build_vector(const ParsedGraph& parsed, const CompiledSimGraph& cg,
     }
     TestCycle cycle;
     cycle.sample_outputs = request.sample[c];
+    cycle.fault_active = request.fault_active.empty() || request.fault_active[c];
     for (size_t i = 0; i < input_yids.size(); ++i) {
       cycle.inputs[input_yids[i]] = values[i];
     }

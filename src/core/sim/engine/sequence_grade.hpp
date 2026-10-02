@@ -22,6 +22,9 @@ struct SequenceGradeRequest {
   std::vector<std::string> observe_outputs;   // output names, one bit each
   std::vector<SequenceFaultSpec> faults;
   bool initial_ff_value = false;              // every flop's value before cycle 0
+  // Per cycle: is the fault injected (a scan protocol keeps it out of the
+  // preamble and the load)? Empty: every cycle.
+  std::vector<bool> fault_active;
 };
 
 struct SequenceGradeResult {

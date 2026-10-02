@@ -383,6 +383,12 @@ class Runner:
             # set, so a design without them keeps its config_hash.
             payload["scan_nonscan_cells"] = list(self.cfg.scan.nonscan_cells)
             payload["scan_hold"] = [list(pair) for pair in self.cfg.scan.hold]
+        if self.cfg.compression.enabled:
+            # Compressed, every pattern is a decompressor seed's load
+            # (scan.detection_pipeline._decompressed); a campaign graded before
+            # -- random loads, care bits checked after the fact -- credits
+            # tests the chip can't apply, so it must not resume into this one.
+            payload["compression_atpg"] = "seeded"
         return payload
 
     def _rendered_yosys_script(self, source: Path | None = None) -> str:

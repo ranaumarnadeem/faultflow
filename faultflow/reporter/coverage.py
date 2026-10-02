@@ -132,9 +132,10 @@ def _undetected_reason(
     hold_unresolved: bool = False,
 ) -> str:
     """Classify an undetected fault. protocol_unresolved (the simulator could not
-    resolve it) is structural; compression_unresolved means every witness SAT
-    could find for this fault was rejected as undeliverable through the scan
-    compressor (see detection_pipeline._is_compression_only_rejected) --
+    resolve it) is structural; compression_unresolved means no load the scan
+    decompressor can make tests the fault, though a test exists (SAT UNSAT
+    through the decompressor, not without it -- see the UNSAT branch of
+    detection_pipeline.run_progressive_scan_atpg; Tessent's AU.EDT) --
     compaction_unresolved means every witness SAT could find detected this
     fault through the real, uncompacted scan-out ports, but its diff aliased
     to zero at every compacted output bit, every cycle (see

@@ -149,10 +149,10 @@ class ScanPattern:
     load_seqs: dict[int, list[bool]]
     capture_pi_values: dict[str, bool]
     expected_unload: dict[int, list[bool]]
-    # (chain_id, cycle) positions of load_seqs that a compression-satisfiability
-    # check (detection_pipeline.py's _check_compression_satisfiable) proved are
-    # actually required for detection, as opposed to don't-care fill -- None
-    # when that check never ran (no compression, or a random-fill candidate).
+    # (chain_id, cycle) positions of load_seqs a tester must reproduce. With
+    # scan compression every position: the pattern is one decompressor seed's
+    # whole scan-in stream (detection_pipeline._decompressed), so any seed
+    # making them all is that load. None without compression.
     load_care: tuple[tuple[int, int], ...] | None = None
     # Per chain, parallel to expected_unload: False where the expected bit is
     # don't-care -- a flop that captured a blackbox output's unknown value
