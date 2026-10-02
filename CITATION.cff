@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+message: "If you use faultflow in academic or professional work, please cite it as below."
+title: faultflow
+abstract: >-
+  An open-source ATPG and fault simulation engine for Yosys gate-level
+  netlists. SAT-based test generation with CaDiCaL, stuck-at and transition
+  fault models, scan insertion and scan ATPG, IEEE 1500 core wrapping and
+  hierarchical SoC coverage aggregation.
+type: software
+authors:
+  - given-names: Rana Umar
+    family-names: Nadeem
+    email: rana.umar.nadeem21@gmail.com
+    orcid: "https://orcid.org/0009-0008-9880-0116"
+version: 0.1.0
+license: Apache-2.0
+repository-code: "https://github.com/ranaumarnadeem/faultflow"
+url: "https://ranaumarnadeem.github.io/faultflow/"
+keywords:
+  - ATPG
+  - automatic test pattern generation
+  - fault simulation
+  - design for test
+  - DFT
+  - stuck-at fault
+  - transition fault
+  - scan insertion
+  - SAT solver
+  - Yosys
+  - sky130
+  - open-source EDA
+# doi: add after minting a Zenodo DOI from a tagged GitHub release
+# preferred-citation: add the paper here once accepted
