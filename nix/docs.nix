@@ -17,6 +17,7 @@ let
       sphinx-copybutton
       sphinx-design
       sphinxcontrib-mermaid
+      sphinx-sitemap
     ]
   );
 in
@@ -25,12 +26,14 @@ stdenv.mkDerivation {
   inherit version;
 
   # docs/contributing.md is a `{include} ../CONTRIBUTING.md` shim, so the
-  # root-level CONTRIBUTING.md must be in the sandbox alongside docs/.
+  # root-level CONTRIBUTING.md must be in the sandbox alongside docs/; and
+  # docs/conf.py reads the release from ../VERSION.
   src = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.unions [
       ../docs
       ../CONTRIBUTING.md
+      ../VERSION
     ];
   };
 
