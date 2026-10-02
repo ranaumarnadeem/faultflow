@@ -54,6 +54,22 @@ Pattern counts are not recorded for these runs.
 
 ¹ Restarted mid-run after diagnosing a WSL 9P-bridge I/O bottleneck: the SQLite DB had grown large on `/mnt/c` and was moved to native ext4 storage, keeping all prior progress. The run fully converged (`atpg_terminal=COMPLETE`, 0 timeouts, 0 unknowns) and was stopped after all 27,988 faults resolved (0 undetected), once a subsequent vector-compaction phase began growing the DB unboundedly (29 GB in <1 h) with no further effect on the coverage numerator or denominator.
 
+## How faultflow compares
+
+| | faultflow | Fault (AUCOHL) | Atalanta | Commercial (TetraMAX/TestMAX, Modus, Tessent) |
+|---|---|---|---|---|
+| License | Apache-2.0 | Apache-2.0 | Academic | Proprietary |
+| Input | Yosys gate-level netlist | Gate-level Verilog netlist | ISCAS bench | Industry netlists |
+| Test generation | SAT (CaDiCaL) + random | Random/LFSR + Quaigh, Atalanta or PODEM | FAN | Proprietary |
+| Stuck-at | Yes | Yes | Yes | Yes |
+| Transition (LOC/LOS) | Yes | No | No | Yes; LOC/LOS: Unverified |
+| Scan insertion | Yes | Yes | No | Yes |
+| IEEE 1500 wrapper | Yes | No | No | Yes |
+| Hierarchical SoC roll-up | Yes | No | No | Tessent: Yes; TestMAX, Modus: Unverified |
+| Scan compression | Yes | No | No | Yes |
+
+Fault and Atalanta were checked against their source and documentation, and the commercial tools against vendor product pages and datasheets (October 2026); Unverified marks what public sources do not confirm. Fault inserts an IEEE 1149.1 JTAG TAP, which is not an IEEE 1500 wrapper. The commercial column covers each vendor's DFT product family: scan insertion, compression and core wrapping ship as companion tools to the ATPG engine.
+
 ## Quick start
 
 ```bash
