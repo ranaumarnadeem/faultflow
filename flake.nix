@@ -150,6 +150,9 @@
                 ./schemas
                 ./cells
                 ./tests/benchmarks
+                # test_cell_liberty.py checks each cell against its Liberty
+                # function with the parser in tools/derive_gate_truth_tables.py.
+                ./tools
                 # Already git-tracked (see .gitignore's comment) —
                 # test_flow_service.py, test_serial_simulation.py, and
                 # others read it directly.
