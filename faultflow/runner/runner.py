@@ -688,11 +688,43 @@ class Runner:
         )
         manifest_path = self._scan_manifest_path()
         tech_note = f" sky130={sky130_v}" if do_techmap else " sky130=skipped"
+        sdc = self._write_inserted_sdc(generic_json, result.top)
+        sdc_note = f" sdc={sdc}" if sdc is not None else ""
         return (
             f"scan complete top={result.top} chains={result.chain_count} "
             f"cells={result.cell_count} generic={generic_json} "
-            f"techmap={techmap_v}{tech_note} manifest={manifest_path}"
+            f"techmap={techmap_v}{tech_note} manifest={manifest_path}{sdc_note}"
         )
+
+    def _write_inserted_sdc(self, generic_json: Path, top: str) -> Path | None:
+        """For a chip mbist-insert built ([autombist] manifest): the SDC of the
+        crossings it inserted, by pin of the scanned netlist (<top>_scan.sdc beside
+        <top>_scan.v) -- None when the manifest names no synchronizer."""
+        if self.cfg.autombist_manifest is None:
+            return None
+        from faultflow.integrations.autombist import load_autombist_manifest
+        from faultflow.mbist.netlist_sdc import (
+            NetlistSdcError,
+            netlist_crossings,
+            netlist_sdc,
+        )
+
+        data = json.loads(generic_json.read_text(encoding="utf-8"))
+        try:
+            found = netlist_crossings(
+                data["modules"][top],
+                _load_json_object(resolve_scan_cell_map(self.cfg)),
+                load_autombist_manifest(self.cfg.autombist_manifest),
+            )
+        except NetlistSdcError as exc:
+            raise RunnerError(str(exc)) from exc
+        if not found:
+            return None
+        path = self.cfg.output_dir / f"{top}_scan.sdc"
+        path.write_text(
+            netlist_sdc(self.cfg.scan_verilog_path.name, found), encoding="utf-8"
+        )
+        return path
 
     def scan_status(self) -> str:
         manifest_path = self._scan_manifest_path()

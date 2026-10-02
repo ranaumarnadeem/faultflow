@@ -1,0 +1,140 @@
+"""The SDC of the crossings mbist-insert inserted, written from the netlist the chip
+became -- the scanned netlist FaultFlow hands off -- every object a pin of one of
+its cells. (sdc.py writes the RTL version, by hierarchical pin of the inserted
+RTL.)
+
+The chip's manifest names each synchronizer by its instance: each shell's reset
+synchronizer (<shell>__u_rst_sync) and control synchronizers
+(<shell>__u_sync_<port>), and with JTAG the READ TDRs' capture synchronizers
+(bc1_shift_only_sync) and the control TDRs' clear synchronizer (tck_reset_sync).
+Synthesis made each a few flops named under its instance, and stitching and the
+scan techmap keep those names. A data crossing enters the first flop: the one
+whose D its synchronizer doesn't drive. A reset crossing enters every flop's
+clear or preset. A synchronizer with no flop to name is refused: every object
+must resolve in the netlist.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
+
+from faultflow.control_trace import Netlist, one_net
+from faultflow.integrations.autombist import (
+    AutombistInstance,
+    AutombistManifest,
+    AutombistTestAccessInstance,
+)
+from faultflow.mbist.manifest import SHELL_CATEGORY
+
+RESET_SYNC = "u_rst_sync"
+_SYNC_PREFIX = "u_sync_"
+_READ_SYNC = "bc1_shift_only_sync"
+_CLEAR_SYNC = "tck_reset_sync"
+
+
+class NetlistSdcError(RuntimeError):
+    """A synchronizer the manifest names has no flop to name in the netlist."""
+
+
+@dataclass(frozen=True)
+class NetlistCrossing:
+    pins: tuple[str, ...]  # "<cell>/<pin>" of the netlist
+    what: str
+
+
+def synchronizers(manifest: AutombistManifest) -> list[tuple[str, str, str]]:
+    """(instance, "data" | "reset", what crosses) of each synchronizer the
+    manifest names."""
+    instances: list[AutombistInstance | AutombistTestAccessInstance] = list(
+        manifest.instances
+    )
+    if manifest.test_access is not None:
+        instances += manifest.test_access.instances
+    found: dict[str, tuple[str, str, str]] = {}
+    for inst in instances:
+        path = inst.hierarchical_path
+        module = inst.module_type.lstrip("\\")
+        leaf = path.rpartition("__")[2]
+        if inst.category == SHELL_CATEGORY and leaf == RESET_SYNC:
+            found[path] = (path, "reset", "the chip reset, into clk")
+        elif inst.category == SHELL_CATEGORY and leaf.startswith(_SYNC_PREFIX):
+            port = leaf[len(_SYNC_PREFIX) :]
+            found[path] = (path, "data", f"{port}, into clk")
+        elif module == _READ_SYNC:
+            found[path] = (path, "data", "a status bit, into TCK")
+        elif module == _CLEAR_SYNC:
+            found[path] = (path, "reset", "the chip reset, into TCK")
+    return [found[path] for path in sorted(found)]
+
+
+def netlist_crossings(
+    module: Mapping[str, Any],
+    cell_map: Mapping[str, Any],
+    manifest: AutombistManifest,
+    *,
+    prefix: str = "",
+) -> list[NetlistCrossing]:
+    """Each synchronizer's crossing as pins of `module`, whose cells carry the
+    chip's names behind `prefix` (a compressed design's core instance)."""
+    netlist = Netlist(module, cell_map)
+    flops = netlist.flops()
+    found: list[NetlistCrossing] = []
+    for path, kind, what in synchronizers(manifest):
+        inside = f"{prefix}{path}__"
+        members = [f for f in flops if f.instance.startswith(inside)]
+        if not members:
+            raise NetlistSdcError(
+                f"no flop of the synchronizer {path} in the netlist (cells named "
+                f"{inside}*)"
+            )
+        if kind == "reset":
+            pins = tuple(
+                f"{flop.instance}/{control.pin}"
+                for flop in members
+                for control in flop.controls
+            )
+        else:
+            firsts = []
+            for flop in members:
+                data = str(
+                    ((netlist.entry(flop.instance) or {}).get("ff") or {}).get(
+                        "data", "D"
+                    )
+                )
+                net = one_net(netlist.cells[flop.instance]["connections"].get(data))
+                driver = netlist.drivers.get(net) if isinstance(net, int) else None
+                if driver is None or not driver[0].startswith(inside):
+                    firsts.append(f"{flop.instance}/{data}")
+            pins = tuple(firsts)
+        if len(pins) == 0 or (kind == "data" and len(pins) != 1):
+            raise NetlistSdcError(
+                f"the synchronizer {path} has {len(pins)} flops a {kind} crossing "
+                "enters in the netlist"
+            )
+        found.append(NetlistCrossing(pins, what))
+    return found
+
+
+def _pattern(name: str) -> str:
+    """`name` as a get_pins pattern matching only itself."""
+    return re.sub(r"([\\\[\]*?])", r"\\\1", name)
+
+
+def netlist_sdc(netlist_name: str, found: Sequence[NetlistCrossing]) -> str:
+    lines = [
+        f"# Generated by FaultFlow for {netlist_name}: the clock-domain crossings",
+        "# mbist-insert inserted, each into the first flop of a two-flop synchronizer,",
+        "# by pin of that netlist. This says what was inserted. It is not a CDC",
+        "# analysis, and timing sign-off stays the designer's.",
+    ]
+    for crossing in found:
+        objects = " ".join(_pattern(pin) for pin in crossing.pins)
+        lines += [
+            "",
+            f"# {crossing.what}",
+            f"set_false_path -to [get_pins {{{objects}}}]",
+        ]
+    return "\n".join(lines) + "\n"
