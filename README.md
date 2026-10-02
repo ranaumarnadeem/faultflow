@@ -1,11 +1,16 @@
 # faultflow
 
-Gate-level stuck-at and transition fault simulator with native SAT ATPG, for
-post-synthesis netlists from Yosys. Driven from an interactive Tcl shell
-(`python3 ff.py shell`) or a batch CLI (`python3 ff.py <command>`) for scripted,
-one-shot runs.
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-github%20pages-2ea44f)](https://ranaumarnadeem.github.io/faultflow/)
+[![CI](https://github.com/ranaumarnadeem/faultflow/actions/workflows/nix.yml/badge.svg)](https://github.com/ranaumarnadeem/faultflow/actions/workflows/nix.yml)
 
-Full documentation: https://ranaumarnadeem.github.io/faultflow/
+**faultflow is an open-source Automatic Test Pattern Generation (ATPG) and fault simulation engine for post-synthesis gate-level netlists from Yosys, with SAT-based test generation, stuck-at and transition fault models, scan insertion and IEEE 1500 core wrapping.**
+
+Manufacturing test of digital chips depends on ATPG, and the established tools (Synopsys TetraMAX/TestMAX, Cadence Modus, Siemens Tessent) are commercial. faultflow is a design-for-test (DFT) engine for open flows: it reads a Yosys-synthesized netlist, inserts scan, generates and compacts test patterns with a CaDiCaL SAT solver, and reports fault coverage. It runs from an interactive Tcl shell (`python3 ff.py shell`) or a batch CLI (`python3 ff.py <command>`).
+
+- Documentation: https://ranaumarnadeem.github.io/faultflow/
+- Benchmarks: [docs/benchmarking.md](docs/benchmarking.md)
+- Engine: C++17 core, Python bridge (pybind11), CaDiCaL SAT solver
 
 ## Features
 
