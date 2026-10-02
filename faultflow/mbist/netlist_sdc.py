@@ -114,7 +114,7 @@ def netlist_crossings(
                 f"the synchronizer {path} has {len(pins)} flops a {kind} crossing "
                 "enters in the netlist"
             )
-        found.append(NetlistCrossing(pins, what))
+        found.append(NetlistCrossing(pins, f"{path}: {what}"))
     return found
 
 

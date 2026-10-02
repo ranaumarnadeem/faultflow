@@ -213,6 +213,20 @@ Written by `ff.py autombist-generate` (see [External tools](../external_tools.md
 |---|---|---|
 | `manifest` | path | The autoMBIST instance manifest the netlist was built from. The coverage report then breaks detected faults, the denominator, `blackbox_unresolved` and `hold_unresolved` down by the manifest's instance categories. Report-only: not part of the campaign fingerprint |
 
+## `[compression]` and `[compaction]`
+
+Scan test-pattern compression (`ff.py scan-compress`: a ring-generator and
+phase-shifter decompressor in front of the scan inputs) and response compaction
+(`ff.py scan-compact`: an XOR-tree space compactor behind the scan outputs). Each
+wraps the scanned design, which becomes the instance `core_inst`.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Insert it |
+| `channels` | `8` | External channels. Compression: an LFSR width, 8, 16, 32 or 64 |
+| `scan_enable`, `clock` | the design's | `[compression]` only: the scan enable and clock the decompressor uses |
+| `channel_port` | `tdi` / `tdo` | The name of the channel bus. It can't be a port the design already has, and `ff.py jtag` refuses a TAP pin's name. The `.ofs` `mbist-insert -c` writes for a chip with a TAP sets `comp_si` and `comp_so` unless yours sets them |
+
 ## `[jtag]`
 
 Used by `ff.py jtag` / `run_jtag` (see [Running without the shell](running_without_shell.md)).

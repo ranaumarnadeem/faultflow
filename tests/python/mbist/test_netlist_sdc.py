@@ -75,11 +75,12 @@ def test_each_crossing_enters_its_synchronizer_by_its_own_pins() -> None:
     rst = f"{SHELL}__u_rst_sync__$auto$ff.cc:337:slice$"
     assert found == [
         NetlistCrossing(
-            (f"{rst}1/RESET_B", f"{rst}2/RESET_B"), "the chip reset, into clk"
+            (f"{rst}1/RESET_B", f"{rst}2/RESET_B"),
+            f"{SHELL}__u_rst_sync: the chip reset, into clk",
         ),
         NetlistCrossing(
             (f"{SHELL}__u_sync_test_mode__$auto$ff.cc:337:slice$7/D",),
-            "test_mode, into clk",
+            f"{SHELL}__u_sync_test_mode: test_mode, into clk",
         ),
     ]
     sdc = netlist_sdc("chip_top_scan.v", found)

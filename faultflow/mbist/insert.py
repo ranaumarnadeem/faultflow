@@ -776,7 +776,12 @@ def insert_command(
     if ofs is not None:
         base = read_base(ofs)
         if loaded.reset is not None:
-            check_base(base, loaded.reset, tap_nonscan=tap_nonscan)
+            check_base(
+                base,
+                loaded.reset,
+                tap_nonscan=tap_nonscan,
+                tap_ports=TAP_PORTS if loaded.jtag is not None else (),
+            )
         liberty = ofs_liberty(ofs)
         if liberty is not None:
             taken = liberty_cells(liberty)
@@ -869,6 +874,7 @@ def _synthesize_for_flow(
         nonscan_cells=cells,
         holds=scan_holds(spec.reset, tap_nonscan=tap_nonscan),
         manifest=result.manifest,
+        tap=result.jtag is not None,
     )
 
 

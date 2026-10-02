@@ -172,3 +172,65 @@ def test_a_control_tdr_bits_branch_into_its_synchronizer_per_fault(
     assert rows[(branch, "sa1")][0] == "detected"
     assert rows[(branch, "sa0")][1] == 1
     assert rows[(stem, "sa0")][2] == rows[(stem, "sa1")][2] == "jtag"
+
+
+@pytest.fixture(scope="module")
+def compressed(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Any]:
+    """The same flow with scan compression: init, scan, scan-check, scan-compress,
+    sim --scan and ff.py jtag. The .ofs names the channels away from the TAP."""
+    from faultflow.cli import main
+    from faultflow.mbist.insert import insert_command
+    from faultflow.runner.runner import _load_core
+
+    if _load_core() is None:
+        pytest.skip("needs the C++ core")
+    skip_unless_warptap("warptap.tap_integrity")
+    tmp = tmp_path_factory.mktemp("compressed_flow")
+    spec = chip_copy(tmp, lambda t: t.replace("jtag: false", "jtag: {tck_max_mhz: 10}"))
+    base = tmp / "chip.ofs"
+    # Random patterns only: through 8 channels into chains of five flops, most SAT
+    # candidates don't encode, and this test is about names and JTAG.
+    base.write_text(
+        f"[design]\ncell_lib = {CELL_MAP}\nliberty = {LIBERTY}\n\n"
+        "[scan]\nchains = 16\n\n[compression]\nenabled = true\nchannels = 8\n\n"
+        "[atpg]\nrandom_only = true\n",
+        encoding="utf-8",
+    )
+    out = tmp / "out"
+    insert_command(spec, TOP, out, base, tap_nonscan=True)
+    ofs = out / f"{TOP}_mbist.ofs"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(out)
+        for step in (
+            ["init"],
+            ["scan"],
+            ["scan-check"],
+            ["scan-compress"],
+            ["sim", "--scan"],
+            ["jtag"],
+        ):
+            assert main([*step, "--top", TOP, "-c", str(ofs)]) == 0, step
+    return out, load_config(ofs, TOP)
+
+
+def test_with_compression_the_sdc_names_the_core_and_jtag_still_grades(
+    compressed: tuple[Path, Any],
+) -> None:
+    """The compressed netlist holds the chip as core_inst: its SDC names the same
+    crossings there. The channel bus is comp_si, beside the TAP's tdi and tdo,
+    and ff.py jtag grades the chip as before."""
+    out, cfg = compressed
+    assert cfg.compression.channel_port == "comp_si"
+    composed = json.loads(
+        (cfg.output_dir / f"{TOP}_compressed.json").read_text(encoding="utf-8")
+    )
+    module = composed["modules"][f"{TOP}_compressed"]
+    assert {"comp_si", "tdi", "tdo"} <= set(module["ports"])
+    crossings = _sdc_pins(cfg.output_dir / f"{TOP}_compressed.sdc")
+    assert len(crossings) == 16
+    for pins in crossings:
+        for pin in pins:
+            cell, name = pin.rsplit("/", 1)
+            assert cell.startswith("core_inst__"), pin
+            assert name in module["cells"][cell]["connections"], pin
+    assert _report(cfg, out)["jtag"]["detected"] > 0

@@ -9,6 +9,7 @@ import fnmatch
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -178,3 +179,44 @@ def test_the_inserted_chips_ofs_scans_it(
     assert all(
         name.startswith("warptap_") or "__u_rst_sync__" in name for name in nonscan
     )
+
+
+@pytest.mark.unit
+def test_with_a_tap_the_channels_are_named_away_from_its_pins(tmp_path: Path) -> None:
+    """The defaults, tdi and tdo, are TAP pins: the .ofs names the channels
+    unless the user's does, and a user's name that is a TAP pin is refused."""
+    from faultflow.mbist.jtag import TAP_PORTS
+
+    netlist = tmp_path / "composed.json"
+    netlist.write_text("{}", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+
+    def written(text: str) -> Any:
+        ofs = write_inserted_ofs(
+            tmp_path / "chip_mbist.ofs",
+            _base(tmp_path, text),
+            netlist=netlist,
+            output_root=tmp_path / "output",
+            blackboxes=[],
+            renamed=[],
+            clock_ports=["clk"],
+            chains=1,
+            nonscan_cells=[],
+            holds=[("rst_n", 1)],
+            manifest=manifest,
+            tap=True,
+        )
+        return load_config(ofs, "chip")
+
+    cfg = written("[design]\nnetlist = x.json\n")
+    assert (cfg.compression.channel_port, cfg.compaction.channel_port) == (
+        "comp_si",
+        "comp_so",
+    )
+    assert written("[compaction]\nchannel_port = out_ch\n").compaction.channel_port == (
+        "out_ch"
+    )
+    clash = _base(tmp_path, "[compression]\nchannel_port = tdi\n")
+    with pytest.raises(InsertError, match="channels tdi, a pin of the TAP"):
+        check_base(clash, RESET, tap_nonscan=False, tap_ports=TAP_PORTS)

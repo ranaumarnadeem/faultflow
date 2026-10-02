@@ -199,7 +199,8 @@ python3 ff.py jtag --top <top> -c config.ofs [--program FILE] [--verify] [--forc
 Grade the scan campaign's stuck-at faults with a JTAG network-integrity program played
 through the TAP of the scanned netlist and compared at TDO, and report the credit beside
 the scan coverage (the `jtag` and `combined` blocks, see [Outputs](outputs.md)). Needs a
-completed `sim --scan`; stuck-at only, and not with `[compression]` or `[compaction]`.
+completed `sim --scan`; stuck-at only. With `[compression]` or `[compaction]`, their
+`channel_port` can't be a TAP pin's name (the defaults, `tdi` and `tdo`, are).
 
 The program is a `warptap-tck-program` JSON file (`--program` or `[jtag] program`), or,
 for a design built from an autoMBIST manifest with `test_access`, it's built from that

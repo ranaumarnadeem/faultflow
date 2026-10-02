@@ -688,7 +688,12 @@ class Runner:
         )
         manifest_path = self._scan_manifest_path()
         tech_note = f" sky130={sky130_v}" if do_techmap else " sky130=skipped"
-        sdc = self._write_inserted_sdc(generic_json, result.top)
+        sdc = self._write_inserted_sdc(
+            generic_json,
+            result.top,
+            self.cfg.output_dir / f"{result.top}_scan.sdc",
+            self.cfg.scan_verilog_path.name,
+        )
         sdc_note = f" sdc={sdc}" if sdc is not None else ""
         return (
             f"scan complete top={result.top} chains={result.chain_count} "
@@ -696,10 +701,20 @@ class Runner:
             f"techmap={techmap_v}{tech_note} manifest={manifest_path}{sdc_note}"
         )
 
-    def _write_inserted_sdc(self, generic_json: Path, top: str) -> Path | None:
+    def _write_inserted_sdc(
+        self,
+        netlist_json: Path,
+        top: str,
+        sdc: Path,
+        netlist_name: str,
+        *,
+        prefix: str = "",
+    ) -> Path | None:
         """For a chip mbist-insert built ([autombist] manifest): the SDC of the
-        crossings it inserted, by pin of the scanned netlist (<top>_scan.sdc beside
-        <top>_scan.v) -- None when the manifest names no synchronizer."""
+        crossings it inserted, by pin of a netlist it became -- the scanned one
+        (<top>_scan.sdc beside <top>_scan.v), or a compressed or compacted one,
+        the chip under `prefix` -- None when the manifest names no
+        synchronizer."""
         if self.cfg.autombist_manifest is None:
             return None
         from faultflow.integrations.autombist import load_autombist_manifest
@@ -709,22 +724,20 @@ class Runner:
             netlist_sdc,
         )
 
-        data = json.loads(generic_json.read_text(encoding="utf-8"))
+        data = json.loads(netlist_json.read_text(encoding="utf-8"))
         try:
             found = netlist_crossings(
                 data["modules"][top],
                 _load_json_object(resolve_scan_cell_map(self.cfg)),
                 load_autombist_manifest(self.cfg.autombist_manifest),
+                prefix=prefix,
             )
         except NetlistSdcError as exc:
             raise RunnerError(str(exc)) from exc
         if not found:
             return None
-        path = self.cfg.output_dir / f"{top}_scan.sdc"
-        path.write_text(
-            netlist_sdc(self.cfg.scan_verilog_path.name, found), encoding="utf-8"
-        )
-        return path
+        sdc.write_text(netlist_sdc(netlist_name, found), encoding="utf-8")
+        return sdc
 
     def scan_status(self) -> str:
         manifest_path = self._scan_manifest_path()
@@ -861,6 +874,7 @@ class Runner:
                 workdir=workdir,
                 clock_port=clock_port,
                 scan_enable_port=scan_enable_port,
+                channel_port=self.cfg.compression.channel_port,
             )
         except (ScanError, ValueError) as exc:
             raise RunnerError(str(exc)) from exc
@@ -882,7 +896,7 @@ class Runner:
             "composed_json_hash": _hash_file(output_json),
             "clock_port": clock_port,
             "scan_enable_port": scan_enable_port,
-            "channel_port": "tdi",
+            "channel_port": self.cfg.compression.channel_port,
             "polynomial": {
                 "width": compression_map.polynomial.width,
                 "taps": sorted(compression_map.polynomial.taps),
@@ -903,9 +917,17 @@ class Runner:
             raise RunnerError(
                 "compression structural check failed: " + "; ".join(structural.errors)
             )
+        sdc = self._write_inserted_sdc(
+            output_json,
+            f"{core_top}_compressed",
+            self.cfg.output_dir / f"{self.cfg.top}_compressed.sdc",
+            output_json.name,
+            prefix="core_inst__",
+        )
         return (
             f"scan compress complete top={core_top} "
             f"channels={compression_map.num_channels} composed={output_json}"
+            + (f" sdc={sdc}" if sdc is not None else "")
         )
 
     def scan_compact(self) -> str:
@@ -963,6 +985,7 @@ class Runner:
                 self.cfg.liberty,
                 output_json,
                 workdir=workdir,
+                channel_port=self.cfg.compaction.channel_port,
             )
         except (ScanError, ValueError) as exc:
             raise RunnerError(str(exc)) from exc
@@ -977,7 +1000,7 @@ class Runner:
             "enabled": True,
             "num_outputs": compaction_map.num_outputs,
             "scan_out_ports": scan_out_ports,
-            "channel_port": "tdo",
+            "channel_port": self.cfg.compaction.channel_port,
             "fanout": compaction_map.fanout,
             "composed_json": str(output_json),
             "composed_top": f"{core_top}_compacted",
@@ -998,9 +1021,17 @@ class Runner:
             raise RunnerError(
                 "compaction structural check failed: " + "; ".join(structural.errors)
             )
+        sdc = self._write_inserted_sdc(
+            output_json,
+            f"{core_top}_compacted",
+            self.cfg.output_dir / f"{self.cfg.top}_compacted.sdc",
+            output_json.name,
+            prefix="core_inst__",
+        )
         return (
             f"scan compact complete top={core_top} "
             f"channels={compaction_map.num_outputs} composed={output_json}"
+            + (f" sdc={sdc}" if sdc is not None else "")
         )
 
     def _scan_vector_source(

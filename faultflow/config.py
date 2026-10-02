@@ -153,12 +153,20 @@ def _optional_int(parser: ConfigParser, section: str, key: str) -> int | None:
     return int(value) if value else None
 
 
+def _channel_port(parser: ConfigParser, section: str, default: str) -> str:
+    name = parser.get(section, "channel_port", fallback=default).strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ConfigError(f"[{section}] channel_port must be a port name: {name!r}")
+    return name
+
+
 def _compression_config(parser: ConfigParser) -> "CompressionConfig":
     cfg = CompressionConfig(
         enabled=_bool(parser, "compression", "enabled", False),
         channels=_int(parser, "compression", "channels", 8),
         scan_enable=parser.get("compression", "scan_enable", fallback=""),
         clock=parser.get("compression", "clock", fallback=""),
+        channel_port=_channel_port(parser, "compression", "tdi"),
     )
     if cfg.enabled:
         try:
@@ -172,6 +180,7 @@ def _compaction_config(parser: ConfigParser) -> "CompactionConfig":
     cfg = CompactionConfig(
         enabled=_bool(parser, "compaction", "enabled", False),
         channels=_int(parser, "compaction", "channels", 8),
+        channel_port=_channel_port(parser, "compaction", "tdo"),
     )
     if cfg.enabled and cfg.channels <= 0:
         raise ConfigError("[compaction] channels must be positive")
@@ -320,12 +329,15 @@ class CompressionConfig:
     config-load time, not deferred to insertion). ``scan_enable``/``clock``
     empty means "reuse the design's existing scan-enable/clock port names"
     (``ScanConfig.scan_enable`` / the design's declared ``ClockSpec.port``).
+    ``channel_port`` names the external channel input bus; it can't be a port of
+    the design.
     """
 
     enabled: bool = False
     channels: int = 8
     scan_enable: str = ""
     clock: str = ""
+    channel_port: str = "tdi"
 
 
 @dataclass(frozen=True)
@@ -334,11 +346,13 @@ class CompactionConfig:
     ``faultflow.scan.compaction``). ``channels`` is the number of external
     compacted output channels -- independent of ``[compression]``'s channel
     count, since a design can decompress its inputs without compacting its
-    outputs, or vice versa.
+    outputs, or vice versa. ``channel_port`` names the compacted output bus; it
+    can't be a port of the design.
     """
 
     enabled: bool = False
     channels: int = 8
+    channel_port: str = "tdo"
 
 
 @dataclass(frozen=True)

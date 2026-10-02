@@ -235,11 +235,16 @@ def run_jtag(
         raise JtagError(
             "ff.py jtag grades stuck-at faults only; fault_model is transition"
         )
-    if cfg.compression.enabled or cfg.compaction.enabled:
-        raise JtagError(
-            "ff.py jtag can't grade a design with [compression] or [compaction]: "
-            "their channel ports are named tdi/tdo, the TAP's own port names"
-        )
+    taps = {cfg.jtag.tck, cfg.jtag.tms, cfg.jtag.tdi, cfg.jtag.trst_n, cfg.jtag.tdo}
+    for section, settings in (
+        ("compression", cfg.compression),
+        ("compaction", cfg.compaction),
+    ):
+        if settings.enabled and settings.channel_port in taps:
+            raise JtagError(
+                f"[{section}] channel_port is {settings.channel_port}, a TAP port's "
+                f"name: name the {section} channels something else"
+            )
     core = _load_core()
     if core is None:
         raise JtagError("C++ extension _faultflow_core is required")

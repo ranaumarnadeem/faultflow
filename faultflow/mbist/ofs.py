@@ -23,6 +23,9 @@ from faultflow.mbist.spec import ResetSpec
 # The reset synchronizer's instance in every shell (faultflow/mbist/shell.py).
 RESET_SYNC = "u_rst_sync"
 TAP_HOLDS = (("trst_n", 0), ("tck", 0))
+# The scan compression / compaction channels of a chip with a TAP: the defaults,
+# tdi and tdo, are TAP pins.
+CHANNEL_PORTS = (("compression", "comp_si"), ("compaction", "comp_so"))
 _PATH_KEYS = (
     ("design", "cell_lib"),
     ("design", "liberty"),
@@ -58,9 +61,21 @@ def scan_holds(reset: ResetSpec, *, tap_nonscan: bool) -> tuple[tuple[str, int],
 
 
 def check_base(
-    parser: configparser.ConfigParser, reset: ResetSpec, *, tap_nonscan: bool
+    parser: configparser.ConfigParser,
+    reset: ResetSpec,
+    *,
+    tap_nonscan: bool,
+    tap_ports: Sequence[str] = (),
 ) -> None:
-    """Refuse a user .ofs that contradicts the scan holds the inserted chip needs."""
+    """Refuse a user .ofs that contradicts the scan holds the inserted chip needs,
+    or that names scan compression or compaction channels like a TAP port."""
+    for section, _ in CHANNEL_PORTS:
+        name = parser.get(section, "channel_port", fallback="").strip()
+        if name and name in tap_ports:
+            raise InsertError(
+                f"the .ofs names the [{section}] channels {name}, a pin of the TAP "
+                "mbist-insert adds"
+            )
     base = _holds(parser)
     for port, value in scan_holds(reset, tap_nonscan=tap_nonscan):
         if base.get(port, value) != value:
@@ -113,13 +128,16 @@ def write_inserted_ofs(
     nonscan_cells: Sequence[str],
     holds: Sequence[tuple[str, int]],
     manifest: Path,
+    tap: bool = False,
 ) -> Path:
     """The user's .ofs (`base`) for the synthesized, inserted chip. Paths are
     absolute (an .ofs's resolve against the current directory). Its blackboxes are
     the chip's -- the user's own that `renamed` doesn't name (memories now inside
     a shell) and the composed netlist's memories; [clocks] are the scan clocks,
     each with the user's off state; [scan] keeps the user's settings, with at least
-    one chain per clock domain and the non-scan cells and holds added."""
+    one chain per clock domain and the non-scan cells and holds added. With a `tap`,
+    the scan compression and compaction channels get names of their own unless the
+    user's .ofs names them."""
     out = configparser.ConfigParser(interpolation=None)
     out.read_dict({name: dict(base[name]) for name in base.sections()})
 
@@ -176,6 +194,10 @@ def write_inserted_ofs(
     merged = {**_holds(base), **dict(holds)}
     put("scan", "hold", ", ".join(f"{port}:{value}" for port, value in merged.items()))
     put("autombist", "manifest", str(manifest.resolve()))
+    if tap:
+        for section, name in CHANNEL_PORTS:
+            if not base.has_option(section, "channel_port"):
+                put(section, "channel_port", name)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:

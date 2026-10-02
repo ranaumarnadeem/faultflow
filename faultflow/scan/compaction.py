@@ -126,6 +126,11 @@ def compactor_wrapper_verilog(
 
     scan_out_set = set(scan_out_ports)
     passthrough_names = [name for name in ports if name not in scan_out_set]
+    if channel_port in passthrough_names:
+        raise ValueError(
+            f"the channel port {channel_port!r} is a port of {core_module!r} too; "
+            "name the channels something else ([compaction] channel_port)"
+        )
 
     port_decls: list[str] = []
     port_list: list[str] = passthrough_names + [channel_port]
@@ -181,6 +186,7 @@ def insert_compaction(
     output_json: Path,
     *,
     workdir: Path,
+    channel_port: str = "tdo",
 ) -> tuple[Path, CompactionMap]:
     """Insert a static XOR-tree space compactor around a frozen, already
     scan-stitched core netlist, producing one flat composed netlist at
@@ -209,6 +215,7 @@ def insert_compaction(
         scan_out_ports,
         fanout,
         wrapper_top,
+        channel_port=channel_port,
         instance_name=instance_name,
     )
 

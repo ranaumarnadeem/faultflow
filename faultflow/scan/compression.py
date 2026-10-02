@@ -166,6 +166,11 @@ def ring_generator_wrapper_verilog(
             f"clock_port {clock_port!r} is not a port of {core_module!r} "
             "(or is itself one of scan_in_ports)"
         )
+    if channel_port in passthrough_names:
+        raise ValueError(
+            f"the channel port {channel_port!r} is a port of {core_module!r} too; "
+            "name the channels something else ([compression] channel_port)"
+        )
 
     width = polynomial.width
 
@@ -185,9 +190,7 @@ def ring_generator_wrapper_verilog(
         terms = " ^ ".join(f"effective_state[{t}]" for t in taps)
         assigns.append(f"  assign {name} = {terms};")
 
-    inst_conns = [
-        f"    .{name}({name})" for name in passthrough_names + scan_in_ports
-    ]
+    inst_conns = [f"    .{name}({name})" for name in passthrough_names + scan_in_ports]
 
     lines = [
         f"module {wrapper_module}({', '.join(port_list)});",
@@ -207,7 +210,8 @@ def ring_generator_wrapper_verilog(
         "  genvar i;",
         "  generate",
         f"    for (i = 1; i < {width}; i = i + 1) begin : lfsr_tap",
-        "      assign next_state[i] = effective_state[i-1] ^ (TAP_MASK[i] ? fb : 1'b0);",
+        "      assign next_state[i] = effective_state[i-1]"
+        " ^ (TAP_MASK[i] ? fb : 1'b0);",
         "    end",
         "  endgenerate",
         "",
@@ -250,6 +254,7 @@ def insert_compression(
     workdir: Path,
     clock_port: str = "clk",
     scan_enable_port: str = "scan_en",
+    channel_port: str = "tdi",
 ) -> tuple[Path, CompressionMap]:
     """Insert a sequential ring-generator + phase-shifter decompressor around
     a frozen, already scan-stitched core netlist, producing one flat composed
@@ -288,6 +293,7 @@ def insert_compression(
         wrapper_top,
         clock_port=clock_port,
         scan_enable_port=scan_enable_port,
+        channel_port=channel_port,
         instance_name=instance_name,
     )
 
