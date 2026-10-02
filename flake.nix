@@ -106,6 +106,8 @@
             myst-parser
             sphinx-copybutton
             sphinx-design
+            sphinxcontrib-mermaid
+            sphinx-sitemap
           ])
         );
       in
