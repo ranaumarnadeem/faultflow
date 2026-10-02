@@ -1,0 +1,14 @@
+# faultflow
+
+> Open-source ATPG and fault simulation engine for Yosys gate-level netlists: SAT-based test generation (CaDiCaL), stuck-at and transition faults, scan insertion, IEEE 1500 wrapping.
+
+## Docs
+- [Getting started](https://ranaumarnadeem.github.io/faultflow/getting_started/installation.html)
+- [User guide](https://ranaumarnadeem.github.io/faultflow/user_guide/tcl_shell.html)
+- [Architecture](https://ranaumarnadeem.github.io/faultflow/architecture/overview.html)
+- [Benchmarking](https://ranaumarnadeem.github.io/faultflow/benchmarking.html)
+
+## Related
+- [OpenTestability](https://github.com/ranaumarnadeem/OpenTestability)
+- [autoMBIST](https://github.com/ranaumarnadeem/autoMBIST)
+- [warptap](https://github.com/ranaumarnadeem/warptap)
