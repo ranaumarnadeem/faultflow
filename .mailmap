@@ -1,0 +1,3 @@
+# From 2026-05-16 to 2026-07-31 the author name was a pasted command line, not the
+# name; the email was right. Map it, so log, shortlog and blame show the name.
+ranaumarnadeem <ranaumarnadeem632@gmail.com> ranaumarnadeemgit config --global user.name ranaumarnadeem <ranaumarnadeem632@gmail.com>
