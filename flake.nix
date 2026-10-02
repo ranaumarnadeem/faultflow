@@ -109,7 +109,7 @@
         apps.default = {
           type = "app";
           program = "${faultflow}/bin/faultflow";
-          meta.description = "Run faultflow (see docs/user_guide/cli_reference.md for subcommands)";
+          meta.description = "Run faultflow (see docs/user_guide/running_without_shell.md for subcommands)";
         };
 
         # `nix fmt` — format every Nix file with nixfmt (the RFC-style
