@@ -26,6 +26,34 @@ Manufacturing test of digital chips depends on ATPG, and the established tools (
 - **Fault collapsing** — equivalence-based (incl. compound AOI/OAI cells).
 - **PDKs** — Sky130 HD (default) and OSU035; Yosys front end, optional iverilog verification.
 
+## Results
+
+Stuck-at results, copied from [docs/benchmarking.md](docs/benchmarking.md). Hybrid ATPG is the default flow (random fill, then SAT ATPG on the faults left); Random runs never call SAT.
+
+| Design | Fault model | ATPG mode | FFs | Scan chains | Test coverage | Patterns | Wall time |
+|---|---|---|---:|---:|---:|---:|---:|
+| s5378 | Stuck-at | Hybrid | 162 | 17 | 100.00% | 577 | 994.2 s |
+| s9234_1 | Stuck-at | Hybrid | 135 | 14 | 100.00% | 505 | 769.3 s |
+| s15850 | Stuck-at | Hybrid | 559 | 56 | 100.00% | 866 | 2,654.3 s |
+| boxcar | Stuck-at | Hybrid | 1,130 | 113 | 100.00% | 1,100 | 1,243.3 s |
+| boxcar | Stuck-at | Random | 1,130 | 113 | 98.926% | 288 | 336.1 s |
+| picorv32a | Stuck-at | Hybrid | 1,613 | 162 | 99.969% | 2,441 | 13,044.3 s |
+| picorv32a | Stuck-at | Random | 1,613 | 162 | 99.785% | 1,164 | 4,387.8 s |
+
+Test coverage is detected faults over in-scope faults minus those SAT proved redundant; fault coverage counts redundant faults as undetected. Random runs prove none redundant, so for them the two are equal. The picorv32a Hybrid row is the most recent re-run (fault collapsing on); its FF count is the 1,613-cell scan length in the SoC1 table. Full tables, including every ISCAS-85/89 design, collapsing on and off, and hierarchical SoC roll-ups: [docs/benchmarking.md](docs/benchmarking.md).
+
+### Transition delay faults
+
+| Design | ATPG mode | FFs | Scan chains | Test coverage | Fault coverage | Wall time |
+|---|---|---:|---:|---:|---:|---:|
+| s9234_1 | Hybrid | 135 | 14 | 99.91% | 86.06% | 834.4 s |
+| boxcar¹ | Hybrid | 1,130 | 113 | 100.00% | 80.98% | ~11.7 h |
+| picorv32a | Hybrid | 1,613 | 162 | 94.73% | 89.81% | ~10.5 h |
+
+Pattern counts are not recorded for these runs.
+
+¹ Restarted mid-run after diagnosing a WSL 9P-bridge I/O bottleneck: the SQLite DB had grown large on `/mnt/c` and was moved to native ext4 storage, keeping all prior progress. The run fully converged (`atpg_terminal=COMPLETE`, 0 timeouts, 0 unknowns) and was stopped after all 27,988 faults resolved (0 undetected), once a subsequent vector-compaction phase began growing the DB unboundedly (29 GB in <1 h) with no further effect on the coverage numerator or denominator.
+
 ## Quick start
 
 ```bash
