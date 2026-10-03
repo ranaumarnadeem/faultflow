@@ -91,7 +91,7 @@ are: **Sky130 HD** — `cell_lib = cells/sky130/sky130_fd_sc_hd.json`,
 | `launch` | `loc`, `los` | `loc` | Transition launch style for **scan** transition ATPG. `los` (launch-on-shift) is supported for the scan flow only; combinational broadside transition rejects `los` |
 | `collapsing` | bool | `true` (see note) | Enable equivalence-only fault collapsing — never dominance, so coverage is provably unchanged (see [Collapsing rules](../collapsing_rules.md)). `transition` + `collapsing=true` is an error |
 | `include_clock_faults` | bool | `false` | Count clock-net faults in the denominator |
-| `include_reset_faults` | bool | `false` | Grade async reset/set-tree faults via implication instead of excluding them. Fingerprinted — toggling it forces a fresh campaign |
+| `include_reset_faults` | bool | `false` | Grade async reset/set-tree faults via implication instead of excluding them. In a scan test a pattern may then set a reset input active, in the capture only: the input stays inactive while the chains shift (`shift_pi_values` in exported patterns). Fingerprinted — toggling it forces a fresh campaign |
 
 ```{important}
 `collapsing` defaults to **true** (on) when the key is omitted entirely.

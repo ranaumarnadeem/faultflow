@@ -229,18 +229,41 @@ def _flow_chip() -> dict[str, Any]:
     return {"modules": {TOP: module}}
 
 
+def _reset_chip() -> dict[str, Any]:
+    """Before scan: rst_n clears r0 and r1, a chain of two data flops; y = r1 & d1."""
+    chip = _flow_chip()
+    cells = chip["modules"][TOP]["cells"]
+    for name in ("u_sync__s0", "u_sync__s1"):
+        del cells[name]
+    for name in ("r0", "r1"):
+        cells[name]["connections"]["RESET_B"] = [3]
+    return chip
+
+
 def _run_flow(
-    work: Path, nonscan: str, steps: list[list[str]], scan_extra: str = ""
+    work: Path,
+    nonscan: str,
+    steps: list[list[str]],
+    scan_extra: str = "",
+    *,
+    chip: dict[str, Any] | None = None,
+    sections: str | None = None,
 ) -> Any:
-    """Each step's exit status (the CLI exits 2 on an error), and the config."""
+    """Each step's exit status (the CLI exits 2 on an error), and the config:
+    `chip` (the synchronizer chip by default) with `sections` (by default a [scan]
+    with `nonscan` non-scan and rst_n held)."""
     from faultflow.cli import main
 
     netlist = work / "chip.json"
-    netlist.write_text(json.dumps(_flow_chip()), encoding="utf-8")
+    netlist.write_text(json.dumps(chip or _flow_chip()), encoding="utf-8")
+    if sections is None:
+        sections = (
+            f"[scan]\nchains = 1\nnonscan_cells = {nonscan}\nhold = rst_n:1\n"
+            f"{scan_extra}"
+        )
     ofs = work / "chip.ofs"
     ofs.write_text(
-        f"[design]\nnetlist = {netlist}\ncell_lib = {CELL_MAP_PATH}\n\n"
-        f"[scan]\nchains = 1\nnonscan_cells = {nonscan}\nhold = rst_n:1\n{scan_extra}",
+        f"[design]\nnetlist = {netlist}\ncell_lib = {CELL_MAP_PATH}\n\n{sections}",
         encoding="utf-8",
     )
     results: list[int | str | None] = []
@@ -328,6 +351,53 @@ def test_accepted_with_warn_the_cells_unload_otherwise(
         ]
         assert "u_sync__s1" in warning
         assert replay_on_cells(cfg, patterns, tmp_path / "replay")
+
+
+@pytest.mark.integration
+def test_testing_the_reset_it_pulses_in_the_capture_only(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """With include_reset_faults, ATPG may set rst_n active in a capture to test the
+    reset. The pattern holds it inactive while the chains shift (shift_pi_values),
+    where the simulators turn a scan flop's reset off, so the sky130 cells unload
+    what FaultFlow expects."""
+    patterns = tmp_path / "patterns.json"
+    results, cfg = _run_flow(
+        tmp_path,
+        "",
+        [
+            ["init"],
+            ["scan"],
+            ["scan-check"],
+            ["sim", "--scan", "--export-patterns", str(patterns)],
+        ],
+        chip=_reset_chip(),
+        sections="[scan]\nchains = 1\n\n[fault_model]\ninclude_reset_faults = true\n",
+    )
+    assert results == [0, 0, 0, 0]
+    exported = json.loads(patterns.read_text(encoding="utf-8"))
+    assert any(not p["capture_pi_values"]["rst_n"] for p in exported)
+    assert all(p["shift_pi_values"] == {"rst_n": True} for p in exported)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(tmp_path)
+        assert replay_on_cells(cfg, patterns, tmp_path / "replay") == []
+
+
+@pytest.mark.unit
+def test_a_pattern_keeps_its_shift_values_through_the_file() -> None:
+    from faultflow.scan.pattern_export import (
+        scan_pattern_from_dict,
+        scan_pattern_to_dict,
+    )
+    from faultflow.scan.protocol import ScanPattern
+
+    plain = ScanPattern({0: [True]}, {"rst_n": False}, {0: [False]})
+    assert "shift_pi_values" not in scan_pattern_to_dict(plain)
+    held = ScanPattern(
+        {0: [True]}, {"rst_n": False}, {0: [False]}, shift_pi_values={"rst_n": True}
+    )
+    data = json.loads(json.dumps(scan_pattern_to_dict(held)))
+    assert scan_pattern_from_dict(data) == held
 
 
 @pytest.mark.unit

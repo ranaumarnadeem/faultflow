@@ -98,6 +98,7 @@ def credit_not_reproduced(
             blackbox_instances=blackboxes,
             unload_mask=pattern.unload_mask or {},
             preamble_cycles=(pattern.preamble_cycles if preamble is None else preamble),
+            shift_pi_values=pattern.shift_pi_values,
         )
         for batch in result["batches"]:
             for lane in batch["lanes"]:
@@ -243,13 +244,17 @@ def compressed_credit_not_reproduced(
                 active.append(fault_active)
             return len(cycles) - 2
 
+        shift = {
+            **base,
+            **{k: v for k, v in pattern.shift_pi_values.items() if k in inputs},
+        }
         for _ in range(pattern.preamble_cycles):
-            pulse({**base, scan_enable: False}, False)
+            pulse({**shift, scan_enable: False}, False)
         for _ in range(max_chain_length):
-            pulse({**base, scan_enable: True}, False)
+            pulse({**shift, scan_enable: True}, False)
         capture = pulse({**base, scan_enable: False}, True)
         unloads = [
-            pulse({**base, scan_enable: True}, True) for _ in range(max_chain_length)
+            pulse({**shift, scan_enable: True}, True) for _ in range(max_chain_length)
         ]
 
         # One observation per set of compared samples: the functional outputs

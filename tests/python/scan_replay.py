@@ -2,7 +2,8 @@
 models (iverilog), cycle by cycle as scan_pattern_sim.cpp applies them: the preamble's
 pulses, a load (scan enable 1, a scan-in bit per pulse), the capture pulse (scan enable
 0), then an unload sampled at the low clock level before each pulse; every input the
-pattern doesn't set at 0, and the pattern's capture values on the others throughout.
+pattern doesn't set at 0, the pattern's capture values on the others, and its shift
+values (shift_pi_values) on theirs outside the capture.
 
 FaultFlow's own simulators are the reference everywhere else; this asks whether a real
 chip -- whose scan flops' clear and preset act during shift too -- unloads what the
@@ -67,10 +68,18 @@ def replay_on_cells(cfg: Any, patterns_path: Path, work: Path) -> list[str]:
             {n: int(v) for n, v in pattern["capture_pi_values"].items() if n in base}
         )
         base.update({se: 0, **{s: 0 for s in scan_ins}})
+        shift = dict(base)
+        shift.update(
+            {
+                n: int(v)
+                for n, v in pattern.get("shift_pi_values", {}).items()
+                if n in shift
+            }
+        )
         for _ in range(int(pattern.get("preamble_cycles", 0))):
-            cycle(base)
+            cycle(shift)
         for offset in range(length):
-            values = dict(base, **{se: 1})
+            values = dict(shift, **{se: 1})
             for chain, scan_in in enumerate(scan_ins):
                 bits = pattern["load_seqs"].get(str(chain), [])
                 values[scan_in] = int(bits[offset]) if offset < len(bits) else 0
@@ -81,7 +90,7 @@ def replay_on_cells(cfg: Any, patterns_path: Path, work: Path) -> list[str]:
                 f'$display("U {index} {chain} %b", {_escaped(so)});'
                 for chain, so in enumerate(scan_outs)
             )
-            cycle(dict(base, **{se: 1}), sample=f"    {shows}")
+            cycle(dict(shift, **{se: 1}), sample=f"    {shows}")
     lines += ["    $finish;", "  end", "endmodule"]
 
     work.mkdir(parents=True, exist_ok=True)

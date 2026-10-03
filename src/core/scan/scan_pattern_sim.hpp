@@ -43,10 +43,17 @@ struct ScanPatternRequest {
   // TestVector so the sequential sims pick the mode-aware evaluator.
   TestMode test_mode = TestMode::FUNCTIONAL;
   // Clock pulses before the load -- scan_enable off, every other input at its
-  // capture value -- so the non-scan flops a scan clock settles (a reset
-  // synchronizer with the chip reset held inactive) hold their value before the
-  // first shift. Fault-inactive and unsampled, like the load. 0: none.
+  // shift value (shift_pi_values) or capture value -- so the non-scan flops a
+  // scan clock settles (a reset synchronizer with the chip reset held inactive)
+  // hold their value before the first shift. Fault-inactive and unsampled, like
+  // the load. 0: none.
   int preamble_cycles = 0;
+  // Inputs held at these values, in place of capture_pi_values, while the chains
+  // shift -- the preamble, the load, the unload and a launch-on-shift shift: an
+  // async set/reset input a capture may set active to test the reset, kept
+  // inactive while the chains shift (a real scan flop's set/reset acts during
+  // shift too). Empty: capture_pi_values throughout.
+  std::map<std::string, bool> shift_pi_values;
 };
 
 // Returns true if clock i should be pulsed during the launch/capture window.

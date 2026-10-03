@@ -482,6 +482,9 @@ def _protocol_fault_sim_kwargs(
         "blackbox_instances": list(ctx.cfg.blackbox_instances),
         "unload_mask": pattern.unload_mask or {},
         "preamble_cycles": pattern.preamble_cycles,
+        "shift_pi_values": {
+            rename.get(k, k): v for k, v in pattern.shift_pi_values.items()
+        },
     }
 
 
@@ -503,8 +506,9 @@ def _serialize(
     ctx: ScanPipelineContext, serialize_input: dict[str, bool]
 ) -> ScanPattern:
     """serialize_vector, with the X-masked expected bits marked don't-care, the
-    held inputs, which the view ties rather than lists, at their values, and the
-    preamble that settles the non-scan flops the scan clock settles."""
+    held inputs, which the view ties rather than lists, at their values, the
+    preamble that settles the non-scan flops the scan clock settles, and, testing
+    the reset, the reset holds while the chains shift."""
     pattern = serialize_vector(
         {**serialize_input, **ctx.input_holds},
         ctx.pseudo_port_map,
@@ -513,7 +517,11 @@ def _serialize(
         masked_outputs=ctx.x_mask.outputs,
     )
     preamble = ctx.nonscan.preamble if ctx.nonscan is not None else 0
-    return replace(pattern, preamble_cycles=preamble) if preamble else pattern
+    # Testing the reset, a capture may set a reset input active (_process_scan_
+    # candidate leaves it free); it stays inactive while the chains shift, where
+    # a real scan flop's reset would wipe the load (scan.shift_controls).
+    shift = dict(ctx.reset_pi_holds) if ctx.cfg.fault_model.include_reset_faults else {}
+    return replace(pattern, preamble_cycles=preamble, shift_pi_values=shift)
 
 
 def _seed_kwargs(

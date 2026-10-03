@@ -86,6 +86,7 @@ void append_launch_shift(TestVector& vec, const ParsedGraph& parsed,
   // value), so the capture pulse built from the SE=0 base map still de-asserts.
   // Only active-domain clocks are pulsed during the LOS launch shift.
   values[request.scan_enable_port] = true;
+  for (const auto& [name, value] : request.shift_pi_values) values[name] = value;
   for (size_t chain_id = 0; chain_id < request.scan_input_ports.size();
        ++chain_id) {
     const auto it = request.los_launch_scan_in.find(static_cast<int>(chain_id));
@@ -133,6 +134,7 @@ void append_unload_pulse(TestVector& vec, const ParsedGraph& parsed,
 
 std::map<std::string, bool> base_values(const ScanPatternRequest& request) {
   std::map<std::string, bool> values = request.capture_pi_values;
+  for (const auto& [name, value] : request.shift_pi_values) values[name] = value;
   values[request.scan_enable_port] = false;
   for (size_t i = 0; i < request.clock_ports.size(); ++i)
     values[request.clock_ports[i]] = clock_off(request, i);
