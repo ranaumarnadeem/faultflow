@@ -758,7 +758,8 @@ py::dict simulate_scan_pattern_py(
     const std::vector<std::string>& active_clock_ports,
     const std::string& test_mode = "",
     const std::vector<std::string>& blackbox_instances = {},
-    int preamble_cycles = 0) {
+    int preamble_cycles = 0,
+    const std::map<std::string, bool>& shift_pi_values = {}) {
   scan::ScanPatternRequest request;
   request.clock_ports = clock_ports;
   request.clock_off_states = clock_off_states;
@@ -775,6 +776,7 @@ py::dict simulate_scan_pattern_py(
   request.active_clock_ports = active_clock_ports;
   request.test_mode = parse_test_mode(test_mode);
   request.preamble_cycles = preamble_cycles;
+  request.shift_pi_values = shift_pi_values;
   const scan::ScanPatternResult result = scan::simulate_scan_pattern(
       json_path, cell_map_path, request, unsupported_policy, blackbox_instances);
   py::dict out;
@@ -806,7 +808,8 @@ py::dict simulate_scan_protocol_faults_py(
     bool capture_diffs = false,
     const std::vector<std::string>& blackbox_instances = {},
     const std::map<int, std::vector<bool>>& unload_mask = {},
-    int preamble_cycles = 0) {
+    int preamble_cycles = 0,
+    const std::map<std::string, bool>& shift_pi_values = {}) {
   scan::ScanProtocolFaultRequest request;
   request.capture_diffs = capture_diffs;
   request.unload_mask = unload_mask;
@@ -825,6 +828,7 @@ py::dict simulate_scan_protocol_faults_py(
   request.pattern.active_clock_ports = active_clock_ports;
   request.pattern.test_mode = parse_test_mode(test_mode);
   request.pattern.preamble_cycles = preamble_cycles;
+  request.pattern.shift_pi_values = shift_pi_values;
   request.faults.reserve(faults.size());
   for (const auto& [net_index, fault_type] : faults) {
     scan::ScanProtocolFaultSpec spec;
@@ -1331,7 +1335,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("active_clock_ports") = std::vector<std::string>{},
         py::arg("test_mode") = "",
         py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("preamble_cycles") = 0);
+        py::arg("preamble_cycles") = 0,
+        py::arg("shift_pi_values") = std::map<std::string, bool>{});
   m.def("simulate_scan_protocol_faults",
         &faultflow::simulate_scan_protocol_faults_py,
         py::arg("json_path"), py::arg("cell_map_path"),
@@ -1349,7 +1354,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("capture_diffs") = false,
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("unload_mask") = std::map<int, std::vector<bool>>{},
-        py::arg("preamble_cycles") = 0);
+        py::arg("preamble_cycles") = 0,
+        py::arg("shift_pi_values") = std::map<std::string, bool>{});
   m.def("simulate_sequence_faults", &faultflow::simulate_sequence_faults_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("input_order"),
         py::arg("cycles"), py::arg("sample"), py::arg("observe_outputs"),
