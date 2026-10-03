@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from faultflow.runner.parallel_solve import solve_fault_worker
+from faultflow.runner.parallel_solve import install_seed, solve_fault_worker
 
 # ---------------------------------------------------------------------------
 # Unit tests — worker routing
@@ -58,6 +58,14 @@ def _args_tuple(solve_kind: str, **overrides) -> tuple:
         d["test_mode"],
         d["incremental"],
     )
+
+
+@pytest.fixture
+def seeded():
+    """Install a worker process's decompressor seed (the pool initializer's
+    job) for one test, and take it away after."""
+    yield install_seed
+    install_seed({})
 
 
 def _fake_core(result: str = "SAT", **extras: Any) -> MagicMock:
@@ -153,6 +161,45 @@ class TestWorkerRouting:
         # 10-arg signature: ..., unsupported, bb_instances, cone_restrict
         assert ["blackbox_inst"] in pos_args
         assert True in pos_args
+
+    def test_scan_kinds_forward_the_installed_decompressor_seed(self, seeded):
+        """Scan compression: the seed constraints the pool initializer
+        installs (install_seed, see detection_pipeline._seed_kwargs) reach the
+        scan solvers as keywords -- not the native ones."""
+        seeded({"seed_width": 8, "seeded_inputs": {"__ppi_u0": [0, 3]}})
+        for kind, solver in (
+            ("scan_stuck_at", "solve_fault_atpg"),
+            ("broadside_transition", "solve_scan_transition_fault_atpg"),
+        ):
+            core = _fake_core()
+            with patch.dict("sys.modules", {"_faultflow_core": core}):
+                solve_fault_worker(_args_tuple(kind))
+            kwargs = getattr(core, solver).call_args.kwargs
+            assert kwargs["seed_width"] == 8, kind
+            assert kwargs["seeded_inputs"] == {"__ppi_u0": [0, 3]}, kind
+        core = _fake_core()
+        with patch.dict("sys.modules", {"_faultflow_core": core}):
+            solve_fault_worker(_args_tuple("native_stuck_at"))
+        assert "seeded_inputs" not in core.solve_fault_atpg.call_args.kwargs
+        seeded(
+            {
+                "seed_width": 8,
+                "seeded_inputs": {"__ppi_u0": [0, 3]},
+                "seeded_heads": {"__ppi_u0": [1]},
+            }
+        )
+        core = _fake_core()
+        with patch.dict("sys.modules", {"_faultflow_core": core}):
+            solve_fault_worker(_args_tuple("los_transition"))
+        kwargs = core.solve_scan_los_transition_fault_atpg.call_args.kwargs
+        assert kwargs["seeded_heads"] == {"__ppi_u0": [1]}
+        assert kwargs["seeded_inputs"] == {"__ppi_u0": [0, 3]}
+
+    def test_no_seed_no_seed_keywords(self):
+        core = _fake_core()
+        with patch.dict("sys.modules", {"_faultflow_core": core}):
+            solve_fault_worker(_args_tuple("scan_stuck_at"))
+        assert "seeded_inputs" not in core.solve_fault_atpg.call_args.kwargs
 
     def test_worker_exception_returns_unknown(self):
         core = MagicMock()

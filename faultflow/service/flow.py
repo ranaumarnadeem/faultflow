@@ -183,6 +183,16 @@ class FlowService:
         message = str(self._runner(cfg).scan_techmap())
         return OperationResult("scan-techmap", cfg.top, message)
 
+    def scan_compress(self, cfg: FaultflowConfig) -> OperationResult:
+        log.info("compress start  top=%s", cfg.top)
+        message = str(self._runner(cfg).scan_compress())
+        return OperationResult("scan-compress", cfg.top, message)
+
+    def scan_compact(self, cfg: FaultflowConfig) -> OperationResult:
+        log.info("compact  start  top=%s", cfg.top)
+        message = str(self._runner(cfg).scan_compact())
+        return OperationResult("scan-compact", cfg.top, message)
+
     def run_atpg(self, cfg: FaultflowConfig, **options: object) -> AtpgResult:
         log.info("sim    start  top=%s", cfg.top)
         message = str(self._runner(cfg).sim(**options))
@@ -289,6 +299,10 @@ class FlowService:
             "detected": data["detected"],
             "redundant": data.get("redundant", 0),
             "protocol_unresolved": data.get("protocol_unresolved", 0),
+            "compression_unresolved": data.get("compression_unresolved", 0),
+            "compaction_unresolved": data.get("compaction_unresolved", 0),
+            "blackbox_unresolved": data.get("blackbox_unresolved", 0),
+            "hold_unresolved": data.get("hold_unresolved", 0),
             "fault_coverage_percent": data["fault_coverage_percent"],
             "test_coverage_percent": data["test_coverage_percent"],
             "vectors": run.get("vector_count", 0),

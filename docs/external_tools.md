@@ -74,20 +74,100 @@ With `[atpg] tool = quaigh`, faultflow converts the gate-level Verilog to BENCH 
 reference/comparison path — the native SAT ATPG remains the default. `nl2bench` may be
 present at `venv/bin/nl2bench`.
 
+### autoMBIST — memory built-in self-test logic (optional)
+
+autoMBIST generates memory-BIST wrapper RTL for SRAM macros. faultflow grades the logic
+it adds — the MBIST controller, self-repair, diagnosis and repair-remap logic — with a
+scan test, the memory itself staying a blackbox. faultflow only runs autoMBIST as a
+subprocess and reads the files it writes. To put autoMBIST collars into your own chip's
+RTL in place of its memories, see [MBIST insertion](user_guide/mbist.md).
+
+```bash
+python3 ff.py autombist-generate --config mbist.yml --out build \
+    --liberty cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib \
+    --cell-lib cells/sky130/sky130_fd_sc_hd.json
+```
+
+This runs `autombist generate --emit-manifest` (`--autombist-cmd` names another command,
+e.g. `'python3 -m autombist'`; `--algo` picks the MBIST algorithm, e.g. `march-raw`,
+autoMBIST's default otherwise), then builds the design from the manifest: every distinct
+instrument synthesized once on its own, the wrapper synthesized with the instruments and
+the memory as blackboxes, and the instruments' netlists spliced back in. It writes the
+composed netlist and a `.ofs` for it: `[blackbox] instances` names the memories, and
+`[autombist] manifest` names the manifest. The Tcl shell's `autombist_generate` does the
+same and loads the design into the session.
+
+A memory's outputs are unknown to a scan test: every scan-flop capture and primary output
+they reach is masked (`[blackbox] output_value`), and a fault only a memory pin could
+reveal counts as `blackbox_unresolved`.
+
+**JTAG access (`--test-access`, `-test_access` in the shell).** autoMBIST then also runs
+`wrap-test-access --manifest <dir> --emit-icl`, which puts the design's control and
+status ports behind a JTAG TAP and an IJTAG network (one SIB per port, one TDR bit per
+port bit; it needs the [warptap](https://github.com/ranaumarnadeem/warptap) package). The
+control ports (`test_mode`, `bist_start`, ...) become JTAG-only: their pins are left
+without fanout. The status ports stay readable at their pins. faultflow builds the wrapped
+design from the manifest's `test_access` block alone: each distinct module of the wrapped
+netlist is synthesized once — including the parameter-specialized
+`$paramod$<hash>\march_c_top`, used verbatim — and spliced into every instance of it.
+The glue's own non-library cells must be exactly the listed instances.
+
+The TAP and its network run on `tck`/`trst_n`, the MBIST logic on `clk`/`rst_n`: two
+clock domains. The `.ofs` declares both in `[clocks]` and asks for one scan chain per
+domain; scan insertion scans every flop of both, and holds `trst_n` inactive like
+`rst_n`. Scan patterns then grade the TAP and the network like any other logic, and
+`ff.py jtag` (below) adds JTAG credit on top.
+
+**TAP non-scan (`--tap-nonscan`, `-tap_nonscan` in the shell).** A production flow keeps
+the TAP out of scan and tests it with JTAG patterns alone. With `--test-access
+--tap-nonscan`, the `.ofs` does that: `[scan] nonscan_cells` names the JTAG-category
+instances, and `[scan] hold = trst_n:0, tck:0` keeps the TAP and the network in reset
+through the whole scan test, which leaves `clk` as the only scan clock and one chain. The
+scan view ties each of their flops at the value its reset forces. Scan leaves their
+faults to `ff.py jtag` (`excluded_jtag`), with the faults only they see -- the TAP's
+inputs, the decode that selects the network -- and the stuck-ats that would release a
+tied flop. `ff.py jtag` grades them, and its `combined` block counts every one. A fault
+the held values alone block, like MBIST logic a TDR held at its reset value gates, is
+`hold_unresolved` (Tessent's AU.PC): undetected and in the denominator, not redundant.
+
+**Coverage by category.** With `[autombist] manifest` set, the coverage report breaks
+detected faults, the denominator, `blackbox_unresolved` and `hold_unresolved` down by
+the manifest's instance categories (`autombist_categories` in `coverage_report.json`, a table in
+`coverage.rpt`): memory, mbist_controller, self_repair, diagnosis, repair_remap and, for a
+wrapped design, jtag_tap, ijtag_sib, ijtag_tdr, ijtag_scan_mux. A fault belongs to the
+instance of the cell it sits on; what no instance owns — the wrapper's own logic, its
+ports, constant nets — counts as `glue`, so the categories add up to the totals.
+
+**The TAP and the IJTAG network over JTAG.** `ff.py jtag` (the shell's `run_jtag`)
+plays the network-integrity program a production flow uses -- IDCODE, the instruction
+register's capture and length, BYPASS and every unimplemented opcode, every TAP state
+transition with each TAP register held in Pause at 0 and at 1, each SIB opened alone, the
+network held still under SAMPLE/PRELOAD and through Pause, each control TDR written and
+read back, a TMS reset -- through the TAP of the scanned netlist, grades the scan
+campaign's faults at TDO, and reports the credit beside the scan coverage (`jtag` and
+`combined`, per category too). The program is built by warptap's
+`build_integrity_program` from the network the manifest describes (it needs warptap with
+`warptap.tap_integrity`), or read from a `warptap-tck-program` file. What it leaves
+undetected in the TAP is mostly beyond any TCK sequence: a register's behaviour under
+another instruction (every read starts with a capture), decodes of opcodes the TAP never
+latches, and TDO outside the shift states.
+
+```{admonition} warptap 0.0.2 and earlier
+:class: warning
+
+The IJTAG network is the data register of EXTEST: its top-level SIBs are selected by a
+decode of the TAP's instruction, so reading or writing it needs EXTEST loaded, and
+Test-Logic-Reset (five TMS=1 cycles) deselects it. warptap 0.0.2 and earlier tie that
+select high instead, so their network moves on every DR scan, whatever the instruction
+(two all-ones scans under IDCODE start the BIST); re-wrap a design built with them.
+```
+
 ## Future and planned integrations
 
 ```{note}
 The items below are **not implemented**. They are recorded here as direction, so the
 external-tools story is complete.
 ```
-
-### autoMBIST — memory built-in self-test
-
-faultflow grades logic (stuck-at and transition) faults; it has **no memory-BIST
-capability today**. Integrating an **autoMBIST** flow — generating and grading
-memory-BIST structures for embedded RAMs, and combining MBIST with the logic-test
-campaign — is a future direction. There is no current dependency on, or integration
-with, any MBIST tool.
 
 ### OpenSTA — at-speed timing
 

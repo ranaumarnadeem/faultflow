@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -205,6 +206,26 @@ def test_retarget_block_pattern_verifies_on_soc(
             reloaded = dict_to_pattern(read_retargeted(out))
             res2 = verify_soc(soc_netlist, _CELL_MAP, access, reloaded, core=core)
             assert res2.verified, (qa, qb, res2.mismatches)
+
+
+def test_retarget_keeps_the_block_dont_care_bits_masked() -> None:
+    """A block unload bit its own pattern marks don't-care -- a flop that
+    captured a blackbox output's unknown value -- stays masked on the SoC."""
+    access = _soc_access()
+    bp = ScanPattern(
+        load_seqs={0: [False, False, False]},
+        capture_pi_values={},
+        expected_unload={0: [True, True, True]},
+        unload_mask={0: [True, False, True]},  # block position 1 is don't-care
+    )
+
+    soc_pat = retarget_block_pattern(bp, access, "blkB")
+
+    # SoC shift order: the BYPASS bit (position 3) first, then block
+    # positions 2, 1, 0.
+    assert soc_pat.unload_mask == {0: [False, True, False, True]}
+    plain = retarget_block_pattern(replace(bp, unload_mask=None), access, "blkB")
+    assert plain.unload_mask == {0: [False, True, True, True]}
 
 
 def test_retarget_rejects_unmapped_block_chain() -> None:

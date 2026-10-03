@@ -8,7 +8,9 @@ add_executable(
   scan/test_scan_chain.cpp
   scan/test_scan_sequence.cpp
   scan/test_scan_multiclock_stagger.cpp
+  scan/test_scan_compression.cpp
   sim/test_bit_parallel.cpp
+  sim/test_sequence_grade.cpp
   sim/test_blackbox_boundary.cpp
   sim/test_wbr_modes.cpp
   sim/test_wbr_scan_cell.cpp
@@ -29,6 +31,7 @@ add_executable(
   atpg/test_transition_atpg.cpp
   atpg/test_scan_transition_atpg.cpp
   atpg/test_scan_los_transition_atpg.cpp
+  atpg/test_seeded_scan_atpg.cpp
   atpg/test_progressive_sim.cpp
   atpg/test_sat_timeout.cpp
   atpg/test_parallel_sim.cpp

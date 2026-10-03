@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import time
 from pathlib import Path
@@ -10,13 +11,18 @@ import pytest
 from faultflow.scan import ScanError, stitch_scan_json
 from faultflow.scan.atpg_view import (
     ATPG_VIEW_SCHEMA_VER,
+    BLACKBOX_FREE_PORT_PREFIX,
+    BLACKBOX_INSTANCE_ATTR,
+    BLACKBOX_OBSERVE_PORT_PREFIX,
     D_BRANCH_BUF_CELL,
     OBSERVE_BUF_CELL,
     PPI_PREFIX,
     PPO_PREFIX,
+    TIE0_CELL,
     _BitIndex,
     _bit_to_single_net_name,
     build_scan_atpg_view,
+    make_blackbox_transparent,
 )
 from faultflow.scan.reports import manifest_from_result
 
@@ -505,9 +511,16 @@ def test_ff_to_ff_d_observe_follows_rewired_pin() -> None:
     module = view["modules"]["tiny_ff_to_ff"]
     ppi_a_bit = module["ports"][port_map["ff_a"]["ppi_port"]]["bits"][0]
 
+    # In the generic netlist A's Q net has two sites, A.Q and B.D, so B's
+    # capture reads a branch of it (decided on the generic netlist, whatever
+    # order A and B are processed in) -- and that branch reads A's PPI.
+    branch_b = module["cells"]["$ffbranch_ff_b"]
+    assert branch_b["connections"]["A"] == [ppi_a_bit]
     observe_b = module["cells"]["$ffobserve_ff_b"]
-    assert observe_b["connections"]["A"] == [ppi_a_bit]
-    assert port_map["ff_b"]["boundary"]["d_observe_net_id"] == ppi_a_bit
+    assert observe_b["connections"]["A"] == branch_b["connections"]["Y"]
+    assert port_map["ff_b"]["boundary"]["d_observe_net_id"] == (
+        branch_b["connections"]["Y"][0]
+    )
     # The stale data_net (10) must not be what B observes.
     assert port_map["ff_b"]["boundary"]["d_observe_net_id"] != 10
 
@@ -606,3 +619,183 @@ def test_self_referencing_ff_d_observe_follows_own_rewired_pin() -> None:
         for c in cells.values()
         for pin in c.get("connections", {})
     ), "stale net 10 must not be referenced anywhere in the reduced view"
+
+
+def _scan_chain_with_memory() -> tuple[dict[str, Any], dict[str, Any]]:
+    """One scan FF whose Q feeds a blackbox memory's data input; the memory's
+    two data outputs feed a gate that drives a primary output."""
+    generic, manifest = _big_scan_chain(1)
+    module = generic["modules"][manifest["top"]]
+    module["cells"]["u_mem"] = {
+        "type": "sram_like",
+        "port_directions": {"din": "input", "dout": "output"},
+        "connections": {"din": [100], "dout": [200, 201]},
+    }
+    module["cells"]["g0"] = {
+        "type": "sky130_fd_sc_hd__and2_1",
+        "port_directions": {"A": "input", "B": "input", "X": "output"},
+        "connections": {"A": [200], "B": [201], "X": [300]},
+    }
+    module["ports"]["po"] = {"direction": "output", "bits": [300]}
+    return generic, manifest
+
+
+def _tie_connections(cells: dict[str, Any]) -> dict[str, Any]:
+    return {
+        name: cell["connections"]
+        for name, cell in cells.items()
+        if name.startswith("$bbtie0_")
+    }
+
+
+@pytest.mark.parametrize("with_scan_cells", [True, False])
+def test_blackbox_instance_is_modeled_opaque(with_scan_cells: bool) -> None:
+    """A scan test can neither set a memory's outputs nor observe its inputs,
+    so the reduced view holds each output at the 0 the scan protocol simulator
+    reads from it and drops the memory (and with it the inputs), instead of
+    keeping a boundary SAT could drive and observe. Also on the no-scan-FF
+    (wrapper-only graybox) early return."""
+    generic, manifest = _scan_chain_with_memory()
+    if not with_scan_cells:
+        manifest["cells"] = []
+
+    view, _ = build_scan_atpg_view(generic, manifest, blackbox_instances=["u_mem"])
+
+    cells = view["modules"][manifest["top"]]["cells"]
+    assert "u_mem" not in cells
+    # Each tie is its own constant cell: hung off the design's constant-0
+    # net, it would give that net's s-a-1 a path through the memory.
+    assert _tie_connections(cells) == {
+        "$bbtie0_u_mem_dout_0": {"Y": [200]},
+        "$bbtie0_u_mem_dout_1": {"Y": [201]},
+    }
+    assert cells["$bbtie0_u_mem_dout_0"]["type"] == TIE0_CELL
+    # Each tie names the instance it stands in for, so x_mask can tell an
+    # unknown output from one asserted known ([blackbox] output_value).
+    assert all(
+        cell["attributes"][BLACKBOX_INSTANCE_ATTR] == "u_mem"
+        for name, cell in cells.items()
+        if name.startswith("$bbtie0_")
+    )
+    assert cells["g0"]["connections"] == {"A": [200], "B": [201], "X": [300]}
+    # The memory's input keeps a dangling, unobserved reader.
+    reader = cells["$bbsink_u_mem_din_0"]
+    assert reader["type"] == OBSERVE_BUF_CELL
+    assert not any(bit in reader["connections"]["Y"] for bit in (200, 201, 300))
+
+
+def test_every_blackbox_input_keeps_a_dangling_reader() -> None:
+    """Each net a memory input read keeps a reader: a tie-off only the memory
+    read (here its `en` pin, to 1'b1) would otherwise drop out of the view,
+    yet the real netlist keeps its fault sites, which need a site in the view
+    to be graded -- and the transparent twin observes the memory's inputs
+    through these readers."""
+    generic, manifest = _scan_chain_with_memory()
+    mem = generic["modules"][manifest["top"]]["cells"]["u_mem"]
+    mem["port_directions"]["en"] = "input"
+    mem["connections"]["en"] = ["1"]
+
+    view, _ = build_scan_atpg_view(generic, manifest, blackbox_instances=["u_mem"])
+
+    cells = view["modules"][manifest["top"]]["cells"]
+    sinks = {name: cell for name, cell in cells.items() if name.startswith("$bbsink_")}
+    assert sorted(sinks) == ["$bbsink_u_mem_din_0", "$bbsink_u_mem_en_0"]
+    assert sinks["$bbsink_u_mem_en_0"]["connections"]["A"] == ["1"]
+    assert all(sink["type"] == OBSERVE_BUF_CELL for sink in sinks.values())
+
+
+def test_view_keeps_blackbox_cells_that_are_not_listed() -> None:
+    generic, manifest = _scan_chain_with_memory()
+
+    view, _ = build_scan_atpg_view(generic, manifest)
+
+    cells = view["modules"][manifest["top"]]["cells"]
+    assert "u_mem" in cells
+    assert _tie_connections(cells) == {}
+
+
+def test_unknown_blackbox_instance_is_an_error() -> None:
+    generic, manifest = _scan_chain_with_memory()
+
+    with pytest.raises(ScanError, match="u_missing"):
+        build_scan_atpg_view(generic, manifest, blackbox_instances=["u_missing"])
+
+
+def test_blackbox_without_port_directions_is_an_error() -> None:
+    """Without Yosys's port_directions the view can't tell a memory's outputs
+    from its inputs; guessing from pin names is how a memory's dout0 was once
+    read as an input."""
+    generic, manifest = _scan_chain_with_memory()
+    del generic["modules"][manifest["top"]]["cells"]["u_mem"]["port_directions"]
+
+    with pytest.raises(ScanError, match="port_directions"):
+        build_scan_atpg_view(generic, manifest, blackbox_instances=["u_mem"])
+
+
+def test_blackbox_transparent_twin_frees_outputs_and_observes_inputs() -> None:
+    """The twin lets SAT drive every blackbox output and observe every
+    blackbox input without changing any fault site: each tie becomes a buffer
+    fed by a new input port, each input's reader drives a new output port,
+    and nothing else changes."""
+    generic, manifest = _scan_chain_with_memory()
+    view, _ = build_scan_atpg_view(generic, manifest, blackbox_instances=["u_mem"])
+    twin = copy.deepcopy(view)
+
+    assert make_blackbox_transparent(twin, manifest["top"])
+
+    module = twin["modules"][manifest["top"]]
+    free = {
+        name: port
+        for name, port in module["ports"].items()
+        if name.startswith(BLACKBOX_FREE_PORT_PREFIX)
+    }
+    assert sorted(free) == ["__bbfree_u_mem_dout_0", "__bbfree_u_mem_dout_1"]
+    for i, dout_bit in enumerate((200, 201)):
+        port = free[f"__bbfree_u_mem_dout_{i}"]
+        assert port["direction"] == "input"
+        tie = module["cells"][f"$bbtie0_u_mem_dout_{i}"]
+        assert tie["type"] == OBSERVE_BUF_CELL
+        assert tie["connections"] == {"A": port["bits"], "Y": [dout_bit]}
+    observed = {
+        name: port
+        for name, port in module["ports"].items()
+        if name.startswith(BLACKBOX_OBSERVE_PORT_PREFIX)
+    }
+    assert observed == {
+        "__bbobs_u_mem_din_0": {
+            "direction": "output",
+            "bits": module["cells"]["$bbsink_u_mem_din_0"]["connections"]["Y"],
+        }
+    }
+    original = view["modules"][manifest["top"]]
+    assert set(module["cells"]) == set(original["cells"])
+    assert {
+        name: cell
+        for name, cell in module["cells"].items()
+        if not name.startswith("$bbtie0_")
+    } == {
+        name: cell
+        for name, cell in original["cells"].items()
+        if not name.startswith("$bbtie0_")
+    }
+
+
+def test_blackbox_transparent_twin_of_a_view_without_blackboxes_is_untouched() -> None:
+    generic, manifest = _scan_chain_with_memory()
+    view, _ = build_scan_atpg_view(generic, manifest)
+    before = copy.deepcopy(view)
+
+    assert not make_blackbox_transparent(view, manifest["top"])
+    assert view == before
+
+
+def test_blackbox_twin_port_name_collision_is_an_error() -> None:
+    generic, manifest = _scan_chain_with_memory()
+    view, _ = build_scan_atpg_view(generic, manifest, blackbox_instances=["u_mem"])
+    view["modules"][manifest["top"]]["ports"]["__bbfree_u_mem_dout_0"] = {
+        "direction": "input",
+        "bits": [999],
+    }
+
+    with pytest.raises(ScanError, match="already taken"):
+        make_blackbox_transparent(view, manifest["top"])

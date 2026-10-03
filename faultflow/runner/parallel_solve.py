@@ -10,7 +10,7 @@ it has had a chance to warm the cache explicitly.
 
 Solve kinds
 -----------
-"scan_stuck_at"         core.solve_fault_atpg (fused-view, no extras)
+"scan_stuck_at"         core.solve_fault_atpg (fused view; the seed if compressed)
 "broadside_transition"  core.solve_scan_transition_fault_atpg
 "los_transition"        core.solve_scan_los_transition_fault_atpg
 "native_stuck_at"       core.solve_fault_atpg (full signature with bb/test_mode)
@@ -23,13 +23,27 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Scan compression: the decompressor constraints every scan solve of this
+# worker process carries (detection_pipeline._seed_kwargs; empty without
+# compression). Installed once per process by the pool's initializer
+# (install_seed), not pickled into every task: it holds one row of seed bits
+# per scan cell, big on a big design.
+_seed: dict[str, Any] = {}
+
+
+def install_seed(seed: dict[str, Any]) -> None:
+    """The pool initializer: this process's scan solves' seed constraints."""
+    global _seed
+    _seed = dict(seed)
+
 
 def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
     """Solve one fault; return (fault_id, result_str, solved_dict).
 
     ``args`` is a 15-element tuple so multiprocessing can pickle it without
     any process-local state.  All values must be plain Python scalars or
-    lists — no Path objects, no dataclasses.
+    lists — no Path objects, no dataclasses. The scan kinds also carry the
+    seed constraints install_seed installed.
 
     The returned ``solved_dict`` is the raw dict from the C++ solver.  For
     SAT results it contains 'vector' (stuck-at), 'launch'+'capture' (LOS),
@@ -53,6 +67,7 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
         test_mode,
         incremental,
     ) = args
+    seed = _seed
 
     # The C extension lives in build/src/core/, not on the default sys.path.
     # Mirror the path search from runner._load_core() so forked workers can
@@ -85,7 +100,9 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
                     conflict_limit,
                     timeout,
                     unsupported,
+                    blackbox_instances=bb_instances,
                     cone_restrict=cone_restrict,
+                    **seed,
                 )
             )
         elif solve_kind == "broadside_transition":
@@ -99,7 +116,9 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
                     conflict_limit,
                     timeout,
                     unsupported,
+                    blackbox_instances=bb_instances,
                     cone_restrict=cone_restrict,
+                    **seed,
                 )
             )
         elif solve_kind == "native_stuck_at":
@@ -145,6 +164,8 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
                     conflict_limit,
                     timeout,
                     unsupported,
+                    blackbox_instances=bb_instances,
+                    **seed,
                 )
             )
     except Exception as exc:

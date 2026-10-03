@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -56,6 +57,20 @@ class BitParallelSim {
   std::vector<std::vector<uint64_t>> simulate_batch_samples(
       const CompiledSimGraph& cg, const TestVector& vec,
       const FaultBatch& batch) const;
+
+  // simulate_batch's cycle loop, detecting only on `observe` (compiled net
+  // indices) at sampled cycles. first_sample[lane] = index, among the sampled
+  // cycles, of the first one at which the lane differs from lane 0 on any
+  // observed net (-1: never). With early_exit the run stops once every lane in
+  // batch.mask is detected, which changes neither result. When lane0 is given,
+  // lane 0's observed values at each sampled cycle run are appended to it.
+  // Returns the detected-lane mask.
+  uint64_t simulate_batch_observed(const CompiledSimGraph& cg, const TestVector& vec,
+                                   const FaultBatch& batch,
+                                   const std::vector<uint32_t>& observe,
+                                   std::array<int32_t, 64>& first_sample,
+                                   bool early_exit = true,
+                                   std::vector<std::vector<bool>>* lane0 = nullptr) const;
 
   void seed_ff_outputs(SimState& state, const CompiledSimGraph& cg,
                        const FaultBatch& batch) const;

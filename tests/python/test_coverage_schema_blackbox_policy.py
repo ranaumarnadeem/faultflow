@@ -53,6 +53,36 @@ def test_schema_accepts_no_blackbox_policy_fields() -> None:
     jsonschema.validate(instance=policy, schema=_policy_schema())
 
 
+def test_schema_accepts_opaque_blackbox_boundary() -> None:
+    policy = _policy(blackbox_instances=["u_sram"], blackbox_boundary="opaque")
+
+    jsonschema.validate(instance=policy, schema=_policy_schema())
+
+
+@pytest.mark.parametrize(
+    ("campaign_type", "instances", "expected"),
+    [
+        ("scan", ("u_sram",), "opaque"),
+        ("comb", ("u_sram",), "pseudo_port"),
+        ("scan_extest", ("u_sram",), "pseudo_port"),
+        ("scan", (), "none"),
+        ("comb", (), "none"),
+    ],
+)
+def test_policy_reports_the_blackbox_model_the_campaign_used(
+    campaign_type: str, instances: tuple[str, ...], expected: str
+) -> None:
+    """A scan campaign's reduced view models a blackbox opaque (outputs tied to
+    0, inputs unobserved); combinational and EXTEST ATPG model it as a pseudo
+    port. The report must say which one the numbers came from."""
+    from faultflow.reporter.coverage import _policy as report_policy
+
+    policy = report_policy({"campaign_type": campaign_type}, instances)
+
+    assert policy["blackbox_boundary"] == expected
+    jsonschema.validate(instance=policy, schema=_policy_schema())
+
+
 def test_schema_rejects_invalid_blackbox_boundary_value() -> None:
     policy = _policy(blackbox_instances=["u_core"], blackbox_boundary="bogus")
 
@@ -107,7 +137,12 @@ def _minimal_valid_report() -> dict[str, Any]:
             "excluded_scan_chain": 0,
             "excluded_cross_domain": 0,
             "excluded_wbr_decoupled": 0,
+            "excluded_jtag": 0,
             "protocol_unresolved": 0,
+            "compression_unresolved": 0,
+            "compaction_unresolved": 0,
+            "blackbox_unresolved": 0,
+            "hold_unresolved": 0,
             "fault_coverage_percent": 100.0,
             "test_coverage_percent": 100.0,
             "coverage_percent": 100.0,
@@ -161,6 +196,47 @@ def test_validate_report_accepts_random_only_terminal_reason() -> None:
 
     report = _minimal_valid_report()
     report["run"]["atpg_terminal_reason"] = "RANDOM_ONLY"
+    _validate_report(report)  # must not raise
+
+
+@pytest.mark.parametrize("sat_outcome", [None, "timeout"])
+@pytest.mark.parametrize("reason", ["blackbox_unresolved", "hold_unresolved"])
+def test_undetected_reason_reports_an_untestable_class(
+    sat_outcome: str | None, reason: str
+) -> None:
+    """blackbox_unresolved and hold_unresolved outrank a recorded SAT outcome: a
+    fault can time out in one round and be proven UNSAT (then classified) in a
+    later one, and the stale outcome row stays behind."""
+    from faultflow.reporter.coverage import _undetected_reason
+
+    assert (
+        _undetected_reason(False, False, False, sat_outcome, **{reason: True}) == reason
+    )
+
+
+@pytest.mark.parametrize("reason", ["blackbox_unresolved", "hold_unresolved"])
+def test_validate_report_accepts_an_untestable_fault(reason: str) -> None:
+    from faultflow.reporter.coverage import _validate_report
+
+    report = _minimal_valid_report()
+    report["summary"].update(detected=0, undetected=1, **{reason: 1})
+    for key in ("fault_coverage_percent", "test_coverage_percent", "coverage_percent"):
+        report["summary"][key] = 0.0
+    report["undetected_faults"] = [
+        {
+            "id": 1,
+            "net_id": 6,
+            "net_name": "dout",
+            "fault_type": "sa0",
+            "fault_site_key": "net:6:stem",
+            "protocol_unresolved": False,
+            "compression_unresolved": False,
+            "compaction_unresolved": False,
+            "blackbox_unresolved": reason == "blackbox_unresolved",
+            "hold_unresolved": reason == "hold_unresolved",
+            "reason": reason,
+        }
+    ]
     _validate_report(report)  # must not raise
 
 

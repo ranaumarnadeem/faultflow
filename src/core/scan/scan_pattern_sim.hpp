@@ -42,6 +42,11 @@ struct ScanPatternRequest {
   // FUNCTIONAL (default) keeps wrapper cells transparent. Carried onto the built
   // TestVector so the sequential sims pick the mode-aware evaluator.
   TestMode test_mode = TestMode::FUNCTIONAL;
+  // Clock pulses before the load -- scan_enable off, every other input at its
+  // capture value -- so the non-scan flops a scan clock settles (a reset
+  // synchronizer with the chip reset held inactive) hold their value before the
+  // first shift. Fault-inactive and unsampled, like the load. 0: none.
+  int preamble_cycles = 0;
 };
 
 // Returns true if clock i should be pulsed during the launch/capture window.
@@ -73,12 +78,34 @@ struct ScanProtocolFaultSpec {
 struct ScanProtocolFaultRequest {
   ScanPatternRequest pattern;
   std::vector<ScanProtocolFaultSpec> faults;
+  // Opt-in, default false, fully backward-compatible with every existing
+  // caller. When true, each lane's per-chain, per-cycle faulty-vs-golden
+  // unload diff is additionally retained in ScanProtocolFaultLaneResult
+  // (reuses the per-lane observation already computed to decide `outcome` --
+  // no new simulation pass). Used by the scan compactor's post-hoc
+  // observability check (faultflow.scan.detection_pipeline), which needs the
+  // real diff to fold through the compactor's XOR fanout map.
+  bool capture_diffs = false;
+  // Per chain, per unload offset: false where the good machine's unload bit
+  // is unknown -- a flop that captured a blackbox output's value, which no
+  // scan test knows (faultflow/scan/x_mask.py). A masked bit never counts as
+  // a detection and reads as no difference in diff_unload_seqs. A chain
+  // absent here, or an offset past its list, is compared; empty compares all.
+  std::map<int, std::vector<bool>> unload_mask;
 };
 
 struct ScanProtocolFaultLaneResult {
   size_t fault_index = 0;
   ScanProtocolFaultOutcome outcome =
       ScanProtocolFaultOutcome::NO_CAPTURE_OR_UNLOAD_EFFECT;
+  // Populated iff the request's capture_diffs is true (else left empty).
+  // chain_id -> per-cycle bool, true where this lane's faulty unload bit
+  // differs from the golden unload at that (chain, cycle). Computed
+  // unconditionally of `outcome`/detected -- a lane detected solely via a
+  // functional-PO diff (no scan-chain diff at all) still needs an all-false
+  // map here so a caller can tell "no scan-chain diff exists" apart from "a
+  // scan-chain diff exists but folds to zero through some fanout map".
+  std::map<int, std::vector<bool>> diff_unload_seqs;
 };
 
 struct ScanProtocolFaultBatchResult {
@@ -91,9 +118,13 @@ struct ScanProtocolFaultSimResult {
   std::vector<ScanProtocolFaultBatchResult> batches;
 };
 
+// `blackbox_instances` must match what every other load of the same netlist
+// uses: a blackbox instance's cell type is usually absent from the cell map, so
+// without it an `unsupported_policy` of "fail" rejects the netlist outright.
 ScanPatternResult simulate_scan_pattern(
     const std::string& json_path, const std::string& cell_map_path,
-    const ScanPatternRequest& request, const std::string& unsupported_policy);
+    const ScanPatternRequest& request, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
 
 // `sim_threads` parallelizes grading across the independent fault batches:
 // <= 0 auto, 1 serial, N threads. Batches are written to pre-assigned slots, so
@@ -101,7 +132,8 @@ ScanPatternResult simulate_scan_pattern(
 ScanProtocolFaultSimResult simulate_scan_protocol_faults(
     const std::string& json_path, const std::string& cell_map_path,
     const ScanProtocolFaultRequest& request,
-    const std::string& unsupported_policy, int sim_threads = 1);
+    const std::string& unsupported_policy, int sim_threads = 1,
+    const std::vector<std::string>& blackbox_instances = {});
 
 bool scan_observations_equal(const ScanPatternResult& lhs,
                              const ScanPatternResult& rhs);

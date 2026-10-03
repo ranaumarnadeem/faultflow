@@ -84,6 +84,50 @@ def test_blackbox_empty_instances_is_empty(tmp_path: Path) -> None:
     assert cfg.blackbox_instances == ()
 
 
+def test_blackbox_outputs_are_unknown_by_default(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.ofs"
+    _write_config(cfg_path, "\n[blackbox]\ninstances = u_a, u_b\n")
+    cfg = load_config(cfg_path, "demo")
+    assert cfg.blackbox_output_values == (("u_a", "x"), ("u_b", "x"))
+    assert cfg.blackbox_x_instances == ("u_a", "u_b")
+
+
+def test_blackbox_output_value_default_and_override(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.ofs"
+    _write_config(
+        cfg_path, "\n[blackbox]\ninstances = u_a, u_b, u_c\noutput_value = 0, u_b:X\n"
+    )
+    cfg = load_config(cfg_path, "demo")
+    assert cfg.blackbox_output_values == (("u_a", "0"), ("u_b", "x"), ("u_c", "0"))
+    assert cfg.blackbox_x_instances == ("u_b",)
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("1", "not supported yet"),
+        ("z", "must be x or 0"),
+        ("x, 0", "two defaults"),
+        ("u_zz:0", "not in instances"),
+        ("u_a:0, u_a:x", "repeats"),
+    ],
+)
+def test_blackbox_output_value_rejects(
+    tmp_path: Path, value: str, message: str
+) -> None:
+    cfg_path = tmp_path / "config.ofs"
+    _write_config(cfg_path, f"\n[blackbox]\ninstances = u_a\noutput_value = {value}\n")
+    with pytest.raises(ConfigError, match=message):
+        load_config(cfg_path, "demo")
+
+
+def test_blackbox_output_value_needs_instances(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.ofs"
+    _write_config(cfg_path, "\n[blackbox]\noutput_value = 0\n")
+    with pytest.raises(ConfigError, match="needs"):
+        load_config(cfg_path, "demo")
+
+
 # --------------------------------------------------------------------------- #
 # 9-P03 — fingerprint participation (resume invalidation)
 # --------------------------------------------------------------------------- #
@@ -99,6 +143,24 @@ def test_blackbox_change_changes_fingerprint(tmp_path: Path) -> None:
     assert fp_plain["blackbox_instances"] == []
     assert fp_boxed["blackbox_instances"] == ["u_sram"]
     assert fp_plain != fp_boxed
+
+
+def test_blackbox_output_value_changes_fingerprint(tmp_path: Path) -> None:
+    """What a blackbox outputs decides what a scan test may observe; a
+    design without blackboxes keeps the payload it always had."""
+    unknown = tmp_path / "unknown.ofs"
+    zero = tmp_path / "zero.ofs"
+    plain = tmp_path / "plain.ofs"
+    _write_config(unknown, "\n[blackbox]\ninstances = u_sram\n")
+    _write_config(zero, "\n[blackbox]\ninstances = u_sram\noutput_value = 0\n")
+    _write_config(plain)
+
+    def payload(path: Path) -> dict[str, object]:
+        return Runner(load_config(path, "demo"))._config_fingerprint_payload()
+
+    assert payload(unknown)["blackbox_output_values"] == [["u_sram", "x"]]
+    assert payload(zero)["blackbox_output_values"] == [["u_sram", "0"]]
+    assert "blackbox_output_values" not in payload(plain)
 
 
 # --------------------------------------------------------------------------- #

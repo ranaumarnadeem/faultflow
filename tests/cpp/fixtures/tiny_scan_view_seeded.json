@@ -1,0 +1,72 @@
+{
+  "comment": [
+    "Hand-built reduced scan ATPG view for decompressor-seeded (scan compression)",
+    "SAT ATPG. Three scan FFs lowered to pseudo ports:",
+    "  Y         = AND3(__ppi_ff0, __ppi_ff1, __ppi_ff2)",
+    "  __ppo_ff0 = A XOR __ppi_ff0",
+    "  __ppo_ff1 = __ppi_ff1",
+    "  __ppo_ff2 = __ppi_ff2",
+    "The tests load the FFs from a 2-bit seed: ff0 = s0, ff1 = s0 ^ s1, ff2 = s1,",
+    "so ff1 == ff0 ^ ff2 in every load the decompressor can make. Y stuck-at-0",
+    "needs all three at 1: SAT without the seed, UNSAT through it."
+  ],
+  "modules": {
+    "tiny_scan_view_seeded": {
+      "attributes": { "top": "00000000000000000000000000000001" },
+      "ports": {
+        "A": { "direction": "input", "bits": [2] },
+        "__ppi_ff0": { "direction": "input", "bits": [3] },
+        "__ppi_ff1": { "direction": "input", "bits": [4] },
+        "__ppi_ff2": { "direction": "input", "bits": [5] },
+        "Y": { "direction": "output", "bits": [6] },
+        "__ppo_ff0": { "direction": "output", "bits": [7] },
+        "__ppo_ff1": { "direction": "output", "bits": [8] },
+        "__ppo_ff2": { "direction": "output", "bits": [9] }
+      },
+      "cells": {
+        "g_and": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__and3_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "B": "input", "C": "input", "X": "output" },
+          "connections": { "A": [3], "B": [4], "C": [5], "X": [6] }
+        },
+        "g_xor": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__xor2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "B": "input", "X": "output" },
+          "connections": { "A": [2], "B": [3], "X": [7] }
+        },
+        "g_buf1": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__buf_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "X": "output" },
+          "connections": { "A": [4], "X": [8] }
+        },
+        "g_buf2": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__buf_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "X": "output" },
+          "connections": { "A": [5], "X": [9] }
+        }
+      },
+      "netnames": {
+        "A": { "hide_name": 0, "bits": [2], "attributes": {} },
+        "__ppi_ff0": { "hide_name": 0, "bits": [3], "attributes": {} },
+        "__ppi_ff1": { "hide_name": 0, "bits": [4], "attributes": {} },
+        "__ppi_ff2": { "hide_name": 0, "bits": [5], "attributes": {} },
+        "Y": { "hide_name": 0, "bits": [6], "attributes": {} },
+        "__ppo_ff0": { "hide_name": 0, "bits": [7], "attributes": {} },
+        "__ppo_ff1": { "hide_name": 0, "bits": [8], "attributes": {} },
+        "__ppo_ff2": { "hide_name": 0, "bits": [9], "attributes": {} }
+      }
+    }
+  }
+}

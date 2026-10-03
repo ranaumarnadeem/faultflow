@@ -74,6 +74,7 @@ run_techmap = true
 | `liberty` | Sky130 HD `.lib` | Liberty file — used by **Yosys only** |
 | `verilog_models` | — | Behavioral cell models for the iverilog gate (falls back to `[simulation] verilog_models`) |
 | `yosys_ver` | `""` | Yosys version string, recorded in the fingerprint |
+| `output_root` | `output` | Where the campaign's outputs go: `<output_root>/<top>`. The `.ofs` `mbist-insert -c` writes sets its own, so the inserted chip (same top) doesn't share the original's |
 
 ```{note}
 The cell map and Liberty must be a matched pair for the same PDK. The two shipped pairs
@@ -107,7 +108,6 @@ line rather than setting it turns collapsing back on.
 | `verify` | bool | `false` | Run the optional iverilog verification gate |
 | `verify_tool` | `iverilog` | `iverilog` | Verification backend |
 | `verify_use_power_pins` | bool | `false` | Drive `VPWR=1`/`VGND=0` and pass `-DUSE_POWER_PINS` in the generated testbench, for behavioral models that need it |
-| `tie_xz` | bool | `false` | Tie Yosys `x`/`z` constant bits to 0 before simulation (needed for netlists with unconnected/don't-care inputs, e.g. unused scan pins) |
 | `sim_threads` | int | `1` | Threads for parallel fault grading, the dominant ATPG cost. `1` = serial, `0` = auto (`cpu_count - 2`, min 1), `N` = `N` threads. Coverage is bit-identical for any value — only wall-clock changes |
 | `verilog_models` | — | Sky130 models | Behavioral cell models for verification |
 
@@ -140,7 +140,7 @@ There is no silent-skip option.
 | `pack_orders` | int | `1` | Number of packing orders tried during dynamic compaction |
 | `order_by_cone_size` | bool | `true` | Order faults by ascending structural cone size so the fastest SAT calls run first, incidentally detecting more faults early. Coverage-identical; stuck-at only |
 | `workers` | int | `1` | Parallel SAT worker processes (`1` = serial). Requires a fork-capable OS (Linux/WSL); silently falls back to serial on Windows/spawn platforms. Also settable interactively in the shell with `WORKERS N` |
-| `preflight` | bool | `true` | Run OpenTestability structural reconvergence analysis before ATPG (reconvergent-site faults sorted last and skip the short timeout tier; canceling-path-stem faults pre-certified UNSAT with no SAT call). Requires the `opentest` binary on `PATH`; falls back silently when unavailable |
+| `preflight` | bool | `true` | Run OpenTestability structural reconvergence analysis before ATPG (reconvergent-site faults sorted last and skip the short timeout tier). Ordering only: a fault is classified redundant only when SAT proves it UNSAT. Requires the `opentest` binary on `PATH`; falls back silently when unavailable |
 | `preflight_tech` | str | `""` (auto-detect) | PDK tech tag passed to `opentest`'s preflight pass. Empty auto-detects from the `cell_lib` path (`sky130` unless the path contains `osu035`/`osu`) |
 | `easy_fault_reserve` | int | `2` | Easy/hard worker split, applied only when `workers >= 4`: each wave reserves this many slots for easy (small-cone, non-reconvergent) faults while the rest run hard faults, so fast and slow faults progress concurrently. `0` disables the split |
 
@@ -155,12 +155,14 @@ There is no silent-skip option.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `chains` | `1` | Number of scan chains |
-| `max_chain_length` | (none) | Maximum flip-flops per chain; empty means unbounded |
+| `chains` | `1` | Number of scan chains. A chain never spans two clock domains, so a multi-clock design needs one per domain at least; flip-flops split as evenly as the count allows, and where that would straddle a domain boundary, each domain gets whole chains in proportion to its flip-flop count |
+| `max_chain_length` | (none) | Maximum flip-flops per chain; empty means unbounded. With `chains = 1`, the chain count becomes what keeps every chain within it, counted per clock domain |
 | `scan_in` | `scan_in` | Scan input port base name |
 | `scan_out` | `scan_out` | Scan output port base name |
 | `scan_enable` | `scan_en` | Scan enable port name |
 | `run_techmap` | `true` | Run the Sky130 scan-cell techmap after stitching |
+| `nonscan_cells` | (none) | Instance-name globs, e.g. `u_tap__*, u_sib_*`: flip-flops left out of scan on purpose, like a JTAG TAP and its IJTAG network that `ff.py jtag` tests through TCK. Each must hold still for the whole scan test: either a `hold` input keeps its clear or preset active, and the scan view ties its output at the value that forces, or its clock is held and nothing free can reset it, and its output is unknown, masked like an unknown blackbox output, or it *settles*: a scan clock clocks it, the holds keep its clear and preset inactive, and its D traces to holds, constants and other settled flops (a reset synchronizer with `rst_n` held inactive). A settled flop is tied at the value it settles to, every pattern starts with the pulses that settle it (`preamble_cycles`), and its own faults are `excluded_reset`. Anything else is an error. The other non-scan flops' faults, and those only they see, are `excluded_jtag`; a glob selects settled flops or others, not both |
+| `hold` | (none) | `input:0\|1` list, e.g. `trst_n:0, tck:0`: inputs held at that value in every scan pattern, e.g. to keep a non-scan TAP in reset. Not a scan port or scan clock, and not a value that clears or presets scan flops. A fault only the held values block is `hold_unresolved` |
 
 ## `[testpoint]`
 
@@ -188,7 +190,8 @@ one-shot from the CLI with `add-clock`).
 
 | Key | Format | Meaning |
 |---|---|---|
-| `instances` | comma list, e.g. `u_sram, u_pll` | Instances modeled as test boundaries (pseudo-PI/PO) |
+| `instances` | comma list, e.g. `u_sram, u_pll` | Instances modeled as test boundaries (pseudo-PI/PO). Scan runs model them opaque instead: a scan test can neither set, know nor observe them, so their inputs are unobserved and their outputs hold `output_value` |
+| `output_value` | `x` or `0`, plus per-instance `inst:x` / `inst:0` overrides, e.g. `x, u_rom:0` | Scan runs only: what an instance's outputs hold during the scan test. `x` (the default) is unknown, like an SRAM's output, which holds whatever it last read: every scan flop capture and primary output it reaches combinationally (for launch-on-capture, also through a flop that captured it at launch) gets no detection credit and is don't-care in exported patterns. Faults seen only there count as `blackbox_unresolved`. `0` asserts the design holds the output at 0 in test mode. An unknown output that reaches a scan flop's clock, scan-in, scan-enable or async set/reset is an error |
 
 ## `[testmode]`
 
@@ -201,6 +204,56 @@ one-shot from the CLI with `add-clock`).
 | Key | Allowed values | Default | Meaning |
 |---|---|---|---|
 | `wbr_model` | `buffer`, `scan` | `scan` | Wrapper boundary register model used by the shell's `wrap` command: `buffer` is transparent, `scan` is a native shiftable WBR |
+
+## `[autombist]`
+
+Written by `ff.py autombist-generate` (see [External tools](../external_tools.md)).
+
+| Key | Format | Meaning |
+|---|---|---|
+| `manifest` | path | The autoMBIST instance manifest the netlist was built from. The coverage report then breaks detected faults, the denominator, `blackbox_unresolved` and `hold_unresolved` down by the manifest's instance categories. Report-only: not part of the campaign fingerprint |
+
+## `[compression]` and `[compaction]`
+
+Scan test-pattern compression (`ff.py scan-compress`: a ring-generator and
+phase-shifter decompressor in front of the scan inputs) and response compaction
+(`ff.py scan-compact`: an XOR-tree space compactor behind the scan outputs). Each
+wraps the scanned design, which becomes the instance `core_inst`.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Insert it |
+| `channels` | `8` | External channels. Compression: an LFSR width, 8, 16, 32 or 64 |
+| `scan_enable`, `clock` | the design's | `[compression]` only: the scan enable and clock the decompressor uses |
+| `channel_port` | `tdi` / `tdo` | The name of the channel bus. It can't be a port the design already has, and `ff.py jtag` refuses a TAP pin's name. The `.ofs` `mbist-insert -c` writes for a chip with a TAP sets `comp_si` and `comp_so` unless yours sets them |
+
+The decompressor loads every scan cell from one seed of `channels` bits per
+pattern (a channel value at the start of the load, then the ring generator runs),
+so a compressed design can apply only the loads that seed space spans. `sim --scan`
+generates only those: SAT solves with each scan cell tied to its seed bits
+(launching on shift, each chain's launch-shift bit too), random fill draws random
+seeds, and every pattern is graded and exported as the seed's whole scan-in stream
+(`load_care` names every position). A fault some test detects but no load the
+decompressor makes is `compression_unresolved`: undetected, in the denominator,
+never redundant. Only more channels (a wider seed) widen what it can load; how the
+cells are split into chains doesn't. A campaign graded before this can't be resumed:
+re-run with `--clean`.
+
+## `[jtag]`
+
+Used by `ff.py jtag` / `run_jtag` (see [Running without the shell](running_without_shell.md)).
+Every key is optional; the defaults fit a TAP warptap inserted. Report-only: not part of the
+campaign fingerprint (a JTAG grade keys itself to its program, netlist and holds).
+
+| Key | Format | Default | Meaning |
+|---|---|---|---|
+| `tck`, `tms`, `tdi`, `trst_n`, `tdo` | port names | the same | The TAP's ports |
+| `hold` | `input:0\|1` list, e.g. `rst_n:0, test_mode:0` | — | What to hold other inputs at, over the defaults (0, or the level that keeps a flop's reset active) |
+| `program` | path | — | A `warptap-tck-program` JSON file to play; without it, one is built from the `[autombist] manifest` with warptap |
+| `ir_width` | integer ≥ 2 | `4` | The TAP's instruction-register width, for a built program |
+| `idcode` | 32-bit integer (bit 0 set), or `none` | `0x1A5A5003` | The TAP's IDCODE value, for a built program; `none` for a TAP without one. A manifest that records the TAP's IDCODE wins; set here against it, it's refused |
+| `margin` | integer ≥ 1 | `8` | Sentinel bits fed past each register's length in a built program |
+| `exhaustive_opcodes` | boolean | `true` | Test every unimplemented opcode in a built program |
 
 ## Notes on legacy and inert keys
 

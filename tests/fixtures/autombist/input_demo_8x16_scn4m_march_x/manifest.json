@@ -1,0 +1,61 @@
+{
+  "format": "autombist_instance_manifest",
+  "generated_at": "1970-01-01T00:00:00+00:00",
+  "generator": {
+    "command": "generate",
+    "config_path": "config.yml",
+    "topology": "dedicated"
+  },
+  "instances": [
+    {
+      "category": "memory",
+      "geometry": {
+        "addr_width": 4,
+        "connected_addr_width": 4,
+        "connected_data_width": 8,
+        "data_width": 8,
+        "mem_addr_width": 4,
+        "mem_data_width": 8,
+        "num_diagnosis_entries": 0,
+        "num_spare_cols": 0,
+        "num_spare_rows": 0,
+        "read_latency": 0
+      },
+      "hierarchical_path": "u_sram",
+      "hierarchy_hint": "blackbox",
+      "instance_name": "u_sram",
+      "module_type": "input_demo_8x16_scn4m",
+      "present_because": "always",
+      "sources": [
+        "input_demo_8x16_scn4m_bbox.v"
+      ]
+    },
+    {
+      "category": "mbist_controller",
+      "hierarchical_path": "u_algo_top",
+      "hierarchy_hint": "separate",
+      "instance_name": "u_algo_top",
+      "module_type": "march_x_top",
+      "parameters": {
+        "ADDR_WIDTH": 4,
+        "DATA_WIDTH": 8,
+        "READ_LATENCY": 0
+      },
+      "present_because": "always",
+      "sources": [
+        "march_x/march_x_algo.sv",
+        "march_x/march_x_fsm.sv",
+        "march_x/march_x_top.sv"
+      ]
+    }
+  ],
+  "module_outdir": "<ignored by faultflow -- see load_autombist_manifest, sources always resolve against the manifest file's own directory>",
+  "schema_version": "1.0.0",
+  "sources": {
+    "blackbox_stub": "input_demo_8x16_scn4m_bbox.v",
+    "wrapper": "input_demo_8x16_scn4m_mbist.v"
+  },
+  "test_access": null,
+  "tool_version": "0.1.0",
+  "top_module": "input_demo_8x16_scn4m_mbist_x"
+}

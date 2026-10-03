@@ -127,6 +127,20 @@ one runtime dependency (`jsonschema`, used to validate the JSON reports); a buil
 shape check runs if it is absent.
 ```
 
+### Optional: warptap
+
+The JTAG flows (`autombist-generate --test-access`, and `ff.py jtag` building its
+program from a manifest) use [warptap](https://github.com/ranaumarnadeem/warptap).
+Install it into the same venv from a clone:
+
+```bash
+pip install -e /path/to/warptap
+```
+
+The tests that need it skip without it. A run that is meant to have it can say so:
+with `FAULTFLOW_REQUIRE_WARPTAP=1`, those tests fail instead of skipping, so a
+missing or broken install can't pass as a green suite.
+
 A convenience wrapper, `bin/faultflow`, execs `venv/bin/python ff.py "$@"`. If you
 symlink it onto your `PATH` (or activate the venv), you can call `faultflow` instead
 of `python3 ff.py`.

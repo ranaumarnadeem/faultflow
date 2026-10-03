@@ -4,10 +4,12 @@ import logging
 import random
 import sqlite3
 import time
+from typing import NamedTuple, Sequence
 
 from faultflow.atpg import VectorSet
 from faultflow.db import connect, init_schema, summary
 from faultflow.runner.runner import RunnerError, _load_core
+from faultflow.scan.site_resolution import fault_type_to_sa_code
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +40,53 @@ def _detected_fault_ids(conn: sqlite3.Connection, campaign_id: int) -> list[int]
         (campaign_id,),
     ).fetchall()
     return [int(row["id"]) for row in rows]
+
+
+class _FaultTarget(NamedTuple):
+    fault_id: int
+    net_index: int
+    type_code: int
+
+
+def _detected_fault_targets(
+    conn: sqlite3.Connection, campaign_id: int
+) -> dict[int, _FaultTarget]:
+    """Same WHERE clause as _detected_fault_ids, plus the (net_index, type)
+    every compaction_detections_preloaded call needs. Loaded ONCE per
+    compact_run* call and reused across every vector in its loop -- the C++
+    side (atpg::detect_with_vector/detect_with_pair) does no DB access at all
+    given these, unlike core.compaction_detections/compaction_pair_detections
+    (which re-open the DB and re-fetch the whole target set on every call)."""
+    rows = conn.execute(
+        """
+        SELECT id, COALESCE(atpg_compiled_net_index, compiled_net_index) AS net_index,
+               fault_type
+        FROM faults
+        WHERE campaign_id = ?
+          AND status = 'detected'
+          AND exclusion = 'none'
+          AND collapsed_into IS NULL
+        ORDER BY id
+        """,
+        (campaign_id,),
+    ).fetchall()
+    return {
+        int(row["id"]): _FaultTarget(
+            int(row["id"]),
+            int(row["net_index"]),
+            fault_type_to_sa_code(str(row["fault_type"])),
+        )
+        for row in rows
+    }
+
+
+def _triples(
+    fault_ids: set[int] | list[int], targets_by_id: dict[int, _FaultTarget]
+) -> list[tuple[int, int, int]]:
+    return [
+        (t.fault_id, t.net_index, t.type_code)
+        for t in (targets_by_id[fid] for fid in sorted(fault_ids))
+    ]
 
 
 def _insert_compacted_run(
@@ -83,6 +132,7 @@ def compact_run(
     run_id: int,
     vectors: VectorSet,
     unsupported: str,
+    blackbox_instances: Sequence[str] = (),
 ) -> tuple[VectorSet, int, int]:
     """Reverse-order fault-simulation static compaction.
 
@@ -106,7 +156,8 @@ def compact_run(
     started = time.perf_counter()
     with connect(db_path) as conn:
         init_schema(conn)
-        remaining: set[int] = set(_detected_fault_ids(conn, campaign_id))
+        targets_by_id = _detected_fault_targets(conn, campaign_id)
+        remaining: set[int] = set(targets_by_id)
 
     kept_indices: list[int] = []
     for idx in range(raw_count - 1, -1, -1):
@@ -114,14 +165,14 @@ def compact_run(
             # Everything is already covered by a later (kept) vector; every
             # earlier vector is redundant.
             break
-        detected = core.compaction_detections(
+        detected = core.compaction_detections_preloaded(
             json_path,
             cell_map_path,
-            db_path,
             vectors.vectors[idx],
             input_order,
-            sorted(remaining),
+            _triples(remaining, targets_by_id),
             unsupported,
+            list(blackbox_instances),
         )
         newly = [fid for fid in detected if fid in remaining]
         if newly:
@@ -250,6 +301,7 @@ def compact_run_dynamic(
     vectors: VectorSet,
     unsupported: str,
     pack_orders: int = 1,
+    blackbox_instances: Sequence[str] = (),
 ) -> tuple[VectorSet, int, int]:
     """Dynamic compaction via sim-verified cube packing.
 
@@ -276,23 +328,24 @@ def compact_run_dynamic(
             "Run: cmake --build build -- -j2"
         )
 
-    def detect(vector: dict[str, bool], targets: set[int]) -> set[int]:
-        return set(
-            core.compaction_detections(
-                json_path,
-                cell_map_path,
-                db_path,
-                vector,
-                input_order,
-                sorted(targets),
-                unsupported,
-            )
-        )
-
     started = time.perf_counter()
     with connect(db_path) as conn:
         init_schema(conn)
-        all_detected = set(_detected_fault_ids(conn, campaign_id))
+        targets_by_id = _detected_fault_targets(conn, campaign_id)
+        all_detected = set(targets_by_id)
+
+    def detect(vector: dict[str, bool], targets: set[int]) -> set[int]:
+        return set(
+            core.compaction_detections_preloaded(
+                json_path,
+                cell_map_path,
+                vector,
+                input_order,
+                _triples(targets, targets_by_id),
+                unsupported,
+                list(blackbox_instances),
+            )
+        )
 
     # 1. Contributing vectors (same selection as reverse), each with the faults it
     #    newly covers.
@@ -342,6 +395,7 @@ def compact_run_dynamic(
             run_id=run_id,
             vectors=vectors,
             unsupported=unsupported,
+            blackbox_instances=blackbox_instances,
         )
 
     # 5. Write the packed set as a new compacted run (mirrors compact_run).
@@ -378,6 +432,7 @@ def compact_run_transition(
     run_id: int,
     vectors: VectorSet,
     unsupported: str,
+    blackbox_instances: Sequence[str] = (),
 ) -> tuple[VectorSet, int, int]:
     """Reverse-order TWO-FRAME (transition) static compaction.
 
@@ -399,7 +454,8 @@ def compact_run_transition(
             """,
             (campaign_id, run_id),
         ).fetchall()
-        remaining: set[int] = set(_detected_fault_ids(conn, campaign_id))
+        targets_by_id = _detected_fault_targets(conn, campaign_id)
+        remaining: set[int] = set(targets_by_id)
     pairs = [
         (
             _decode(str(row["launch_pattern"]), input_order),
@@ -424,15 +480,15 @@ def compact_run_transition(
         if not remaining:
             break
         launch, capture = pairs[idx]
-        detected = core.compaction_pair_detections(
+        detected = core.compaction_pair_detections_preloaded(
             json_path,
             cell_map_path,
-            db_path,
             launch,
             capture,
             input_order,
-            sorted(remaining),
+            _triples(remaining, targets_by_id),
             unsupported,
+            list(blackbox_instances),
         )
         newly = [fid for fid in detected if fid in remaining]
         if newly:

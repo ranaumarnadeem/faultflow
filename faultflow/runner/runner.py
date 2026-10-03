@@ -54,6 +54,10 @@ from faultflow.rule_check.model import RuleCheckReport
 from faultflow.scan.checks import check_scan_structure
 from faultflow.scan.atpg_view import build_scan_atpg_view
 from faultflow.scan.cell_map import resolve_scan_cell_map
+from faultflow.scan.compression import insert_compression
+from faultflow.scan.compression_checks import check_compression_structure
+from faultflow.scan.compaction import insert_compaction
+from faultflow.scan.compaction_checks import check_compaction_structure
 from faultflow.scan.manifest import manifest_clock_net_ids
 from faultflow.scan.reports import (
     format_dry_run,
@@ -63,6 +67,8 @@ from faultflow.scan.reports import (
     utc_timestamp,
     write_scan_artifacts,
 )
+from faultflow.scan.nonscan import NONSCAN_REASON, NonscanSetup, analyze_nonscan
+from faultflow.scan.x_mask import XMask, launch_mode_key, mask_scan_view
 from faultflow.verify import IverilogVerifier, VerificationError
 
 log = logging.getLogger(__name__)
@@ -331,7 +337,7 @@ class Runner:
         return ensure_campaign(conn, self._campaign_type(scan), payload)
 
     def _config_fingerprint_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "top": self.cfg.top,
             "cell_lib": str(self.cfg.cell_lib),
             "fault_model": self.cfg.fault_model.model,
@@ -352,7 +358,38 @@ class Runner:
             # chain (new control/observe points + fault sites), so buffer<->scan is
             # a distinct campaign.
             "wbr_model": self.cfg.wbr_model,
+            # Enabling/disabling compression, or resizing its channel count,
+            # changes the synthesized netlist (new ring-generator/phase-shifter
+            # gates = new fault sites), so it's part of the fingerprint too.
+            "compression_enabled": self.cfg.compression.enabled,
+            "compression_channels": self.cfg.compression.channels,
+            # Enabling/disabling compaction, or resizing its channel count,
+            # changes fault classification outcomes -- a fault can flip
+            # between compaction_unresolved and detected purely as a function
+            # of channel count -- so it's part of the fingerprint too.
+            "compaction_enabled": self.cfg.compaction.enabled,
+            "compaction_channels": self.cfg.compaction.channels,
         }
+        if self.cfg.blackbox_output_values:
+            # What each blackbox outputs in a scan test (x or 0) decides what
+            # the test may observe (scan.x_mask). Keyed only with blackboxes, so
+            # a design without any keeps its config_hash.
+            payload["blackbox_output_values"] = [
+                list(pair) for pair in self.cfg.blackbox_output_values
+            ]
+        if self.cfg.scan.nonscan_cells or self.cfg.scan.hold:
+            # Which flops stay out of scan and which inputs are held decide the
+            # scan view and which faults scan leaves to JTAG. Keyed only when
+            # set, so a design without them keeps its config_hash.
+            payload["scan_nonscan_cells"] = list(self.cfg.scan.nonscan_cells)
+            payload["scan_hold"] = [list(pair) for pair in self.cfg.scan.hold]
+        if self.cfg.compression.enabled:
+            # Compressed, every pattern is a decompressor seed's load
+            # (scan.detection_pipeline._decompressed); a campaign graded before
+            # -- random loads, care bits checked after the fact -- credits
+            # tests the chip can't apply, so it must not resume into this one.
+            payload["compression_atpg"] = "seeded"
+        return payload
 
     def _rendered_yosys_script(self, source: Path | None = None) -> str:
         src = source or self._existing_verilog_source()
@@ -597,6 +634,7 @@ class Runner:
                     scan_in_base=si_base,
                     scan_out_base=so_base,
                     scan_enable=se_name,
+                    nonscan_cells=self.cfg.scan.nonscan_cells,
                 )
             except ScanError as exc:
                 raise RunnerError(str(exc)) from exc
@@ -618,6 +656,7 @@ class Runner:
                 scan_in_base=si_base,
                 scan_out_base=so_base,
                 scan_enable=se_name,
+                nonscan_cells=self.cfg.scan.nonscan_cells,
             )
             log.info(
                 "scan   inserted  %d chains  %d scan cells  %.1fs",
@@ -655,11 +694,56 @@ class Runner:
         )
         manifest_path = self._scan_manifest_path()
         tech_note = f" sky130={sky130_v}" if do_techmap else " sky130=skipped"
+        sdc = self._write_inserted_sdc(
+            generic_json,
+            result.top,
+            self.cfg.output_dir / f"{result.top}_scan.sdc",
+            self.cfg.scan_verilog_path.name,
+        )
+        sdc_note = f" sdc={sdc}" if sdc is not None else ""
         return (
             f"scan complete top={result.top} chains={result.chain_count} "
             f"cells={result.cell_count} generic={generic_json} "
-            f"techmap={techmap_v}{tech_note} manifest={manifest_path}"
+            f"techmap={techmap_v}{tech_note} manifest={manifest_path}{sdc_note}"
         )
+
+    def _write_inserted_sdc(
+        self,
+        netlist_json: Path,
+        top: str,
+        sdc: Path,
+        netlist_name: str,
+        *,
+        prefix: str = "",
+    ) -> Path | None:
+        """For a chip mbist-insert built ([autombist] manifest): the SDC of the
+        crossings it inserted, by pin of a netlist it became -- the scanned one
+        (<top>_scan.sdc beside <top>_scan.v), or a compressed or compacted one,
+        the chip under `prefix` -- None when the manifest names no
+        synchronizer."""
+        if self.cfg.autombist_manifest is None:
+            return None
+        from faultflow.integrations.autombist import load_autombist_manifest
+        from faultflow.mbist.netlist_sdc import (
+            NetlistSdcError,
+            netlist_crossings,
+            netlist_sdc,
+        )
+
+        data = json.loads(netlist_json.read_text(encoding="utf-8"))
+        try:
+            found = netlist_crossings(
+                data["modules"][top],
+                _load_json_object(resolve_scan_cell_map(self.cfg)),
+                load_autombist_manifest(self.cfg.autombist_manifest),
+                prefix=prefix,
+            )
+        except NetlistSdcError as exc:
+            raise RunnerError(str(exc)) from exc
+        if not found:
+            return None
+        sdc.write_text(netlist_sdc(netlist_name, found), encoding="utf-8")
+        return sdc
 
     def scan_status(self) -> str:
         manifest_path = self._scan_manifest_path()
@@ -710,6 +794,251 @@ class Runner:
             manifest,
         )
         return f"scan techmap complete top={manifest['top']} sky130={techmapped}"
+
+    def _default_clock_port(
+        self, manifest: dict[str, object], generic_json: Path
+    ) -> str:
+        """Resolve the design's declared scan clock to a port name, for
+        ``[compression] clock``'s documented "empty = reuse the design's
+        existing clock" fallback. Raises if the manifest declares zero or
+        more than one clock net -- ambiguous, must be configured explicitly
+        via ``[compression] clock`` in that case."""
+        clock_nets = manifest_clock_net_ids(manifest, error_cls=RunnerError)
+        if len(clock_nets) != 1:
+            raise RunnerError(
+                "[compression] clock must be set explicitly: the scan manifest "
+                f"declares {len(clock_nets)} clock net(s), not exactly one"
+            )
+        port = _port_name_for_net(
+            generic_json, str(manifest["top"]), clock_nets[0], "input"
+        )
+        if port is None:
+            raise RunnerError(f"cannot map scan clock net {clock_nets[0]} to a port")
+        return port
+
+    def scan_compress(self) -> str:
+        """Insert the sequential ring-generator + phase-shifter scan
+        compression decompressor (``faultflow.scan.compression.
+        insert_compression``) around the already scan-stitched, scan-check-
+        PASSed netlist, producing a new composed netlist artifact and
+        recording it in a ``manifest["compression"]`` section.
+
+        ``manifest["generic_json"]`` is left UNCHANGED -- it must keep
+        pointing at the plain, pre-compression scan-stitched netlist,
+        permanently, since ATPG's scan protocol needs independently
+        addressable ``scan_in_N`` ports that only exist there (the composed
+        netlist's scan inputs become internal wires driven by the phase
+        shifter). See the compression CLI-wiring plan for the full rationale.
+        """
+        manifest_path = self._scan_manifest_path()
+        if not manifest_path.exists():
+            raise RunnerError(f"scan manifest not found: {manifest_path}")
+        manifest = load_manifest(manifest_path)
+        if not self.cfg.compression.enabled:
+            raise RunnerError(
+                "[compression] enabled = true is required for scan-compress"
+            )
+        generic_json = Path(str(manifest["generic_json"]))
+        if _hash_file(generic_json) != str(manifest.get("generic_json_hash", "")):
+            raise RunnerError("generic scan JSON hash does not match manifest")
+        latest = manifest.get("latest_check")
+        if not isinstance(latest, dict) or latest.get("status") != "PASS":
+            raise RunnerError("run scan-check successfully before scan-compress")
+
+        raw_scan_in_ports = manifest.get("scan_inputs", [])
+        scan_in_ports = (
+            [str(p) for p in raw_scan_in_ports]
+            if isinstance(raw_scan_in_ports, list)
+            else []
+        )
+        clock_port = self.cfg.compression.clock or self._default_clock_port(
+            manifest, generic_json
+        )
+        scan_enable_port = self.cfg.compression.scan_enable or str(
+            manifest["scan_enable"]
+        )
+        if self.cfg.liberty is None or not self.cfg.liberty.exists():
+            raise RunnerError(f"liberty file not found: {self.cfg.liberty}")
+
+        core_top = str(manifest["top"])
+        output_json = self.cfg.output_dir / f"{self.cfg.top}_compressed.json"
+        workdir = self.cfg.intermediate_dir / "compression"
+        t0 = time.perf_counter()
+        log.info(
+            "compress running (top=%s, channels=%d) ...",
+            core_top,
+            self.cfg.compression.channels,
+        )
+        try:
+            _, compression_map = insert_compression(
+                generic_json,
+                core_top,
+                scan_in_ports,
+                self.cfg.compression.channels,
+                self.cfg.liberty,
+                output_json,
+                workdir=workdir,
+                clock_port=clock_port,
+                scan_enable_port=scan_enable_port,
+                channel_port=self.cfg.compression.channel_port,
+            )
+        except (ScanError, ValueError) as exc:
+            raise RunnerError(str(exc)) from exc
+        log.info(
+            "compress complete  channels=%d composed=%s  %.1fs",
+            compression_map.num_channels,
+            output_json,
+            time.perf_counter() - t0,
+        )
+
+        compression_entry: dict[str, object] = {
+            "enabled": True,
+            "num_channels": compression_map.num_channels,
+            "tap_source_net": "effective_state",
+            "scan_in_ports": scan_in_ports,
+            "phase_shifter_taps": compression_map.phase_shifter_taps,
+            "composed_json": str(output_json),
+            "composed_top": f"{core_top}_compressed",
+            "composed_json_hash": _hash_file(output_json),
+            "clock_port": clock_port,
+            "scan_enable_port": scan_enable_port,
+            "channel_port": self.cfg.compression.channel_port,
+            "polynomial": {
+                "width": compression_map.polynomial.width,
+                "taps": sorted(compression_map.polynomial.taps),
+            },
+        }
+        manifest["compression"] = compression_entry
+        structural = check_compression_structure(manifest)
+        compression_entry["structural_check"] = {
+            "status": "PASS" if structural.passed else "FAIL",
+            "errors": structural.errors,
+        }
+        write_scan_artifacts(
+            self.cfg.manifests_dir,
+            self.cfg.scan_report_path,
+            manifest,
+        )
+        if not structural.passed:
+            raise RunnerError(
+                "compression structural check failed: " + "; ".join(structural.errors)
+            )
+        sdc = self._write_inserted_sdc(
+            output_json,
+            f"{core_top}_compressed",
+            self.cfg.output_dir / f"{self.cfg.top}_compressed.sdc",
+            output_json.name,
+            prefix="core_inst__",
+        )
+        return (
+            f"scan compress complete top={core_top} "
+            f"channels={compression_map.num_channels} composed={output_json}"
+            + (f" sdc={sdc}" if sdc is not None else "")
+        )
+
+    def scan_compact(self) -> str:
+        """Insert the static XOR-tree space compactor
+        (``faultflow.scan.compaction.insert_compaction``) around the already
+        scan-stitched, scan-check-PASSed netlist, producing a new composed
+        netlist artifact and recording it in a ``manifest["compaction"]``
+        section.
+
+        ``manifest["generic_json"]`` is left UNCHANGED -- exactly the same
+        rule as ``scan_compress``: ATPG's fault grading stays pinned to the
+        raw, uncompacted scan-out ports; the composed netlist here is only a
+        manufacturing artifact plus a structural self-check
+        (``check_compaction_structure``), never simulated for per-fault
+        pass/fail. See the compactor plan for the full rationale.
+        """
+        manifest_path = self._scan_manifest_path()
+        if not manifest_path.exists():
+            raise RunnerError(f"scan manifest not found: {manifest_path}")
+        manifest = load_manifest(manifest_path)
+        if not self.cfg.compaction.enabled:
+            raise RunnerError(
+                "[compaction] enabled = true is required for scan-compact"
+            )
+        generic_json = Path(str(manifest["generic_json"]))
+        if _hash_file(generic_json) != str(manifest.get("generic_json_hash", "")):
+            raise RunnerError("generic scan JSON hash does not match manifest")
+        latest = manifest.get("latest_check")
+        if not isinstance(latest, dict) or latest.get("status") != "PASS":
+            raise RunnerError("run scan-check successfully before scan-compact")
+
+        raw_scan_out_ports = manifest.get("scan_outputs", [])
+        scan_out_ports = (
+            [str(p) for p in raw_scan_out_ports]
+            if isinstance(raw_scan_out_ports, list)
+            else []
+        )
+        core_top = str(manifest["top"])
+        if self.cfg.liberty is None or not self.cfg.liberty.exists():
+            raise RunnerError(f"liberty file not found: {self.cfg.liberty}")
+        output_json = self.cfg.output_dir / f"{self.cfg.top}_compacted.json"
+        workdir = self.cfg.intermediate_dir / "compaction"
+        t0 = time.perf_counter()
+        log.info(
+            "compact  running (top=%s, channels=%d) ...",
+            core_top,
+            self.cfg.compaction.channels,
+        )
+        try:
+            _, compaction_map = insert_compaction(
+                generic_json,
+                core_top,
+                scan_out_ports,
+                self.cfg.compaction.channels,
+                self.cfg.liberty,
+                output_json,
+                workdir=workdir,
+                channel_port=self.cfg.compaction.channel_port,
+            )
+        except (ScanError, ValueError) as exc:
+            raise RunnerError(str(exc)) from exc
+        log.info(
+            "compact  complete  channels=%d composed=%s  %.1fs",
+            compaction_map.num_outputs,
+            output_json,
+            time.perf_counter() - t0,
+        )
+
+        compaction_entry: dict[str, object] = {
+            "enabled": True,
+            "num_outputs": compaction_map.num_outputs,
+            "scan_out_ports": scan_out_ports,
+            "channel_port": self.cfg.compaction.channel_port,
+            "fanout": compaction_map.fanout,
+            "composed_json": str(output_json),
+            "composed_top": f"{core_top}_compacted",
+            "composed_json_hash": _hash_file(output_json),
+        }
+        manifest["compaction"] = compaction_entry
+        structural = check_compaction_structure(manifest)
+        compaction_entry["structural_check"] = {
+            "status": "PASS" if structural.passed else "FAIL",
+            "errors": structural.errors,
+        }
+        write_scan_artifacts(
+            self.cfg.manifests_dir,
+            self.cfg.scan_report_path,
+            manifest,
+        )
+        if not structural.passed:
+            raise RunnerError(
+                "compaction structural check failed: " + "; ".join(structural.errors)
+            )
+        sdc = self._write_inserted_sdc(
+            output_json,
+            f"{core_top}_compacted",
+            self.cfg.output_dir / f"{self.cfg.top}_compacted.sdc",
+            output_json.name,
+            prefix="core_inst__",
+        )
+        return (
+            f"scan compact complete top={core_top} "
+            f"channels={compaction_map.num_outputs} composed={output_json}"
+            + (f" sdc={sdc}" if sdc is not None else "")
+        )
 
     def _scan_vector_source(
         self,
@@ -840,6 +1169,7 @@ class Runner:
                 input_order,
                 output_order,
                 self.cfg.simulation.unsupported_cells,
+                list(self.cfg.blackbox_instances),
             )
         )
 
@@ -898,7 +1228,25 @@ class Runner:
         self,
         manifest: dict[str, object],
         vectors_path: Path | None,
-    ) -> tuple[list[str], dict[str, object]]:
+    ) -> tuple[
+        list[str],
+        dict[str, object],
+        VectorSet,
+        list[str],
+        list[str],
+        dict[str, bool],
+        list[dict[str, bool]],
+    ]:
+        """Returns (warnings, info, scanned_vectors, output_order, clock_names,
+        scan_extra, generic_out). The last five are the normal-mode context
+        plus generic_json's already-computed sequence outputs, so a caller
+        that goes on to run the techmap-equivalence check can reuse them
+        instead of recomputing an identical context and rebuilding
+        generic_json's compiled graph a second time -- a real cost at design
+        scale (profiled: rebuilding the compiled graph for a ~150k-cell
+        design dominates scan-check's wall time; this call was previously
+        duplicated verbatim by _run_scan_techmap_equivalence_check against
+        the exact same deterministic inputs)."""
         source_json = Path(str(manifest["source_json"]))
         generic_json = Path(str(manifest["generic_json"]))
         (
@@ -925,11 +1273,19 @@ class Runner:
             raise RunnerError(
                 "normal-mode scanned outputs differ from original outputs"
             )
-        return [], {
-            "vector_source": vector_source,
-            "vector_count": vectors.count,
-            "output_order": output_order,
-        }
+        return (
+            [],
+            {
+                "vector_source": vector_source,
+                "vector_count": vectors.count,
+                "output_order": output_order,
+            },
+            scanned_vectors,
+            output_order,
+            clock_names,
+            scan_extra,
+            scanned,
+        )
 
     def _run_scan_techmap_equivalence_check(
         self,
@@ -938,6 +1294,7 @@ class Runner:
         output_order: list[str],
         clock_names: list[str],
         scan_extra: dict[str, bool],
+        generic_out: list[dict[str, bool]],
     ) -> dict[str, object]:
         sky = manifest.get("sky130_verilog")
         if not isinstance(sky, str) or not sky:
@@ -976,14 +1333,13 @@ class Runner:
         except ScanError as exc:
             raise RunnerError(str(exc)) from exc
 
-        generic_out = self._sequence_outputs(
-            generic_json,
-            scanned_vectors,
-            output_order,
-            clock_names,
-            extra_inputs=scan_extra,
-            cell_map_path=resolve_scan_cell_map(self.cfg),
-        )
+        # generic_out is supplied by the caller: it's the exact same
+        # deterministic computation the normal-mode check already performed
+        # against this manifest/vectors_path (same generic_json, same
+        # scanned_vectors/output_order/clock_names/scan_extra/cell_map) --
+        # recomputing it here would rebuild generic_json's compiled graph and
+        # rerun the full sequence simulation a second time for an identical
+        # result.
         techmap_out = self._sequence_outputs(
             techmap_json,
             scanned_vectors,
@@ -1106,12 +1462,35 @@ class Runner:
         warnings = list(structural.warnings)
         normal_mode: dict[str, object] | None = None
         techmap_equivalence: dict[str, object] | None = None
+        # Populated by the normal-mode check below so the techmap-equivalence
+        # check (if it also runs) can reuse them instead of recomputing an
+        # identical context and rebuilding generic_json's compiled graph a
+        # second time -- see _run_scan_normal_mode_check's docstring.
+        normal_mode_reuse: (
+            tuple[
+                VectorSet, list[str], list[str], dict[str, bool], list[dict[str, bool]]
+            ]
+            | None
+        ) = None
         if not errors and not structural_only:
             try:
-                extra_warnings, normal_mode = self._run_scan_normal_mode_check(
-                    manifest, vectors_path
-                )
+                (
+                    extra_warnings,
+                    normal_mode,
+                    scanned_vectors,
+                    output_order,
+                    clock_names,
+                    scan_extra,
+                    generic_out,
+                ) = self._run_scan_normal_mode_check(manifest, vectors_path)
                 warnings.extend(extra_warnings)
+                normal_mode_reuse = (
+                    scanned_vectors,
+                    output_order,
+                    clock_names,
+                    scan_extra,
+                    generic_out,
+                )
             except Exception as exc:
                 errors.append(str(exc))
 
@@ -1121,20 +1500,42 @@ class Runner:
         )
         if not errors and run_techmap_check:
             try:
-                (
-                    _vectors,
-                    scanned_vectors,
-                    output_order,
-                    clock_names,
-                    scan_extra,
-                    _vector_source,
-                ) = self._scan_normal_mode_context(manifest, vectors_path)
+                if normal_mode_reuse is not None:
+                    (
+                        scanned_vectors,
+                        output_order,
+                        clock_names,
+                        scan_extra,
+                        generic_out,
+                    ) = normal_mode_reuse
+                else:
+                    # structural_only=True (or the normal-mode check didn't
+                    # run for some other reason): nothing to reuse, so build
+                    # the context and generic_json's outputs fresh -- matches
+                    # this combination's pre-existing behavior exactly.
+                    (
+                        _vectors,
+                        scanned_vectors,
+                        output_order,
+                        clock_names,
+                        scan_extra,
+                        _vector_source,
+                    ) = self._scan_normal_mode_context(manifest, vectors_path)
+                    generic_out = self._sequence_outputs(
+                        Path(str(manifest["generic_json"])),
+                        scanned_vectors,
+                        output_order,
+                        clock_names,
+                        extra_inputs=scan_extra,
+                        cell_map_path=resolve_scan_cell_map(self.cfg),
+                    )
                 techmap_equivalence = self._run_scan_techmap_equivalence_check(
                     manifest,
                     scanned_vectors,
                     output_order,
                     clock_names,
                     scan_extra,
+                    generic_out,
                 )
             except Exception as exc:
                 errors.append(str(exc))
@@ -1447,6 +1848,7 @@ class Runner:
                 vectors.input_order,
                 output_order,
                 self.cfg.simulation.unsupported_cells,
+                list(self.cfg.blackbox_instances),
             )
         )
 
@@ -1472,6 +1874,7 @@ class Runner:
                 input_order,
                 output_order,
                 self.cfg.simulation.unsupported_cells,
+                list(self.cfg.blackbox_instances),
             )
         )
 
@@ -1662,14 +2065,21 @@ class Runner:
         if isinstance(ineligible, list) and ineligible:
             # WBR scan cells are deliberately routed to the wrapper chain (fused
             # into the view downstream by fuse_wbr_into_view), NOT the main scan
-            # chain -- they are not a full-scan blocker. Genuinely unscannable FFs
-            # (unsupported_ff_shape, unknown_cell_type, existing_scan_cell) are.
+            # chain -- they are not a full-scan blocker; nor are flops left out
+            # by [scan] nonscan_cells, which the view ties (scan.nonscan refuses
+            # one it can't). Genuinely unscannable FFs (unsupported_ff_shape,
+            # unknown_cell_type, existing_scan_cell) are.
             blockers = [
                 item
                 for item in ineligible
-                if isinstance(item, dict) and item.get("reason") != "wbr_scan_cell"
+                if isinstance(item, dict)
+                and item.get("reason") not in ("wbr_scan_cell", NONSCAN_REASON)
             ]
-            wbr_count = len(ineligible) - len(blockers)
+            wbr_count = sum(
+                1
+                for item in ineligible
+                if isinstance(item, dict) and item.get("reason") == "wbr_scan_cell"
+            )
             if wbr_count:
                 log.info(
                     "scan preflight: %d WBR cell(s) routed to wrapper chain",
@@ -1846,6 +2256,7 @@ class Runner:
                         run_id=run_id,
                         vectors=vectors,
                         unsupported=self.cfg.simulation.unsupported_cells,
+                        blackbox_instances=self.cfg.blackbox_instances,
                     )
                 else:
                     from faultflow.runner.compaction import (
@@ -1863,6 +2274,7 @@ class Runner:
                             vectors=vectors,
                             unsupported=self.cfg.simulation.unsupported_cells,
                             pack_orders=self.cfg.atpg.pack_orders,
+                            blackbox_instances=self.cfg.blackbox_instances,
                         )
                     else:
                         vectors, run_id, raw_vector_count = compact_run(
@@ -1873,6 +2285,7 @@ class Runner:
                             run_id=run_id,
                             vectors=vectors,
                             unsupported=self.cfg.simulation.unsupported_cells,
+                            blackbox_instances=self.cfg.blackbox_instances,
                         )
                 vector_source = vectors.source
             if verify_enabled:
@@ -1944,6 +2357,69 @@ class Runner:
             f"report={txt_path} json={json_path}{purge_note}{clean_note}"
         )
 
+    def _mask_unknown_blackbox_outputs(
+        self,
+        view: dict[str, Any],
+        view_path: Path,
+        manifest: dict[str, Any],
+        generic_json: Path,
+        functional_output_order: list[str],
+        nonscan: NonscanSetup | None = None,
+    ) -> XMask:
+        """Mask, in the scan ATPG view on disk, every observation point an
+        unknown value reaches (scan.x_mask) -- a blackbox output's, or a
+        non-scan flop's no held input keeps in reset -- for this campaign's
+        launch mode. Refuses a design where such a value reaches the scan path
+        itself."""
+        launch_mode = launch_mode_key(
+            self.cfg.fault_model.model == "transition", self.cfg.fault_model.launch
+        )
+        x_flops = nonscan.x_sources if nonscan is not None else ()
+        if not self.cfg.blackbox_x_instances and not x_flops:
+            return XMask(launch_mode=launch_mode)
+        core = _load_core()
+        if core is None:
+            raise RunnerError("C++ extension _faultflow_core is required")
+        return mask_scan_view(
+            core,
+            self.cfg,
+            view,
+            view_path,
+            manifest,
+            generic_json,
+            functional_output_order,
+            launch_mode=launch_mode,
+            nonscan_x_nets=x_flops,
+            nonscan_q_nets=(
+                [flop.q for flop in nonscan.flops] if nonscan is not None else ()
+            ),
+        )
+
+    def _nonscan_setup(
+        self, manifest: dict[str, Any], generic_json: Path
+    ) -> NonscanSetup | None:
+        """[scan] nonscan_cells and [scan] hold, checked against the scanned
+        netlist (scan.nonscan), or None without either."""
+        if not self.cfg.scan.nonscan_cells and not self.cfg.scan.hold:
+            return None
+        from faultflow.scan.detection_pipeline import _scan_reset_pi_holds
+
+        cell_map = _load_json_object(resolve_scan_cell_map(self.cfg))
+        _, module = _json_top_module(generic_json, self.cfg.top)
+        try:
+            return analyze_nonscan(
+                module,
+                manifest,
+                cell_map,
+                globs=self.cfg.scan.nonscan_cells,
+                holds=self.cfg.scan.hold,
+                scan_reset_holds=_scan_reset_pi_holds(
+                    generic_json, self.cfg.top, cell_map
+                ),
+            )
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+
     def _sim_scan(
         self,
         *,
@@ -1966,8 +2442,20 @@ class Runner:
 
         manifest = self._preflight_sim_scan()
         generic_json = Path(str(manifest["generic_json"]))
+        # Blackbox instances are modeled opaque in the reduced view (outputs
+        # tied to 0, inputs unobserved) so SAT and the reduced simulators see
+        # exactly what the scan protocol does, and every observation point an
+        # output of unknown value reaches is masked (scan.x_mask). The view
+        # then contains none of them, so it loads with no blackbox list. The
+        # generic netlist keeps the real instances and still loads with
+        # cfg.blackbox_instances. Non-scan flops and held inputs are tied the
+        # same way (scan.nonscan).
+        nonscan = self._nonscan_setup(manifest, generic_json)
         view, pseudo_port_map = build_scan_atpg_view(
-            _load_json_object(generic_json), manifest
+            _load_json_object(generic_json),
+            manifest,
+            blackbox_instances=self.cfg.blackbox_instances,
+            nonscan=nonscan,
         )
 
         # INTEST: fuse the wrapper boundary into the scan-reduced view so the
@@ -2011,6 +2499,15 @@ class Runner:
             for port in _port_names(netlist, self.cfg.top, "output", expand_buses=True)
             if not port.startswith("__ppo_")
         ]
+        # Before the fingerprint, which then hashes the masked view.
+        x_mask = self._mask_unknown_blackbox_outputs(
+            view,
+            atpg_view_path,
+            manifest,
+            generic_json,
+            functional_output_order,
+            nonscan=nonscan,
+        )
         scan_pipeline_ctx = build_scan_pipeline_context(
             self.cfg,
             manifest,
@@ -2020,6 +2517,8 @@ class Runner:
             wbr_stimulus_name_by_port=wbr_stimulus,
             wbr_observe_name_by_port=wbr_observe,
             wbr_decoupled_bits=wbr_decoupled,
+            x_mask=x_mask,
+            nonscan=nonscan,
         )
 
         from faultflow.scan.atpg_view import ATPG_VIEW_SCHEMA_VER
@@ -2146,6 +2645,11 @@ class Runner:
         view doesn't have. Dead-core faults are unobservable here and fall out as
         SAT-redundant, so coverage reflects the testable interconnect.
         """
+        if self.cfg.scan.nonscan_cells or self.cfg.scan.hold:
+            raise RunnerError(
+                "[scan] nonscan_cells and [scan] hold apply to scan ATPG "
+                "(FUNCTIONAL and INTEST), not to EXTEST"
+            )
         from faultflow.runner.progressive_atpg import (
             redundancy_model_id,
             run_progressive_native_atpg,
@@ -2216,6 +2720,7 @@ class Runner:
                 run_id=run_id,
                 vectors=vectors,
                 unsupported=self.cfg.simulation.unsupported_cells,
+                blackbox_instances=self.cfg.blackbox_instances,
             )
         else:
             raw_vectors = vectors.count
@@ -2290,14 +2795,35 @@ class Runner:
                     f" generated={run['atpg_generated_vectors']}"
                     f" accepted={run['atpg_accepted_vectors']}"
                 )
+            from faultflow.jtag.store import report_blocks
+
+            jtag_blocks = report_blocks(conn, campaign_id, data)
+            if jtag_blocks is not None:
+                jtag, combined = jtag_blocks
+                combined_cov = combined["test_coverage_percent"]
+                atpg_note += (
+                    f" jtag_detected={jtag['detected']}"
+                    f" jtag_only={jtag['detected_only_by_jtag']}"
+                    " combined_coverage="
+                    + ("n/a" if combined_cov is None else f"{combined_cov:.3f}%")
+                )
             return (
                 f"top={self.cfg.top} scan_mode={str(scan).lower()} coverage={cov_text} "
                 f"detected={data['detected']} denominator={data['denominator']} "
                 f"undetected={data['undetected']} redundant={data.get('redundant', 0)} "
                 f"protocol_unresolved={data.get('protocol_unresolved', 0)} "
+                f"compression_unresolved={data.get('compression_unresolved', 0)} "
+                f"blackbox_unresolved={data.get('blackbox_unresolved', 0)} "
                 f"collapsed={data['collapsed']} "
                 f"excluded_blackbox={data['excluded_blackbox']} "
                 f"excluded_clock={data['excluded_clock']} "
                 f"excluded_reset={data['excluded_reset']} "
-                f"xdomain={data.get('excluded_cross_domain', 0)}{atpg_note}"
+                f"xdomain={data.get('excluded_cross_domain', 0)}"
+                + (
+                    f" excluded_jtag={data['excluded_jtag']}"
+                    f" hold_unresolved={data.get('hold_unresolved', 0)}"
+                    if data.get("excluded_jtag") or data.get("hold_unresolved")
+                    else ""
+                )
+                + atpg_note
             )

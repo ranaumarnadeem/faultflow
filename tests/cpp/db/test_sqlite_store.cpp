@@ -201,6 +201,200 @@ TEST_CASE("SQLite store fault writes roll back on insertion failure", "[db]") {
   std::filesystem::remove(path);
 }
 
+TEST_CASE("SQLite store has compression_unresolved column", "[db]") {
+  const auto path = db_path("faultflow_compression_unresolved_column.sqlite");
+  db::init_database(path.string());
+  SQLite::Database sqlite(path.string(), SQLite::OPEN_READONLY);
+  REQUIRE(has_column(sqlite, "faults", "compression_unresolved"));
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("mark_fault_compression_unresolved flips the column without "
+          "touching status",
+          "[db]") {
+  const auto path =
+      db_path("faultflow_mark_compression_unresolved.sqlite");
+  db::init_database(path.string());
+  const int64_t campaign_id = insert_test_campaign(path.string());
+  const std::vector<int64_t> ids =
+      insert_fault_rows(path.string(), campaign_id, 1);
+
+  db::mark_fault_compression_unresolved(path.string(), ids[0]);
+
+  SQLite::Database sqlite(path.string(), SQLite::OPEN_READONLY);
+  SQLite::Statement q(
+      sqlite, "SELECT status, compression_unresolved FROM faults WHERE id = ?");
+  q.bind(1, ids[0]);
+  REQUIRE(q.executeStep());
+  REQUIRE(q.getColumn(0).getString() == "undetected");
+  REQUIRE(q.getColumn(1).getInt() == 1);
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("mark_fault_compression_unresolved does not overwrite a detected "
+          "fault",
+          "[db]") {
+  const auto path =
+      db_path("faultflow_mark_compression_unresolved_guard.sqlite");
+  db::init_database(path.string());
+  const int64_t campaign_id = insert_test_campaign(path.string());
+  const int64_t run_id =
+      db::start_run(path.string(), campaign_id, "vectors.json", 1, "{}");
+  const std::vector<int64_t> ids =
+      insert_fault_rows(path.string(), campaign_id, 1);
+  db::mark_fault_detected(path.string(), campaign_id, run_id, ids[0], 0);
+
+  db::mark_fault_compression_unresolved(path.string(), ids[0]);
+
+  SQLite::Database sqlite(path.string(), SQLite::OPEN_READONLY);
+  SQLite::Statement q(
+      sqlite, "SELECT status, compression_unresolved FROM faults WHERE id = ?");
+  q.bind(1, ids[0]);
+  REQUIRE(q.executeStep());
+  REQUIRE(q.getColumn(0).getString() == "detected");
+  REQUIRE(q.getColumn(1).getInt() == 0);
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("SQLite store has compaction_unresolved column", "[db]") {
+  const auto path = db_path("faultflow_compaction_unresolved_column.sqlite");
+  db::init_database(path.string());
+  SQLite::Database sqlite(path.string(), SQLite::OPEN_READONLY);
+  REQUIRE(has_column(sqlite, "faults", "compaction_unresolved"));
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("mark_fault_compaction_unresolved flips the column without "
+          "touching status",
+          "[db]") {
+  const auto path =
+      db_path("faultflow_mark_compaction_unresolved.sqlite");
+  db::init_database(path.string());
+  const int64_t campaign_id = insert_test_campaign(path.string());
+  const std::vector<int64_t> ids =
+      insert_fault_rows(path.string(), campaign_id, 1);
+
+  db::mark_fault_compaction_unresolved(path.string(), ids[0]);
+
+  SQLite::Database sqlite(path.string(), SQLite::OPEN_READONLY);
+  SQLite::Statement q(
+      sqlite, "SELECT status, compaction_unresolved FROM faults WHERE id = ?");
+  q.bind(1, ids[0]);
+  REQUIRE(q.executeStep());
+  REQUIRE(q.getColumn(0).getString() == "undetected");
+  REQUIRE(q.getColumn(1).getInt() == 1);
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("mark_fault_compaction_unresolved does not overwrite a detected "
+          "fault",
+          "[db]") {
+  const auto path =
+      db_path("faultflow_mark_compaction_unresolved_guard.sqlite");
+  db::init_database(path.string());
+  const int64_t campaign_id = insert_test_campaign(path.string());
+  const int64_t run_id =
+      db::start_run(path.string(), campaign_id, "vectors.json", 1, "{}");
+  const std::vector<int64_t> ids =
+      insert_fault_rows(path.string(), campaign_id, 1);
+  db::mark_fault_detected(path.string(), campaign_id, run_id, ids[0], 0);
+
+  db::mark_fault_compaction_unresolved(path.string(), ids[0]);
+
+  SQLite::Database sqlite(path.string(), SQLite::OPEN_READONLY);
+  SQLite::Statement q(
+      sqlite, "SELECT status, compaction_unresolved FROM faults WHERE id = ?");
+  q.bind(1, ids[0]);
+  REQUIRE(q.executeStep());
+  REQUIRE(q.getColumn(0).getString() == "detected");
+  REQUIRE(q.getColumn(1).getInt() == 0);
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("SQLite store has blackbox_unresolved column", "[db]") {
+  const auto path = db_path("faultflow_blackbox_unresolved_column.sqlite");
+  db::init_database(path.string());
+  SQLite::Database sqlite(path.string(), SQLite::OPEN_READONLY);
+  REQUIRE(has_column(sqlite, "faults", "blackbox_unresolved"));
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("mark_fault_blackbox_unresolved flips the column without touching "
+          "status",
+          "[db]") {
+  const auto path = db_path("faultflow_mark_blackbox_unresolved.sqlite");
+  db::init_database(path.string());
+  const int64_t campaign_id = insert_test_campaign(path.string());
+  const std::vector<int64_t> ids =
+      insert_fault_rows(path.string(), campaign_id, 1);
+
+  db::mark_fault_blackbox_unresolved(path.string(), ids[0]);
+
+  SQLite::Database sqlite(path.string(), SQLite::OPEN_READONLY);
+  SQLite::Statement q(
+      sqlite, "SELECT status, blackbox_unresolved FROM faults WHERE id = ?");
+  q.bind(1, ids[0]);
+  REQUIRE(q.executeStep());
+  REQUIRE(q.getColumn(0).getString() == "undetected");
+  REQUIRE(q.getColumn(1).getInt() == 1);
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("mark_fault_blackbox_unresolved does not overwrite a detected fault",
+          "[db]") {
+  const auto path = db_path("faultflow_mark_blackbox_unresolved_guard.sqlite");
+  db::init_database(path.string());
+  const int64_t campaign_id = insert_test_campaign(path.string());
+  const int64_t run_id =
+      db::start_run(path.string(), campaign_id, "vectors.json", 1, "{}");
+  const std::vector<int64_t> ids =
+      insert_fault_rows(path.string(), campaign_id, 1);
+  db::mark_fault_detected(path.string(), campaign_id, run_id, ids[0], 0);
+
+  db::mark_fault_blackbox_unresolved(path.string(), ids[0]);
+
+  SQLite::Database sqlite(path.string(), SQLite::OPEN_READONLY);
+  SQLite::Statement q(
+      sqlite, "SELECT status, blackbox_unresolved FROM faults WHERE id = ?");
+  q.bind(1, ids[0]);
+  REQUIRE(q.executeStep());
+  REQUIRE(q.getColumn(0).getString() == "detected");
+  REQUIRE(q.getColumn(1).getInt() == 0);
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("mark_fault_hold_unresolved flips its column alone, and never on a "
+          "detected fault",
+          "[db]") {
+  const auto path = db_path("faultflow_mark_hold_unresolved.sqlite");
+  db::init_database(path.string());
+  const int64_t campaign_id = insert_test_campaign(path.string());
+  const int64_t run_id =
+      db::start_run(path.string(), campaign_id, "vectors.json", 1, "{}");
+  const std::vector<int64_t> ids =
+      insert_fault_rows(path.string(), campaign_id, 2);
+  db::mark_fault_detected(path.string(), campaign_id, run_id, ids[1], 0);
+
+  db::mark_fault_hold_unresolved(path.string(), ids[0]);
+  db::mark_fault_hold_unresolved(path.string(), ids[1]);
+
+  SQLite::Database sqlite(path.string(), SQLite::OPEN_READONLY);
+  SQLite::Statement q(sqlite,
+                      "SELECT status, hold_unresolved, blackbox_unresolved "
+                      "FROM faults WHERE id = ?");
+  q.bind(1, ids[0]);
+  REQUIRE(q.executeStep());
+  REQUIRE(q.getColumn(0).getString() == "undetected");
+  REQUIRE(q.getColumn(1).getInt() == 1);
+  REQUIRE(q.getColumn(2).getInt() == 0);
+  q.reset();
+  q.bind(1, ids[1]);
+  REQUIRE(q.executeStep());
+  REQUIRE(q.getColumn(0).getString() == "detected");
+  REQUIRE(q.getColumn(1).getInt() == 0);
+  std::filesystem::remove(path);
+}
+
 TEST_CASE("load_faults matches per-id load_fault", "[db]") {
   const auto path = db_path("faultflow_load_faults_match.sqlite");
   db::init_database(path.string());

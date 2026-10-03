@@ -190,6 +190,48 @@ python3 ff.py scan-techmap --top <top> -c config.ofs
 
 Regenerate the Sky130 techmap output from the scanned JSON.
 
+## `jtag`
+
+```bash
+python3 ff.py jtag --top <top> -c config.ofs [--program FILE] [--verify] [--force]
+```
+
+Grade the scan campaign's stuck-at faults with a JTAG network-integrity program played
+through the TAP of the scanned netlist and compared at TDO, and report the credit beside
+the scan coverage (the `jtag` and `combined` blocks, see [Outputs](outputs.md)). Needs a
+completed `sim --scan`; stuck-at only. With `[compression]` or `[compaction]`, their
+`channel_port` can't be a TAP pin's name (the defaults, `tdi` and `tdo`, are).
+
+The program is a `warptap-tck-program` JSON file (`--program` or `[jtag] program`), or,
+for a design built from an autoMBIST manifest with `test_access`, it's built from that
+network with warptap's `build_integrity_program`, reaching the network the way the
+manifest's TAP does -- EXTEST, or a dedicated IJTAG_ACCESS instruction (`mbist-insert`)
+-- and reading the manifest's IDCODE. A program file must reach the network the same
+way. Before grading, faultflow proves TDO can't see an unknown value and checks the
+netlist's own TDO against the program on every bit it expects; either failure refuses
+the run and writes nothing. The proof: every TAP flop is reset by `trst_n` at 0; every
+other flop sits still at a known reset value, or its output can't reach TDO; blackbox
+outputs can't either. A reset is followed through buffers, inverters and any AND/OR-type
+gate an input holds at its controlling value (`trst_n & clr_n` at `trst_n` = 0), and up
+a chain of flops (a reset synchronizer resetting a collar).
+
+The inputs the program doesn't drive are held, at 0 or at the level that keeps a flop's
+reset active (`[jtag] hold` overrides) -- except the chip reset of a manifest whose
+control TDRs also clear on it: holding it active would keep them at 0, so the program
+pulses it during its TRST lead-in, then holds it inactive.
+
+With the TAP non-scan (`[scan] nonscan_cells`), the faults scan left to JTAG
+(`excluded_jtag`) are graded too, and the `combined` block counts every one of them,
+detected or not.
+
+| Option | Meaning |
+|---|---|
+| `--program FILE` | TCK program to play, instead of `[jtag] program` or building one |
+| `--verify` | Also replay the program on the techmapped netlist in Icarus Verilog, four-state, and require the golden TDO at every shift |
+| `--force` | Grade again when an identical grade (program, netlist, holds) is recorded |
+| `--threads N` | Grading threads (default: `[simulation] sim_threads`) |
+| `--export FILE` | Write the TCK program played |
+
 ## `rule_check`
 
 ```bash
@@ -222,6 +264,35 @@ config file so subsequent `init` / `sim` / etc. runs pick it up.
 | `port` (positional) | yes | — | Clock port name |
 | `-c`, `--config PATH` | no | `config.ofs` | Config file to edit |
 | `--off {0,1}` | no | `0` | Clock's inactive level (`0`=active-high/posedge, `1`=negedge) |
+
+## `list-memories`
+
+```bash
+python3 ff.py list-memories --top <top> --spec mbist.yml [--pattern GLOB ...]
+```
+
+List the memory macro instances of the design an MBIST insertion file names, to help
+write it: each instance, whether the file configures it, each pin with what drives or
+reads it, and an entry to paste. `--pattern` (repeatable) replaces the file's
+`memory_patterns`. See [MBIST insertion](mbist.md).
+
+## `mbist-insert`
+
+```bash
+python3 ff.py mbist-insert --top <top> --spec mbist.yml [--out DIR] [-c chip.ofs] [--tap-nonscan]
+```
+
+Insert an autoMBIST collar, in a shell, in place of every memory the insertion file
+configures, keeping the design's hierarchy; with `jtag` in the file, behind a TAP and an
+IJTAG network, with the BIST program. With `-c`, also synthesize the result, its DFT
+frozen, and write `<top>_mbist.ofs` for the scan and JTAG flow; `--tap-nonscan` runs the
+TAP and the network non-scan there. See [MBIST insertion](mbist.md).
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--out DIR` | `mbist_<top>` | Where everything is written |
+| `-c`, `--config PATH` | — | The design's `.ofs`: its liberty names cells no new module may take, synthesizes the result, and is merged into `<top>_mbist.ofs` |
+| `--tap-nonscan` | off | With `jtag` and `-c`: the TAP and the network non-scan in the written `.ofs`, `trst_n` and `tck` held at 0 |
 
 ## `run` (OpenTestability oracle mode)
 
@@ -275,6 +346,7 @@ side.
 | Scan ATPG | `add_scan` + `check_scan` + `run_atpg -scan` | `sim --scan` |
 | Scan status | `status -scan` | `scan-status` / `status --scan` |
 | Regenerate techmap | `write_netlist -scan -techmap` | `scan-techmap` |
+| JTAG network-integrity grade | `run_jtag` | `jtag` |
 | Status | `status` | `status` |
 | INTEST | `set_testmode intest` + scan flow + `run_atpg -scan` | `intest` |
 | EXTEST | `add_blackbox` ... + `set_testmode extest` + `run_atpg` | `extest` |

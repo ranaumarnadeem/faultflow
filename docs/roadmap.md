@@ -67,5 +67,5 @@ future capacity. Revisiting any of these would be a scope change, not a backlog 
 tristate. This is the tool's intended, final scope for its core simulation/ATPG engine, not
 an interim state.
 
-See [External tools](external_tools.md) for the planned autoMBIST and OpenSTA
-directions.
+See [External tools](external_tools.md) for the autoMBIST integration and the planned
+OpenSTA direction.

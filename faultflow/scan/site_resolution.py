@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from faultflow.coverage.site_key import SiteProvenance, canonical_site_key
 
@@ -13,8 +13,11 @@ def build_site_key_index(
     json_path: str | Path,
     cell_map_path: str | Path,
     unsupported: str,
+    blackbox_instances: Sequence[str] = (),
 ) -> dict[str, int]:
-    rows = core.list_site_keys(str(json_path), str(cell_map_path), unsupported)
+    rows = core.list_site_keys(
+        str(json_path), str(cell_map_path), unsupported, list(blackbox_instances)
+    )
     return {str(row["site_key"]): int(row["compiled_net_index"]) for row in rows}
 
 
@@ -38,6 +41,41 @@ def _compiled_by_stem_yid(rows: list[dict[str, Any]]) -> dict[int, int]:
     }
 
 
+def _wbr_observe_sites(
+    view_cells: Mapping[str, Any],
+    reduced_by_key: Mapping[str, Mapping[str, Any]],
+    reduced_stems: Mapping[int, int],
+    exact_stems: set[int],
+) -> dict[str, int]:
+    """Wrapper output cell instance -> the view site its INTEST capture reads:
+    the branch into its `$wbobserve_` buffer, or that buffer's input stem when
+    the buffer is the net's only observer (`exact_stems`)."""
+    sites: dict[str, int] = {}
+    prefix = "$wbobserve_"
+    for name, cell in view_cells.items():
+        if not name.startswith(prefix) or not isinstance(cell, dict):
+            continue
+        bits = cell.get("connections", {}).get("A", [])
+        if len(bits) != 1 or not isinstance(bits[0], int):
+            continue
+        net = bits[0]
+        branch = reduced_by_key.get(
+            canonical_site_key(
+                SiteProvenance(
+                    yosys_net_id=net,
+                    kind="branch",
+                    consumer_instance=name,
+                    input_pin="A",
+                )
+            )
+        )
+        if branch is not None:
+            sites[name[len(prefix) :]] = int(branch["compiled_net_index"])
+        elif net in exact_stems and net in reduced_stems:
+            sites[name[len(prefix) :]] = reduced_stems[net]
+    return sites
+
+
 def build_scan_execution_map(
     core: Any,
     generic_json_path: str | Path,
@@ -48,15 +86,41 @@ def build_scan_execution_map(
     pseudo_port_map: dict[str, dict[str, Any]],
     manifest: Mapping[str, Any],
     wbr_decoupled_bits: frozenset[int] = frozenset(),
+    blackbox_instances: Sequence[str] = (),
 ) -> tuple[dict[str, int], dict[str, str]]:
+    # `blackbox_instances` are the GENERIC netlist's: the reduced view models
+    # them opaque (atpg_view._model_blackboxes_opaque) and contains none.
     generic_rows: list[dict[str, Any]] = list(
-        core.list_site_keys(str(generic_json_path), str(generic_cell_map), unsupported)
+        core.list_site_keys(
+            str(generic_json_path),
+            str(generic_cell_map),
+            unsupported,
+            list(blackbox_instances),
+        )
     )
     reduced_rows: list[dict[str, Any]] = list(
         core.list_site_keys(str(reduced_json_path), str(reduced_cell_map), unsupported)
     )
     reduced_by_key = _rows_by_key(reduced_rows)
     reduced_stems = _compiled_by_stem_yid(reduced_rows)
+    # View nets that fan out (their readers get branch sites), and view nets an
+    # output port observes: a stem stands for one reader's branch only when
+    # its net is neither.
+    reduced_fanout_yids = {
+        int(row["yosys_net_id"]) for row in reduced_rows if str(row["kind"]) == "branch"
+    }
+    reduced_data: dict[str, Any] = json.loads(
+        Path(reduced_json_path).read_text(encoding="utf-8")
+    )
+    reduced_output_yids = {
+        bit
+        for port in reduced_data["modules"][str(manifest["top"])]
+        .get("ports", {})
+        .values()
+        if isinstance(port, dict) and port.get("direction") == "output"
+        for bit in port.get("bits", [])
+        if isinstance(bit, int)
+    }
     execution: dict[str, int] = {}
     exclusions: dict[str, str] = {}
 
@@ -110,6 +174,18 @@ def build_scan_execution_map(
 
     wbr_records = extract_wbr_cells(module)
     wbr_core_bits = {rec.core_net for rec in wbr_records}
+    wbr_instances = {rec.instance for rec in wbr_records}
+    view_cells = reduced_data["modules"][str(manifest["top"])].get("cells", {})
+    wbr_observe = _wbr_observe_sites(
+        view_cells,
+        reduced_by_key,
+        reduced_stems,
+        {
+            yid
+            for yid in reduced_stems
+            if yid not in reduced_fanout_yids and yid not in reduced_output_yids
+        },
+    )
     # Use extract_wbr_chain_bits (not just rec.chain_nets) so that chain nets
     # from constant-FROM_CORE WBR out cells are included: those cells are
     # skipped by extract_wbr_cells but the C++ still lowers them and emits
@@ -150,22 +226,45 @@ def build_scan_execution_map(
         if direct is not None:
             execution[key] = int(direct["compiled_net_index"])
             continue
-        # WBR boundary core net: branches into the removed wrapper cell (and its
-        # two-node lowering) have no reduced consumer; grade them at the core net,
-        # which the fused view keeps as a stem.
+        # A branch into a removed scan flop's D or async control: graded where
+        # that flop's capture reads it. Before the Q block -- the branch's net
+        # may be another scan flop's Q -- and before the WBR rules, which would
+        # otherwise take a core net's D branch for the core net.
+        if kind == "branch":
+            observe_yid = d_boundaries.get(key, control_boundaries.get(key))
+            if observe_yid is not None:
+                if observe_yid in reduced_stems:
+                    execution[key] = reduced_stems[observe_yid]
+                continue
+        # A branch into a removed wrapper cell (either half of its two-node
+        # lowering): graded where the fused view's INTEST capture reads the core
+        # net for that cell -- for a scan flop's Q, a view net with another id.
+        # Without an observe site, at the core net if the view keeps it.
+        if kind == "branch" and yid in wbr_core_bits:
+            wbr_instance = str(row.get("consumer_instance", "")).removesuffix("$wbrmux")
+            if wbr_instance in wbr_instances:
+                if wbr_instance in wbr_observe:
+                    execution[key] = wbr_observe[wbr_instance]
+                elif yid in reduced_stems:
+                    execution[key] = reduced_stems[yid]
+                continue
+        # Any other unmatched site on a WBR core net: the core net, which the
+        # fused view keeps as a stem.
         if yid in wbr_core_bits and yid in reduced_stems:
             execution[key] = reduced_stems[yid]
             continue
         q_entry = q_boundaries.get(yid)
         if q_entry is not None:
-            ppi_yid = int(q_entry["ppi_net_id"])
             if kind == "stem":
+                ppi_yid = int(q_entry["ppi_net_id"])
                 if ppi_yid in reduced_stems:
                     execution[key] = reduced_stems[ppi_yid]
                 continue
+            # The flop's readers read its PPI, or an async flop's control mux.
+            q_drive_yid = int(q_entry["q_drive_net_id"])
             translated = canonical_site_key(
                 SiteProvenance(
-                    yosys_net_id=ppi_yid,
+                    yosys_net_id=q_drive_yid,
                     kind="branch",
                     consumer_instance=str(row["consumer_instance"]),
                     input_pin=str(row["input_pin"]),
@@ -174,18 +273,16 @@ def build_scan_execution_map(
             translated_row = reduced_by_key.get(translated)
             if translated_row is not None:
                 execution[key] = int(translated_row["compiled_net_index"])
-            elif ppi_yid in reduced_stems:
-                # Removing the scan FF can reduce the PPI fanout to one. The
-                # original functional branch then compiles as the PPI stem.
-                execution[key] = reduced_stems[ppi_yid]
+            elif (
+                q_drive_yid in reduced_stems
+                and q_drive_yid not in reduced_fanout_yids
+                and q_drive_yid not in reduced_output_yids
+            ):
+                # Without the scan-in the view dropped, this reader is the
+                # net's only observer: its stem is the branch. Otherwise the
+                # site stays unmapped, and apply_scan_execution_map says so.
+                execution[key] = reduced_stems[q_drive_yid]
             continue
-        d_observe_yid = d_boundaries.get(key)
-        if d_observe_yid is not None and d_observe_yid in reduced_stems:
-            execution[key] = reduced_stems[d_observe_yid]
-            continue
-        control_observe_yid = control_boundaries.get(key)
-        if control_observe_yid is not None and control_observe_yid in reduced_stems:
-            execution[key] = reduced_stems[control_observe_yid]
 
     return execution, exclusions
 
@@ -195,7 +292,16 @@ def apply_scan_execution_map(
     campaign_id: int,
     execution: dict[str, int],
     exclusions: dict[str, str],
+    *,
+    jtag_sites: set[str] | frozenset[str] = frozenset(),
+    jtag_faults: frozenset[tuple[str, str]] = frozenset(),
+    reset_sites: set[str] | frozenset[str] = frozenset(),
 ) -> None:
+    """Write the view site of every fault ATPG grades and the exclusion of every
+    fault it doesn't. ``reset_sites`` (both faults of each site: a settled non-scan
+    flop's, scan/nonscan.py) are reset faults; ``jtag_sites`` (both faults of each
+    site) and ``jtag_faults`` ((site key, "sa0"/"sa1") pairs) are left to JTAG. Each
+    tags only an uncollapsed fault nothing else excludes, so it is counted once."""
     conn.execute(
         "UPDATE faults SET atpg_compiled_net_index = NULL WHERE campaign_id = ?",
         (campaign_id,),
@@ -222,6 +328,28 @@ def apply_scan_execution_map(
             (exclusion, exclusion, campaign_id, key)
             for key, exclusion in exclusions.items()
         ],
+    )
+    conn.executemany(
+        """
+        UPDATE faults
+        SET exclusion = 'reset', excluded = 'reset', status = 'excluded',
+            atpg_compiled_net_index = NULL
+        WHERE campaign_id = ? AND fault_site_key = ?
+          AND exclusion = 'none' AND collapsed_into IS NULL
+        """,
+        [(campaign_id, key) for key in sorted(reset_sites)],
+    )
+    jtag_update = """
+        UPDATE faults
+        SET exclusion = 'jtag', excluded = 'jtag', status = 'excluded',
+            atpg_compiled_net_index = NULL
+        WHERE campaign_id = ? AND fault_site_key = ?
+          AND exclusion = 'none' AND collapsed_into IS NULL
+        """
+    conn.executemany(jtag_update, [(campaign_id, key) for key in sorted(jtag_sites)])
+    conn.executemany(
+        jtag_update + " AND lower(fault_type) = ?",
+        [(campaign_id, key, fault_type) for key, fault_type in sorted(jtag_faults)],
     )
     missing = conn.execute(
         """

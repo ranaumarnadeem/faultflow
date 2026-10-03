@@ -6,6 +6,8 @@ from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
 
+from faultflow.scan.ring_generator import lookup_polynomial
+
 FAULTFLOW_WORKSPACE = ".faultflow"
 
 SKY130_CELL_LIB = Path("cells/sky130/sky130_fd_sc_hd.json")
@@ -151,6 +153,40 @@ def _optional_int(parser: ConfigParser, section: str, key: str) -> int | None:
     return int(value) if value else None
 
 
+def _channel_port(parser: ConfigParser, section: str, default: str) -> str:
+    name = parser.get(section, "channel_port", fallback=default).strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ConfigError(f"[{section}] channel_port must be a port name: {name!r}")
+    return name
+
+
+def _compression_config(parser: ConfigParser) -> "CompressionConfig":
+    cfg = CompressionConfig(
+        enabled=_bool(parser, "compression", "enabled", False),
+        channels=_int(parser, "compression", "channels", 8),
+        scan_enable=parser.get("compression", "scan_enable", fallback=""),
+        clock=parser.get("compression", "clock", fallback=""),
+        channel_port=_channel_port(parser, "compression", "tdi"),
+    )
+    if cfg.enabled:
+        try:
+            lookup_polynomial(cfg.channels)
+        except ValueError as exc:
+            raise ConfigError(f"[compression] channels: {exc}") from exc
+    return cfg
+
+
+def _compaction_config(parser: ConfigParser) -> "CompactionConfig":
+    cfg = CompactionConfig(
+        enabled=_bool(parser, "compaction", "enabled", False),
+        channels=_int(parser, "compaction", "channels", 8),
+        channel_port=_channel_port(parser, "compaction", "tdo"),
+    )
+    if cfg.enabled and cfg.channels <= 0:
+        raise ConfigError("[compaction] channels must be positive")
+    return cfg
+
+
 @dataclass(frozen=True)
 class FaultModelConfig:
     model: str = "stuck_at"
@@ -172,9 +208,6 @@ class SimulationConfig:
     # model set genuinely requires the power-pins variant, this drives VPWR=1 /
     # VGND=0 in the generated testbench and passes -DUSE_POWER_PINS to iverilog.
     verify_use_power_pins: bool = False
-    # Tie Yosys "x"/"z" constant bits to 0 before simulation.
-    # Required for netlists with unconnected/don't-care inputs (e.g. unused scan pins).
-    tie_xz: bool = False
     # Threads used to parallelize fault GRADING (the dominant ATPG cost). 1 keeps
     # the original serial behaviour; 0 = auto (cpu_count - 2, min 1); N uses N
     # threads. Each thread owns its SimState over the shared immutable graph; the
@@ -249,8 +282,8 @@ class AtpgConfig:
     # The coordinator merges detected sets; the DB writer remains single-threaded.
     workers: int = 1
     # Run OT structural reconvergence analysis before ATPG (requires opentest on PATH).
-    # Phase A: reconvergent-site faults are sorted last and skip the short timeout tier.
-    # Phase B: canceling-path stems are marked UNSAT without any SAT call.
+    # Reconvergent-site faults are sorted last and skip the short timeout tier.
+    # Ordering only: redundancy is still decided by SAT alone.
     # Falls back silently when opentest is unavailable.
     preflight: bool = True
     # PDK tech tag passed to opentest _preflight. Empty string = auto-detect from
@@ -280,6 +313,46 @@ class ScanConfig:
     scan_out: str = "scan_out"
     scan_enable: str = "scan_en"
     run_techmap: bool = True
+    # Flops left out of scan on purpose (instance-name globs) -- a JTAG TAP and its
+    # IJTAG network, tested through TCK instead -- and inputs held at a constant in
+    # every scan pattern (e.g. trst_n:0 keeping the TAP in reset).
+    nonscan_cells: tuple[str, ...] = ()
+    hold: tuple[tuple[str, int], ...] = ()
+
+
+@dataclass(frozen=True)
+class CompressionConfig:
+    """Scan test-pattern compression (sequential ring-generator + phase-shifter
+    decompressor, ``faultflow.scan.compression``). ``channels`` is the LFSR
+    register width -- must be one of the curated widths in
+    ``faultflow.scan.ring_generator.PRIMITIVE_POLYNOMIALS`` (validated at
+    config-load time, not deferred to insertion). ``scan_enable``/``clock``
+    empty means "reuse the design's existing scan-enable/clock port names"
+    (``ScanConfig.scan_enable`` / the design's declared ``ClockSpec.port``).
+    ``channel_port`` names the external channel input bus; it can't be a port of
+    the design.
+    """
+
+    enabled: bool = False
+    channels: int = 8
+    scan_enable: str = ""
+    clock: str = ""
+    channel_port: str = "tdi"
+
+
+@dataclass(frozen=True)
+class CompactionConfig:
+    """Scan test-response compaction (static XOR-tree space compactor,
+    ``faultflow.scan.compaction``). ``channels`` is the number of external
+    compacted output channels -- independent of ``[compression]``'s channel
+    count, since a design can decompress its inputs without compacting its
+    outputs, or vice versa. ``channel_port`` names the compacted output bus; it
+    can't be a port of the design.
+    """
+
+    enabled: bool = False
+    channels: int = 8
+    channel_port: str = "tdo"
 
 
 @dataclass(frozen=True)
@@ -293,6 +366,33 @@ class ClockSpec:
 
     port: str
     off_state: int = 0
+
+
+@dataclass(frozen=True)
+class JtagConfig:
+    """``ff.py jtag`` ([jtag]): grading the scan campaign's faults with a JTAG
+    network-integrity program played through the TAP and compared at TDO. The TAP
+    ports; ``hold``, what to hold other inputs at (overriding the defaults the
+    X-isolation proof settles); ``program``, a warptap-tck-program file, else one is
+    built from the [autombist] manifest with warptap; the TAP's IR width and IDCODE
+    (``None``: no IDCODE register; ``idcode_given``: set in the file, where a
+    manifest that records the TAP's IDCODE otherwise wins); the program's sentinel
+    ``margin``; and whether to test every unimplemented opcode. Report-only: not
+    fingerprinted -- a JTAG grade keys itself to its program, ports, holds and
+    netlist."""
+
+    tck: str = "tck"
+    tms: str = "tms"
+    tdi: str = "tdi"
+    trst_n: str = "trst_n"
+    tdo: str = "tdo"
+    hold: tuple[tuple[str, int], ...] = ()
+    program: Path | None = None
+    ir_width: int = 4
+    idcode: int | None = 0x1A5A5003
+    idcode_given: bool = False
+    margin: int = 8
+    exhaustive_opcodes: bool = True
 
 
 @dataclass(frozen=True)
@@ -317,9 +417,17 @@ class FaultflowConfig:
     atpg: AtpgConfig
     report: ReportConfig
     scan: ScanConfig
+    compression: CompressionConfig = CompressionConfig()
+    compaction: CompactionConfig = CompactionConfig()
+    # [design] output_root: the campaign's outputs go to <output_root>/<top>.
     output_root: Path = Path("output")
     clocks: tuple[ClockSpec, ...] = ()
     blackbox_instances: tuple[str, ...] = ()
+    # [blackbox] output_value: (instance, value) for each listed instance --
+    # what its outputs hold during a scan test. "x" (the default): unknown,
+    # so every observation point they reach is masked (scan.x_mask). "0": the
+    # design guarantees 0, e.g. gated in test mode.
+    blackbox_output_values: tuple[tuple[str, str], ...] = ()
     testpoint: TestpointConfig = TestpointConfig()
     # IEEE 1500 wrapper test mode: "functional" | "intest" | "extest". INTEST and
     # EXTEST reconfigure the wrapper boundary control/observe points, so they are
@@ -330,6 +438,17 @@ class FaultflowConfig:
     # adds the wrapper boundary register as a real scan chain — control/observe
     # points and fault sites differ, so it is part of the fingerprint.
     wbr_model: str = "scan"
+    # [autombist] manifest: the autoMBIST instance manifest the netlist was
+    # built from (ff.py autombist-generate). The coverage report then breaks
+    # coverage down by instance category. Report-only: not fingerprinted.
+    autombist_manifest: Path | None = None
+    jtag: JtagConfig = JtagConfig()
+
+    @property
+    def blackbox_x_instances(self) -> tuple[str, ...]:
+        """The blackbox instances whose outputs are unknown in a scan test."""
+        values = dict(self.blackbox_output_values)
+        return tuple(i for i in self.blackbox_instances if values.get(i, "x") == "x")
 
     @property
     def output_dir(self) -> Path:
@@ -465,6 +584,85 @@ def _parse_clocks(parser: ConfigParser) -> tuple[ClockSpec, ...]:
     return tuple(ClockSpec(port=p, off_state=off_states.get(p, 0)) for p in ports)
 
 
+def _parse_holds(parser: ConfigParser, section: str) -> tuple[tuple[str, int], ...]:
+    """``[<section>] hold = <input>:<0|1>, ...``: inputs held at a constant."""
+    hold: list[tuple[str, int]] = []
+    for token in parser.get(section, "hold", fallback="").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        port, _, value = token.partition(":")
+        if not port.strip() or value.strip() not in {"0", "1"}:
+            raise ConfigError(
+                f"[{section}] hold entry '{token}' must be '<input>:<0|1>'"
+            )
+        hold.append((port.strip(), int(value)))
+    if len({p for p, _ in hold}) != len(hold):
+        raise ConfigError(f"[{section}] hold names an input twice")
+    return tuple(hold)
+
+
+def _parse_scan(parser: ConfigParser) -> ScanConfig:
+    nonscan_cells = tuple(
+        glob.strip()
+        for glob in parser.get("scan", "nonscan_cells", fallback="").split(",")
+        if glob.strip()
+    )
+    return ScanConfig(
+        chains=_int(parser, "scan", "chains", 1),
+        max_chain_length=_optional_int(parser, "scan", "max_chain_length"),
+        scan_in=parser.get("scan", "scan_in", fallback="scan_in"),
+        scan_out=parser.get("scan", "scan_out", fallback="scan_out"),
+        scan_enable=parser.get("scan", "scan_enable", fallback="scan_en"),
+        run_techmap=_bool(parser, "scan", "run_techmap", True),
+        nonscan_cells=nonscan_cells,
+        hold=_parse_holds(parser, "scan"),
+    )
+
+
+def _parse_jtag(parser: ConfigParser) -> JtagConfig:
+    if not parser.has_section("jtag"):
+        return JtagConfig()
+    defaults = JtagConfig()
+    ports = {
+        name: parser.get("jtag", name, fallback=getattr(defaults, name)).strip()
+        for name in ("tck", "tms", "tdi", "trst_n", "tdo")
+    }
+    if len(set(ports.values())) != len(ports) or not all(ports.values()):
+        raise ConfigError(f"[jtag] TAP ports must be distinct and non-empty: {ports}")
+    hold = _parse_holds(parser, "jtag")
+    idcode_raw = parser.get("jtag", "idcode", fallback="").strip().lower()
+    idcode: int | None = defaults.idcode
+    if idcode_raw == "none":
+        idcode = None
+    elif idcode_raw:
+        try:
+            idcode = int(idcode_raw, 0)
+        except ValueError:
+            raise ConfigError(
+                f"[jtag] idcode must be an integer or 'none': {idcode_raw}"
+            )
+        if not 0 <= idcode < (1 << 32) or not idcode & 1:
+            raise ConfigError("[jtag] idcode must be a 32-bit value with bit 0 set")
+    config = JtagConfig(
+        hold=hold,
+        program=_optional_path(parser, "jtag", "program"),
+        ir_width=_int(parser, "jtag", "ir_width", defaults.ir_width),
+        idcode=idcode,
+        idcode_given=bool(idcode_raw),
+        margin=_int(parser, "jtag", "margin", defaults.margin),
+        exhaustive_opcodes=_bool(
+            parser, "jtag", "exhaustive_opcodes", defaults.exhaustive_opcodes
+        ),
+        **ports,
+    )
+    if config.ir_width < 2:
+        raise ConfigError("[jtag] ir_width must be at least 2")
+    if config.margin < 1:
+        raise ConfigError("[jtag] margin must be at least 1")
+    return config
+
+
 def add_clock_to_config(path: str | Path, port: str, *, off_state: int = 0) -> None:
     """Declare a clock in a config.ofs file's ``[clocks]`` section, in place.
 
@@ -550,6 +748,57 @@ def _parse_blackbox(parser: ConfigParser) -> tuple[str, ...]:
     return tuple(instances)
 
 
+def _blackbox_output_value(value: str) -> str:
+    value = value.strip().lower()
+    if value == "1":
+        raise ConfigError(
+            "[blackbox] output_value 1 is not supported yet: the scan protocol "
+            "simulator holds an undriven blackbox output at 0"
+        )
+    if value not in {"x", "0"}:
+        raise ConfigError(f"[blackbox] output_value must be x or 0, got '{value}'")
+    return value
+
+
+def _parse_blackbox_output_values(
+    parser: ConfigParser, instances: tuple[str, ...]
+) -> tuple[tuple[str, str], ...]:
+    """Parse ``[blackbox] output_value``: what each listed instance's outputs
+    hold during a scan test. A bare value sets the default for every
+    instance; ``<instance>:<value>`` overrides it for one::
+
+        output_value = x, u_rom:0
+
+    ``x`` (the default) is unknown, like an SRAM's output, which holds its
+    last read; ``0`` asserts the design holds the output at 0 in test mode.
+    """
+    raw = parser.get("blackbox", "output_value", fallback="").strip()
+    if not raw:
+        return tuple((inst, "x") for inst in instances)
+    if not instances:
+        raise ConfigError("[blackbox] output_value needs [blackbox] instances")
+    default: str | None = None
+    overrides: dict[str, str] = {}
+    for item in (part.strip() for part in raw.split(",")):
+        if not item:
+            continue
+        inst, sep, value = item.rpartition(":")
+        if not sep:
+            if default is not None:
+                raise ConfigError("[blackbox] output_value gives two defaults")
+            default = _blackbox_output_value(item)
+            continue
+        inst = inst.strip()
+        if inst not in instances:
+            raise ConfigError(
+                f"[blackbox] output_value names '{inst}', which is not in instances"
+            )
+        if inst in overrides:
+            raise ConfigError(f"[blackbox] output_value repeats '{inst}'")
+        overrides[inst] = _blackbox_output_value(value)
+    return tuple((inst, overrides.get(inst, default or "x")) for inst in instances)
+
+
 def _verilog_models(parser: ConfigParser) -> Path:
     value = parser.get("simulation", "verilog_models", fallback="").strip()
     if not value:
@@ -625,6 +874,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
 
     clocks = _parse_clocks(parser)
     blackbox_instances = _parse_blackbox(parser)
+    blackbox_output_values = _parse_blackbox_output_values(parser, blackbox_instances)
 
     test_mode = parser.get("testmode", "mode", fallback="functional").strip().lower()
     if test_mode not in {"functional", "intest", "extest"}:
@@ -660,7 +910,6 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             verify_use_power_pins=_bool(
                 parser, "simulation", "verify_use_power_pins", False
             ),
-            tie_xz=_bool(parser, "simulation", "tie_xz", False),
             sim_threads=sim_threads,
         ),
         atpg=AtpgConfig(
@@ -689,16 +938,12 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             output=_path(parser, "report", "output", "coverage.rpt"),
             threshold=_float(parser, "report", "threshold", 95.0),
         ),
-        scan=ScanConfig(
-            chains=_int(parser, "scan", "chains", 1),
-            max_chain_length=_optional_int(parser, "scan", "max_chain_length"),
-            scan_in=parser.get("scan", "scan_in", fallback="scan_in"),
-            scan_out=parser.get("scan", "scan_out", fallback="scan_out"),
-            scan_enable=parser.get("scan", "scan_enable", fallback="scan_en"),
-            run_techmap=_bool(parser, "scan", "run_techmap", True),
-        ),
+        scan=_parse_scan(parser),
+        compression=_compression_config(parser),
+        compaction=_compaction_config(parser),
         clocks=clocks,
         blackbox_instances=blackbox_instances,
+        blackbox_output_values=blackbox_output_values,
         testpoint=TestpointConfig(
             opentest=Path(parser.get("testpoint", "opentest", fallback="opentest")),
             metric=parser.get("testpoint", "metric", fallback="scoap"),
@@ -707,4 +952,16 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         ),
         test_mode=test_mode,
         wbr_model=wbr_model,
+        autombist_manifest=_autombist_manifest(parser),
+        jtag=_parse_jtag(parser),
+        output_root=_optional_path(parser, "design", "output_root") or Path("output"),
     )
+
+
+def _autombist_manifest(parser: ConfigParser) -> Path | None:
+    """``[autombist] manifest``, checked now: the coverage report reads it
+    only once a campaign has run."""
+    path = _optional_path(parser, "autombist", "manifest")
+    if path is not None and not path.is_file():
+        raise ConfigError(f"[autombist] manifest not found: {path}")
+    return path

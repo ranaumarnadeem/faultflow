@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <sstream>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include "common/errors.hpp"
@@ -107,6 +109,38 @@ FFConfig build_ff_config(const CellMapEntry& entry, const ParsedCell& cell) {
   return cfg;
 }
 
+// The top module's kUnobservedNetsAttr, checked against its output bits: an
+// entry that names no output would silently leave a point observed that the
+// caller meant to mask.
+std::set<int> parse_unobserved_nets(const ParsedModule& mod,
+                                    const std::set<int>& pos) {
+  std::set<int> out;
+  const auto it = mod.attrs.find(kUnobservedNetsAttr);
+  if (it == mod.attrs.end()) {
+    return out;
+  }
+  std::istringstream ids(it->second);
+  std::string token;
+  while (ids >> token) {
+    size_t used = 0;
+    int bit = 0;
+    try {
+      bit = std::stoi(token, &used);
+    } catch (const std::exception&) {
+      used = 0;
+    }
+    if (used != token.size()) {
+      throw ParseError(std::string(kUnobservedNetsAttr) + ": not a net id: " + token);
+    }
+    if (!pos.count(bit)) {
+      throw ParseError(std::string(kUnobservedNetsAttr) + ": net " + token +
+                       " is not an output port bit");
+    }
+    out.insert(bit);
+  }
+  return out;
+}
+
 }  // namespace
 
 NormalizedGraph NormalizedGraph::from_parsed(
@@ -127,7 +161,11 @@ NormalizedGraph NormalizedGraph::from_parsed(
   }
 
   // Resolve whether a pin is an output of a (possibly unknown-type) cell:
-  // prefer the cell-map entry, else fall back to common output-pin names.
+  // prefer the cell-map entry, then the direction Yosys wrote for the cell,
+  // and only then guess from common output-pin names. A blackbox memory's
+  // type is never in the cell map and its data output is named like "dout0",
+  // which the name guess reads as an input -- leaving the output undriven
+  // (a free variable to SAT, 0 to the simulator) and observed as a test point.
   auto is_output_pin = [&](const ParsedCell& cell,
                            const std::string& pin) -> bool {
     const auto entry = cell_map.lookup(cell.type);
@@ -143,6 +181,10 @@ NormalizedGraph NormalizedGraph::from_parsed(
           return false;
         }
       }
+    }
+    const auto dir = cell.port_directions.find(pin);
+    if (dir != cell.port_directions.end()) {
+      return dir->second == "output";
     }
     return pin == "Y" || pin == "YS" || pin == "YC" || pin == "Q" ||
            pin == "X" || pin == "CO" || pin == "SUM" || pin == "S" ||
@@ -181,6 +223,7 @@ NormalizedGraph NormalizedGraph::from_parsed(
       }
     }
   }
+  ng.unobserved = parse_unobserved_nets(mod, ng.POs);
 
   for (const auto& [inst, cell] : mod.cells) {
     for (const auto& [pin, bits] : cell.conns) {

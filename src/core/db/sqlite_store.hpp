@@ -11,7 +11,7 @@
 
 namespace faultflow::db {
 
-constexpr int kSchemaUserVersion = 6;
+constexpr int kSchemaUserVersion = 10;
 
 struct CoverageSummary {
   int64_t total_raw_faults = 0;
@@ -110,6 +110,52 @@ void mark_fault_redundant(const std::string& db_path, int64_t fault_id,
 
 void mark_fault_protocol_unresolved(const std::string& db_path,
                                     int64_t fault_id);
+
+// A fault SAT finds no test for through the scan-compression decompressor
+// (every scan cell loaded from its seed) but does without it -- a genuine
+// test exists, none is a load the decompressor can make -- reaches here
+// instead of mark_fault_redundant. Leaves `status` untouched (same guard as
+// mark_fault_protocol_unresolved: does not overwrite a detected fault) -- this
+// is NOT an exclusion, the fault stays in the coverage denominator, same
+// character as protocol_unresolved.
+void mark_fault_compression_unresolved(const std::string& db_path,
+                                       int64_t fault_id);
+
+// A fault whose EVERY candidate_rejections entry (this campaign) is reason
+// "compaction_indistinguishable" -- every witness SAT found detects it
+// through the real, uncompacted scan-out ports, but its diff aliases to zero
+// at every compacted output bit, every cycle, so no witness is
+// distinguishable through the real (compacted) tester -- reaches here
+// instead of mark_fault_redundant when SAT eventually reports UNSAT purely
+// as an artifact of blocking every compaction-rejected witness. Leaves
+// `status` untouched (same guard as mark_fault_protocol_unresolved /
+// mark_fault_compression_unresolved: does not overwrite a detected fault) --
+// this fires only at candidate-generation time, strictly before a fault is
+// ever committed detected, never as a post-hoc audit of an already-detected
+// fault. Not an exclusion -- the fault stays in the coverage denominator,
+// same character as protocol_unresolved/compression_unresolved.
+void mark_fault_compaction_unresolved(const std::string& db_path,
+                                      int64_t fault_id);
+
+// A scan fault that is UNSAT in the scan ATPG view (blackbox outputs tied to
+// 0 and inputs unobserved: what the scan protocol sees) but SAT once the
+// blackbox's outputs are free and its inputs observed: a test exists only if
+// the blackbox could be driven or observed, which no scan test can do, so it
+// is untestable because of the blackbox (Tessent's AU.BB), not redundant.
+// Reaches here instead of mark_fault_redundant from the round loop's UNSAT
+// branch. Leaves `status` untouched (same guard
+// as mark_fault_protocol_unresolved: does not overwrite a detected fault) --
+// not an exclusion, the fault stays in the coverage denominator.
+void mark_fault_blackbox_unresolved(const std::string& db_path,
+                                    int64_t fault_id);
+
+// A scan fault that is UNSAT in the scan ATPG view (the [scan] hold inputs,
+// and the non-scan flops they keep in reset, tied: what the scan protocol
+// sees) but SAT once those are free and the non-scan flops' inputs observed:
+// a test exists only if the holds were lifted, so it is untestable because of
+// them (Tessent's AU.PC), not redundant. Same guard and same character as
+// mark_fault_blackbox_unresolved.
+void mark_fault_hold_unresolved(const std::string& db_path, int64_t fault_id);
 
 void invalidate_stale_redundant(const std::string& db_path,
                                 int64_t campaign_id,

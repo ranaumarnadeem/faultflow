@@ -27,6 +27,7 @@ class TclBridge:
             "add_scan": self._add_scan,
             "check_scan": self._check_scan,
             "run_atpg": self._run_atpg,
+            "run_jtag": self._run_jtag,
             "status": self._status,
             "report": self._report,
             "write_netlist": self._write_netlist,
@@ -47,6 +48,9 @@ class TclBridge:
             "reject_tp": self._reject_tp,
             "wrap": self._wrap,
             "retarget": self._retarget,
+            "autombist_generate": self._autombist_generate,
+            "list_memories": self._list_memories,
+            "mbist_insert": self._mbist_insert,
             "WORKERS": self._workers,
             "set_testmode": self._set_testmode,
             "report_testmode": self._report_testmode,
@@ -306,6 +310,32 @@ proc {name} {{args}} {{
         return self.session.run_atpg(
             scan=scan, transition_model=transition_model, **options
         )
+
+    def _run_jtag(self, args: list[str]) -> Any:
+        usage = (
+            "usage: run_jtag [-program PATH] [-verify] [-force] [-threads N] "
+            "[-export PATH]"
+        )
+        options: dict[str, Any] = {}
+        index = 0
+        while index < len(args):
+            key = args[index]
+            if key in ("-verify", "-force"):
+                options[key[1:]] = True
+                index += 1
+            elif key in ("-program", "-export") and index + 1 < len(args):
+                name = "program_path" if key == "-program" else "export"
+                options[name] = Path(args[index + 1])
+                index += 2
+            elif key == "-threads" and index + 1 < len(args):
+                try:
+                    options["sim_threads"] = int(args[index + 1])
+                except ValueError:
+                    raise ShellError(usage, "CONFIG", "INVALID_OPTION")
+                index += 2
+            else:
+                raise ShellError(usage, "CONFIG", "INVALID_OPTION")
+        return self.session.run_jtag(**options)
 
     def _check_scan(self, args: list[str]) -> Any:
         structural_only = False
@@ -619,6 +649,158 @@ proc {name} {{args}} {{
                     "MISSING_ARG",
                 )
         return self.session.retarget(**kwargs)  # type: ignore[arg-type]
+
+    def _autombist_generate(self, args: list[str]) -> Any:
+        import shlex
+
+        from faultflow.integrations.autombist import run_autombist_generate
+
+        flag_to_key = {
+            "-config": "config",
+            "-out": "out",
+            "-autombist_cmd": "autombist_cmd",
+            "-algo": "algo",
+            "-liberty": "liberty",
+            "-cell_lib": "cell_lib",
+        }
+        kwargs: dict[str, str] = {}
+        test_access = False
+        tap_nonscan = False
+        idx = 0
+        while idx < len(args):
+            flag = args[idx]
+            if flag == "-test_access":
+                test_access = True
+                idx += 1
+                continue
+            if flag == "-tap_nonscan":
+                tap_nonscan = True
+                idx += 1
+                continue
+            if flag not in flag_to_key:
+                raise ShellError(
+                    f"autombist_generate: unknown option {flag!r}",
+                    "CONFIG",
+                    "INVALID_OPTION",
+                )
+            if idx + 1 >= len(args):
+                raise ShellError(
+                    f"autombist_generate: {flag} requires a value",
+                    "CONFIG",
+                    "MISSING_ARG",
+                )
+            kwargs[flag_to_key[flag]] = args[idx + 1]
+            idx += 2
+        for required in ("config", "out", "liberty", "cell_lib"):
+            if required not in kwargs:
+                raise ShellError(
+                    f"autombist_generate: -{required} is required",
+                    "CONFIG",
+                    "MISSING_ARG",
+                )
+        if tap_nonscan and not test_access:
+            raise ShellError(
+                "autombist_generate: -tap_nonscan needs -test_access",
+                "CONFIG",
+                "INVALID_OPTION",
+            )
+
+        cmd = tuple(shlex.split(kwargs.pop("autombist_cmd", "autombist")))
+        result = run_autombist_generate(
+            Path(kwargs["config"]),
+            Path(kwargs["out"]),
+            autombist_cmd=cmd,
+            liberty=Path(kwargs["liberty"]),
+            cell_lib=Path(kwargs["cell_lib"]),
+            test_access=test_access,
+            tap_nonscan=tap_nonscan,
+            algo=kwargs.get("algo"),
+        )
+        self.session.load_json(result.composed_json_path, result.top_module)
+        for inst in result.blackbox_instances:
+            self.session.add_blackbox(inst)
+        for port in result.clock_ports:
+            self.session.add_clock(port)
+        if result.manifest_path is not None:
+            self.session.set_autombist_manifest(result.manifest_path)
+        if result.nonscan_cells:
+            self.session.set_scan_nonscan(result.nonscan_cells, result.scan_holds)
+        message = (
+            f"autombist synthesis: {result.ofs_path} "
+            f"(top={result.top_module}, blocks={result.block_count})"
+        )
+        if result.scan_chains is not None:
+            message += (
+                f"; clocks {', '.join(result.clock_ports)}: "
+                f"add_scan -chains {result.scan_chains}"
+            )
+        if result.nonscan_cells:
+            message += (
+                f"; TAP and IJTAG network non-scan "
+                f"({len(result.nonscan_cells)} instances), graded by ff.py jtag"
+            )
+        return message
+
+    def _list_memories(self, args: list[str]) -> Any:
+        from faultflow.mbist.memories import list_memories
+
+        values: dict[str, str] = {}
+        patterns: list[str] = []
+        idx = 0
+        while idx < len(args):
+            flag = args[idx]
+            if flag not in ("-top", "-spec", "-pattern"):
+                raise ShellError(
+                    f"list_memories: unknown option {flag!r}",
+                    "CONFIG",
+                    "INVALID_OPTION",
+                )
+            if idx + 1 >= len(args):
+                raise ShellError(
+                    f"list_memories: {flag} requires a value", "CONFIG", "MISSING_ARG"
+                )
+            if flag == "-pattern":
+                patterns.append(args[idx + 1])
+            else:
+                values[flag[1:]] = args[idx + 1]
+            idx += 2
+        for required in ("top", "spec"):
+            if required not in values:
+                raise ShellError(
+                    f"list_memories: -{required} is required", "CONFIG", "MISSING_ARG"
+                )
+        return list_memories(Path(values["spec"]), values["top"], patterns or None)
+
+    def _mbist_insert(self, args: list[str]) -> Any:
+        from faultflow.mbist.insert import insert_command
+
+        flags = {"-top": "top", "-spec": "spec", "-out": "out", "-config": "config"}
+        values: dict[str, str] = {}
+        tap_nonscan = "-tap_nonscan" in args
+        args = [a for a in args if a != "-tap_nonscan"]
+        for idx in range(0, len(args), 2):
+            flag = args[idx]
+            if flag not in flags:
+                raise ShellError(
+                    f"mbist_insert: unknown option {flag!r}", "CONFIG", "INVALID_OPTION"
+                )
+            if idx + 1 >= len(args):
+                raise ShellError(
+                    f"mbist_insert: {flag} requires a value", "CONFIG", "MISSING_ARG"
+                )
+            values[flags[flag]] = args[idx + 1]
+        for required in ("top", "spec"):
+            if required not in values:
+                raise ShellError(
+                    f"mbist_insert: -{required} is required", "CONFIG", "MISSING_ARG"
+                )
+        return insert_command(
+            Path(values["spec"]),
+            values["top"],
+            Path(values["out"]) if "out" in values else None,
+            Path(values["config"]) if "config" in values else None,
+            tap_nonscan=tap_nonscan,
+        )
 
     def _set_testmode(self, args: list[str]) -> Any:
         if len(args) != 1:

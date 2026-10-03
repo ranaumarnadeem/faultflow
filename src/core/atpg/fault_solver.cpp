@@ -147,6 +147,67 @@ inline int faulty_input_lit(const CnfVarMap& vars, const ConeMasks& masks,
                                : vars.free_vars.at(net);
 }
 
+using NetVar = std::function<int(uint32_t)>;
+
+// Each seeded input's variable (`var_of` picks the frame) tied to the XOR of
+// its seed bits: a chain of 2-input XOR definitions, or 0 for no bits.
+void add_seeded_inputs(CaDiCaL::Solver& solver, CnfVarMap& vars,
+                       const std::vector<int>& seed,
+                       const std::vector<SeededInput>& inputs,
+                       const NetVar& var_of) {
+  for (const SeededInput& input : inputs) {
+    int value = 0;  // no seed bit yet: the constant 0
+    for (int bit : input.seed_bits) {
+      if (bit < 0 || bit >= static_cast<int>(seed.size())) {
+        throw std::runtime_error("seeded input: seed bit " + std::to_string(bit) +
+                                 " is outside the " + std::to_string(seed.size()) +
+                                 "-bit seed");
+      }
+      const int seed_var = seed[static_cast<size_t>(bit)];
+      if (value == 0) {
+        value = seed_var;
+        continue;
+      }
+      const int d = vars.next++;
+      add_xor_def(solver, value, seed_var, d);
+      value = d;
+    }
+    const int target = var_of(input.compiled);
+    if (value == 0) {
+      add_unit(solver, -target);
+    } else {
+      add_equiv(solver, target, value);
+    }
+  }
+}
+
+// Scan compression (options.seed_width / seeded_inputs): ONE seed for the whole
+// test, so both frames of a two-frame CNF read the same seed variables. `launch`
+// is the only frame of a stuck-at CNF; `capture` is null there.
+void add_seed_constraints(CaDiCaL::Solver& solver, CnfVarMap& vars,
+                          const SatSolveOptions& options, const NetVar& launch,
+                          const NetVar* capture) {
+  if (options.seed_width < 0) {
+    throw std::runtime_error("seed width must be >= 0");
+  }
+  if (options.seeded_inputs.empty() && options.seeded_capture_inputs.empty()) {
+    return;
+  }
+  if (capture == nullptr && !options.seeded_capture_inputs.empty()) {
+    throw std::runtime_error(
+        "capture-frame seeded inputs need a two-frame (transition) solve");
+  }
+  std::vector<int> seed;
+  seed.reserve(static_cast<size_t>(options.seed_width));
+  for (int i = 0; i < options.seed_width; ++i) {
+    seed.push_back(vars.next++);
+  }
+  add_seeded_inputs(solver, vars, seed, options.seeded_inputs, launch);
+  if (capture != nullptr) {
+    add_seeded_inputs(solver, vars, seed, options.seeded_capture_inputs, *capture);
+  }
+}
+
 }  // namespace
 
 std::vector<AtpgPiInfo> ordered_pis(const ParsedGraph& parsed,
@@ -287,6 +348,9 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
                 vars.faulty_vars.at(pi.compiled));
     }
   }
+  add_seed_constraints(
+      solver, vars, options,
+      [&](uint32_t net) { return vars.free_vars.at(net); }, nullptr);
 
   for (const std::string& blocked : options.blocked_patterns) {
     if (blocked.size() != pis.size()) {
@@ -387,6 +451,11 @@ SatSolveResult solve_stuck_at_fault_incremental(
   add_unit(solver, (fault.type == FaultType::SA1)
                        ? vars.faulty_vars.at(fault_net)
                        : -vars.faulty_vars.at(fault_net));
+  // The decompressor's seed (permanent): the PIs' good vars exist before their
+  // cones are encoded.
+  add_seed_constraints(
+      solver, vars, options,
+      [&](uint32_t net) { return vars.free_vars.at(net); }, nullptr);
 
   // Blocked patterns over PI good vars (permanent; identical to the baseline).
   if (!options.blocked_patterns.empty()) {
@@ -672,6 +741,9 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
                 vars.faulty_vars.at(pi.compiled));
     }
   }
+  add_seed_constraints(
+      solver, vars, options,
+      [&](uint32_t net) { return vars.free_vars.at(net); }, nullptr);
 
   for (const std::string& blocked : options.blocked_patterns) {
     if (blocked.size() != pis.size()) {
@@ -823,6 +895,12 @@ SatSolveResult solve_two_frame_transition(
   // Launch<->capture PI coupling: broadside = none (independent); scan LOC =
   // capture PPI == launch PPO + held real PIs.
   couple_pis(solver, launch_vars, vars);
+  // Scan compression: the launch frame's load and (LOS) the capture frame's
+  // launch-shift scan-in bits come from one seed.
+  const NetVar capture_var = [&](uint32_t net) { return vars.free_vars.at(net); };
+  add_seed_constraints(
+      solver, vars, options,
+      [&](uint32_t net) { return launch_vars.at(net); }, &capture_var);
 
   // Broadside blocks the combined V1||V2 pair (length 2N); scan LOC blocks the
   // launch only (length N) because V2 is functionally derived from V1, so a new

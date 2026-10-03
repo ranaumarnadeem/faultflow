@@ -68,7 +68,6 @@ void wire_inputs(SimNode& sn, GateType gt,
     case GateType::DFF:
       break;
     case GateType::AND2:
-    case GateType::AND2B:
     case GateType::OR2:
     case GateType::NAND2:
     case GateType::NOR2:
@@ -80,6 +79,14 @@ void wire_inputs(SimNode& sn, GateType gt,
       wire("B", sn.in1);
       wire("A_N", sn.in0);
       wire("B_N", sn.in1);
+      wire("SLEEP", sn.in1);  // lpflow_inputiso1p (OR2)
+      break;
+    case GateType::AND2B:
+      // in0 & ~in1: the true input first, the bubbled one second -- sky130
+      // and2b's B and A_N, lpflow_isobufsrc's A and SLEEP.
+      wire("A", sn.in0);
+      wire("B", sn.in0);
+      wire("A_N", sn.in1);
       wire("SLEEP", sn.in1);
       break;
     case GateType::AND3:
@@ -123,6 +130,7 @@ void wire_inputs(SimNode& sn, GateType gt,
       wire("A", sn.in0);
       wire("B", sn.in1);
       wire("S", sn.in2);
+      wire("S0", sn.in2);  // OSU035 MX2X* (OpenTestability's control points)
       break;
     case GateType::MUX2_NI:
       wire_seq({"A0", "A1", "S"});
@@ -254,7 +262,8 @@ void wire_inputs(SimNode& sn, GateType gt,
     case GateType::ADDF_CO:
       wire("A", sn.in0);
       wire("B", sn.in1);
-      wire("C", sn.in2);
+      wire("C", sn.in2);    // OSU035 FAX1
+      wire("CIN", sn.in2);  // sky130 fa
       break;
     case GateType::ADDH_S:
     case GateType::ADDH_CO:
@@ -596,13 +605,13 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
   cg.compiled_to_yosys = std::move(c2y);
 
   for (int po : ng.POs) {
-    if (cg.yosys_to_compiled.count(po)) {
+    if (cg.yosys_to_compiled.count(po) && !ng.unobserved.count(po)) {
       cg.observable.push_back(cg.yosys_to_compiled.at(po));
     }
   }
   // Phase 9: test points (e.g. blackbox input nets) become observable pseudo-POs.
   for (int tp : ng.TPs) {
-    if (cg.yosys_to_compiled.count(tp)) {
+    if (cg.yosys_to_compiled.count(tp) && !ng.unobserved.count(tp)) {
       const int cidx = cg.yosys_to_compiled.at(tp);
       if (std::find(cg.observable.begin(), cg.observable.end(), cidx) ==
           cg.observable.end()) {

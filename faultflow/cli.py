@@ -195,6 +195,114 @@ def _parser() -> argparse.ArgumentParser:
         "--out", type=Path, required=True, help="Output retargeted pattern file"
     )
 
+    autombist_p = sub.add_parser(
+        "autombist-generate",
+        help="Generate a FaultFlow synthesis (.ofs) from an autoMBIST manifest",
+    )
+    autombist_p.add_argument(
+        "--config", type=Path, required=True, help="autoMBIST YAML config"
+    )
+    autombist_p.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="Output directory (passed to autombist --out)",
+    )
+    autombist_p.add_argument(
+        "--autombist-cmd",
+        dest="autombist_cmd",
+        default="autombist",
+        help="Command prefix to invoke autoMBIST, e.g. 'python3 -m autombist.cli'",
+    )
+    autombist_p.add_argument(
+        "--algo",
+        default=None,
+        help="MBIST algorithm, passed to autombist generate --algo (march-c, "
+        "march-raw, march-1r1w, march-2rw, march-x, mats-plus, checkerboard); "
+        "autoMBIST's default without it",
+    )
+    autombist_p.add_argument(
+        "--liberty",
+        type=Path,
+        required=True,
+        help="Liberty file for synthesis + the written .ofs",
+    )
+    autombist_p.add_argument(
+        "--cell-lib",
+        dest="cell_lib",
+        type=Path,
+        required=True,
+        help="Cell-map JSON for the written .ofs",
+    )
+    autombist_p.add_argument(
+        "--test-access",
+        dest="test_access",
+        action="store_true",
+        help="Wrap the generated design for JTAG access (autombist "
+        "wrap-test-access, which needs warptap) and synthesize the wrapped "
+        "design",
+    )
+    autombist_p.add_argument(
+        "--tap-nonscan",
+        dest="tap_nonscan",
+        action="store_true",
+        help="With --test-access: keep the TAP and its IJTAG network out of scan, "
+        "held in reset ([scan] nonscan_cells, [scan] hold), for ff.py jtag to "
+        "grade through TCK",
+    )
+
+    list_mem = sub.add_parser(
+        "list-memories",
+        help="List a design's memory instances and how each pin is connected, "
+        "to help write an MBIST insertion file",
+    )
+    list_mem.add_argument("--top", required=True, help="Top module of the design")
+    list_mem.add_argument(
+        "--spec",
+        type=Path,
+        required=True,
+        help="MBIST insertion file (YAML or JSON): the design's sources, and the "
+        "memories already configured",
+    )
+    list_mem.add_argument(
+        "--pattern",
+        action="append",
+        default=None,
+        help="Memory macro module name glob, e.g. 'sky130_sram_*' (repeatable); "
+        "replaces the file's memory_patterns",
+    )
+
+    insert = sub.add_parser(
+        "mbist-insert",
+        help="Insert MBIST into a design's RTL: an autoMBIST collar, in a shell, "
+        "in place of every memory an insertion file configures",
+    )
+    insert.add_argument("--top", required=True, help="Top module of the design")
+    insert.add_argument(
+        "--spec", type=Path, required=True, help="MBIST insertion file (YAML or JSON)"
+    )
+    insert.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Output directory (default: mbist_<top> in the current directory)",
+    )
+    insert.add_argument(
+        "-c",
+        "--config",
+        type=Path,
+        default=None,
+        help="The design's .ofs: no inserted module may be named after one of its "
+        "liberty's cells; the inserted design is synthesized with its liberty, and "
+        "<top>_mbist.ofs written for it",
+    )
+    insert.add_argument(
+        "--tap-nonscan",
+        action="store_true",
+        help="With jtag and -c: the TAP and the IJTAG network run non-scan in the "
+        "written .ofs (trst_n and tck held at 0), for ff.py jtag to test",
+    )
+
     status = sub.add_parser("status", help="Print current coverage status")
     add_common(status)
     status.add_argument(
@@ -254,6 +362,52 @@ def _parser() -> argparse.ArgumentParser:
         "scan-techmap", help="Regenerate Sky130 techmap output from scanned JSON"
     )
     add_common(scan_techmap)
+
+    jtag = sub.add_parser(
+        "jtag",
+        help=(
+            "Grade the scan campaign's faults with a JTAG network-integrity "
+            "program played through the TAP"
+        ),
+    )
+    add_common(jtag)
+    jtag.add_argument(
+        "--program",
+        type=Path,
+        help=(
+            "warptap-tck-program JSON to play (default: [jtag] program, else "
+            "built from the [autombist] manifest with warptap)"
+        ),
+    )
+    jtag.add_argument(
+        "--verify",
+        action="store_true",
+        help=(
+            "Also replay the program on the techmapped netlist in Icarus Verilog "
+            "(four-state) and require the golden TDO"
+        ),
+    )
+    jtag.add_argument(
+        "--force",
+        action="store_true",
+        help="Grade again even if an identical grade is recorded",
+    )
+    jtag.add_argument(
+        "--threads", type=int, help="Grading threads (default: [simulation])"
+    )
+    jtag.add_argument("--export", type=Path, help="Write the TCK program played")
+
+    scan_compress = sub.add_parser(
+        "scan-compress",
+        help="Insert scan test-pattern compression (ring generator + phase shifter)",
+    )
+    add_common(scan_compress)
+
+    scan_compact = sub.add_parser(
+        "scan-compact",
+        help="Insert scan test-response compaction (static XOR-tree space compactor)",
+    )
+    add_common(scan_compact)
 
     rule_check = sub.add_parser(
         "rule_check",
@@ -342,6 +496,26 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "retarget":
             return _handle_retarget(args)
+        if args.command == "autombist-generate":
+            return _handle_autombist_generate(args)
+        if args.command == "list-memories":
+            from faultflow.mbist.memories import list_memories
+
+            print(list_memories(args.spec, args.top, args.pattern), end="")
+            return 0
+        if args.command == "mbist-insert":
+            from faultflow.mbist.insert import insert_command
+
+            print(
+                insert_command(
+                    args.spec,
+                    args.top,
+                    args.out,
+                    args.config,
+                    tap_nonscan=args.tap_nonscan,
+                )
+            )
+            return 0
         if args.command == "add-clock":
             add_clock_to_config(Path(args.config), args.port, off_state=args.off_state)
             print(
@@ -447,6 +621,22 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "scan-techmap":
             print(service.regenerate_scan_techmap(cfg).message)
+        elif args.command == "jtag":
+            from faultflow.jtag.command import run_jtag
+
+            outcome = run_jtag(
+                cfg,
+                program_path=args.program,
+                force=args.force,
+                sim_threads=args.threads,
+                export=args.export,
+                verify=args.verify,
+            )
+            print(outcome.message(cfg.top))
+        elif args.command == "scan-compress":
+            print(service.scan_compress(cfg).message)
+        elif args.command == "scan-compact":
+            print(service.scan_compact(cfg).message)
         elif args.command == "rule_check":
             result = service.rule_check(cfg, strict=args.strict)
             print(result.message)
@@ -498,6 +688,51 @@ def _handle_retarget(args: object) -> int:
     }
     written = write_retargeted(Path(getattr(args, "out")), payload)
     print(f"retargeted {len(retargeted)} pattern(s) from {block!r} -> {written}")
+    return 0
+
+
+def _handle_autombist_generate(args: object) -> int:
+    import shlex
+
+    from faultflow.integrations.autombist import run_autombist_generate
+
+    config = Path(getattr(args, "config"))
+    if not config.exists():
+        raise ConfigError(f"autoMBIST config not found: {config}")
+    test_access = bool(getattr(args, "test_access", False))
+    tap_nonscan = bool(getattr(args, "tap_nonscan", False))
+    if tap_nonscan and not test_access:
+        raise ConfigError("--tap-nonscan needs --test-access")
+    cmd = tuple(shlex.split(str(getattr(args, "autombist_cmd"))))
+    result = run_autombist_generate(
+        config,
+        Path(getattr(args, "out")),
+        autombist_cmd=cmd,
+        liberty=Path(getattr(args, "liberty")),
+        cell_lib=Path(getattr(args, "cell_lib")),
+        test_access=test_access,
+        tap_nonscan=tap_nonscan,
+        algo=getattr(args, "algo", None),
+    )
+    counts = ", ".join(f"{k}={v}" for k, v in sorted(result.instance_counts.items()))
+    print(
+        f"wrote {result.ofs_path}  (top={result.top_module}, "
+        f"blocks={result.block_count}, {counts})"
+    )
+    if result.scan_chains is not None:
+        print(
+            f"clocks: {', '.join(result.clock_ports)}  "
+            f"(scan chains: {result.scan_chains}, one per clock domain)"
+        )
+    if result.nonscan_cells:
+        print(
+            f"non-scan: {len(result.nonscan_cells)} TAP/IJTAG instances, held by "
+            + ", ".join(f"{port}:{v}" for port, v in result.scan_holds)
+            + "; ff.py jtag grades them after sim --scan"
+        )
+    print(
+        f"run: python3 ff.py sim --scan --top {result.top_module} -c {result.ofs_path}"
+    )
     return 0
 
 

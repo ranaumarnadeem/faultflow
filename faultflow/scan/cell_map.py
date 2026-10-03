@@ -25,6 +25,10 @@ INTERNAL_ATPG_VIEW_KEYS = (
     "\\$faultflow_capture_or",
     "$faultflow_capture_inv",
     "\\$faultflow_capture_inv",
+    "$faultflow_tie0",
+    "\\$faultflow_tie0",
+    "$faultflow_tie1",
+    "\\$faultflow_tie1",
 )
 OSU_CELL_MAP = Path("cells/osu/osu035.json")
 

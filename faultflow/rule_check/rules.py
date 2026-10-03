@@ -274,6 +274,18 @@ def rules_scan(manifest: dict[str, Any]) -> list[Violation]:
         for ff in ineligible:
             if not isinstance(ff, dict):
                 continue
+            if ff.get("reason") == "nonscan_policy":
+                # Left out of scan on purpose ([scan] nonscan_cells): not a defect.
+                out.append(
+                    Violation(
+                        "SCAN011",
+                        Severity.INFO,
+                        "non-scan by policy",
+                        f"FF {ff.get('instance')} ({ff.get('cell_type')}) is left out "
+                        "of scan by [scan] nonscan_cells",
+                    )
+                )
+                continue
             out.append(
                 Violation(
                     "SCAN010",
@@ -283,6 +295,68 @@ def rules_scan(manifest: dict[str, Any]) -> list[Violation]:
                     f"scannable: {ff.get('reason')}",
                 )
             )
+    return out
+
+
+# --- COMP001: scan compression structural check ---
+def rules_compression(manifest: dict[str, Any]) -> list[Violation]:
+    """Re-derives the ring generator's XOR structure from the synthesized
+    netlist and diffs it against the manifest -- see
+    faultflow.scan.compression_checks.check_compression_structure for the
+    algorithm (covers both the phase-shifter's fan-out AND the register's
+    own feedback-tap/reseed-mux cone). No-op (returns []) when compression
+    is absent/disabled in the manifest.
+    """
+    from faultflow.scan.compression_checks import check_compression_structure
+
+    try:
+        result = check_compression_structure(manifest)
+    except Exception as exc:  # defensive: a malformed manifest is itself a finding
+        return [
+            Violation(
+                "COMP001",
+                Severity.ERROR,
+                "compression structure",
+                f"compression structural check failed: {exc}",
+            )
+        ]
+    out: list[Violation] = []
+    for err in result.errors:
+        out.append(Violation("COMP001", Severity.ERROR, "compression structure", err))
+    for warn in result.warnings:
+        out.append(
+            Violation("COMP001", Severity.WARNING, "compression structure", warn)
+        )
+    return out
+
+
+# --- COMP002: scan compaction (space compactor) structural check ---
+def rules_compaction(manifest: dict[str, Any]) -> list[Violation]:
+    """Re-derives the static XOR-tree compactor's fanout structure from the
+    synthesized netlist and diffs it against the manifest -- see
+    faultflow.scan.compaction_checks.check_compaction_structure for the
+    algorithm. Unlike COMP001, this check covers the compactor completely
+    (no register/feedback structure to defer). No-op (returns []) when
+    compaction is absent/disabled in the manifest.
+    """
+    from faultflow.scan.compaction_checks import check_compaction_structure
+
+    try:
+        result = check_compaction_structure(manifest)
+    except Exception as exc:  # defensive: a malformed manifest is itself a finding
+        return [
+            Violation(
+                "COMP002",
+                Severity.ERROR,
+                "compaction structure",
+                f"compaction structural check failed: {exc}",
+            )
+        ]
+    out: list[Violation] = []
+    for err in result.errors:
+        out.append(Violation("COMP002", Severity.ERROR, "compaction structure", err))
+    for warn in result.warnings:
+        out.append(Violation("COMP002", Severity.WARNING, "compaction structure", warn))
     return out
 
 
@@ -302,4 +376,6 @@ def run_rule_check(
     report.violations.extend(rule_combinational_feedback(facts))
     if manifest is not None:
         report.violations.extend(rules_scan(manifest))
+        report.violations.extend(rules_compression(manifest))
+        report.violations.extend(rules_compaction(manifest))
     return report

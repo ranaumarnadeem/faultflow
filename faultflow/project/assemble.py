@@ -12,10 +12,18 @@ instantiations), with each block module read via ``read_verilog -lib <stub>.v`` 
 Yosys treats it as a blackbox and ``flatten`` has nothing to inline for it — the
 block survives synthesis as an untouched instance cell with a ``connections`` dict
 mapping each port to a glue-space net id list. (2) ``compose_soc`` splices each
-block's real cells/netnames into the glue's instance site in pure Python,
-net-ID-remapping the block's internal nets into the SoC's net-ID space and wiring
-the block's port nets directly to the glue instance's connections. The result is
-ONE flat module the C++ core can parse/normalize/compile/simulate unchanged.
+block's real cells/netnames into the glue's instance site in pure Python. Every
+block port bit and the glue connection bit at the same index are ONE electrical
+net; a block's own internal wiring or the wrapper's own wiring can tie that one
+net to more than one boundary position (a shared clock net exposed on two port
+names, a bus bit repeated across ports, a constant-tied input, a constant block
+output). ``compose_soc`` resolves this via a union-find spanning the WHOLE call —
+never a flat per-instance dict, which silently drops every boundary position but
+the last one written. See ``_UnionFind`` / ``_collect_boundary_bindings`` /
+``_resolve_classes`` / ``_apply_glue_substitution`` below. The result is ONE flat
+module the C++ core can parse/normalize/compile/simulate unchanged — verified
+driver-clean by the ``check -assert`` guard in
+``faultflow/integrations/autombist.py::synthesize_from_manifest``.
 
 WBC (IEEE-1500 wrapper boundary) cells copied from a block are re-tagged with
 ``attributes["faultflow_block"]`` / ``attributes["faultflow_wbc"]`` (plain Python
@@ -25,8 +33,10 @@ spliced-in block's wrapper cells as boundary faults owned by that block.
 
 from __future__ import annotations
 
+import itertools
 import shutil
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -83,7 +93,20 @@ def _find_top(data: dict[str, Any], requested_top: str) -> dict[str, Any]:
     raise AssembleError(f"cannot find top module {requested_top!r} in glue JSON")
 
 
-def block_stub_verilog(block_json: dict[str, Any], module: str) -> str:
+def _verilog_parameter_literal(value: Any) -> str:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def block_stub_verilog(
+    block_json: dict[str, Any],
+    module: str,
+    *,
+    parameters: dict[str, Any] | None = None,
+) -> str:
     """Emit a blackbox Verilog interface stub for `module` from `block_json`.
 
     ``(* blackbox *) module <module>(...);`` with port declarations only (direction
@@ -91,6 +114,16 @@ def block_stub_verilog(block_json: dict[str, Any], module: str) -> str:
     and no body -- pure string-building, no Yosys involved. When read via
     ``read_verilog -lib``, Yosys treats this as a blackbox: ``flatten`` has nothing
     to inline for it, so the real instance survives glue synthesis untouched.
+
+    ``parameters``, when non-empty, adds a ``#(parameter K = V, ...)`` clause --
+    REQUIRED when the real module has parameters and the glue instantiates it with
+    an override (e.g. ``algo_top #(.ADDR_WIDTH(ADDR_WIDTH)) u_algo(...)``); without
+    the declaration Yosys errors with "Module `X' ... does not have a parameter
+    named 'K'". No type keyword is emitted (bare ``parameter K = V``) -- purely
+    cosmetic for Yosys's own chparam/instantiation-override handling, and guessing
+    one from a bare JSON scalar risks getting it wrong for a case the caller's data
+    doesn't disambiguate. `parameters=None` (the default) produces output identical
+    to before this argument existed.
     """
     modules = block_json.get("modules")
     if not isinstance(modules, dict) or module not in modules:
@@ -111,9 +144,294 @@ def block_stub_verilog(block_json: dict[str, Any], module: str) -> str:
         else:
             decls.append(f"  {direction} [{width - 1}:0] {name};")
 
-    header = f"module {module}({', '.join(port_names)});"
+    param_clause = ""
+    if parameters:
+        param_decls = ", ".join(
+            f"parameter {k} = {_verilog_parameter_literal(v)}"
+            for k, v in parameters.items()
+        )
+        param_clause = f" #({param_decls})"
+
+    header = f"module {module}{param_clause}({', '.join(port_names)});"
     lines = ["(* blackbox *)", header, *decls, "endmodule", ""]
     return "\n".join(lines)
+
+
+class _UnionFind:
+    """A minimal union-find over arbitrary hashable keys (path compression only
+    -- no union-by-rank; realistic netlists are small enough that this is not a
+    performance concern). Keys are never pre-registered: `find`/`union` register
+    an unseen key as its own singleton root on first use."""
+
+    def __init__(self) -> None:
+        self._parent: dict[Any, Any] = {}
+
+    def find(self, x: Any) -> Any:
+        self._parent.setdefault(x, x)
+        while self._parent[x] != x:
+            self._parent[x] = self._parent[self._parent[x]]
+            x = self._parent[x]
+        return x
+
+    def union(self, a: Any, b: Any) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self._parent[ra] = rb
+
+    def classes(self) -> dict[Any, set[Any]]:
+        groups: dict[Any, set[Any]] = {}
+        for key in self._parent:
+            groups.setdefault(self.find(key), set()).add(key)
+        return groups
+
+
+def _collect_boundary_bindings(
+    uf: _UnionFind,
+    inst: str,
+    block_module: dict[str, Any],
+    inst_connections: dict[str, Any],
+    occurrence: Iterator[int],
+) -> set[int]:
+    """Union every connected port-boundary bit of `inst` with its glue-side
+    binding, and return the set of the block's OWN int bit values that were
+    bound (used by the caller to tell a boundary bit from a purely-internal
+    one when building that instance's remap).
+
+    Block side: `("B", inst, bit)` for an int bit. Glue side: `("G", net)`
+    for an int net. A constant literal ("0"/"1"/"x"/"z") on either side is
+    `("C", value, n)`, where `n` is unique per occurrence: a constant must
+    never become a shared node, or every net tied to "0" -- or every
+    undriven block output, which Yosys writes as "x" -- would be unioned
+    into one class, linking electrically unrelated nets.
+
+    The tag is ALWAYS element 0 of every key, so classification can test
+    `key[0]` alone. An instance-first block key (`(inst, "B", bit)`) would
+    make an instance literally named "C" or "G" read as a constant or glue
+    key.
+
+    Unconnected ports (key absent from `inst_connections`, or present with an
+    empty list -- both are real Yosys shapes, see `git blame` on this
+    function) are skipped entirely: an unconnected input floats, which is
+    valid Verilog. Raises AssembleError on a width mismatch between the
+    block's own port and what the glue instantiation connects to it.
+    """
+    block_ports = block_module.get("ports", {})
+    if not isinstance(block_ports, dict):
+        raise AssembleError("block module has no ports")
+
+    bound: set[int] = set()
+    for port_name, port in block_ports.items():
+        if not isinstance(port, dict):
+            continue
+        block_bits = port.get("bits", [])
+        glue_bits = inst_connections.get(port_name)
+        if not glue_bits:
+            continue
+        if len(glue_bits) != len(block_bits):
+            raise AssembleError(
+                f"instance {inst!r} port {port_name!r}: width mismatch "
+                f"(block has {len(block_bits)} bit(s), glue connects "
+                f"{len(glue_bits)})"
+            )
+        for i, bit in enumerate(block_bits):
+            glue_bit = glue_bits[i]
+            if isinstance(bit, int):
+                block_key: tuple[Any, ...] = ("B", inst, bit)
+                bound.add(bit)
+            else:
+                block_key = ("C", bit, next(occurrence))
+            glue_key = (
+                ("G", glue_bit)
+                if isinstance(glue_bit, int)
+                else ("C", glue_bit, next(occurrence))
+            )
+            uf.union(block_key, glue_key)
+    return bound
+
+
+def _block_driven_bits(block_module: dict[str, Any]) -> set[int]:
+    """Int bits the block itself drives: bits of its output ports that are
+    not also bits of an input port (an input passed straight through to an
+    output is driven from outside, not by the block)."""
+    outputs: set[int] = set()
+    inputs: set[int] = set()
+    ports = block_module.get("ports", {})
+    for port in ports.values() if isinstance(ports, dict) else ():
+        if not isinstance(port, dict):
+            continue
+        bits = _all_int_bits(port.get("bits"))
+        if port.get("direction") == "output":
+            outputs.update(bits)
+        elif port.get("direction") == "input":
+            inputs.update(bits)
+    return outputs - inputs
+
+
+def _resolve_classes(
+    uf: _UnionFind,
+    top_level_inputs: set[int],
+    driven_bits: dict[str, set[int]],
+) -> tuple[dict[Any, int | str], dict[Any, set[Any]]]:
+    """Resolve every union-find class to one canonical value, by priority:
+
+    1. A "0"/"1" constant. Both present is a contradiction, and so is a
+       top-level input also tied to a constant (an externally driven pin
+       can't also be fixed) -- both raise AssembleError.
+    2. A top-level (primary) INPUT port bit -- the one member guaranteed to
+       stay externally driven no matter which instance cells get spliced or
+       deleted. Two or more DIFFERENT top-level input bits is a short
+       (AssembleError).
+    3. The lowest glue net id.
+    4. "x"/"z". These mean "nothing drives this", not a value, so they only
+       resolve a class that has nothing else: a block input the glue ties
+       to x. An undriven block output (which Yosys writes as "x") sharing a
+       glue net with anything real contributes nothing and loses.
+    A class with none of these (a purely internal block bit, or a bit of a
+    genuinely unconnected port) is left unresolved; the caller assigns it a
+    fresh id.
+
+    A class that resolves to a constant must not contain a bit its own block
+    drives (`driven_bits`): that is a second driver on the net, and
+    substituting the constant would rewrite the driving cell's OUTPUT pin to
+    a constant -- raise instead.
+
+    Returns `(resolved, classes)`: `resolved` maps a class's root to its
+    canonical value; `classes` maps that same root to its full member set
+    (reused by `_glue_substitution_map`, so the union-find is only walked
+    once).
+    """
+    classes = uf.classes()
+    resolved: dict[Any, int | str] = {}
+    for root, members in classes.items():
+        hard = sorted({k[1] for k in members if k[0] == "C" and k[1] in ("0", "1")})
+        soft = sorted({k[1] for k in members if k[0] == "C" and k[1] not in ("0", "1")})
+        glue_nets = {k[1] for k in members if k[0] == "G"}
+        shorted_inputs = glue_nets & top_level_inputs
+        value: int | str
+        if hard:
+            if len(hard) > 1:
+                raise AssembleError(
+                    "conflicting constant drivers (0 and 1) tied to the same net"
+                )
+            value = hard[0]
+            if shorted_inputs:
+                raise AssembleError(
+                    f"top-level input net(s) {sorted(shorted_inputs)} tied to "
+                    f"constant {value!r}"
+                )
+        elif glue_nets:
+            if len(shorted_inputs) > 1:
+                raise AssembleError(
+                    "top-level input nets shorted together: "
+                    f"{sorted(shorted_inputs)}"
+                )
+            resolved[root] = (
+                next(iter(shorted_inputs)) if shorted_inputs else min(glue_nets)
+            )
+            continue
+        elif soft:
+            value = soft[0]
+        else:
+            continue  # no glue/constant member -- left unresolved
+        for key in members:
+            if key[0] == "B" and key[2] in driven_bits.get(key[1], set()):
+                raise AssembleError(
+                    f"instance {key[1]!r} drives bit {key[2]} itself, but its net "
+                    f"is also tied to constant {value!r} (multiple drivers)"
+                )
+        resolved[root] = value
+    return resolved, classes
+
+
+def _instance_remap(
+    inst: str,
+    block_module: dict[str, Any],
+    bound_bits: set[int],
+    uf: _UnionFind,
+    resolved: dict[Any, int | str],
+    next_id: int,
+) -> tuple[dict[int, int | str], int]:
+    """Build bit -> remap target for every int bit in `block_module`.
+
+    A boundary bit (in `bound_bits`) maps to its class's resolved value (an
+    int glue net, or a constant string). Every other bit -- purely internal,
+    or a port bit whose port was genuinely unconnected -- gets a fresh
+    sequential id from `next_id`, which is returned incremented past
+    whatever was allocated.
+    """
+    all_bits: set[int] = set()
+    block_ports = block_module.get("ports", {})
+    if isinstance(block_ports, dict):
+        for port in block_ports.values():
+            if isinstance(port, dict):
+                all_bits.update(_all_int_bits(port.get("bits")))
+    for net in block_module.get("netnames", {}).values():
+        if isinstance(net, dict):
+            all_bits.update(_all_int_bits(net.get("bits")))
+    for cell in block_module.get("cells", {}).values():
+        if not isinstance(cell, dict):
+            continue
+        conns = cell.get("connections", {})
+        if isinstance(conns, dict):
+            for bits in conns.values():
+                all_bits.update(_all_int_bits(bits))
+
+    remap: dict[int, int | str] = {}
+    for bit in sorted(all_bits):
+        if bit in bound_bits:
+            root = uf.find(("B", inst, bit))
+            remap[bit] = resolved[root]
+        else:
+            remap[bit] = next_id
+            next_id += 1
+    return remap, next_id
+
+
+def _glue_substitution_map(
+    resolved: dict[Any, int | str], classes: dict[Any, set[Any]]
+) -> dict[int, int | str]:
+    """Every glue net whose class resolved to something other than itself (a
+    merge with another glue net, or a constant) needs substituting wherever
+    the ORIGINAL glue netlist referenced it directly -- an existing glue-native
+    cell/port/netname never goes through `_instance_remap`, so without this
+    pass it would keep pointing at a net id that this composition just
+    renamed out from under it."""
+    substitution: dict[int, int | str] = {}
+    for root, value in resolved.items():
+        for key in classes[root]:
+            if key[0] == "G" and key[1] != value:
+                substitution[key[1]] = value
+    return substitution
+
+
+def _substitute_bits(bits: list[Any], substitution: dict[int, int | str]) -> list[Any]:
+    return [substitution.get(b, b) if isinstance(b, int) else b for b in bits]
+
+
+def _apply_glue_substitution(
+    result_module: dict[str, Any], substitution: dict[int, int | str]
+) -> None:
+    """Rewrite every occurrence of a substituted glue net, across ALL of
+    `result_module`'s cells' connections, ports' bits, and netnames' bits --
+    both glue-native entries (which reference the OLD id directly) and
+    already-spliced block cells (whose remap already used the resolved
+    value, so this is a no-op for them; safe to apply uniformly)."""
+    if not substitution:
+        return
+    for cell in result_module.get("cells", {}).values():
+        if not isinstance(cell, dict):
+            continue
+        conns = cell.get("connections")
+        if isinstance(conns, dict):
+            for pin, bits in conns.items():
+                if isinstance(bits, list):
+                    conns[pin] = _substitute_bits(bits, substitution)
+    for port in result_module.get("ports", {}).values():
+        if isinstance(port, dict) and isinstance(port.get("bits"), list):
+            port["bits"] = _substitute_bits(port["bits"], substitution)
+    for net in result_module.get("netnames", {}).values():
+        if isinstance(net, dict) and isinstance(net.get("bits"), list):
+            net["bits"] = _substitute_bits(net["bits"], substitution)
 
 
 def compose_soc(
@@ -129,7 +447,12 @@ def compose_soc(
 
     Returns a NEW flat Yosys-JSON dict: one module (`soc_top`) containing the
     glue's own cells plus every block's cells (net-ID-remapped + spliced in), with
-    each block's instance cell removed. See the module docstring for the algorithm.
+    each block's instance cell removed. See the module docstring for the algorithm
+    -- in short, a union-find spans the WHOLE call so that a net shared across
+    multiple port-boundary positions (a fanned-out clock exposed on two port
+    names, a repeated bus bit, a constant tie on either side) resolves to one
+    correct value everywhere, instead of a flat per-instance dict silently
+    keeping only the last position written.
 
     ``graybox``: splice ONLY each block's WBC (IEEE-1500 wrapper) cells, dropping
     its core logic + internal scan FFs. This is the EXTEST view -- the wrapper
@@ -158,6 +481,20 @@ def compose_soc(
     # Running max net id, updated after each splice so blocks never collide.
     next_id = _next_net_id(result_module)
 
+    top_level_inputs = {
+        b
+        for port in glue_module.get("ports", {}).values()
+        if isinstance(port, dict) and port.get("direction") == "input"
+        for b in _all_int_bits(port.get("bits"))
+    }
+
+    # ---- Phase A: gather every instance's data + the boundary union-find ----
+    uf = _UnionFind()
+    occurrence = itertools.count()
+    block_module_data: dict[str, dict[str, Any]] = {}
+    bound_bits: dict[str, set[int]] = {}
+    driven_bits: dict[str, set[int]] = {}
+
     for inst, block_json in blocks.items():
         module_name = block_module.get(inst)
         if module_name is None:
@@ -176,21 +513,36 @@ def compose_soc(
             raise AssembleError(
                 f"block for instance {inst!r} has no module {module_name!r}"
             )
-        block_module_data = block_modules[module_name]
+        module_data = block_modules[module_name]
+        block_module_data[inst] = module_data
+        bound_bits[inst] = _collect_boundary_bindings(
+            uf, inst, module_data, inst_connections, occurrence
+        )
+        driven_bits[inst] = _block_driven_bits(module_data)
 
-        remap, next_id = _build_remap(block_module_data, inst_connections, next_id)
+    # ---- Phase B: resolve every class to one canonical value ----
+    resolved, classes = _resolve_classes(uf, top_level_inputs, driven_bits)
 
+    # ---- Phase C: per-instance remap + splice (fresh ids assigned here) ----
+    for inst in blocks:
+        module_data = block_module_data[inst]
+        remap, next_id = _instance_remap(
+            inst, module_data, bound_bits[inst], uf, resolved, next_id
+        )
         _splice_cells(
             result_module,
-            block_module_data,
+            module_data,
             inst,
             remap,
             graybox=graybox,
             block_tag=names.get(inst, inst),
         )
-        _splice_netnames(result_module, block_module_data, inst, remap)
-
+        _splice_netnames(result_module, module_data, inst, remap)
         del result_module["cells"][inst]
+
+    # ---- Phase D: substitute every merged/constant-resolved glue net ----
+    substitution = _glue_substitution_map(resolved, classes)
+    _apply_glue_substitution(result_module, substitution)
 
     return {
         "creator": glue_json.get("creator", "faultflow-assemble"),
@@ -238,73 +590,7 @@ def _next_net_id(module: dict[str, Any]) -> int:
     return max_id + 1
 
 
-def _build_remap(
-    block_module: dict[str, Any],
-    inst_connections: dict[str, list[Any]],
-    next_id: int,
-) -> tuple[dict[int, int], int]:
-    """Build net_id -> new_net_id for every int bit in the block module.
-
-    Port-boundary bits map to the glue instance's connections (index-aligned for
-    multi-bit ports). Every other (internal) bit gets a fresh sequential id from
-    `next_id`, which is returned incremented past whatever was allocated.
-    """
-    block_ports = block_module.get("ports", {})
-    if not isinstance(block_ports, dict):
-        raise AssembleError("block module has no ports")
-
-    remap: dict[int, int] = {}
-
-    # Port-boundary nets first: they map directly to the glue instance's wiring.
-    for port_name, port in block_ports.items():
-        if not isinstance(port, dict):
-            continue
-        block_bits = port.get("bits", [])
-        glue_bits = inst_connections.get(port_name)
-        if glue_bits is None:
-            raise AssembleError(f"instance connections missing port {port_name!r}")
-        for i, bit in enumerate(block_bits):
-            if not isinstance(bit, int):
-                continue
-            if i >= len(glue_bits):
-                raise AssembleError(
-                    f"port {port_name!r} width mismatch vs instance connections"
-                )
-            glue_bit = glue_bits[i]
-            if isinstance(glue_bit, int):
-                remap[bit] = glue_bit
-            # else: glue side is a constant literal ("0"/"1"/"x"/"z") -- the
-            # block's port bit still needs a remap target if referenced
-            # internally, but with no glue-space net to bind to we fall back to
-            # a fresh internal id below (handled by the "not in remap" pass).
-
-    # Every other int bit anywhere in the block module gets a fresh id, unless
-    # it was already bound to a port-boundary net above.
-    all_bits: set[int] = set()
-    for port in block_ports.values():
-        if isinstance(port, dict):
-            all_bits.update(_all_int_bits(port.get("bits")))
-    for net in block_module.get("netnames", {}).values():
-        if isinstance(net, dict):
-            all_bits.update(_all_int_bits(net.get("bits")))
-    for cell in block_module.get("cells", {}).values():
-        if not isinstance(cell, dict):
-            continue
-        conns = cell.get("connections", {})
-        if not isinstance(conns, dict):
-            continue
-        for bits in conns.values():
-            all_bits.update(_all_int_bits(bits))
-
-    for bit in sorted(all_bits):
-        if bit not in remap:
-            remap[bit] = next_id
-            next_id += 1
-
-    return remap, next_id
-
-
-def _remap_bits(bits: list[Any], remap: dict[int, int]) -> list[Any]:
+def _remap_bits(bits: list[Any], remap: dict[int, Any]) -> list[Any]:
     return [remap[b] if isinstance(b, int) else b for b in bits]
 
 
@@ -312,7 +598,7 @@ def _splice_cells(
     result_module: dict[str, Any],
     block_module: dict[str, Any],
     inst: str,
-    remap: dict[int, int],
+    remap: dict[int, Any],
     *,
     graybox: bool = False,
     block_tag: str | None = None,
@@ -346,7 +632,7 @@ def _splice_netnames(
     result_module: dict[str, Any],
     block_module: dict[str, Any],
     inst: str,
-    remap: dict[int, int],
+    remap: dict[int, Any],
 ) -> None:
     block_ports = block_module.get("ports", {})
     port_names = set(block_ports) if isinstance(block_ports, dict) else set()
