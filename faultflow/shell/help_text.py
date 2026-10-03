@@ -296,8 +296,10 @@ COMMAND_HELP = {
         "Scan",
         "check_scan [-structural]",
         "Validate current scan insertion",
-        "Runs structural and normal-mode checks and records the result. "
-        "-structural runs the structural check only.",
+        "Runs structural and normal-mode checks and records the result. It also "
+        "fails on a scan flop whose async clear or preset isn't held inactive "
+        "during shift ([scan] shift_controls). -structural runs the structural "
+        "checks only.",
         "A current generic scan insertion.",
         "check_scan",
     ),

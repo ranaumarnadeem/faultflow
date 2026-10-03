@@ -68,6 +68,11 @@ from faultflow.scan.reports import (
     write_scan_artifacts,
 )
 from faultflow.scan.nonscan import NONSCAN_REASON, NonscanSetup, analyze_nonscan
+from faultflow.scan.shift_controls import (
+    ShiftViolation,
+    shift_control_message,
+    shift_control_violations,
+)
 from faultflow.scan.x_mask import XMask, launch_mode_key, mask_scan_view
 from faultflow.verify import IverilogVerifier, VerificationError
 
@@ -1460,6 +1465,17 @@ class Runner:
         structural = check_scan_structure(manifest, require_techmap=require_techmap)
         errors = list(structural.errors)
         warnings = list(structural.warnings)
+        if not errors:
+            try:
+                violations = self._shift_control_violations(manifest)
+            except RunnerError as exc:
+                errors.append(str(exc))
+            else:
+                if violations:
+                    warn = self.cfg.scan.shift_controls == "warn"
+                    (warnings if warn else errors).append(
+                        shift_control_message(violations)
+                    )
         normal_mode: dict[str, object] | None = None
         techmap_equivalence: dict[str, object] | None = None
         # Populated by the normal-mode check below so the techmap-equivalence
@@ -1566,6 +1582,22 @@ class Runner:
             f"scan-check PASS top={manifest.get('top')} "
             f"vectors={normal_mode.get('vector_count') if normal_mode else 0}"
             f"{tech_note} manifest={manifest_path}"
+        )
+
+    def _shift_control_violations(
+        self, manifest: dict[str, Any]
+    ) -> list[ShiftViolation]:
+        """The scan flops whose clear or preset isn't held inactive during shift
+        (scan.shift_controls), with [scan] hold and the non-scan flops the test
+        ties."""
+        generic_json = Path(str(manifest["generic_json"]))
+        _, module = _json_top_module(generic_json, self.cfg.top)
+        return shift_control_violations(
+            module,
+            manifest,
+            _load_json_object(resolve_scan_cell_map(self.cfg)),
+            holds=dict(self.cfg.scan.hold),
+            nonscan=self._nonscan_setup(manifest, generic_json),
         )
 
     def rule_check(self, *, strict: bool = False) -> RuleCheckReport:
