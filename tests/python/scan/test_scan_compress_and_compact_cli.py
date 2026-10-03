@@ -4,9 +4,9 @@ enabled SIMULTANEOUSLY in one campaign: `ff.py scan` -> `scan-check` ->
 Yosys-synthesizable design, through the actual `main()` entry point.
 
 Each side was built and verified independently (test_scan_compress_cli.py,
-test_scan_compact_cli.py); this proves they COMPOSE -- the round loop's two
-independent post-hoc filters (_check_compression_satisfiable,
-_check_compaction_distinguishable) both active on the same campaign, the
+test_scan_compact_cli.py); this proves they COMPOSE -- the round loop's
+decompressor-seeded ATPG and its post-hoc compaction filter
+(_check_compaction_distinguishable) both active on the same campaign, the
 manifest's disjoint "compression"/"compaction" sections both surviving the
 scan-compress -> scan-compact sequence intact, and a real ATPG run producing
 a well-formed coverage report with both compression_unresolved and
@@ -180,8 +180,8 @@ def test_scan_compress_and_compact_cli_end_to_end(
     ]
     assert comp_errors == []
 
-    # Real ATPG, both post-hoc filters (_check_compression_satisfiable,
-    # _check_compaction_distinguishable) simultaneously active.
+    # Real ATPG, decompressor-seeded, with the compaction filter
+    # (_check_compaction_distinguishable) active too.
     assert main(["sim", "--top", "core_top", "-c", str(cfg_path), "--scan"]) == 0
 
     coverage_json = (

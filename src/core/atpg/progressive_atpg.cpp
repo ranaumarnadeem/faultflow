@@ -143,6 +143,29 @@ void apply_net_index_override(CompactFault& fault, const CompiledSimGraph& cg,
   fault.net_index = static_cast<uint32_t>(net_index_override);
 }
 
+// SeedRows resolved against the view's PIs. A name that is no PI is refused:
+// dropping its constraint would credit tests the decompressor cannot load.
+std::vector<SeededInput> seeded_pis(const std::vector<AtpgPiInfo>& pis,
+                                    const SeedRows& rows) {
+  std::vector<SeededInput> out;
+  if (rows.empty()) {
+    return out;
+  }
+  std::map<std::string, uint32_t> compiled_by_name;
+  for (const AtpgPiInfo& pi : pis) {
+    compiled_by_name.emplace(pi.name, pi.compiled);
+  }
+  out.reserve(rows.size());
+  for (const auto& [name, bits] : rows) {
+    const auto it = compiled_by_name.find(name);
+    if (it == compiled_by_name.end()) {
+      throw std::runtime_error("seeded input is not a PI of the view: " + name);
+    }
+    out.push_back(SeededInput{it->second, bits});
+  }
+  return out;
+}
+
 struct ActiveFaultRecord {
   int64_t fault_id = 0;
   CompactFault fault;
@@ -434,7 +457,7 @@ SolveFaultResult solve_fault_for_db(
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
     const std::string& test_mode, bool cone_restrict, bool incremental,
-    int64_t net_index_override) {
+    int64_t net_index_override, int seed_width, const SeedRows& seeded_inputs) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -450,6 +473,8 @@ SolveFaultResult solve_fault_for_db(
   options.conflict_limit = conflict_limit;
   options.sat_timeout_seconds = sat_timeout_seconds;
   options.blocked_patterns = blocked_patterns;
+  options.seed_width = seed_width;
+  options.seeded_inputs = seeded_pis(pis, seeded_inputs);
 
   std::map<std::string, bool> vector;
   const TestMode mode = parse_test_mode(test_mode);
@@ -679,7 +704,7 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances, bool cone_restrict,
-    int64_t net_index_override) {
+    int64_t net_index_override, int seed_width, const SeedRows& seeded_inputs) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -700,6 +725,8 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
   // Scan LOC transition: cone restricts the two capture machines; launch frame
   // full (the PPI<->PPO coupling needs every coupled PPO computed).
   options.cone_restrict = cone_restrict;
+  options.seed_width = seed_width;
+  options.seeded_inputs = seeded_pis(pis, seeded_inputs);
 
   std::map<std::string, bool> launch;
   std::map<std::string, bool> capture;
@@ -723,7 +750,8 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances, bool cone_restrict,
-    int64_t net_index_override) {
+    int64_t net_index_override, int seed_width, const SeedRows& seeded_inputs,
+    const SeedRows& seeded_heads) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -767,6 +795,9 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
   options.blocked_patterns = blocked_patterns;
   // Scan LOS transition: cone restricts the two capture machines; launch full.
   options.cone_restrict = cone_restrict;
+  options.seed_width = seed_width;
+  options.seeded_inputs = seeded_pis(pis, seeded_inputs);
+  options.seeded_capture_inputs = seeded_pis(pis, seeded_heads);
 
   std::map<std::string, bool> launch;
   std::map<std::string, bool> capture;

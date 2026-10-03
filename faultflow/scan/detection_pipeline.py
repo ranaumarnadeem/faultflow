@@ -29,7 +29,7 @@ from faultflow.db.candidates import (
     load_blocked_patterns,
     load_rejection_reasons,
 )
-from faultflow.runner.parallel_solve import solve_fault_worker
+from faultflow.runner.parallel_solve import install_seed, solve_fault_worker
 from faultflow.runner.progressive_atpg import (
     ATPGRANDOM_SEED,
     AtpgStats,
@@ -66,7 +66,6 @@ from faultflow.scan.site_resolution import (
     build_site_key_index,
     fault_type_to_sa_code,
 )
-from faultflow.scan.care_bits import extract_scan_care_bits
 from faultflow.scan.compaction import CompactionMap, build_compactor_fanout
 from faultflow.scan.compression import CompressionMap, build_broadcast_fanout
 from faultflow.scan.errors import ScanError
@@ -120,10 +119,18 @@ class ScanPipelineContext:
     # cfg.compression.channels + the manifest's chain count -- pure functions
     # of the same inputs insert_compression used, so no persisted manifest
     # section is needed to rebuild them (see build_scan_pipeline_context).
-    # care_bit_rows is precomputed ONCE per campaign (O(max_chain_length *
-    # channels)), not per-candidate.
+    # care_bit_rows is precomputed ONCE per campaign, not per-candidate, over
+    # max_chain_length + 1 shift cycles: the load, then the launch-on-shift
+    # shift.
     compression_map: CompressionMap | None = None
     compression_care_bit_rows: list[list[int]] | None = None
+    # The decompressor loads every scan cell from one seed per pattern: per
+    # PPI, the seed bits it XORs into that cell (chain c's position p loads at
+    # shift cycle max_chain_length-1-p); per chain head PPI, those of the bit
+    # a launch-on-shift shift brings in. Every scan solve is constrained by
+    # them (_seed_kwargs), so SAT only finds loads the decompressor can make.
+    seeded_inputs: dict[str, list[int]] = field(default_factory=dict)
+    seeded_heads: dict[str, list[int]] = field(default_factory=dict)
     # Scan compaction (faultflow.scan.compaction): None unless
     # [compaction] enabled = true. Reconstructed deterministically from
     # cfg.compaction.channels + the manifest's chain count -- the same
@@ -246,6 +253,8 @@ def build_scan_pipeline_context(
         clock_ports.append(port)
     compression_map: CompressionMap | None = None
     compression_care_bit_rows: list[list[int]] | None = None
+    seeded_inputs: dict[str, list[int]] = {}
+    seeded_heads: dict[str, list[int]] = {}
     if cfg.compression.enabled:
         num_chains = len(manifest.get("scan_inputs", []))
         polynomial = lookup_polynomial(cfg.compression.channels)
@@ -255,9 +264,27 @@ def build_scan_pipeline_context(
         compression_map = CompressionMap(
             cfg.compression.channels, polynomial, phase_shifter_taps
         )
+        max_chain_length = int(manifest.get("max_chain_length", 0))
         compression_care_bit_rows = care_bit_rows(
-            polynomial, phase_shifter_taps, int(manifest.get("max_chain_length", 0))
+            polynomial, phase_shifter_taps, max_chain_length + 1
         )
+        for entry in pseudo_port_map.values():
+            chain = int(entry["chain_id"])
+            position = int(entry["position_in_chain"])
+            if not 0 <= chain < num_chains or not 0 <= position < max_chain_length:
+                raise ScanError(
+                    f"scan cell {entry['ppi_port']} (chain {chain}, position "
+                    f"{position}) is outside the {num_chains} compressed chains "
+                    f"of at most {max_chain_length} cells"
+                )
+            ppi = str(entry["ppi_port"])
+            seeded_inputs[ppi] = bitmask_to_index_list(
+                compression_care_bit_rows[max_chain_length - 1 - position][chain]
+            )
+            if position == 0:
+                seeded_heads[ppi] = bitmask_to_index_list(
+                    compression_care_bit_rows[max_chain_length][chain]
+                )
     compaction_map: CompactionMap | None = None
     if cfg.compaction.enabled:
         num_scan_out_chains = len(manifest.get("scan_outputs", []))
@@ -281,6 +308,8 @@ def build_scan_pipeline_context(
         reset_pi_holds=reset_pi_holds,
         compression_map=compression_map,
         compression_care_bit_rows=compression_care_bit_rows,
+        seeded_inputs=seeded_inputs,
+        seeded_heads=seeded_heads,
         compaction_map=compaction_map,
         clock_ports=clock_ports,
         x_mask=x_mask if x_mask is not None else XMask(),
@@ -507,36 +536,118 @@ def _serialize(
     return replace(pattern, preamble_cycles=preamble) if preamble else pattern
 
 
-def _reject_compression_unsatisfiable(
-    fault_ids: list[int],
-    track_key: str,
-    protocol_sim_rejections: list[CandidateRejection],
-    blocked: list[tuple[int, str]],
-) -> None:
-    for fault_id in fault_ids:
-        protocol_sim_rejections.append(
-            CandidateRejection(fault_id, "compression_unsatisfiable")
+def _seed_kwargs(
+    scan_ctx: ScanPipelineContext, *, los: bool = False
+) -> dict[str, object]:
+    """A scan solve's decompressor constraints (the solvers' seeded_inputs, and
+    launching on shift seeded_heads): none without compression."""
+    if scan_ctx.compression_map is None:
+        return {}
+    kwargs: dict[str, object] = {
+        "seed_width": scan_ctx.compression_map.num_channels,
+        "seeded_inputs": scan_ctx.seeded_inputs,
+    }
+    if los:
+        kwargs["seeded_heads"] = scan_ctx.seeded_heads
+    return kwargs
+
+
+def _seeded_bit(row: int, seed: int) -> bool:
+    """The scan-in bit the decompressor gives for `seed`, where `row` is the
+    bit's care_bit_rows bitmask over the seed bits."""
+    return bin(row & seed).count("1") % 2 == 1
+
+
+def _decompressed(
+    core: Any,
+    scan_ctx: ScanPipelineContext,
+    vector: dict[str, bool],
+    pattern: ScanPattern,
+    head_bits: dict[int, bool],
+) -> ScanPattern:
+    """`pattern` as the decompressor shifts it in. The seed is the one that
+    loads each scan cell with its value in `vector` -- and, launching on
+    shift, brings in `head_bits` (by chain) at the launch shift. Every chain's
+    scan-in at every load cycle is that seed's, the cycles whose bits pass
+    through a shorter chain included, and every position is care (load_care):
+    a tester applies only the seed, so this is exactly what the chip loads.
+    Raises ScanError when no seed gives these values: every compressed
+    candidate comes from a seed (the seeded SAT solve, _seeded_random_vectors),
+    so that would be a bug."""
+    assert scan_ctx.compression_map is not None
+    rows = scan_ctx.compression_care_bit_rows
+    assert rows is not None
+    max_chain_length = len(rows) - 1
+    names = sorted(scan_ctx.seeded_inputs)
+    fanout = [scan_ctx.seeded_inputs[name] for name in names]
+    values = [bool(vector[name]) for name in names]
+    for chain, bit in sorted(head_bits.items()):
+        fanout.append(bitmask_to_index_list(rows[max_chain_length][chain]))
+        values.append(bool(bit))
+    solved = core.solve_xor_broadcast(
+        scan_ctx.compression_map.num_channels, fanout, list(enumerate(values))
+    )
+    if not solved["ok"]:
+        raise ScanError(
+            "a compressed scan pattern loads values no decompressor seed gives"
         )
-        blocked.append((fault_id, track_key))
+    seed = sum(1 << k for k, bit in enumerate(solved["channels"]) if bit)
+    load_seqs = {
+        chain: [
+            _seeded_bit(rows[cycle][chain], seed) for cycle in range(max_chain_length)
+        ]
+        for chain in pattern.load_seqs
+    }
+    for entry in scan_ctx.pseudo_port_map.values():
+        chain = int(entry["chain_id"])
+        cycle = max_chain_length - 1 - int(entry["position_in_chain"])
+        if load_seqs[chain][cycle] != pattern.load_seqs[chain][cycle]:
+            raise ScanError(
+                f"scan cell {entry['ppi_port']} is not loaded at the shift cycle "
+                "its decompressor row is for"
+            )
+    return replace(
+        pattern,
+        load_seqs=load_seqs,
+        load_care=tuple(
+            (chain, cycle)
+            for chain in sorted(load_seqs)
+            for cycle in range(max_chain_length)
+        ),
+    )
 
 
-def _is_compression_only_rejected(reasons: set[str] | None) -> bool:
-    """True iff this fault has been rejected at least once, and EVERY
-    rejection reason recorded against it (this campaign, all rounds so far)
-    is "compression_unsatisfiable" -- i.e. every blocked witness was blocked
-    specifically because its care bits weren't compressor-deliverable, never
-    because it was functionally/verification wrong.
-
-    Used to decide, at the round loop's UNSAT branch, whether a fault whose
-    entire blocked-pattern history is compression-driven should be tagged
-    compression_unresolved instead of mark_fault_redundant -- SAT returning
-    UNSAT there is an artifact of blocking every witness that WAS found, not
-    proof the fault is functionally untestable. A MIXED history (some
-    compression, some other reason) deliberately falls through to the
-    existing mark_fault_redundant behavior unchanged: a mix cannot prove the
-    UNSAT is solely attributable to compression.
-    """
-    return bool(reasons) and reasons == {"compression_unsatisfiable"}
+def _seeded_random_vectors(
+    core: Any,
+    input_order: list[str],
+    scan_ctx: ScanPipelineContext,
+    count: int,
+    *,
+    los: bool = False,
+) -> list[tuple[dict[str, bool], dict[int, bool]]]:
+    """Random patterns for a compressed design: random real inputs and a random
+    seed, each scan cell -- and, launching on shift, each chain's launch
+    scan-in bit (by chain) -- what the decompressor makes of the seed. Random
+    loads would almost never be a load it can make: one seed of [compression]
+    channels bits loads every cell."""
+    assert scan_ctx.compression_map is not None
+    rows = scan_ctx.compression_care_bit_rows
+    assert rows is not None
+    seed_names = [f"__seed[{k}]" for k in range(scan_ctx.compression_map.num_channels)]
+    free = [name for name in input_order if name not in scan_ctx.seeded_inputs]
+    drawn: list[tuple[dict[str, bool], dict[int, bool]]] = []
+    for raw in core.atpg_random_vectors(free + seed_names, count, ATPGRANDOM_SEED):
+        seed = sum(1 << k for k, name in enumerate(seed_names) if raw[name])
+        values = {name: bool(raw[name]) for name in free}
+        for ppi, bits in scan_ctx.seeded_inputs.items():
+            values[ppi] = sum((seed >> bit) & 1 for bit in bits) % 2 == 1
+        heads = (
+            {chain: _seeded_bit(row, seed) for chain, row in enumerate(rows[-1])}
+            if los
+            else {}
+        )
+        drawn.append(({name: values[name] for name in input_order}, heads))
+    return drawn
 
 
 def _reject_compaction_indistinguishable(
@@ -558,9 +669,9 @@ def _is_compaction_only_rejected(reasons: set[str] | None) -> bool:
     is "compaction_indistinguishable" -- i.e. every witness detected it
     through the real, uncompacted scan-out ports, but its diff aliased to
     zero at every compacted output bit, every cycle. A MIXED history (some
-    compaction, some other reason -- including compression) deliberately
-    falls through to the existing mark_fault_redundant behavior unchanged,
-    mirroring _is_compression_only_rejected exactly.
+    compaction, some other reason) deliberately falls through to the
+    existing mark_fault_redundant behavior unchanged: a mix cannot prove the
+    UNSAT is solely attributable to compaction.
     """
     return bool(reasons) and reasons == {"compaction_indistinguishable"}
 
@@ -807,92 +918,6 @@ def _compaction_diff_observable(
     return False
 
 
-def _check_compression_satisfiable(
-    core: Any,
-    scan_ctx: ScanPipelineContext,
-    scan_pattern: ScanPattern,
-    generic_cell_map: str,
-    unsupported: str,
-    is_loc: bool,
-    is_los: bool,
-    head_bits: dict[int, bool],
-    active_clock_ports: list[str] | None,
-    active_rows: list[_FaultRow],
-    generic_site_index: dict[str, int],
-    passed_fault_ids: list[int],
-) -> tuple[bool, list[tuple[int, int, bool]]]:
-    """Returns ``(satisfiable, care)``: ``satisfiable`` is True iff every one of
-    ``passed_fault_ids``'s required scan-chain-input care bits is jointly
-    satisfiable through the compression decompressor (``solve_xor_broadcast``,
-    reused unmodified for the sequential ring-generator case -- see
-    ring_generator.py::care_bit_rows). ``care`` is the extracted ``(chain_id,
-    cycle, value)`` list itself, for the caller to attach to the accepted
-    pattern's ``load_care`` (see ``ScanPattern.load_care``) -- computed either
-    way, so returning it is free.
-
-    Extraction (``extract_scan_care_bits``) is a real cost (2 protocol-fault-
-    sim calls per specified (chain, cycle) position) -- callers must scope
-    this to sparse, SAT-targeted candidates only, never random-fill patterns
-    (any random seed is trivially satisfiable -- nothing to check).
-    """
-    assert scan_ctx.compression_map is not None
-    assert scan_ctx.compression_care_bit_rows is not None
-    row_by_id = {row.fault_id: row for row in active_rows}
-    max_chain_length = int(scan_ctx.manifest.get("max_chain_length", 0))
-    base_kwargs = _protocol_fault_sim_kwargs(scan_ctx, scan_pattern)
-
-    def detect(trial_load_seqs: dict[int, list[bool]], want: set[int]) -> set[int]:
-        ids: list[int] = []
-        specs: list[tuple[int, int]] = []
-        for fault_id in want:
-            row = row_by_id.get(fault_id)
-            if row is None:
-                continue
-            cidx = generic_site_index.get(row.fault_site_key)
-            if cidx is None:
-                continue
-            ids.append(fault_id)
-            specs.append((cidx, fault_type_to_sa_code(row.fault_type)))
-        kwargs = dict(base_kwargs)
-        kwargs["load_seqs"] = trial_load_seqs
-        result = dict(
-            core.simulate_scan_protocol_faults(
-                str(scan_ctx.generic_json),
-                generic_cell_map,
-                faults=specs,
-                unsupported_policy=unsupported,
-                loc_two_capture=is_loc,
-                los_two_capture=is_los,
-                los_launch_scan_in=head_bits,
-                active_clock_ports=active_clock_ports or [],
-                **kwargs,
-            )
-        )
-        passed: set[int] = set()
-        for batch in result.get("batches", []):
-            for lane in batch.get("lanes", []):
-                lane_dict = dict(lane)
-                idx = lane_dict.get("fault_index")
-                if idx is None or not (0 <= int(idx) < len(ids)):
-                    continue
-                if str(lane_dict.get("outcome")) == "pass":
-                    passed.add(ids[int(idx)])
-        return passed
-
-    care = extract_scan_care_bits(
-        detect, scan_pattern.load_seqs, max_chain_length, set(passed_fault_ids)
-    )
-    rows = scan_ctx.compression_care_bit_rows
-    fanout = [
-        bitmask_to_index_list(rows[cycle][chain_id]) for chain_id, cycle, _ in care
-    ]
-    care_bits = [(i, value) for i, (_, _, value) in enumerate(care)]
-    solved = core.solve_xor_broadcast(
-        scan_ctx.compression_map.num_channels, fanout, care_bits
-    )
-    return bool(solved["ok"]), care
-
-
 def _check_compaction_distinguishable(
     core: Any,
     scan_ctx: ScanPipelineContext,
@@ -911,27 +936,23 @@ def _check_compaction_distinguishable(
     through ``scan_ctx.compaction_map``'s static XOR-tree compactor -- i.e.
     NOT compaction-indistinguishable.
 
-    Unlike ``_check_compression_satisfiable``'s joint GF(2) solve (one
-    physical decompressor state feeds every chain from a single seed, so
-    satisfiability is genuinely all-or-nothing per candidate), compaction
-    distinguishability is a per-fault property: the compactor only affects
-    what a tester can observe at read-out, never what gets loaded/captured,
-    so the candidate vector stays perfectly valid regardless -- only the
-    specific faults whose diff happens to alias to zero lose credit from this
-    witness. Unlike the compression check, this one is NOT scoped to
-    ``source == "sat"`` -- a random-fill candidate's incidental detections
-    are exactly as subject to real compacted-output aliasing as a
-    SAT-targeted candidate's, so skipping random-fill here would silently
-    over-credit coverage a real compacted tester could never see.
+    Compaction distinguishability is a per-fault property: the compactor only
+    affects what a tester can observe at read-out, never what gets
+    loaded/captured, so the candidate vector stays perfectly valid regardless
+    -- only the specific faults whose diff happens to alias to zero lose
+    credit from this witness. The check is NOT scoped to ``source == "sat"``
+    -- a random-fill candidate's incidental detections are exactly as subject
+    to real compacted-output aliasing as a SAT-targeted candidate's, so
+    skipping random-fill here would silently over-credit coverage a real
+    compacted tester could never see.
 
     One batched ``simulate_scan_protocol_faults(..., capture_diffs=True)``
     call over ALL of ``passed_fault_ids`` -- required even for
     reduced-trusted-graded faults, which never call the protocol simulator on
     their own path, so their diff data doesn't exist yet from any earlier
     call in this candidate's processing. A ``fault_site_key`` missing from
-    ``generic_site_index`` passes through as observable (mirrors
-    ``_check_compression_satisfiable``'s own ``detect()``-skip-if-missing
-    precedent: under-flag, never false-exclude).
+    ``generic_site_index`` passes through as observable (under-flag, never
+    false-exclude).
     """
     assert scan_ctx.compaction_map is not None
     row_by_id = {row.fault_id: row for row in active_rows}
@@ -1250,6 +1271,12 @@ def _process_scan_candidate(
         launch_pattern = ""
 
     scan_pattern = _serialize(scan_ctx, serialize_input)
+    if scan_ctx.compression_map is not None:
+        # What the chip shifts in: the gate, the protocol sims and the export
+        # all see the decompressor's whole stream for the candidate's seed.
+        scan_pattern = _decompressed(
+            core, scan_ctx, vector, scan_pattern, head_bits if is_los else {}
+        )
     insert_pending_candidate(
         conn,
         campaign_id=campaign_id,
@@ -1584,29 +1611,6 @@ def _process_scan_candidate(
                     )
                     blocked.append((fault_id, track_key))
 
-    compression_care: list[tuple[int, int, bool]] | None = None
-    if scan_ctx.compression_map is not None and source == "sat" and passed_fault_ids:
-        satisfiable, compression_care = _check_compression_satisfiable(
-            core,
-            scan_ctx,
-            scan_pattern,
-            generic_cell_map,
-            unsupported,
-            is_loc,
-            is_los,
-            head_bits,
-            active_clock_ports,
-            active_rows,
-            generic_site_index,
-            passed_fault_ids,
-        )
-        if not satisfiable:
-            _reject_compression_unsatisfiable(
-                passed_fault_ids, track_key, protocol_sim_rejections, blocked
-            )
-            passed_fault_ids = []
-            compression_care = None
-
     if scan_ctx.compaction_map is not None and passed_fault_ids:
         observable_ids = _check_compaction_distinguishable(
             core,
@@ -1679,13 +1683,6 @@ def _process_scan_candidate(
         (vector_index, run_id),
     )
     conn.commit()
-    if compression_care is not None:
-        scan_pattern = replace(
-            scan_pattern,
-            load_care=tuple(
-                (chain_id, cycle) for chain_id, cycle, _ in compression_care
-            ),
-        )
     return True, False, scan_pattern
 
 
@@ -1906,7 +1903,7 @@ def run_progressive_scan_atpg(
         )
         if twin is not None
     ]
-    unresolved = {"hold": 0, "blackbox": 0}
+    unresolved = {"hold": 0, "blackbox": 0, "compression": 0}
 
     generic_site_index = build_site_key_index(
         core, scan_ctx.generic_json, generic_cell_map, unsupported, bb
@@ -1987,9 +1984,13 @@ def run_progressive_scan_atpg(
             reduced_json_path, reduced_cell_map, [], [], unsupported
         )
         try:
+            # Each worker gets the decompressor's seed rows once, inherited
+            # through the fork, not pickled into every task.
             _executor = ProcessPoolExecutor(
                 max_workers=cfg.atpg.workers,
                 mp_context=get_context("fork"),
+                initializer=install_seed,
+                initargs=(_seed_kwargs(scan_ctx, los=los),),
             )
         except Exception as _fork_exc:
             log.warning(
@@ -2043,6 +2044,72 @@ def run_progressive_scan_atpg(
             _easy_reserve,
         )
 
+    def solve(
+        fault_id: int, blocked: list[str], timeout: int, *, seeded: bool
+    ) -> dict[str, Any]:
+        """One scan SAT solve on the view; `seeded`: through the decompressor
+        (no constraint without compression)."""
+        seed = _seed_kwargs(scan_ctx, los=los) if seeded else {}
+        if los:
+            return dict(
+                core.solve_scan_los_transition_fault_atpg(
+                    reduced_json_path,
+                    reduced_cell_map,
+                    effective_db_path,
+                    fault_id,
+                    los_couple_ports,
+                    los_head_ports,
+                    blocked,
+                    cfg.atpg.sat_conflict_limit,
+                    timeout,
+                    unsupported,
+                    cone_restrict=cfg.atpg.cone_restrict,
+                    **seed,
+                )
+            )
+        if transition:
+            return dict(
+                core.solve_scan_transition_fault_atpg(
+                    reduced_json_path,
+                    reduced_cell_map,
+                    effective_db_path,
+                    fault_id,
+                    blocked,
+                    cfg.atpg.sat_conflict_limit,
+                    timeout,
+                    unsupported,
+                    cone_restrict=cfg.atpg.cone_restrict,
+                    **seed,
+                )
+            )
+        return dict(
+            core.solve_fault_atpg(
+                reduced_json_path,
+                reduced_cell_map,
+                effective_db_path,
+                fault_id,
+                blocked,
+                cfg.atpg.sat_conflict_limit,
+                timeout,
+                unsupported,
+                **seed,
+            )
+        )
+
+    head_chain_by_port = {port: chain for chain, port in los_head_by_chain.items()}
+
+    def random_key(vector: dict[str, bool], heads: dict[int, bool]) -> str:
+        """A random candidate's dedup/blocking key: V1, launching on shift
+        followed by its launch-shift scan-in bits in head-port order (V1 ‖
+        head-bits, length-compatible with LOS blocked keys)."""
+        key = pattern_key(vector, input_order)
+        if los:
+            key += "".join(
+                "1" if heads.get(head_chain_by_port[port], False) else "0"
+                for port in los_head_ports
+            )
+        return key
+
     terminal = "MAX_ROUNDS"
     # Random fill runs ONCE (round 1): up to random_vectors patterns, or until
     # fault coverage crosses random_stop_coverage -- then SAT mode for the rest.
@@ -2061,26 +2128,32 @@ def run_progressive_scan_atpg(
             terminal = "COMPLETE"
             break
 
-        if switched_to_sat:
-            random_batch: list[dict[str, bool]] = []
-        else:
+        # Each random candidate is (V1, LOS launch-shift scan-in bits by chain).
+        # Compressed, both come from a random decompressor seed; otherwise the
+        # head bits are 0.
+        random_batch: list[tuple[dict[str, bool], dict[int, bool]]] = []
+        if not switched_to_sat:
             random_started = time.perf_counter()
-            random_batch = core.atpg_random_vectors(
-                input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
+            random_batch = (
+                _seeded_random_vectors(
+                    core, input_order, scan_ctx, cfg.atpg.random_vectors, los=los
+                )
+                if scan_ctx.compression_map is not None
+                else [
+                    (vector, {})
+                    for vector in core.atpg_random_vectors(
+                        input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
+                    )
+                ]
             )
             atpg_seconds += time.perf_counter() - random_started
-        new_random: list[dict[str, bool]] = []
-        for vector in list(random_batch):
-            # LOS random candidates carry head bits = 0; the composite dedup key
-            # appends a zero head suffix so it stays length-compatible with LOS
-            # blocked keys (V1 ‖ head-bits).
-            key = pattern_key(vector, input_order)
-            if los:
-                key = key + "0" * len(los_head_ports)
+        new_random: list[tuple[dict[str, bool], dict[int, bool]]] = []
+        for vector, heads in random_batch:
+            key = random_key(vector, heads)
             if key in seen_patterns:
                 continue
             seen_patterns.add(key)
-            new_random.append(vector)
+            new_random.append((vector, heads))
         heartbeat = GradeHeartbeat(
             log,
             round_idx,
@@ -2089,7 +2162,7 @@ def run_progressive_scan_atpg(
         )
         random_denom = _coverage_denominator(effective_db_path, campaign_id)
         graded_random = 0
-        for offset, vector in enumerate(new_random):
+        for offset, (vector, heads) in enumerate(new_random):
             stats.generated_vectors += 1
             candidate_counter += 1
             vector_index = len(vectors) + 1
@@ -2118,12 +2191,8 @@ def run_progressive_scan_atpg(
                         unsupported=unsupported,
                         transition=transition,
                         launch_mode=launch_mode,
-                        los_head_scan_in={} if los else None,
-                        candidate_key=(
-                            pattern_key(vector, input_order) + "0" * len(los_head_ports)
-                            if los
-                            else None
-                        ),
+                        los_head_scan_in=heads if los else None,
+                        candidate_key=random_key(vector, heads) if los else None,
                     )
                 )
             fault_sim_seconds += time.perf_counter() - sim_started
@@ -2156,11 +2225,8 @@ def run_progressive_scan_atpg(
         if not switched_to_sat:
             # Release the patterns of any random vectors we did not grade so SAT
             # can generate them for the remaining faults; then stay in SAT mode.
-            for _v in new_random[graded_random:]:
-                _k = pattern_key(_v, input_order)
-                if los:
-                    _k = _k + "0" * len(los_head_ports)
-                seen_patterns.discard(_k)
+            for _v, _h in new_random[graded_random:]:
+                seen_patterns.discard(random_key(_v, _h))
             switched_to_sat = True
             if cfg.atpg.random_only:
                 # Deliberately incomplete "pure random" terminal mode for
@@ -2175,8 +2241,7 @@ def run_progressive_scan_atpg(
             db_blocked = load_blocked_patterns(conn, campaign_id)
             rejection_reasons = (
                 load_rejection_reasons(conn, campaign_id)
-                if scan_ctx.compression_map is not None
-                or scan_ctx.compaction_map is not None
+                if scan_ctx.compaction_map is not None
                 else {}
             )
 
@@ -2316,49 +2381,7 @@ def run_progressive_scan_atpg(
                 result = _pre_res
             else:
                 solve_started = time.perf_counter()
-                if los:
-                    solved = dict(
-                        core.solve_scan_los_transition_fault_atpg(
-                            reduced_json_path,
-                            reduced_cell_map,
-                            effective_db_path,
-                            fault_id,
-                            los_couple_ports,
-                            los_head_ports,
-                            blocked,
-                            cfg.atpg.sat_conflict_limit,
-                            tier_timeout,
-                            unsupported,
-                            cone_restrict=cfg.atpg.cone_restrict,
-                        )
-                    )
-                elif transition:
-                    solved = dict(
-                        core.solve_scan_transition_fault_atpg(
-                            reduced_json_path,
-                            reduced_cell_map,
-                            effective_db_path,
-                            fault_id,
-                            blocked,
-                            cfg.atpg.sat_conflict_limit,
-                            tier_timeout,
-                            unsupported,
-                            cone_restrict=cfg.atpg.cone_restrict,
-                        )
-                    )
-                else:
-                    solved = dict(
-                        core.solve_fault_atpg(
-                            reduced_json_path,
-                            reduced_cell_map,
-                            effective_db_path,
-                            fault_id,
-                            blocked,
-                            cfg.atpg.sat_conflict_limit,
-                            tier_timeout,
-                            unsupported,
-                        )
-                    )
+                solved = solve(fault_id, blocked, tier_timeout, seeded=True)
                 atpg_seconds += time.perf_counter() - solve_started
                 result = str(solved["result"])
                 _solved_count += 1
@@ -2444,10 +2467,24 @@ def run_progressive_scan_atpg(
                         stats.protocol_no_progress_rounds += 1
             elif result == "UNSAT":
                 stats.unsat += 1
-                if row.fault_site_key in scan_ctx.q_stem_site_keys:
+                q_stem = row.fault_site_key in scan_ctx.q_stem_site_keys
+                # Through the decompressor UNSAT proves no redundancy: solved
+                # again without it, a test (or no verdict: a redundant one
+                # needs a proof) makes the fault testable, only not through
+                # this decompressor -- compression_unresolved (Tessent's AU.EDT).
+                testable_free = False
+                if scan_ctx.compression_map is not None and not q_stem:
+                    solve_started = time.perf_counter()
+                    testable_free = (
+                        solve(fault_id, blocked, tier_timeout, seeded=False)["result"]
+                        != "UNSAT"
+                    )
+                    atpg_seconds += time.perf_counter() - solve_started
+                if q_stem:
                     core.mark_fault_protocol_unresolved(effective_db_path, fault_id)
-                elif _is_compression_only_rejected(rejection_reasons.get(fault_id)):
+                elif testable_free:
                     core.mark_fault_compression_unresolved(effective_db_path, fault_id)
+                    unresolved["compression"] += 1
                 elif _is_compaction_only_rejected(rejection_reasons.get(fault_id)):
                     core.mark_fault_compaction_unresolved(effective_db_path, fault_id)
                 else:
@@ -2556,6 +2593,12 @@ def run_progressive_scan_atpg(
             "(blackbox_unresolved)",
             unresolved["blackbox"],
         )
+    if unresolved["compression"]:
+        log.info(
+            "atpg   %d faults are testable, but by no load the decompressor "
+            "can make (compression_unresolved)",
+            unresolved["compression"],
+        )
 
     with connect(effective_db_path) as conn:
         init_schema(conn)
@@ -2654,6 +2697,10 @@ def _grade_launch_candidate(
             reduced_expectation.get(str(entry["ppo_port"]), False)
         )
     scan_pattern = _serialize(scan_ctx, serialize_input)
+    if scan_ctx.compression_map is not None:
+        scan_pattern = _decompressed(
+            core, scan_ctx, vector, scan_pattern, head_bits if is_los else {}
+        )
 
     sim_ids: list[int] = []
     specs: list[tuple[int, int]] = []

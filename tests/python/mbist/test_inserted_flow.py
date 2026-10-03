@@ -19,7 +19,7 @@ import pytest
 
 from faultflow.config import load_config
 from mbist_chip import LIBERTY, ROOT, chip_copy
-from scan_credit import credit_not_reproduced
+from scan_credit import compressed_credit_not_reproduced, credit_not_reproduced
 from warptap_helpers import skip_unless_warptap
 
 CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
@@ -177,7 +177,8 @@ def test_a_control_tdr_bits_branch_into_its_synchronizer_per_fault(
 @pytest.fixture(scope="module")
 def compressed(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Any]:
     """The same flow with scan compression: init, scan, scan-check, scan-compress,
-    sim --scan and ff.py jtag. The .ofs names the channels away from the TAP."""
+    sim --scan and ff.py jtag. The .ofs names the channels away from the TAP. An
+    8-bit seed loads the 81 cells of 16 chains: ATPG makes only loads it can."""
     from faultflow.cli import main
     from faultflow.mbist.insert import insert_command
     from faultflow.runner.runner import _load_core
@@ -188,12 +189,9 @@ def compressed(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Any]:
     tmp = tmp_path_factory.mktemp("compressed_flow")
     spec = chip_copy(tmp, lambda t: t.replace("jtag: false", "jtag: {tck_max_mhz: 10}"))
     base = tmp / "chip.ofs"
-    # Random patterns only: through 8 channels into chains of five flops, most SAT
-    # candidates don't encode, and this test is about names and JTAG.
     base.write_text(
         f"[design]\ncell_lib = {CELL_MAP}\nliberty = {LIBERTY}\n\n"
-        "[scan]\nchains = 16\n\n[compression]\nenabled = true\nchannels = 8\n\n"
-        "[atpg]\nrandom_only = true\n",
+        "[scan]\nchains = 16\n\n[compression]\nenabled = true\nchannels = 8\n",
         encoding="utf-8",
     )
     out = tmp / "out"
@@ -206,7 +204,7 @@ def compressed(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Any]:
             ["scan"],
             ["scan-check"],
             ["scan-compress"],
-            ["sim", "--scan"],
+            ["sim", "--scan", "--export-patterns", str(out / "patterns.json")],
             ["jtag"],
         ):
             assert main([*step, "--top", TOP, "-c", str(ofs)]) == 0, step
@@ -234,3 +232,43 @@ def test_with_compression_the_sdc_names_the_core_and_jtag_still_grades(
             assert cell.startswith("core_inst__"), pin
             assert name in module["cells"][cell]["connections"], pin
     assert _report(cfg, out)["jtag"]["detected"] > 0
+
+
+def test_with_compression_every_credit_holds_on_the_compressed_chip(
+    compressed: tuple[Path, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every exported pattern is one decompressor seed's whole load -- warptap's
+    strictest read solves it -- and every credited fault is detected in the full
+    protocol on the core and on the compressed chip itself, that seed on comp_si
+    and the synthesized decompressor loading the chains. What only a load the
+    decompressor can't make would test is compression_unresolved."""
+    from warptap.faultflow_compression import (
+        care_bit_rows,
+        polynomial_from_manifest,
+        solve_pattern_seed,
+    )
+
+    out, cfg = compressed
+    monkeypatch.chdir(out)
+    patterns = out / "patterns.json"
+    manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+    compression = manifest["compression"]
+    poly = polynomial_from_manifest(compression)
+    rows = care_bit_rows(
+        poly, compression["phase_shifter_taps"], int(manifest["max_chain_length"])
+    )
+
+    def seed_of(number: int, raw: dict[str, Any]) -> int:
+        # Every load position a hard constraint (no load_care).
+        return int(solve_pattern_seed(raw["load_seqs"], rows, poly.width, number))
+
+    exported = json.loads(patterns.read_text(encoding="utf-8"))
+    assert exported
+    for number, raw in enumerate(exported):
+        seed_of(number, raw)
+    assert credit_not_reproduced(cfg, patterns) == []
+    assert compressed_credit_not_reproduced(cfg, patterns, seed_of) == {
+        "not_reproduced": [],
+        "golden": [],
+    }
+    assert _report(cfg, out)["summary"]["compression_unresolved"] > 0

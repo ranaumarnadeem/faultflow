@@ -95,3 +95,26 @@ def test_compression_settings_are_part_of_the_config_fingerprint(
     assert payload_base["compression_enabled"] is False
     assert payload_enabled["compression_enabled"] is True
     assert payload_base != payload_enabled
+
+
+@pytest.mark.unit
+def test_compressed_atpg_model_is_part_of_the_config_fingerprint(
+    tmp_path: Path,
+) -> None:
+    """A compressed campaign's ATPG loads every pattern from a decompressor
+    seed (detection_pipeline._decompressed): one graded before that -- random
+    loads, care bits checked after the fact -- must not resume into it. Keyed
+    only with compression, so an uncompressed design keeps its config_hash."""
+    base = load_config(
+        _cfg(tmp_path, "[design]\nnetlist = n.json\ncell_lib = c.json\n"), "top"
+    )
+    enabled = load_config(
+        _cfg(
+            tmp_path,
+            "[design]\nnetlist = n.json\ncell_lib = c.json\n"
+            "[compression]\nenabled = true\nchannels = 8\n",
+        ),
+        "top",
+    )
+    assert "compression_atpg" not in Runner(base)._config_fingerprint_payload()
+    assert Runner(enabled)._config_fingerprint_payload()["compression_atpg"] == "seeded"

@@ -325,11 +325,10 @@ def test_is_compaction_only_rejected_true_for_pure_compaction_history() -> None:
 @pytest.mark.unit
 def test_is_compaction_only_rejected_false_for_mixed_history() -> None:
     # A mix must NOT be classified compaction-only -- it must keep falling
-    # back to mark_fault_redundant, mirroring _is_compression_only_rejected's
-    # regression-safety case.
+    # back to mark_fault_redundant.
     assert (
         _is_compaction_only_rejected(
-            {"compaction_indistinguishable", "compression_unsatisfiable"}
+            {"compaction_indistinguishable", "no_capture_or_unload_effect"}
         )
         is False
     )

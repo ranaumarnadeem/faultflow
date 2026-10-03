@@ -111,14 +111,13 @@ void mark_fault_redundant(const std::string& db_path, int64_t fault_id,
 void mark_fault_protocol_unresolved(const std::string& db_path,
                                     int64_t fault_id);
 
-// A fault whose EVERY candidate_rejections entry (this campaign) is reason
-// "compression_unsatisfiable" -- a genuine ATPG witness exists but none is
-// deliverable through the scan-compression decompressor -- reaches here
-// instead of mark_fault_redundant when SAT eventually reports UNSAT purely
-// as an artifact of blocking every compression-rejected witness. Leaves
-// `status` untouched (same guard as mark_fault_protocol_unresolved: does not
-// overwrite a detected fault) -- this is NOT an exclusion, the fault stays in
-// the coverage denominator, same character as protocol_unresolved.
+// A fault SAT finds no test for through the scan-compression decompressor
+// (every scan cell loaded from its seed) but does without it -- a genuine
+// test exists, none is a load the decompressor can make -- reaches here
+// instead of mark_fault_redundant. Leaves `status` untouched (same guard as
+// mark_fault_protocol_unresolved: does not overwrite a detected fault) -- this
+// is NOT an exclusion, the fault stays in the coverage denominator, same
+// character as protocol_unresolved.
 void mark_fault_compression_unresolved(const std::string& db_path,
                                        int64_t fault_id);
 

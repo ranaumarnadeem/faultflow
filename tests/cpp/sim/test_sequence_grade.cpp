@@ -214,3 +214,35 @@ TEST_CASE("Sequence grading under a held reset ignores the flops' initial state"
   free_one.initial_ff_value = true;
   REQUIRE(grade(free_zero, {}).golden.front() != grade(free_one, {}).golden.front());
 }
+
+TEST_CASE("Sequence grading injects a fault only in its active cycles",
+          "[sequence_grade]") {
+  const std::vector<SequenceFaultSpec> din_sa0 = {{compiled_net("DIN"), 0}};
+  const SequenceGradeRequest request = shift_request({"DOUT"});
+  // Period k is cycles 2k (CLK low) and 2k+1 (its edge). The reset holds the
+  // first two; DIN's first 1 is latched at period 2's edge and reaches DOUT at
+  // sample 5, and DIN is 0 in period 3.
+  const auto active_in = [&](const std::vector<size_t>& periods) {
+    SequenceGradeRequest masked = request;
+    masked.fault_active.assign(masked.cycles.size(), false);
+    for (size_t period : periods) {
+      masked.fault_active[2 * period] = true;
+      masked.fault_active[2 * period + 1] = true;
+    }
+    return masked;
+  };
+  REQUIRE(grade(active_in({}), din_sa0).first_sample == std::vector<int32_t>{-1});
+  REQUIRE(grade(active_in({2}), din_sa0).first_sample == std::vector<int32_t>{5});
+  REQUIRE(grade(active_in({2}), din_sa0, 1, true).first_sample ==
+          std::vector<int32_t>{5});
+  REQUIRE(grade(active_in({3}), din_sa0).first_sample == std::vector<int32_t>{-1});
+
+  SequenceGradeRequest every = request;
+  every.fault_active.assign(request.cycles.size(), true);
+  REQUIRE(grade(every, every_fault()).first_sample ==
+          grade(request, every_fault()).first_sample);
+
+  SequenceGradeRequest short_mask = request;
+  short_mask.fault_active.assign(3, true);
+  REQUIRE_THROWS_AS(grade(short_mask, din_sa0), std::runtime_error);
+}
