@@ -16,7 +16,11 @@ from typing import Any
 import pytest
 
 from faultflow.config import load_config
-from scan_replay import replay_compressed_on_cells, replay_on_cells
+from scan_replay import (
+    replay_compacted_on_cells,
+    replay_compressed_on_cells,
+    replay_on_cells,
+)
 from warptap_helpers import skip_unless_warptap
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -124,10 +128,11 @@ def flow_tools() -> None:
 
 
 def _flow(
-    work: Path, chip: dict[str, Any], sections: str, *, compress: bool = False
+    work: Path, chip: dict[str, Any], sections: str, *, compose: str | None = None
 ) -> Any:
-    """init, scan, scan-check (scan-compress) and sim --scan on `chip` with
-    `sections`; the config and the exported patterns' path. Run in `work`."""
+    """init, scan, scan-check, `compose` (scan-compress or scan-compact) and sim
+    --scan on `chip` with `sections`; the config and the exported patterns' path.
+    Run in `work`."""
     from faultflow.cli import main
 
     netlist = work / "chip.json"
@@ -140,8 +145,8 @@ def _flow(
     )
     patterns = work / "patterns.json"
     steps = [["init"], ["scan"], ["scan-check"]]
-    if compress:
-        steps.append(["scan-compress"])
+    if compose is not None:
+        steps.append([compose])
     steps.append(["sim", "--scan", "--export-patterns", str(patterns)])
     for step in steps:
         assert main([*step, "--top", TOP, "-c", str(ofs)]) == 0, step
@@ -231,7 +236,7 @@ def test_compressed_patterns_load_through_the_decompressor_cells(
             tmp_path,
             _ring(),
             "[scan]\nchains = 3\n\n[compression]\nenabled = true\nchannels = 8\n",
-            compress=True,
+            compose="scan-compress",
         )
         manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
         compression = manifest["compression"]
@@ -248,6 +253,27 @@ def test_compressed_patterns_load_through_the_decompressor_cells(
             replay_compressed_on_cells(cfg, patterns, tmp_path / "replay", seed_of)
             == []
         )
+
+
+@pytest.mark.integration
+def test_compacted_patterns_unload_through_the_compactor_cells(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """With scan compaction a tester sees only the channels: the compactor's own
+    cells XOR three chains onto two, and every channel bit is the XOR of the
+    expected unload bits it reads."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(tmp_path)
+        cfg, patterns = _flow(
+            tmp_path,
+            _ring(),
+            "[scan]\nchains = 3\n\n[compaction]\nenabled = true\nchannels = 2\n",
+            compose="scan-compact",
+        )
+        manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+        assert len(manifest["compaction"]["fanout"]) == 2
+        assert json.loads(patterns.read_text(encoding="utf-8"))
+        assert replay_compacted_on_cells(cfg, patterns, tmp_path / "replay") == []
 
 
 @pytest.mark.integration

@@ -13,7 +13,9 @@ unknown on the cells.
 With scan compression the chip is the composed netlist scan-compress wrote, its
 generic scan cells techmapped as `ff.py scan` maps them: each pattern's seed is held on
 the channel bus and the decompressor's own cells load the chains
-(replay_compressed_on_cells).
+(replay_compressed_on_cells). With scan compaction it is the composed netlist
+scan-compact wrote, and the unload is compared where a tester sees it, on the
+compactor's channels (replay_compacted_on_cells).
 
 FaultFlow's own simulators are the reference everywhere else; this asks whether a real
 chip -- whose scan flops' clear and preset act during shift too -- does what the
@@ -193,30 +195,49 @@ def _values(
     return capture, shift
 
 
-def replay_on_cells(cfg: Any, patterns_path: Path, work: Path) -> list[str]:
-    """Each unload bit (not masked) and each output value that differs on the cells
-    from the pattern's, as "pattern P chain C: expected ..., cells ..." or "pattern
-    P output O: expected ..., cells ..."; empty when every one matches."""
-    manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
-    netlist = Path(str(manifest["sky130_verilog"])).resolve()
-    module = json.loads(
-        Path(str(manifest["generic_json"])).read_text(encoding="utf-8")
-    )["modules"][str(manifest["top"])]
-    ports = module["ports"]
+def _clocks(manifest: dict[str, Any]) -> list[str]:
+    """The scan clocks' port names (the core's: a wrapper passes them through)."""
+    ports = json.loads(Path(str(manifest["generic_json"])).read_text(encoding="utf-8"))[
+        "modules"
+    ][str(manifest["top"])]["ports"]
     clock_nets = set(manifest["clock_nets"])
-    clocks = [
+    return [
         n
         for n, p in ports.items()
         if p["direction"] == "input" and set(p["bits"]) & clock_nets
     ]
+
+
+def _techmapped(composed: Path, manifest: dict[str, Any], work: Path) -> Path:
+    """A composed netlist as Verilog of sky130 cells, its generic scan cells mapped
+    as `ff.py scan` maps them."""
+    work.mkdir(parents=True, exist_ok=True)
+    netlist = work / "composed.v"
+    script = work / "composed.ys"
+    script.write_text(
+        f'read_json "{composed}"\n'
+        f'techmap -map "{Path(str(manifest["techmap_verilog"])).resolve()}"\n'
+        f'clean\nwrite_verilog -noattr "{netlist}"\n',
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["yosys", "-q", "-s", str(script)], check=True, capture_output=True, text=True
+    )
+    return netlist
+
+
+def _drive(
+    manifest: dict[str, Any],
+    bench: _Bench,
+    patterns: list[dict[str, Any]],
+    unload_sample: Callable[[int], str],
+) -> list[list[tuple[str, bool]]]:
+    """Each pattern on `bench`, its scan inputs loading the chains; at each unload
+    cycle `unload_sample(pattern index)`. The outputs each pattern compares."""
     se = str(manifest["scan_enable"])
     scan_ins = [str(p) for p in manifest["scan_inputs"]]
-    scan_outs = [str(p) for p in manifest["scan_outputs"]]
     length = int(manifest["max_chain_length"])
-    patterns = json.loads(patterns_path.read_text(encoding="utf-8"))
-
-    bench = _Bench(str(manifest["top"]), ports, clocks)
-    base = {n: 0 for n in bench.inputs if n not in clocks}
+    base = {n: 0 for n in bench.inputs if n not in bench.clocks}
     compared_outputs: list[list[tuple[str, bool]]] = []
     for index, pattern in enumerate(patterns):
         capture, shift = _values(pattern, bench.inputs, base)
@@ -244,18 +265,103 @@ def replay_on_cells(cfg: Any, patterns_path: Path, work: Path) -> list[str]:
         outputs = bench.strobes(pattern["capture_pi_values"])
         compared_outputs.append(outputs)
         bench.cycle(capture, sample=bench.strobe_sample(index, outputs))
-        for offset in range(length):
-            shows = " ".join(
-                f'$display("U {index} {chain} %b", {_escaped(so)});'
-                for chain, so in enumerate(scan_outs)
-            )
-            bench.cycle(dict(shift, **{se: 1}), sample=shows)
+        for _ in range(length):
+            bench.cycle(dict(shift, **{se: 1}), sample=unload_sample(index))
+    return compared_outputs
+
+
+def replay_on_cells(cfg: Any, patterns_path: Path, work: Path) -> list[str]:
+    """Each unload bit (not masked) and each output value that differs on the cells
+    from the pattern's, as "pattern P chain C: expected ..., cells ..." or "pattern
+    P output O: expected ..., cells ..."; empty when every one matches."""
+    manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+    netlist = Path(str(manifest["sky130_verilog"])).resolve()
+    module = json.loads(
+        Path(str(manifest["generic_json"])).read_text(encoding="utf-8")
+    )["modules"][str(manifest["top"])]
+    scan_outs = [str(p) for p in manifest["scan_outputs"]]
+    patterns = json.loads(patterns_path.read_text(encoding="utf-8"))
+    bench = _Bench(str(manifest["top"]), module["ports"], _clocks(manifest))
+    compared_outputs = _drive(
+        manifest, bench, patterns, lambda index: _unloads(index, scan_outs)
+    )
     lines = bench.run(work, netlist, _stubs(module, set(cfg.blackbox_instances)))
     return _compare(lines, patterns, scan_outs, compared_outputs)
 
 
-# insert_compression's instance of the core in the composed netlist.
+def _unloads(index: int, scan_outs: list[str]) -> str:
+    """The $displays of pattern `index`'s unload bits at one unload cycle."""
+    return " ".join(
+        f'$display("U {index} {chain} %b", {_escaped(so)});'
+        for chain, so in enumerate(scan_outs)
+    )
+
+
+# The core's instance in a composed netlist (insert_compression, insert_compaction).
 CORE_INSTANCE = "core_inst"
+
+
+def replay_compacted_on_cells(cfg: Any, patterns_path: Path, work: Path) -> list[str]:
+    """replay_on_cells on the compacted chip: the composed netlist scan-compact
+    wrote, techmapped to sky130 cells. A tester sees only the compactor's channels:
+    each channel bit at each unload cycle is compared with the XOR of the expected
+    unload bits it reads (fanout), when none of them is masked. Without compression:
+    with both, scan-compress and scan-compact each compose the core alone, and no
+    netlist holds the whole chip."""
+    manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("compression"):
+        raise ValueError(
+            "no composed netlist holds both the decompressor and compactor"
+        )
+    compaction = manifest["compaction"]
+    composed = Path(str(compaction["composed_json"])).resolve()
+    top = str(compaction["composed_top"])
+    channel = str(compaction.get("channel_port", "tdo"))
+    fanout = [[int(c) for c in row] for row in compaction["fanout"]]
+    scan_outs = [str(p) for p in manifest["scan_outputs"]]
+    chain_of = [scan_outs.index(str(p)) for p in compaction["scan_out_ports"]]
+    module = json.loads(composed.read_text(encoding="utf-8"))["modules"][top]
+    patterns = json.loads(patterns_path.read_text(encoding="utf-8"))
+    netlist = _techmapped(composed, manifest, work)
+    bench = _Bench(top, module["ports"], _clocks(manifest))
+    refs = [
+        f"{_escaped(channel)}[{o}]" if len(fanout) > 1 else _escaped(channel)
+        for o in range(len(fanout))
+    ]
+
+    def unload_sample(index: int) -> str:
+        return " ".join(
+            f'$display("C {index} {o} %b", {ref});' for o, ref in enumerate(refs)
+        )
+
+    compared_outputs = _drive(manifest, bench, patterns, unload_sample)
+    blackboxes = {f"{CORE_INSTANCE}__{name}" for name in cfg.blackbox_instances}
+    lines = bench.run(work, netlist, _stubs(module, blackboxes))
+    differ = _compare(lines, patterns, [], compared_outputs)
+    got: dict[tuple[int, int], str] = {}
+    for line in lines:
+        if line.startswith("C "):
+            _, pattern_index, output_index, bit = line.split()
+            key = (int(pattern_index), int(output_index))
+            got[key] = got.get(key, "") + bit
+    length = int(manifest["max_chain_length"])
+    for index, pattern in enumerate(patterns):
+        masks = pattern.get("unload_mask") or {}
+        for o, row in enumerate(fanout):
+            chains = [chain_of[c] for c in row]
+            have = got.get((index, o), "")
+            for t in range(length):
+                if any(not masks.get(str(c), [True] * length)[t] for c in chains):
+                    continue  # an unknown bit makes the XOR unknown
+                want = 0
+                for c in chains:
+                    want ^= int(pattern["expected_unload"][str(c)][t])
+                if have[t : t + 1] != str(want):
+                    differ.append(
+                        f"pattern {index} channel {o} cycle {t}: expected {want}, "
+                        f"cells {have[t : t + 1]}"
+                    )
+    return differ
 
 
 def replay_compressed_on_cells(
@@ -274,43 +380,22 @@ def replay_compressed_on_cells(
     manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
     compression = manifest["compression"]
     if manifest.get("compaction"):
-        raise ValueError("the compressed replay doesn't model a compactor")
+        raise ValueError(
+            "no composed netlist holds both the decompressor and compactor"
+        )
     composed = Path(str(compression["composed_json"])).resolve()
     composed_top = str(compression["composed_top"])
     channel = str(compression.get("channel_port", "tdi"))
     width = int(compression["num_channels"])
     module = json.loads(composed.read_text(encoding="utf-8"))["modules"][composed_top]
-    ports = module["ports"]
-    core_ports = json.loads(
-        Path(str(manifest["generic_json"])).read_text(encoding="utf-8")
-    )["modules"][str(manifest["top"])]["ports"]
-    clock_nets = set(manifest["clock_nets"])
-    clocks = [
-        n
-        for n, p in core_ports.items()
-        if p["direction"] == "input" and set(p["bits"]) & clock_nets
-    ]
     se = str(manifest["scan_enable"])
     scan_outs = [str(p) for p in manifest["scan_outputs"]]
     length = int(manifest["max_chain_length"])
     lengths = {int(c["index"]): int(c["length"]) for c in manifest["chains"]}
     patterns = json.loads(patterns_path.read_text(encoding="utf-8"))
-
-    work.mkdir(parents=True, exist_ok=True)
-    netlist = work / "composed.v"
-    script = work / "composed.ys"
-    script.write_text(
-        f'read_json "{composed}"\n'
-        f'techmap -map "{Path(str(manifest["techmap_verilog"])).resolve()}"\n'
-        f'clean\nwrite_verilog -noattr "{netlist}"\n',
-        encoding="utf-8",
-    )
-    subprocess.run(
-        ["yosys", "-q", "-s", str(script)], check=True, capture_output=True, text=True
-    )
-
-    bench = _Bench(composed_top, ports, clocks)
-    base = {n: 0 for n in bench.inputs if n not in clocks}
+    netlist = _techmapped(composed, manifest, work)
+    bench = _Bench(composed_top, module["ports"], _clocks(manifest))
+    base = {n: 0 for n in bench.inputs if n not in bench.clocks}
     compared_outputs: list[list[tuple[str, bool]]] = []
     for index, pattern in enumerate(patterns):
         seed = seed_of(index, pattern)
@@ -331,11 +416,7 @@ def replay_compressed_on_cells(
         compared_outputs.append(outputs)
         bench.cycle(capture, sample=bench.strobe_sample(index, outputs))
         for _ in range(length):
-            shows = " ".join(
-                f'$display("U {index} {chain} %b", {_escaped(so)});'
-                for chain, so in enumerate(scan_outs)
-            )
-            bench.cycle(dict(shift, **{se: 1}), sample=shows)
+            bench.cycle(dict(shift, **{se: 1}), sample=_unloads(index, scan_outs))
     blackboxes = {f"{CORE_INSTANCE}__{name}" for name in cfg.blackbox_instances}
     lines = bench.run(work, netlist, _stubs(module, blackboxes))
     return _compare(lines, patterns, scan_outs, compared_outputs, lengths)
