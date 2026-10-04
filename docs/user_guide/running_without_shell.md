@@ -182,7 +182,8 @@ What the STIL holds:
   the decompressor's bits come out of a shorter chain. The preamble is a Loop, once
   first, or before each pattern's load with `--no-overlap`.
 
-These are exactly the cycles the test suite replays on the chip's sky130 cell models.
+These are exactly the cycles the test suite replays on the chip's sky130 cell models,
+and an independent STIL parser, Semi-ATE-STIL, reads every file it writes.
 
 ## `status`
 

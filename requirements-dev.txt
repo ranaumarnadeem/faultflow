@@ -8,3 +8,8 @@ black>=24.0
 flake8>=7.0
 mypy>=1.8
 types-PyYAML
+# Test-only: the tests read every STIL file `ff.py write-patterns` makes with
+# Semi-ATE-STIL, an independent IEEE 1450 parser (tests/python/scan_replay.py).
+# GPLv2; faultflow itself never imports it. It doesn't declare its need for lark.
+Semi-ATE-STIL==0.3.2
+lark>=1.1
