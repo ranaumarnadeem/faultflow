@@ -138,17 +138,24 @@ python3 ff.py write-patterns --top <top> -c config.ofs --patterns patterns.json 
 ```
 
 Write the scan patterns `sim --scan --export-patterns` exported as STIL (IEEE 1450):
-the cycles a tester applies to the chip, one pattern after another, each applied
-alone as FaultFlow grades it -- its preamble, load, launch, capture and unload. The
-chip is the scanned netlist, or with scan compression or compaction the one
+the cycles a tester applies to the chip, one pattern after another. Each load also
+unloads the pattern before, the usual way, with half the shifts: the preamble is
+given once, first, and a last unload ends the patterns. With `--no-overlap` each
+pattern is applied alone, as FaultFlow grades it -- its preamble, load, launch,
+capture and unload. Nothing an unload compares depends on what shifts in at the
+same time or on the inputs a load holds, the holds keep every flop a preamble
+settles settled, and each capture's pulse arms the decompressor's reseed for the
+next load, so both give the same results; the test suite checks both on the cells.
+The chip is the scanned netlist, or with scan compression or compaction the one
 `scan-compress` or `scan-compact` wrote (with both, the compacted one). A design
 with IEEE 1500 wrapper cells is refused: they have no cell-level implementation.
-The Tcl shell's `write_patterns -patterns PATH -o PATH` does the same.
+The Tcl shell's `write_patterns -patterns PATH -o PATH [-no_overlap]` does the same.
 
 | Option | Required | Meaning |
 |---|---|---|
 | `--patterns PATH` | yes | The patterns `sim --scan --export-patterns` wrote for this scan campaign |
 | `-o PATH`, `--output PATH` | yes | The STIL file to write |
+| `--no-overlap` | no | Apply each pattern alone: its unload doesn't overlap the next load |
 
 What the STIL holds:
 
@@ -167,14 +174,15 @@ What the STIL holds:
   on, then a Shift takes a bit per scan input and per scan output each shift. With
   compression the scan inputs aren't shifted: the decompressor makes the load from
   the seed they hold.
-- Per pattern: a condition statement setting its shift values (and seed), a Loop for
-  its preamble, a `load_unload` call for its load (nothing compared), a vector for a
-  transition pattern's launch, a vector for its capture (the outputs strobed), and a
-  `load_unload` call for its unload: its expected bits, X where a flop captured an
-  unknown value or the decompressor's bits come out of a shorter chain.
+- Per pattern: a `load_unload` call for its load -- comparing the unload of the
+  pattern before, or nothing -- a vector for a transition pattern's launch and one
+  for its capture (the outputs strobed); then a last `load_unload` call for the
+  last unload.
+  An unload compares the expected bits, X where a flop captured an unknown value or
+  the decompressor's bits come out of a shorter chain. The preamble is a Loop, once
+  first, or before each pattern's load with `--no-overlap`.
 
-A pattern's unload doesn't overlap the next one's load. These are exactly the cycles
-the test suite replays on the chip's sky130 cell models.
+These are exactly the cycles the test suite replays on the chip's sky130 cell models.
 
 ## `status`
 

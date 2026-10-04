@@ -1,10 +1,11 @@
 """The cycles a tester applies to run exported scan patterns on the chip, cycle for
 cycle as FaultFlow grades them (``scan_pattern_sim.cpp``): each pattern alone -- the
 preamble's pulses, the load, a transition pattern's launch, the capture, then the
-unload. A cycle gives every input but the scan clocks its value, the outputs it
-compares at the strobe (the clocks low, before their edge), and whether the clocks
-pulse at its end. The real-cell replay drives the PDK's cell models with these
-cycles, and the STIL writer writes them.
+unload -- or, overlapped, each load also unloading the pattern before. A cycle
+gives every input but the scan clocks its value, the outputs it compares at the
+strobe (the clocks low, before their edge), and whether the clocks pulse at its
+end. The real-cell replay drives the PDK's cell models with these cycles, and the
+STIL writer writes them.
 
 The chip is the netlist a tester connects to: the scanned one, or with scan
 compression or compaction the one ``scan-compress`` or ``scan-compact`` composed
@@ -16,7 +17,7 @@ channel bit the XOR of the unload bits it reads. Scan clocks idle at 0."""
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -168,18 +169,63 @@ class Cycle:
     inputs: Mapping[str, int]
     expect: Mapping[str, int | None]
     pulse: bool = True
+    # The pattern whose unload the cycle compares: the pattern itself in its
+    # unload, the one before in a load that overlaps that one's unload. None: no
+    # unload.
+    unloading: int | None = None
 
 
-def cycles(chip: Chip, patterns: Sequence[Mapping[str, Any]]) -> list[Cycle]:
+def cycles(
+    chip: Chip, patterns: Sequence[Mapping[str, Any]], *, overlap: bool = False
+) -> list[Cycle]:
     """Every exported pattern's cycles on `chip`, one pattern after another. An
     input a pattern doesn't set is 0; its shift values (shift_pi_values) hold
-    everywhere but the launch on capture and the capture."""
+    everywhere but the launch on capture and the capture.
+
+    Without `overlap` each pattern is applied alone, as FaultFlow grades it: its
+    preamble, load, launch, capture, then its unload. With it, each load also
+    unloads the pattern before -- a tester's usual way, half the shifts. Nothing an
+    unload compares depends on what shifts in or on the inputs the load holds.
+    Every flop a preamble settles stays settled under the holds, so the longest
+    preamble is given once, first, and each capture's pulse, scan enable off, arms
+    the decompressor's reseed for the next load. A last unload ends the patterns."""
     inputs = [name for name in chip.inputs if name not in chip.clocks]
     outputs = set(chip.outputs)
+    own = [
+        _pattern_cycles(chip, inputs, outputs, index, pattern)
+        for index, pattern in enumerate(patterns)
+    ]
+    if not overlap:
+        return [cycle for pattern_cycles in own for cycle in pattern_cycles]
     program: list[Cycle] = []
-    for index, pattern in enumerate(patterns):
-        program += _pattern_cycles(chip, inputs, outputs, index, pattern)
-    return program
+    if own:
+        preamble = max(sum(c.phase == "preamble" for c in o) for o in own)
+        program += [_preamble_cycle(chip, own[0])] * preamble
+    previous: list[Cycle] = []  # the unload of the pattern before
+    for pattern_cycles in own:
+        loads = [cycle for cycle in pattern_cycles if cycle.phase == "load"]
+        for t, load in enumerate(loads):
+            if previous:
+                unload = previous[t]
+                load = replace(
+                    load, expect=dict(unload.expect), unloading=unload.pattern
+                )
+            program.append(load)
+        program += [c for c in pattern_cycles if c.phase in ("launch", "capture")]
+        previous = [cycle for cycle in pattern_cycles if cycle.phase == "unload"]
+    return program + previous
+
+
+def _preamble_cycle(chip: Chip, first: list[Cycle]) -> Cycle:
+    """A preamble cycle of the first pattern: its shift values, scan enable off."""
+    for cycle in first:
+        if cycle.phase == "preamble":
+            return cycle
+    load = next(cycle for cycle in first if cycle.phase == "load")
+    values = dict(load.inputs)
+    values[chip.scan_enable] = 0
+    values.update(dict.fromkeys(chip.scan_ins, 0))
+    return Cycle(load.pattern, "preamble", values, {})
 
 
 def _pattern_cycles(
@@ -219,7 +265,8 @@ def _pattern_cycles(
     own.append(Cycle(index, "capture", dict(capture), dict(strobed)))
     for t in range(chip.max_chain_length):
         shifting = _shifting(chip, shift, {}, t)
-        own.append(Cycle(index, "unload", shifting, _unloaded(chip, pattern, t)))
+        unload = _unloaded(chip, pattern, t)
+        own.append(Cycle(index, "unload", shifting, unload, unloading=index))
     return own
 
 

@@ -119,7 +119,8 @@ def run(chip: Chip, testbench: str, work: Path, blackboxes: set[str]) -> list[st
 
 def differences(program: list[Cycle], lines: list[str]) -> list[str]:
     """Each compared output whose value on the cells differs from the cycle's, as
-    "pattern P <phase>, cycle C, <output>: expected V, cells W"."""
+    "pattern P <phase>, cycle C, <output>: expected V, cells W" -- P the pattern
+    whose response it is."""
     got: dict[tuple[int, str], str] = {}
     for line in lines:
         if line.startswith("E "):
@@ -127,13 +128,16 @@ def differences(program: list[Cycle], lines: list[str]) -> list[str]:
             got[(int(shown), name)] = value
     differ: list[str] = []
     for number, cycle in enumerate(program):
+        owner, what = cycle.pattern, cycle.phase
+        if cycle.unloading is not None and cycle.unloading != cycle.pattern:
+            owner, what = cycle.unloading, f"unload (pattern {cycle.pattern}'s load)"
         for name, want in cycle.expect.items():
             if want is None:
                 continue
             have = got.get((number, name), "")
             if have != str(want):
                 differ.append(
-                    f"pattern {cycle.pattern} {cycle.phase}, cycle {number}, {name}: "
+                    f"pattern {owner} {what}, cycle {number}, {name}: "
                     f"expected {want}, cells {have}"
                 )
     return differ
@@ -141,14 +145,22 @@ def differences(program: list[Cycle], lines: list[str]) -> list[str]:
 
 def replay_on_cells(cfg: Any, patterns_path: Path, work: Path) -> list[str]:
     """Every exported pattern, one after another from power-up, on the chip's
-    cells: each compared output that differs (differences); empty when every one
-    matches. The STIL write-patterns makes of them must be these cycles too
-    (stil_problems)."""
+    cells, both ways a tester applies them: each pattern alone, as FaultFlow
+    grades it, and each load overlapping the unload before. Each compared output
+    that differs (differences); empty when every one matches. The STIL
+    write-patterns makes of each must be those cycles too (stil_problems)."""
     manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
     chip = chip_of(manifest)
-    program = cycles(chip, json.loads(patterns_path.read_text(encoding="utf-8")))
-    lines = run(chip, bench(chip, program), work, set(cfg.blackbox_instances))
-    return differences(program, lines) + stil_problems(manifest, chip, program, work)
+    patterns = json.loads(patterns_path.read_text(encoding="utf-8"))
+    problems: list[str] = []
+    for overlap in (False, True):
+        program = cycles(chip, patterns, overlap=overlap)
+        where = work / ("overlapped" if overlap else "alone")
+        lines = run(chip, bench(chip, program), where, set(cfg.blackbox_instances))
+        mode = "overlapped: " if overlap else ""
+        problems += [mode + p for p in differences(program, lines)]
+        problems += [mode + p for p in stil_problems(manifest, chip, program, where)]
+    return problems
 
 
 def stil_problems(

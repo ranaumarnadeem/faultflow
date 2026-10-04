@@ -291,9 +291,10 @@ def test_write_patterns_needs_its_files_and_a_scanned_design(tmp_path: Path) -> 
     with pytest.raises(ShellError) as exc:
         bridge.call("write_patterns", "-patterns", "patterns.json")
     assert exc.value.code == ("FAULTFLOW", "CONFIG", "INVALID_OPTION")
-    with pytest.raises(ShellError) as exc:
-        bridge.call("write_patterns", "-patterns", "p.json", "-o", "chip.stil")
-    assert exc.value.code == ("FAULTFLOW", "PRECONDITION", "SCAN_REQUIRED")
+    for flags in ([], ["-no_overlap"]):
+        with pytest.raises(ShellError) as exc:
+            bridge.call("write_patterns", "-patterns", "p.json", "-o", "x.stil", *flags)
+        assert exc.value.code == ("FAULTFLOW", "PRECONDITION", "SCAN_REQUIRED")
 
 
 def test_workers_command_updates_readable_global(tmp_path: Path) -> None:

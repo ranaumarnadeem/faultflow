@@ -1125,10 +1125,13 @@ class Runner:
         )
         return output_json, sdc
 
-    def write_patterns(self, patterns: Path, output: Path) -> str:
+    def write_patterns(
+        self, patterns: Path, output: Path, *, overlap: bool = True
+    ) -> str:
         """Scan patterns `sim --scan --export-patterns` exported, as STIL: the
         cycles a tester applies to the chip (faultflow.scan.tester_program), the
-        scanned netlist or the one compression or compaction composed."""
+        scanned netlist or the one compression or compaction composed -- each
+        load overlapping the unload before, or each pattern alone."""
         manifest_path = self._scan_manifest_path()
         if not manifest_path.exists():
             raise RunnerError(f"scan manifest not found: {manifest_path}")
@@ -1139,7 +1142,7 @@ class Runner:
         chains = manifest.get("chains", [])
         try:
             chip = chip_of(manifest)
-            program = cycles(chip, exported)
+            program = cycles(chip, exported, overlap=overlap)
             text = write_stil(
                 chip, program, chains=chains if isinstance(chains, list) else []
             )
@@ -1149,7 +1152,8 @@ class Runner:
         output.write_text(text, encoding="utf-8")
         return (
             f"patterns written top={self.cfg.top} chip={chip.top} "
-            f"patterns={len(exported)} cycles={len(program)} stil={output}"
+            f"patterns={len(exported)} cycles={len(program)} "
+            f"overlapped={'yes' if overlap else 'no'} stil={output}"
         )
 
     def _composed_verilog(

@@ -864,10 +864,14 @@ proc {name} {{args}} {{
     def _write_patterns(self, args: list[str]) -> Any:
         patterns: Path | None = None
         output: Path | None = None
+        overlap = True
         index = 0
         while index < len(args):
             key = args[index]
-            if key == "-patterns" and index + 1 < len(args):
+            if key == "-no_overlap":
+                overlap = False
+                index += 1
+            elif key == "-patterns" and index + 1 < len(args):
                 patterns = Path(args[index + 1])
                 index += 2
             elif key == "-o" and index + 1 < len(args):
@@ -881,8 +885,11 @@ proc {name} {{args}} {{
                 )
         if patterns is None or output is None:
             raise ShellError(
-                "usage: write_patterns -patterns <file.json> -o <file.stil>",
+                "usage: write_patterns -patterns <file.json> -o <file.stil> "
+                "[-no_overlap]",
                 "CONFIG",
                 "INVALID_OPTION",
             )
-        return self.session.write_patterns(patterns=patterns, output=output)
+        return self.session.write_patterns(
+            patterns=patterns, output=output, overlap=overlap
+        )

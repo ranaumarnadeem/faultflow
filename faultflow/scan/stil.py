@@ -1,18 +1,18 @@
 """Exported scan patterns as STIL (IEEE 1450): the cycles a tester applies
-(``faultflow.scan.tester_program``), one pattern after another, written with STIL's
-scan constructs. Each load and unload is a call of one ``load_unload`` procedure
-whose Shift takes every chain's bits; a preamble is a Loop; a launch and a capture
-are one vector each.
+(``faultflow.scan.tester_program``), each pattern alone or each load overlapping the
+unload of the pattern before, written with STIL's scan constructs. Each load and
+unload is a call of one ``load_unload`` procedure whose Shift takes every chain's
+bits; a preamble is a Loop; a launch and a capture are one vector each.
 
 One WaveformTable: inputs change at the start of the period, outputs are strobed
 before the scan clocks rise, and the clocks pulse after the strobe. In STIL every
 signal keeps its last waveform character. Readers differ on whether a procedure
 starts from its caller's characters and leaves its own, or starts afresh and gives
 its caller's back, so the STIL relies on neither: the procedure sets every signal
-itself, a call passing the inputs' values, and a vector sets every signal. Each
-pattern starts with a condition statement setting its inputs and leaving every
-output uncompared (X), and only the capture vector and the unload's shifts compare
-anything.
+itself, a call passing the inputs' values, and after a call the writer sets again
+every group the next cycle needs. Otherwise a condition statement sets only what
+changes. The procedure leaves every output but the scan outputs uncompared (X),
+and only the capture vectors and the shifts' scan outputs compare anything.
 
 With scan compression, the scan inputs are the compression channels: a call passes
 the pattern's seed, held on them through the shifts, and a character per shift for
@@ -115,10 +115,17 @@ def write_stil(
     lines.append(
         f"    Title {_quoted(title or f'FaultFlow scan patterns: {chip.top}')};"
     )
+    overlapped = any(cycle.unloading not in (None, cycle.pattern) for cycle in program)
+    applied = (
+        "Each load also unloads the pattern before; the preamble is given once, "
+        "first, and a last unload ends the patterns."
+        if overlapped
+        else "Each pattern alone: its preamble, load, launch, capture and unload, "
+        "as FaultFlow grades it."
+    )
     lines += [
         '    Source "FaultFlow";',
-        "    Ann {* Each pattern alone: its preamble, load, launch, capture and "
-        "unload, as FaultFlow grades it. *}",
+        f"    Ann {{* {applied} *}}",
         "}",
         "",
         "Signals {",
@@ -178,8 +185,7 @@ def write_stil(
     shifted += [("_so", "#" * len(groups.so)), ("_clk", "P" * len(groups.clk))]
     lines += [f"        Shift {{ V {{ {_assign(shifted)} }} }}", "    }", "}", ""]
     lines += [f"Pattern {_quoted(PATTERN)} {{", f"    W {_quoted(WAVEFORM_TABLE)};"]
-    for index, own in groupby(program, key=lambda cycle: cycle.pattern):
-        lines += _pattern(chip, groups, index, list(own))
+    lines += _Patterns(chip, groups).write(program)
     lines += ["}", ""]
     return "\n".join(lines)
 
@@ -204,51 +210,95 @@ def _scan_structures(chip: Chip, chains: Sequence[Mapping[str, Any]]) -> list[st
     return lines + ["}", ""]
 
 
-def _same(cycles: Sequence[Cycle], names: Sequence[str], what: str) -> str:
-    """The value every one of `cycles` gives `names`."""
-    values = {_drive(cycle, names) for cycle in cycles}
-    if len(values) != 1:
-        raise ScanError(f"STIL: the {what} cycles don't hold their inputs")
-    return values.pop()
+class _Patterns:
+    """The Pattern block's statements for a program: a run of one pattern's one
+    phase at a time -- a Loop for a preamble, a load_unload call for a load or an
+    unload, a vector for a launch or a capture. STIL keeps every signal's last
+    waveform character, so the writer keeps what each group holds and a condition
+    statement sets only what a run needs changed; after a call, which readers end
+    differently, it counts on nothing."""
 
+    def __init__(self, chip: Chip, groups: _Groups) -> None:
+        self.chip = chip
+        self.groups = groups
+        self.held: dict[str, str] = {}
+        self.lines: list[str] = []
 
-def _pattern(chip: Chip, groups: _Groups, index: int, own: list[Cycle]) -> list[str]:
-    """One pattern's statements: the condition it starts from, a Loop for its
-    preamble, a call for its load, a vector for its launch and one for its
-    capture, a call for its unload."""
-    phases = [cycle.phase for cycle in own]
-    order = ["preamble", "load", "launch", "capture", "unload"]
-    if phases != sorted(phases, key=order.index) or phases.count("capture") != 1:
-        raise ScanError(f"STIL: pattern {index}'s cycles are out of order")
-    by = {phase: [c for c in own if c.phase == phase] for phase in order}
-    shifts = by["load"] + by["unload"]
-    if any(not cycle.pulse for cycle in own) or any(
-        any(v is not None for v in cycle.expect.values())
-        for cycle in by["preamble"] + by["load"] + by["launch"]
-    ):
-        raise ScanError(f"STIL: pattern {index} compares outside its strobes")
-    held = groups.pi if chip.scan_ins else groups.pi + groups.si
-    shift_values = _same(shifts + by["preamble"], held, "shift")
-    start = (by["preamble"] or by["load"] or by["capture"])[0]
-    lines = [f'    "pattern {index}":']
-    condition = [
-        ("_pi", shift_values[: len(groups.pi)]),
-        ("_si", _drive(start, groups.si) if by["preamble"] else ""),
-        ("_se", "0" if by["preamble"] else ""),
-        ("_clk", "0" * len(groups.clk)),
-        ("_po", "X" * len(groups.po)),
-        ("_so", "X" * len(groups.so)),
-    ]
-    if not chip.scan_ins:
-        condition[1] = ("_si", shift_values[len(groups.pi) :])
-    lines.append(f"    C {{ {_assign(condition)} }}")
-    if by["preamble"]:
-        if {_drive(c, [groups.se]) for c in by["preamble"]} != {"0"}:
-            raise ScanError(f"STIL: pattern {index}'s preamble shifts")
-        pulse = _assign([("_clk", "P" * len(groups.clk))])
-        lines.append(f"    Loop {len(by['preamble'])} {{ V {{ {pulse} }} }}")
-    lines.append(_call(chip, groups, by["load"], compare=False))
-    for cycle in by["launch"] + by["capture"]:
+    def write(self, program: Sequence[Cycle]) -> list[str]:
+        labelled: int | None = None
+        for (pattern, phase), run in groupby(
+            program, key=lambda cycle: (cycle.pattern, cycle.phase)
+        ):
+            cycles = list(run)
+            if any(not cycle.pulse for cycle in cycles):
+                raise ScanError(f"STIL: pattern {pattern} has a cycle with no pulse")
+            if pattern != labelled:
+                self.lines.append(f'    "pattern {pattern}":')
+                labelled = pattern
+            if phase == "preamble":
+                self._preamble(pattern, cycles)
+            elif phase in ("load", "unload"):
+                self._shifts(pattern, cycles)
+            elif phase in ("launch", "capture"):
+                for cycle in cycles:
+                    self._vector(cycle)
+            else:
+                raise ScanError(f"STIL: pattern {pattern} has a {phase} phase")
+        return self.lines
+
+    def _condition(self, wanted: Sequence[tuple[str, str]]) -> None:
+        changes = [(g, data) for g, data in wanted if data and self.held.get(g) != data]
+        if changes:
+            self.lines.append(f"    C {{ {_assign(changes)} }}")
+            self.held.update(changes)
+
+    def _same(self, cycles: Sequence[Cycle], names: Sequence[str]) -> str:
+        values = {_drive(cycle, names) for cycle in cycles}
+        if len(values) != 1:
+            raise ScanError(f"STIL: pattern {cycles[0].pattern}'s inputs change")
+        return values.pop()
+
+    def _preamble(self, pattern: int, cycles: list[Cycle]) -> None:
+        groups = self.groups
+        if any(v is not None for c in cycles for v in c.expect.values()):
+            raise ScanError(f"STIL: pattern {pattern}'s preamble compares")
+        if self._same(cycles, [groups.se]) != "0":
+            raise ScanError(f"STIL: pattern {pattern}'s preamble shifts")
+        self._condition(
+            [
+                ("_pi", self._same(cycles, groups.pi)),
+                ("_si", self._same(cycles, groups.si)),
+                ("_se", "0"),
+                ("_po", "X" * len(groups.po)),
+                ("_so", "X" * len(groups.so)),
+            ]
+        )
+        pulse = "P" * len(groups.clk)
+        self.lines.append(
+            f"    Loop {len(cycles)} {{ V {{ {_assign([('_clk', pulse)])} }} }}"
+        )
+        self.held["_clk"] = pulse
+
+    def _shifts(self, pattern: int, cycles: list[Cycle]) -> None:
+        """A call of the load_unload procedure: the inputs' values (with
+        compression, the seed too), and a character per shift for each scan input
+        (the load's bits) and each scan output (compared, or X)."""
+        chip, groups = self.chip, self.groups
+        if self._same(cycles, [groups.se]) != "1":
+            raise ScanError(f"STIL: pattern {pattern} shifts with scan enable off")
+        data = [("_pi", self._same(cycles, groups.pi))]
+        if chip.scan_ins:
+            for pin in groups.si:
+                data.append((pin, "".join(str(int(c.inputs[pin])) for c in cycles)))
+        else:
+            data.append(("_si", self._same(cycles, groups.si)))  # the seed
+        for pin in groups.so:
+            data.append((pin, "".join(_compare(c, [pin]) for c in cycles)))
+        self.lines.append(f"    Call {_quoted(PROCEDURE)} {{ {_assign(data)} }}")
+        self.held = {}
+
+    def _vector(self, cycle: Cycle) -> None:
+        groups = self.groups
         vector = [
             ("_pi", _drive(cycle, groups.pi)),
             ("_si", _drive(cycle, groups.si)),
@@ -257,28 +307,5 @@ def _pattern(chip: Chip, groups: _Groups, index: int, own: list[Cycle]) -> list[
             ("_so", _compare(cycle, groups.so)),
             ("_clk", "P" * len(groups.clk)),
         ]
-        lines.append(f"    V {{ {_assign(vector)} }}")
-    lines.append(_call(chip, groups, by["unload"], compare=True))
-    return lines
-
-
-def _call(chip: Chip, groups: _Groups, shifts: list[Cycle], *, compare: bool) -> str:
-    """A call of the load_unload procedure: the inputs' values (with compression,
-    the seed too), and a character per shift for each scan input (the load's
-    bits) and each scan output (compared or not)."""
-    if {_drive(cycle, [groups.se]) for cycle in shifts} != {"1"}:
-        raise ScanError("STIL: a load or unload cycle has scan enable off")
-    data = [("_pi", _same(shifts, groups.pi, "shift"))]
-    if chip.scan_ins:
-        for pin in groups.si:
-            data.append((pin, "".join(str(int(c.inputs[pin])) for c in shifts)))
-    else:
-        data.append(("_si", _same(shifts, groups.si, "shift")))  # the seed
-    for pin in groups.so:
-        if compare:
-            data.append((pin, "".join(_compare(c, [pin]) for c in shifts)))
-        elif any(c.expect.get(pin) is not None for c in shifts):
-            raise ScanError("STIL: a load compares a scan output")
-        else:
-            data.append((pin, "X" * len(shifts)))
-    return f"    Call {_quoted(PROCEDURE)} {{ {_assign(data)} }}"
+        self.lines.append(f"    V {{ {_assign(vector)} }}")
+        self.held.update((group, data) for group, data in vector if data)

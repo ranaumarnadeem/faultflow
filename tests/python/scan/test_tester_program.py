@@ -171,6 +171,37 @@ def test_a_compacted_unload_is_compared_on_the_channels(tmp_path: Path) -> None:
     assert unloads == [{"tdo[0]": 1, "tdo[1]": 1}, {"tdo[0]": None, "tdo[1]": None}]
 
 
+def test_overlapped_each_load_unloads_the_pattern_before(tmp_path: Path) -> None:
+    """The preamble once, first; each load comparing the unload before, with its
+    own pattern's inputs; a last unload ending the patterns."""
+    chip = chip_of(_manifest(tmp_path))
+    second = {**PATTERN, "load_seqs": {"0": [False, True], "1": [True, False]}}
+    second["capture_pi_values"] = {**PATTERN["capture_pi_values"], "d": False}
+    patterns = [{**PATTERN, "preamble_cycles": 1}, {**second, "preamble_cycles": 1}]
+    alone = cycles(chip, patterns)
+    program = cycles(chip, patterns, overlap=True)
+    assert [(c.pattern, c.phase, c.unloading) for c in program] == [
+        (0, "preamble", None),
+        (0, "load", None),
+        (0, "load", None),
+        (0, "capture", None),
+        (1, "load", 0),
+        (1, "load", 0),
+        (1, "capture", None),
+        (1, "unload", 1),
+        (1, "unload", 1),
+    ]
+    first_unload = [c.expect for c in alone if c.phase == "unload" and c.pattern == 0]
+    assert [c.expect for c in program[4:6]] == first_unload
+    second_loads = [c.inputs for c in alone if c.phase == "load" and c.pattern == 1]
+    assert [c.inputs for c in program[4:6]] == second_loads
+    assert program[4].inputs["d"] == 0  # pattern 1's own shift values
+    assert [c.expect for c in program[7:]] == [
+        c.expect for c in alone if c.phase == "unload" and c.pattern == 1
+    ]
+    assert cycles(chip, [], overlap=True) == []
+
+
 def test_wrapper_cells_and_a_chip_compacted_before_compression_are_refused(
     tmp_path: Path,
 ) -> None:

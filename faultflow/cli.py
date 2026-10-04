@@ -423,6 +423,11 @@ def _parser() -> argparse.ArgumentParser:
     write_patterns.add_argument(
         "-o", "--output", type=Path, required=True, help="The STIL file to write"
     )
+    write_patterns.add_argument(
+        "--no-overlap",
+        action="store_true",
+        help="Apply each pattern alone, its unload not overlapping the next load",
+    )
 
     rule_check = sub.add_parser(
         "rule_check",
@@ -653,7 +658,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "scan-compact":
             print(service.scan_compact(cfg).message)
         elif args.command == "write-patterns":
-            print(service.write_patterns(cfg, args.patterns, args.output).message)
+            written = service.write_patterns(
+                cfg, args.patterns, args.output, overlap=not args.no_overlap
+            )
+            print(written.message)
         elif args.command == "rule_check":
             result = service.rule_check(cfg, strict=args.strict)
             print(result.message)

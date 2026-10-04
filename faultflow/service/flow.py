@@ -194,10 +194,16 @@ class FlowService:
         return OperationResult("scan-compact", cfg.top, message)
 
     def write_patterns(
-        self, cfg: FaultflowConfig, patterns: Path, output: Path
+        self,
+        cfg: FaultflowConfig,
+        patterns: Path,
+        output: Path,
+        *,
+        overlap: bool = True,
     ) -> OperationResult:
         log.info("patterns start  top=%s", cfg.top)
-        message = str(self._runner(cfg).write_patterns(patterns, output))
+        runner = self._runner(cfg)
+        message = str(runner.write_patterns(patterns, output, overlap=overlap))
         return OperationResult("write-patterns", cfg.top, message)
 
     def run_atpg(self, cfg: FaultflowConfig, **options: object) -> AtpgResult:
