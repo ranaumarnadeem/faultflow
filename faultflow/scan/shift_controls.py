@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from faultflow.control_trace import CONTROLLING, MUXES, Netlist, one_net
+from faultflow.control_trace import Netlist, one_net
 from faultflow.scan.nonscan import NonscanSetup
 from faultflow.scan.stitch import SCAN_CELL_TYPES
 
@@ -104,13 +104,12 @@ def _unheld(
         instance = netlist.drivers[current][0]
         entry = netlist.entry(instance) or {}
         gate = str(entry.get("gate_type", ""))
-        traced = gate in ("BUF", "INV") or gate in CONTROLLING or gate in MUXES
         if entry.get("node_type") == "FF":
             kind = "scan flop" if instance in scan else "non-scan flop"
             found.append(f"the output of {kind} {instance}")
         elif entry.get("node_type") == "CONST" or gate in ("CONST0", "CONST1"):
             continue
-        elif entry.get("node_type") != "GATE" or not traced:
+        elif entry.get("node_type") != "GATE":
             cell_type = gate or str(netlist.cells[instance].get("type", ""))
             found.append(
                 f"{instance} (a {cell_type}, which the check can't see through)"

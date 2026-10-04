@@ -13,7 +13,9 @@ whatever its other inputs do, or when every input is held. A TDR bit cleared thr
 ``trst_n & clr_n`` is held in reset by ``trst_n`` at 0 that way. Through a mux
 (:data:`MUXES`), a held select picks the data input followed; with a select free, the
 data inputs it could pick must all hold the same value -- ``test_mode ? rst_n :
-rst_sync`` is held with ``test_mode`` and ``rst_n`` held.
+rst_sync`` is held with ``test_mode`` and ``rst_n`` held. Any other gate is held when
+its output is the same for every value of the inputs nothing holds, by the
+simulator's own gate function (the C++ core's ``eval_gate``).
 
 A stuck-at on such a path, at the value that releases the pin, is what can let a flop
 out of a reset that holds it; :func:`release_faults` lists them.
@@ -21,6 +23,7 @@ out of a reset that holds it; :func:`release_faults` lists them.
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -72,6 +75,10 @@ MUXES: dict[str, tuple[tuple[int, ...], tuple[int, ...], bool]] = {
 
 # (net, the cell reading it, that cell's pin, the net's value)
 Step = tuple[int, str, str, int]
+
+# Any other gate is evaluated over every value of its free inputs: 2**6 at most
+# (the widest cells, mux4 and a222oi, have six).
+_MAX_EVALUATED_INPUTS = 6
 
 
 class TraceError(RuntimeError):
@@ -295,7 +302,11 @@ class Netlist:
         if mux is not None:
             return self._mux(driver, inputs, conns, mux, values, known, memo, visiting)
         rule = CONTROLLING.get(gate)
-        if rule is None or len(rule[0]) != len(inputs):
+        if rule is None:
+            return self._evaluated(
+                driver, gate, inputs, conns, values, known, memo, visiting
+            )
+        if len(rule[0]) != len(inputs):
             return None
         setting, output = rule
         setters: list[Step] = []
@@ -320,6 +331,47 @@ class Netlist:
         # Every input held, none at its controlling value: the other output, which
         # any one of them flipped would change.
         return (1 - output, tuple(every)) if all_held else None
+
+    def _evaluated(
+        self,
+        driver: str,
+        gate: str,
+        inputs: list[str],
+        conns: Mapping[str, Any],
+        values: Mapping[str, int],
+        known: Mapping[int, int],
+        memo: dict[int, tuple[int, tuple[Step, ...]] | None],
+        visiting: set[int],
+    ) -> tuple[int, tuple[Step, ...]] | None:
+        """Any other gate's held output: the same for every value of the inputs
+        nothing holds, by the simulator's own gate function (gate_eval.cpp, through
+        the C++ core; without it, nothing is held)."""
+        from faultflow.runner.runner import _load_core
+
+        core = _load_core()
+        if core is None or not gate or len(inputs) > _MAX_EVALUATED_INPUTS:
+            return None
+        held: list[int | None] = []
+        steps: list[Step] = []
+        for input_pin in inputs:
+            source = one_net(conns.get(input_pin))
+            found = self._held(source, values, known, memo, visiting)
+            if found is None:
+                held.append(None)
+                continue
+            held.append(found[0])
+            if isinstance(source, int):
+                steps.append((source, driver, input_pin, found[0]))
+            steps.extend(found[1])
+        free = [i for i, value in enumerate(held) if value is None]
+        outputs: set[int] = set()
+        for assignment in itertools.product((0, 1), repeat=len(free)):
+            given = dict(zip(free, assignment))
+            bits = [bool(given[i] if v is None else v) for i, v in enumerate(held)]
+            outputs.add(int(core.eval_gate(gate, bits)))
+            if len(outputs) > 1:
+                return None
+        return outputs.pop(), tuple(steps)
 
     def _mux(
         self,

@@ -305,10 +305,11 @@ def test_without_the_pulse_a_released_chip_reset_leaves_the_collar_unknown(
             },
             "unknown value can reach tdo",
         ),
-        # c0 reset from logic the rule doesn't follow.
+        # c0 reset from logic of tdi, which the program drives: it may toggle.
+        # (s1 ^ en would be held: en is, and so is the frozen s1.)
         (
             {
-                "x0": _cell("xor2_1", A=21, B=8, X=30),
+                "x0": _cell("xor2_1", A=21, B=4, X=30),
                 "c0": _cell("dfrtp_1", CLK=6, D=3, RESET_B=30, Q=22),
             },
             "unknown value can reach tdo",
