@@ -434,6 +434,37 @@ TEST_CASE("LOC rejects a stuck-at with no good-machine edge", "[scan][loc]") {
           ScanProtocolFaultOutcome::PASS);
 }
 
+TEST_CASE("LOC credits no transition that only the slow unload would show",
+          "[scan][loc]") {
+  // The launched 1->0 edge at ff0.Q again, but no functional output is compared:
+  // at the at-speed capture nothing samples ff0.Q's late value (ff1's SDI is
+  // unused with scan_enable off). Every unload bit shifts out through ff0.Q, so a
+  // fault still active in the unload corrupts it -- a stuck-at does, but a delay
+  // fault doesn't act in the slow shift: no transition credit.
+  ScanProtocolFaultRequest request;
+  request.pattern = tiny_scan_chain_loc_request();
+  request.pattern.functional_output_ports = {};
+  request.pattern.load_seqs[0] = {false, false, true};  // ff0 scanned = true
+  request.pattern.capture_pi_values["D0"] = false;       // launched ff0.Q = false
+  const uint32_t q0 = compiled_index_for_yosys_net("tiny_scan_chain.json", 8);
+  request.faults.push_back({q0, 1});                     // STF at ff0.Q
+
+  const auto loc = simulate_scan_protocol_faults(
+      test::fixture_path("tiny_scan_chain.json"), test::cell_map_path(), request,
+      "fail");
+  REQUIRE(loc.batches.front().lanes.front().outcome ==
+          ScanProtocolFaultOutcome::NO_CAPTURE_OR_UNLOAD_EFFECT);
+
+  // The same stuck-at in a stuck-at pattern corrupts the unload: detected.
+  ScanProtocolFaultRequest sa = request;
+  sa.pattern.loc_two_capture = false;
+  const auto single = simulate_scan_protocol_faults(
+      test::fixture_path("tiny_scan_chain.json"), test::cell_map_path(), sa,
+      "fail");
+  REQUIRE(single.batches.front().lanes.front().outcome ==
+          ScanProtocolFaultOutcome::PASS);
+}
+
 // ---------------------------------------------------------------------------
 // LOS two-capture protocol: launch = last scan shift (scan_enable asserted), so
 // each FF transitions to its chain predecessor's loaded value, then a capture

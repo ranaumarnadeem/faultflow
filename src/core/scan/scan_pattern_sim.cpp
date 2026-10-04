@@ -123,13 +123,15 @@ void append_capture_pulse(TestVector& vec, const ParsedGraph& parsed,
 void append_unload_pulse(TestVector& vec, const ParsedGraph& parsed,
                          const std::vector<std::string>& clock_ports,
                          const std::vector<bool>& clock_off_states,
-                         std::map<std::string, bool> values) {
+                         std::map<std::string, bool> values, bool fault_active) {
   for (size_t i = 0; i < clock_ports.size(); ++i)
     values[clock_ports[i]] = i < clock_off_states.size() ? clock_off_states[i] : false;
-  vec.cycles.push_back(make_cycle(parsed, clock_ports, clock_off_states, values, true, true));
+  vec.cycles.push_back(
+      make_cycle(parsed, clock_ports, clock_off_states, values, true, fault_active));
   for (size_t i = 0; i < clock_ports.size(); ++i)
     values[clock_ports[i]] = !(i < clock_off_states.size() ? clock_off_states[i] : false);
-  vec.cycles.push_back(make_cycle(parsed, clock_ports, clock_off_states, values, false, true));
+  vec.cycles.push_back(
+      make_cycle(parsed, clock_ports, clock_off_states, values, false, fault_active));
 }
 
 std::map<std::string, bool> base_values(const ScanPatternRequest& request) {
@@ -208,11 +210,17 @@ TestVector build_scan_pattern_vector(const ParsedGraph& parsed,
     append_capture_pulse(vec, parsed, request, values);
   }
 
+  // A delay fault acts in the at-speed launch-to-capture window only: in the slow
+  // unload a transition pattern's faults are inactive -- else a fault on a flop's
+  // Q, which every bit behind it shifts through, would be credited for corrupting
+  // the shift. A stuck-at acts in the unload too.
+  const bool unload_faults =
+      !(request.loc_two_capture || request.los_two_capture);
   for (int offset = 0; offset < request.max_chain_length; ++offset) {
     std::map<std::string, bool> values = base_values(request);
     values[request.scan_enable_port] = true;
     append_unload_pulse(vec, parsed, request.clock_ports,
-                        request.clock_off_states, values);
+                        request.clock_off_states, values, unload_faults);
   }
   vec.test_mode = request.test_mode;
   return vec;

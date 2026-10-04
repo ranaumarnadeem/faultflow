@@ -163,7 +163,7 @@ There is no silent-skip option.
 | `run_techmap` | `true` | Run the Sky130 scan-cell techmap after stitching |
 | `nonscan_cells` | (none) | Instance-name globs, e.g. `u_tap__*, u_sib_*`: flip-flops left out of scan on purpose, like a JTAG TAP and its IJTAG network that `ff.py jtag` tests through TCK. Each must hold still for the whole scan test: either a `hold` input keeps its clear or preset active, and the scan view ties its output at the value that forces, or its clock is held and nothing free can reset it, and its output is unknown, masked like an unknown blackbox output, or it *settles*: a scan clock clocks it, the holds keep its clear and preset inactive, and its D traces to holds, constants and other settled flops (a reset synchronizer with `rst_n` held inactive). A settled flop is tied at the value it settles to, every pattern starts with the pulses that settle it (`preamble_cycles`), and its own faults are `excluded_reset`. Anything else is an error. The other non-scan flops' faults, and those only they see, are `excluded_jtag`; a glob selects settled flops or others, not both |
 | `hold` | (none) | `input:0\|1` list, e.g. `trst_n:0, tck:0`: inputs held at that value in every scan pattern, e.g. to keep a non-scan TAP in reset. Not a scan port or scan clock, and not a value that clears or presets scan flops. A fault only the held values block is `hold_unresolved` |
-| `shift_controls` | `fail` | What `scan-check` does with a scan flop whose asynchronous clear or preset isn't held inactive while the chains shift: fail (`fail`), or pass with a warning (`warn`), for resets you have checked yourself. On a real chip a scan flop's clear and preset act during shift too, but FaultFlow's simulation turns them off, so that flop's patterns wouldn't unload what FaultFlow expects. Held inactive means traced through buffers, inverters, gates a held input sets and muxes a held select steers, to constants, held inputs and settled or forced `nonscan_cells` flops. The held inputs are scan enable (at 1), `hold`, and any input that reaches a scan flop's clear or preset through buffers and inverters alone, which the scan test holds inactive by itself (`rst_n`, or `rst` through an inverter). A scanned reset synchronizer, or a reset from an input the patterns set, isn't held: list the synchronizer's flops in `nonscan_cells`, hold the input, or gate the reset in the RTL with scan enable or a held test-mode input |
+| `shift_controls` | `fail` | What `scan-check` does with a scan flop whose asynchronous clear or preset isn't held inactive while the chains shift: fail (`fail`), or pass with a warning (`warn`), for resets you have checked yourself. On a real chip a scan flop's clear and preset act during shift too, but FaultFlow's simulation turns them off, so that flop's patterns wouldn't unload what FaultFlow expects. Held inactive means traced through buffers, inverters, gates a held input sets, muxes a held select steers and any other cell whose held inputs fix its output, to constants, held inputs and settled or forced `nonscan_cells` flops. The held inputs are scan enable (at 1), `hold`, and any input that reaches a scan flop's clear or preset through buffers and inverters alone, which the scan test holds inactive by itself (`rst_n`, or `rst` through an inverter). A scanned reset synchronizer, or a reset from an input the patterns set, isn't held: list the synchronizer's flops in `nonscan_cells`, hold the input, or gate the reset in the RTL with scan enable or a held test-mode input |
 
 ## `[testpoint]`
 
@@ -219,7 +219,13 @@ Written by `ff.py autombist-generate` (see [External tools](../external_tools.md
 Scan test-pattern compression (`ff.py scan-compress`: a ring-generator and
 phase-shifter decompressor in front of the scan inputs) and response compaction
 (`ff.py scan-compact`: an XOR-tree space compactor behind the scan outputs). Each
-wraps the scanned design, which becomes the instance `core_inst`.
+wraps the scanned design, which becomes the instance `core_inst`, in
+`<top>_compressed.json` or `<top>_compacted.json`, and in `<top>_compressed.v` or
+`<top>_compacted.v`, the same as sky130 Verilog (the design's scan cells mapped as
+`ff.py scan` maps them; not with `[scan] run_techmap = false`). With both, the
+compacted netlist holds the decompressor too: it is the whole chip, the design still
+`core_inst`. `scan-compact` builds it around the decompressor `scan-compress`
+inserted, and `scan-compress` run afterwards builds it again around its new one.
 
 | Key | Default | Meaning |
 |---|---|---|

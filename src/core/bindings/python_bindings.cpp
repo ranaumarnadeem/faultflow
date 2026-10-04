@@ -22,6 +22,7 @@
 #include "ir/parsed_graph/parsed_graph.hpp"
 #include "sim/engine/bit_parallel_sim.hpp"
 #include "sim/engine/sequence_grade.hpp"
+#include "sim/gate_eval.hpp"
 #include "sim/golden_ref/golden_ref_sim.hpp"
 #include "sim/state/test_vector.hpp"
 #include "scan/compression.hpp"
@@ -1160,6 +1161,14 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("test_mode") = "");
+  m.def(
+      "eval_gate",
+      [](const std::string& gate_type, const std::vector<bool>& inputs) {
+        return faultflow::eval_gate_scalar(
+            faultflow::gate_type_from_name(gate_type), inputs);
+      },
+      py::arg("gate_type"), py::arg("inputs"),
+      "One gate's output, by its cell-map gate_type name (gate_eval.cpp).");
   m.def("fault_free_outputs", &faultflow::fault_free_outputs, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("vectors"), py::arg("input_order"),
         py::arg("output_order"), py::arg("unsupported_policy") = "fail",

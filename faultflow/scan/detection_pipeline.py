@@ -517,6 +517,13 @@ def _serialize(
         masked_outputs=ctx.x_mask.outputs,
     )
     preamble = ctx.nonscan.preamble if ctx.nonscan is not None else 0
+    if ctx.compression_map is not None:
+        # The decompressor reseeds on scan enable's rising edge, seen through a
+        # flop of the previous scan enable (compression.py): a pulse with it off
+        # before the load arms it. Back to back, a pattern's load follows the
+        # last one's unload, scan enable on, and a chip powers up with that flop
+        # unknown -- without the pulse the load continues the old sequence.
+        preamble = max(preamble, 1)
     # Testing the reset, a capture may set a reset input active (_process_scan_
     # candidate leaves it free); it stays inactive while the chains shift, where
     # a real scan flop's reset would wipe the load (scan.shift_controls).
@@ -1264,6 +1271,19 @@ def _process_scan_candidate(
         # all see the decompressor's whole stream for the candidate's seed.
         scan_pattern = _decompressed(
             core, scan_ctx, vector, scan_pattern, head_bits if is_los else {}
+        )
+    if transition:
+        # What a tester applies between the load and the capture: a launch pulse
+        # (LOC), or one more shift with these scan-in bits (LOS), every chain's.
+        chains = range(len(scan_ctx.manifest.get("scan_inputs", [])))
+        scan_pattern = replace(
+            scan_pattern,
+            launch=launch_mode,
+            launch_scan_in=(
+                {chain: bool(head_bits.get(chain, False)) for chain in chains}
+                if is_los
+                else {}
+            ),
         )
     insert_pending_candidate(
         conn,

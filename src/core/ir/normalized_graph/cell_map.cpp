@@ -256,6 +256,10 @@ CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node)
 
 }  // namespace
 
+GateType gate_type_from_name(const std::string& name) {
+  return parse_gate_type(name);
+}
+
 std::string normalize_cell_name(const std::string& raw) {
   static const std::map<std::string, std::string> kAlias = {
       {"TIEHI", "CONST1"},

@@ -23,13 +23,13 @@ from pathlib import Path
 from typing import Any
 
 from faultflow.project.assemble import assemble_soc
+from faultflow.scan.compression import Decompressor, decompressor_verilog
 
 
 def _port_decl(name: str, direction: str, width: int) -> str:
     """Match block_stub_verilog's exact port-declaration formatting
     (faultflow/project/assemble.py:105-112), same convention already used by
-    faultflow.scan.compression._port_decl -- duplicated (not imported) to
-    keep the decompression and compaction modules independent."""
+    faultflow.scan.compression._port_decl."""
     if width <= 1:
         return f"  {direction} {name};"
     return f"  {direction} [{width - 1}:0] {name};"
@@ -86,6 +86,7 @@ def compactor_wrapper_verilog(
     wrapper_module: str,
     channel_port: str = "tdo",
     instance_name: str = "core_inst",
+    decompressor: Decompressor | None = None,
 ) -> str:
     """Emit compactor wrapper RTL: instantiate ``core_module`` by name (a
     real instantiation -- blackboxing happens later, in assemble.py's
@@ -93,6 +94,11 @@ def compactor_wrapper_verilog(
     except ``scan_out_ports``, which become internal wires feeding a static
     combinational XOR tree that drives an external, ``len(fanout)``-wide
     ``channel_port`` output bus per ``fanout``.
+
+    With ``decompressor`` (the chip has scan compression too), the wrapper holds
+    it as well: the scan inputs become internal wires its phase shifter drives,
+    and its channel port an input -- one module around the one core instance,
+    so the whole chip is one netlist.
 
     ``scan_out_ports`` is the ordered list of the design's actual scan-chain
     output port names (one per chain), and ``fanout[o]`` indexes INTO
@@ -124,31 +130,52 @@ def compactor_wrapper_verilog(
     if not isinstance(ports, dict):
         raise ValueError(f"module {core_module!r} has no ports")
 
-    scan_out_set = set(scan_out_ports)
-    passthrough_names = [name for name in ports if name not in scan_out_set]
+    scan_in_ports = decompressor.scan_in_ports if decompressor is not None else []
+    internal = set(scan_out_ports) | set(scan_in_ports)
+    passthrough_names = [name for name in ports if name not in internal]
     if channel_port in passthrough_names:
         raise ValueError(
             f"the channel port {channel_port!r} is a port of {core_module!r} too; "
             "name the channels something else ([compaction] channel_port)"
         )
+    in_channels: list[str] = []
+    in_lines: list[str] = []
+    if decompressor is not None:
+        decompressor.check_ports(passthrough_names, core_module)
+        if decompressor.channel_port == channel_port:
+            raise ValueError(
+                f"the compression and compaction channels are both named "
+                f"{channel_port!r}; name one of them something else"
+            )
+        in_channels = [decompressor.channel_port]
+        in_lines = [*decompressor_verilog(decompressor), ""]
 
     port_decls: list[str] = []
-    port_list: list[str] = passthrough_names + [channel_port]
+    port_list: list[str] = passthrough_names + in_channels + [channel_port]
     for name in passthrough_names:
         port = ports[name]
         direction = port.get("direction", "input")
         width = len(port.get("bits", []))
         port_decls.append(_port_decl(name, direction, width))
+    if decompressor is not None:
+        port_decls.append(
+            _port_decl(
+                decompressor.channel_port, "input", decompressor.polynomial.width
+            )
+        )
     port_decls.append(_port_decl(channel_port, "output", len(fanout)))
 
-    wire_decls = [f"  wire {name};" for name in scan_out_ports]
+    wire_decls = [f"  wire {name};" for name in [*scan_in_ports, *scan_out_ports]]
     assigns = []
     for o, row in enumerate(fanout):
         terms = " ^ ".join(f"{scan_out_ports[c]}" for c in row)
         target = channel_port if len(fanout) <= 1 else f"{channel_port}[{o}]"
         assigns.append(f"  assign {target} = {terms};")
 
-    inst_conns = [f"    .{name}({name})" for name in passthrough_names + scan_out_ports]
+    inst_conns = [
+        f"    .{name}({name})"
+        for name in [*passthrough_names, *scan_in_ports, *scan_out_ports]
+    ]
 
     lines = [
         f"module {wrapper_module}({', '.join(port_list)});",
@@ -156,6 +183,7 @@ def compactor_wrapper_verilog(
         "",
         *wire_decls,
         "",
+        *in_lines,
         *assigns,
         "",
         f"  {core_module} {instance_name} (",
@@ -187,10 +215,12 @@ def insert_compaction(
     *,
     workdir: Path,
     channel_port: str = "tdo",
+    decompressor: Decompressor | None = None,
 ) -> tuple[Path, CompactionMap]:
     """Insert a static XOR-tree space compactor around a frozen, already
     scan-stitched core netlist, producing one flat composed netlist at
-    ``output_json``.
+    ``output_json`` -- with ``decompressor``, the scan compression's
+    decompressor too, the whole chip.
 
     Reuses faultflow.project.assemble.assemble_soc() UNCHANGED, the exact
     same reuse shape as faultflow.scan.compression.insert_compression: the
@@ -217,6 +247,7 @@ def insert_compaction(
         wrapper_top,
         channel_port=channel_port,
         instance_name=instance_name,
+        decompressor=decompressor,
     )
 
     workdir.mkdir(parents=True, exist_ok=True)
