@@ -1265,6 +1265,19 @@ def _process_scan_candidate(
         scan_pattern = _decompressed(
             core, scan_ctx, vector, scan_pattern, head_bits if is_los else {}
         )
+    if transition:
+        # What a tester applies between the load and the capture: a launch pulse
+        # (LOC), or one more shift with these scan-in bits (LOS), every chain's.
+        chains = range(len(scan_ctx.manifest.get("scan_inputs", [])))
+        scan_pattern = replace(
+            scan_pattern,
+            launch=launch_mode,
+            launch_scan_in=(
+                {chain: bool(head_bits.get(chain, False)) for chain in chains}
+                if is_los
+                else {}
+            ),
+        )
     insert_pending_candidate(
         conn,
         campaign_id=campaign_id,

@@ -169,6 +169,12 @@ class ScanPattern:
     # reset input active, and it stays inactive while a real scan flop's reset
     # would wipe the load (faultflow.scan.shift_controls). Empty: none.
     shift_pi_values: dict[str, bool] = field(default_factory=dict)
+    # A transition pattern's launch, between the load and the capture: "loc", a
+    # functional pulse (launch on capture); "los", one more shift with scan enable
+    # on and launch_scan_in's bit at each chain's scan-in (launch on shift). ""
+    # for a stuck-at pattern, which captures right after the load.
+    launch: str = ""
+    launch_scan_in: dict[int, bool] = field(default_factory=dict)
 
 
 def _chain_lengths(manifest: dict[str, Any]) -> dict[int, int]:

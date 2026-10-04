@@ -1,0 +1,194 @@
+"""Each scan flow's exported patterns, replayed on the scanned sky130 netlist with the
+PDK's own cell models (scan_replay), unload what FaultFlow expects: what a tester
+would see on a good chip. FaultFlow's simulators are the reference everywhere else;
+this is where the patterns meet the real cells.
+
+The chips are sky130 netlists before scan: clk 2, d0 4, d1 5 unless a test says
+otherwise."""
+
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from faultflow.config import load_config
+from scan_replay import replay_on_cells
+
+ROOT = Path(__file__).resolve().parents[3]
+CELL_MAP_PATH = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
+TOP = "chip"
+DFXTP = "sky130_fd_sc_hd__dfxtp_1"
+
+
+def _cell(kind: str, **conns: int | str) -> dict[str, Any]:
+    outputs = ("Q", "X", "Y", "dout")
+    return {
+        "hide_name": 0,
+        "type": kind,
+        "parameters": {},
+        "attributes": {},
+        "port_directions": {p: "output" if p in outputs else "input" for p in conns},
+        "connections": {p: [n] for p, n in conns.items()},
+    }
+
+
+def _gate(kind: str, a: int, b: int, x: int) -> dict[str, Any]:
+    return _cell(f"sky130_fd_sc_hd__{kind}_1", A=a, B=b, X=x)
+
+
+def _chip(
+    cells: dict[str, Any], inputs: dict[str, int], outputs: dict[str, int]
+) -> dict[str, Any]:
+    ports = {
+        **{n: {"direction": "input", "bits": [b]} for n, b in inputs.items()},
+        **{n: {"direction": "output", "bits": [b]} for n, b in outputs.items()},
+    }
+    module = {"attributes": {"top": "1"}, "ports": ports, "cells": cells}
+    module["netnames"] = {}
+    return {"modules": {TOP: module}}
+
+
+def _ring() -> dict[str, Any]:
+    """Three flops in a ring through logic: r0 = d0 ^ r2, r1 = r0 & d1,
+    r2 = r1 | d0; y = r2 ^ r0."""
+    cells = {
+        "g_x": _gate("xor2", 4, 19, 14),
+        "r0": _cell(DFXTP, CLK=2, D=14, Q=15),
+        "g_a": _gate("and2", 15, 5, 16),
+        "r1": _cell(DFXTP, CLK=2, D=16, Q=17),
+        "g_o": _gate("or2", 17, 4, 18),
+        "r2": _cell(DFXTP, CLK=2, D=18, Q=19),
+        "g_y": _gate("xor2", 19, 15, 20),
+    }
+    return _chip(cells, {"clk": 2, "d0": 4, "d1": 5}, {"y": 20})
+
+
+def _two_domains() -> dict[str, Any]:
+    """clk_a 2 clocks a0 and a1, clk_b 3 clocks b0 and b1; a1 feeds b0."""
+    cells = {
+        "g_x": _gate("xor2", 4, 5, 14),
+        "a0": _cell(DFXTP, CLK=2, D=14, Q=15),
+        "g_a": _gate("and2", 15, 5, 16),
+        "a1": _cell(DFXTP, CLK=2, D=16, Q=17),
+        "g_o": _gate("or2", 17, 4, 18),
+        "b0": _cell(DFXTP, CLK=3, D=18, Q=19),
+        "g_b": _gate("xor2", 19, 5, 20),
+        "b1": _cell(DFXTP, CLK=3, D=20, Q=21),
+        "g_y": _gate("and2", 21, 15, 22),
+    }
+    inputs = {"clk_a": 2, "clk_b": 3, "d0": 4, "d1": 5}
+    return _chip(cells, inputs, {"y": 22})
+
+
+def _with_memory() -> dict[str, Any]:
+    """u_mem, a blackbox (din 6, dout 13), feeds r0: r0 = dout & d0,
+    r1 = r0 ^ d1, r2 = d0 | d1; y = r1 & r2."""
+    cells = {
+        "u_mem": _cell("sram_like", din=6, dout=13),
+        "g_m": _gate("and2", 13, 4, 14),
+        "r0": _cell(DFXTP, CLK=2, D=14, Q=15),
+        "g_x": _gate("xor2", 15, 5, 16),
+        "r1": _cell(DFXTP, CLK=2, D=16, Q=17),
+        "g_o": _gate("or2", 4, 5, 18),
+        "r2": _cell(DFXTP, CLK=2, D=18, Q=19),
+        "g_y": _gate("and2", 17, 19, 20),
+    }
+    inputs = {"clk": 2, "d0": 4, "d1": 5, "mdin": 6}
+    return _chip(cells, inputs, {"y": 20})
+
+
+@pytest.fixture
+def flow_tools() -> None:
+    from faultflow.runner.runner import _load_core
+
+    if shutil.which("yosys") is None or _load_core() is None:
+        pytest.skip("needs Yosys on PATH and the C++ core")
+    if shutil.which("iverilog") is None or shutil.which("vvp") is None:
+        pytest.skip("needs iverilog")
+
+
+def _replay(work: Path, chip: dict[str, Any], sections: str) -> list[dict[str, Any]]:
+    """init, scan, scan-check and sim --scan on `chip` with `sections`; the exported
+    patterns, after asserting every one unloads on the cells as expected."""
+    from faultflow.cli import main
+
+    netlist = work / "chip.json"
+    netlist.write_text(json.dumps(chip), encoding="utf-8")
+    ofs = work / "chip.ofs"
+    ofs.write_text(
+        f"[design]\nnetlist = {netlist}\ncell_lib = {CELL_MAP_PATH}\n\n{sections}",
+        encoding="utf-8",
+    )
+    patterns = work / "patterns.json"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(work)
+        for step in (
+            ["init"],
+            ["scan"],
+            ["scan-check"],
+            ["sim", "--scan", "--export-patterns", str(patterns)],
+        ):
+            assert main([*step, "--top", TOP, "-c", str(ofs)]) == 0, step
+        cfg = load_config(ofs, TOP)
+        assert replay_on_cells(cfg, patterns, work / "replay") == []
+    return list(json.loads(patterns.read_text(encoding="utf-8")))
+
+
+@pytest.mark.integration
+def test_launch_on_capture_patterns_unload_on_real_cells(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """A launch-on-capture pattern pulses the clock twice after the load -- the
+    launch, then the capture -- and says so (launch = loc)."""
+    exported = _replay(
+        tmp_path,
+        _ring(),
+        "[fault_model]\nmodel = transition\nlaunch = loc\ncollapsing = false\n\n"
+        "[scan]\nchains = 1\n",
+    )
+    assert exported and {p["launch"] for p in exported} == {"loc"}
+
+
+@pytest.mark.integration
+def test_launch_on_shift_patterns_unload_on_real_cells(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """A launch-on-shift pattern shifts once more after the load, scan enable on,
+    with its own scan-in bit per chain (launch_scan_in), then captures."""
+    exported = _replay(
+        tmp_path,
+        _ring(),
+        "[fault_model]\nmodel = transition\nlaunch = los\ncollapsing = false\n\n"
+        "[scan]\nchains = 1\n",
+    )
+    assert exported and {p["launch"] for p in exported} == {"los"}
+    assert all(set(p["launch_scan_in"]) == {"0"} for p in exported)
+
+
+@pytest.mark.integration
+def test_two_clock_domains_patterns_unload_on_real_cells(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    _replay(
+        tmp_path,
+        _two_domains(),
+        "[clocks]\nports = clk_a, clk_b\n\n[scan]\nchains = 2\n",
+    )
+
+
+@pytest.mark.integration
+def test_blackbox_patterns_unload_on_real_cells(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """u_mem's output is unknown on the cells (a port-only stub): every unload bit
+    it can reach is masked, and every other one matches."""
+    exported = _replay(
+        tmp_path,
+        _with_memory(),
+        "[blackbox]\ninstances = u_mem\n\n[scan]\nchains = 1\n",
+    )
+    assert any(p.get("unload_mask") for p in exported)
