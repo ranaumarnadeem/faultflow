@@ -108,7 +108,9 @@ non-scan flop settles during the test (a reset synchronizer, see `[scan]
 nonscan_cells`), each pattern carries `preamble_cycles`: the scan-clock pulses,
 scan enable off and the holds applied, to give before its load. With scan
 compression every pattern carries at least one: it arms the decompressor's reseed,
-which a load right after the previous unload wouldn't give. With
+which a load right after the previous unload wouldn't give. It also carries `seed`,
+what a tester holds on the compression channels for the whole pattern (seed bit k
+on channel bit k); `load_seqs` is the stream the decompressor makes of it. With
 `include_reset_faults`, a pattern may set a reset input active in its
 `capture_pi_values` to test the reset; it then carries `shift_pi_values`, the values
 those inputs hold everywhere but the capture (inactive: a scan flop's reset acts
@@ -117,7 +119,9 @@ pulse between the load and the capture, or `los`, one more shift with scan enabl
 and each chain's `launch_scan_in` bit at its scan input. `capture_pi_values` holds the
 primary inputs' values and the primary outputs' expected values at the capture
 (but an output a blackbox's unknown value reaches); a bus port's bits are named
-`port[i]`. External vectors supplied
+`port[i]`. `write-patterns` writes the export as STIL, the cycles a tester applies
+(see [Running without the shell](running_without_shell.md#write-patterns)). External
+vectors supplied
 with `sim --ext` use the same plain-text format as `patterns.test` and require a
 same-stem `.bench` sidecar that fixes the primary-input order.
 

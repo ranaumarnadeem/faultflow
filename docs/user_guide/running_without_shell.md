@@ -58,7 +58,7 @@ command.
 | `--serial-ref` | Run isolated serial reference diagnostics; does not update production coverage. Cannot be combined with `--ext` |
 | `-t PCT` | Target coverage percent at which to stop ATPG (default: `[report] threshold`); must be in `(0, 100]` |
 | `--model {stuck-at,transition}` | Override `[fault_model] model` for this run. `transition` with `collapsing = true` is rejected |
-| `--export-patterns PATH` | Export scan ATPG patterns as JSON to `PATH` (requires `--scan`); input for `retarget --patterns` |
+| `--export-patterns PATH` | Export scan ATPG patterns as JSON to `PATH` (requires `--scan`); input for `retarget --patterns` and `write-patterns --patterns` |
 
 The `--ext` sidecar (`.bench`) is a BENCH-format netlist of the same circuit; faultflow
 reads it only to recover the primary-input ordering that the `.test` vector columns map
@@ -130,6 +130,59 @@ The Tcl shell's equivalent command, also named `retarget`, uses single-dash
 Tcl-style flags (`-patterns`, `-soc_access`) instead of the CLI's
 `--patterns`/`--soc-access` — same operation, different flag syntax.
 ```
+
+## `write-patterns`
+
+```bash
+python3 ff.py write-patterns --top <top> -c config.ofs --patterns patterns.json -o chip.stil
+```
+
+Write the scan patterns `sim --scan --export-patterns` exported as STIL (IEEE 1450):
+the cycles a tester applies to the chip, one pattern after another. Each load also
+unloads the pattern before, the usual way, with half the shifts: the preamble is
+given once, first, and a last unload ends the patterns. With `--no-overlap` each
+pattern is applied alone, as FaultFlow grades it -- its preamble, load, launch,
+capture and unload. Nothing an unload compares depends on what shifts in at the
+same time or on the inputs a load holds, the holds keep every flop a preamble
+settles settled, and each capture's pulse arms the decompressor's reseed for the
+next load, so both give the same results; the test suite checks both on the cells.
+The chip is the scanned netlist, or with scan compression or compaction the one
+`scan-compress` or `scan-compact` wrote (with both, the compacted one). A design
+with IEEE 1500 wrapper cells is refused: they have no cell-level implementation.
+The Tcl shell's `write_patterns -patterns PATH -o PATH [-no_overlap]` does the same.
+
+| Option | Required | Meaning |
+|---|---|---|
+| `--patterns PATH` | yes | The patterns `sim --scan --export-patterns` wrote for this scan campaign |
+| `-o PATH`, `--output PATH` | yes | The STIL file to write |
+| `--no-overlap` | no | Apply each pattern alone: its unload doesn't overlap the next load |
+
+What the STIL holds:
+
+- A signal per pin bit (a bus bit is `"port[i]"`), in groups: `_pi` (the inputs but
+  the scan clocks, scan enable and scan inputs), `_po` (the outputs but the scan
+  outputs), `_si` (the scan inputs; with compression, the channels a pattern's seed
+  is held on), `_so` (the scan outputs; with compaction, the compactor's channels),
+  `_clk` (the scan clocks) and `_se`.
+- One WaveformTable, `_wft_`: a 100 ns period, inputs changing at 0 ns, outputs
+  strobed at 40 ns, the scan clocks pulsing high from 50 ns to 80 ns.
+- Without compression or compaction, ScanStructures: each chain's scan input and
+  output, length and cells, scan input first.
+- One procedure, `load_unload`, which sets every signal itself, since readers
+  differ on whether a procedure keeps its caller's signal states: a call passes it
+  the inputs' values to hold (with compression, the seed too), it turns scan enable
+  on, then a Shift takes a bit per scan input and per scan output each shift. With
+  compression the scan inputs aren't shifted: the decompressor makes the load from
+  the seed they hold.
+- Per pattern: a `load_unload` call for its load -- comparing the unload of the
+  pattern before, or nothing -- a vector for a transition pattern's launch and one
+  for its capture (the outputs strobed); then a last `load_unload` call for the
+  last unload.
+  An unload compares the expected bits, X where a flop captured an unknown value or
+  the decompressor's bits come out of a shorter chain. The preamble is a Loop, once
+  first, or before each pattern's load with `--no-overlap`.
+
+These are exactly the cycles the test suite replays on the chip's sky130 cell models.
 
 ## `status`
 
@@ -356,6 +409,7 @@ side.
 | EXTEST | `add_blackbox` ... + `set_testmode extest` + `run_atpg` | `extest` |
 | Hierarchical SoC | `flowscripts/hereichy_atpg.tcl` | `project` |
 | Retarget to SoC | `retarget -patterns ... -soc_access ...` | `retarget --patterns ... --soc-access ...` |
+| Write patterns as STIL | `write_patterns -patterns ... -o ...` | `write-patterns --patterns ... -o ...` |
 | Declare a clock | `add_clock` (live session) | `add-clock` (edits `config.ofs`) |
 | DFT rule check | *(shell has no equivalent)* | `rule_check` |
 | OpenTestability oracle | *(shell has no equivalent)* | `run` |

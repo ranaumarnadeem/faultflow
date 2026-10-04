@@ -20,7 +20,7 @@ import pytest
 from faultflow.config import load_config
 from mbist_chip import LIBERTY, ROOT, chip_copy
 from scan_credit import compressed_credit_not_reproduced, credit_not_reproduced
-from scan_replay import replay_compressed_on_cells, replay_on_cells
+from scan_replay import replay_on_cells
 from warptap_helpers import skip_unless_warptap
 
 CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
@@ -285,8 +285,9 @@ def test_with_compression_every_credit_holds_on_the_compressed_chip(
         "not_reproduced": [],
         "golden": [],
     }
-    # Back to back on the composed chip's sky130 cells, from power-up: each
-    # pattern's pulse arms the reseed, and every unload and output matches.
+    # Back to back on the composed chip's sky130 cells, from power-up, each
+    # pattern's own seed on comp_si: each pattern's pulse arms the reseed, and
+    # every unload and output matches.
     if shutil.which("iverilog") is not None and shutil.which("vvp") is not None:
-        assert replay_compressed_on_cells(cfg, patterns, out / "replay", seed_of) == []
+        assert replay_on_cells(cfg, patterns, out / "replay") == []
     assert _report(cfg, out)["summary"]["compression_unresolved"] > 0

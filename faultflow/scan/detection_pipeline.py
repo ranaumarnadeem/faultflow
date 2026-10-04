@@ -609,6 +609,7 @@ def _decompressed(
             for chain in sorted(load_seqs)
             for cycle in range(max_chain_length)
         ),
+        seed=seed,
     )
 
 

@@ -9,19 +9,15 @@ otherwise."""
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pytest
 
 from faultflow.config import load_config
-from scan_replay import (
-    replay_compacted_on_cells,
-    replay_compressed_on_cells,
-    replay_on_cells,
-)
-from warptap_helpers import skip_unless_warptap
+from scan_replay import replay_on_cells
 
 ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP_PATH = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
@@ -214,28 +210,6 @@ def test_every_bit_of_an_output_bus_is_compared(
     assert all({"y[0]", "y[1]"} <= set(p["capture_pi_values"]) for p in exported)
 
 
-def _seed_solver(cfg: Any) -> Callable[[int, dict[str, Any]], int]:
-    """Each exported pattern's seed, solved as a tester solves it (warptap), for
-    the decompressor the manifest records."""
-    from warptap.faultflow_compression import (
-        care_bit_rows,
-        polynomial_from_manifest,
-        solve_pattern_seed,
-    )
-
-    manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
-    compression = manifest["compression"]
-    poly = polynomial_from_manifest(compression)
-    rows = care_bit_rows(
-        poly, compression["phase_shifter_taps"], int(manifest["max_chain_length"])
-    )
-
-    def seed_of(number: int, raw: dict[str, Any]) -> int:
-        return int(solve_pattern_seed(raw["load_seqs"], rows, poly.width, number))
-
-    return seed_of
-
-
 COMPRESSION = "[compression]\nenabled = true\nchannels = 8\n"
 COMPACTION = "[compaction]\nenabled = true\nchannels = 2\n"
 
@@ -244,11 +218,10 @@ COMPACTION = "[compaction]\nenabled = true\nchannels = 2\n"
 def test_compressed_patterns_load_through_the_decompressor_cells(
     tmp_path: Path, flow_tools: None
 ) -> None:
-    """With scan compression a pattern is one seed's load: the seed, solved as a
-    tester solves it, held on the channel bus of the composed chip, the
-    decompressor's own cells load the three chains, and every pattern unloads and
-    strobes what FaultFlow expects."""
-    skip_unless_warptap("warptap.faultflow_compression")
+    """With scan compression a pattern is one seed's load: the seed it carries
+    held on the channel bus of the composed chip, the decompressor's own cells
+    load the three chains, and every pattern unloads and strobes what FaultFlow
+    expects."""
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(tmp_path)
         cfg, patterns = _flow(
@@ -258,9 +231,7 @@ def test_compressed_patterns_load_through_the_decompressor_cells(
             compose=("scan-compress",),
         )
         assert json.loads(patterns.read_text(encoding="utf-8"))
-        seed_of = _seed_solver(cfg)
-        replayed = replay_compressed_on_cells(cfg, patterns, tmp_path / "r", seed_of)
-        assert replayed == []
+        assert replay_on_cells(cfg, patterns, tmp_path / "replay") == []
 
 
 @pytest.mark.integration
@@ -271,7 +242,6 @@ def test_compressed_and_compacted_patterns_replay_on_the_whole_chip(
     compactor into one netlist, the core still core_inst: each seed held on the
     compression channels, every pattern's unload, read on the compactor's
     channels, matches on its cells."""
-    skip_unless_warptap("warptap.faultflow_compression")
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(tmp_path)
         cfg, patterns = _flow(
@@ -291,9 +261,7 @@ def test_compressed_and_compacted_patterns_replay_on_the_whole_chip(
             module["cells"]
         )
         assert json.loads(patterns.read_text(encoding="utf-8"))
-        seed_of = _seed_solver(cfg)
-        replayed = replay_compressed_on_cells(cfg, patterns, tmp_path / "r", seed_of)
-        assert replayed == []
+        assert replay_on_cells(cfg, patterns, tmp_path / "replay") == []
 
 
 @pytest.mark.integration
@@ -314,7 +282,7 @@ def test_compacted_patterns_unload_through_the_compactor_cells(
         manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
         assert len(manifest["compaction"]["fanout"]) == 2
         assert json.loads(patterns.read_text(encoding="utf-8"))
-        assert replay_compacted_on_cells(cfg, patterns, tmp_path / "replay") == []
+        assert replay_on_cells(cfg, patterns, tmp_path / "replay") == []
 
 
 @pytest.mark.integration
@@ -329,3 +297,36 @@ def test_blackbox_patterns_unload_on_real_cells(
         "[blackbox]\ninstances = u_mem\n\n[scan]\nchains = 1\n",
     )
     assert any(p.get("unload_mask") for p in exported)
+
+
+@pytest.mark.integration
+def test_write_patterns_writes_the_exported_patterns_as_stil(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """ff.py write-patterns writes the export as STIL -- each chain's cells in
+    ScanStructures, a load_unload call per pattern and a last one for the last
+    unload, or with --no-overlap a load and an unload call per pattern -- whose
+    cycles every replay here checks (replay_on_cells); an export that isn't there
+    is an error."""
+    from faultflow.cli import main
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(tmp_path)
+        _, patterns = _flow(tmp_path, _ring(), "[scan]\nchains = 3\n")
+        common = ["write-patterns", "--top", TOP, "-c", str(tmp_path / "chip.ofs")]
+        exported = json.loads(patterns.read_text(encoding="utf-8"))
+        calls = {}
+        for flags in ([], ["--no-overlap"]):
+            stil = tmp_path / f"chip{len(flags)}.stil"
+            written = ["--patterns", str(patterns), "-o", str(stil), *flags]
+            assert main([*common, *written]) == 0
+            text = stil.read_text(encoding="utf-8")
+            assert text.startswith("STIL 1.0;")
+            cells = set(re.findall(r'ScanCells "([^"]+)";', text))
+            assert cells == {"r0", "r1", "r2"}
+            calls[len(flags)] = text.count('Call "load_unload"')
+        assert calls == {0: len(exported) + 1, 1: 2 * len(exported)}
+        missing = ["--patterns", str(tmp_path / "none.json"), "-o", str(stil)]
+        with pytest.raises(SystemExit) as exc:
+            main([*common, *missing])
+        assert exc.value.code == 2
