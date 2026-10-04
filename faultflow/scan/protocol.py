@@ -175,6 +175,10 @@ class ScanPattern:
     # for a stuck-at pattern, which captures right after the load.
     launch: str = ""
     launch_scan_in: dict[int, bool] = field(default_factory=dict)
+    # With scan compression, the decompressor seed whose stream load_seqs is: what
+    # a tester holds on the compression channels, bit k on channel bit k
+    # (detection_pipeline._decompressed). None without compression.
+    seed: int | None = None
 
 
 def _chain_lengths(manifest: dict[str, Any]) -> dict[int, int]:

@@ -83,3 +83,17 @@ def test_load_care_roundtrips_exactly_when_present() -> None:
         isinstance(chain, int) and isinstance(cycle, int)
         for chain, cycle in restored.load_care
     )
+
+
+def test_a_compressed_patterns_seed_roundtrips_and_others_carry_none() -> None:
+    p = ScanPattern(
+        load_seqs={0: [True, False]},
+        capture_pi_values={},
+        expected_unload={0: [False, True]},
+        seed=0b10110001,
+    )
+    d = scan_pattern_to_dict(p)
+    assert d["seed"] == 0b10110001
+    assert scan_pattern_from_dict(json.loads(json.dumps(d))).seed == 0b10110001
+    assert "seed" not in scan_pattern_to_dict(_sample_pattern())
+    assert scan_pattern_from_dict(scan_pattern_to_dict(_sample_pattern())).seed is None

@@ -285,8 +285,14 @@ def test_with_compression_every_credit_holds_on_the_compressed_chip(
         "not_reproduced": [],
         "golden": [],
     }
-    # Back to back on the composed chip's sky130 cells, from power-up: each
-    # pattern's pulse arms the reseed, and every unload and output matches.
+    # Back to back on the composed chip's sky130 cells, from power-up, each
+    # pattern's own seed on comp_si: each pattern's pulse arms the reseed, and
+    # every unload and output matches.
     if shutil.which("iverilog") is not None and shutil.which("vvp") is not None:
-        assert replay_compressed_on_cells(cfg, patterns, out / "replay", seed_of) == []
+        assert (
+            replay_compressed_on_cells(
+                cfg, patterns, out / "replay", lambda _, raw: int(raw["seed"])
+            )
+            == []
+        )
     assert _report(cfg, out)["summary"]["compression_unresolved"] > 0
