@@ -10,7 +10,10 @@ inputs. It follows buffers and inverters, and goes through an AND- or OR-type ga
 when an input sits at its controlling value -- 0 into an AND, 1 into an OR, the
 opposite on a bubbled input (:data:`CONTROLLING`) -- which sets the gate's output
 whatever its other inputs do, or when every input is held. A TDR bit cleared through
-``trst_n & clr_n`` is held in reset by ``trst_n`` at 0 that way.
+``trst_n & clr_n`` is held in reset by ``trst_n`` at 0 that way. Through a mux
+(:data:`MUXES`), a held select picks the data input followed; with a select free, the
+data inputs it could pick must all hold the same value -- ``test_mode ? rst_n :
+rst_sync`` is held with ``test_mode`` and ``rst_n`` held.
 
 A stuck-at on such a path, at the value that releases the pin, is what can let a flop
 out of a reset that holds it; :func:`release_faults` lists them.
@@ -55,6 +58,16 @@ CONTROLLING: dict[str, tuple[tuple[int, ...], int]] = {
     "NOR4": ((1, 1, 1, 1), 0),
     "NOR4B": ((1, 1, 1, 0), 0),
     "NOR4BB": ((1, 1, 0, 0), 0),
+}
+
+# Mux gate type -> (the data input each select value picks, the select inputs, low
+# bit first, and whether the output is complemented): gate_eval.cpp's formulas.
+# OSU's MUX2 picks its first input with the select at 1.
+MUXES: dict[str, tuple[tuple[int, ...], tuple[int, ...], bool]] = {
+    "MUX2_NI": ((0, 1), (2,), False),
+    "MUX2I": ((0, 1), (2,), True),
+    "MUX2": ((1, 0), (2,), True),
+    "MUX4": ((0, 1, 2, 3), (4, 5), False),
 }
 
 # (net, the cell reading it, that cell's pin, the net's value)
@@ -278,6 +291,9 @@ class Netlist:
                 ((source, driver, inputs[0], value),) if isinstance(source, int) else ()
             )
             return value ^ int(gate == "INV"), own + upstream
+        mux = MUXES.get(gate)
+        if mux is not None:
+            return self._mux(driver, inputs, conns, mux, values, known, memo, visiting)
         rule = CONTROLLING.get(gate)
         if rule is None or len(rule[0]) != len(inputs):
             return None
@@ -305,6 +321,73 @@ class Netlist:
         # any one of them flipped would change.
         return (1 - output, tuple(every)) if all_held else None
 
+    def _mux(
+        self,
+        driver: str,
+        inputs: list[str],
+        conns: Mapping[str, Any],
+        mux: tuple[tuple[int, ...], tuple[int, ...], bool],
+        values: Mapping[str, int],
+        known: Mapping[int, int],
+        memo: dict[int, tuple[int, tuple[Step, ...]] | None],
+        visiting: set[int],
+    ) -> tuple[int, tuple[Step, ...]] | None:
+        """A mux's held output: the data inputs its held selects leave it, all held
+        at one value."""
+        data, selects, inverted = mux
+        if len(inputs) != len(data) + len(selects):
+            return None
+
+        def held_input(position: int) -> tuple[int, tuple[Step, ...]] | None:
+            pin = inputs[position]
+            source = one_net(conns.get(pin))
+            held = self._held(source, values, known, memo, visiting)
+            if held is None:
+                return None
+            path = list(held[1])
+            if isinstance(source, int):
+                path.insert(0, (source, driver, pin, held[0]))
+            return held[0], tuple(path)
+
+        steps: list[Step] = []
+        picks = list(range(len(data)))
+        for bit, position in enumerate(selects):
+            select = held_input(position)
+            if select is not None:
+                steps.extend(select[1])
+                picks = [i for i in picks if (i >> bit) & 1 == select[0]]
+        found: set[int] = set()
+        for index in picks:
+            held = held_input(data[index])
+            if held is None:
+                return None
+            found.add(held[0])
+            steps.extend(held[1])
+        if len(found) != 1:
+            return None
+        return found.pop() ^ int(inverted), tuple(steps)
+
+    def controls(self, instance: str) -> tuple[Control, ...]:
+        """A flop's clear and preset, as the cell map names them."""
+        ff = (self.entry(instance) or {}).get("ff", {})
+        conns = self.cells[instance].get("connections", {})
+        found = []
+        for kind in ("clear", "preset"):
+            spec = ff.get(kind)
+            if not isinstance(spec, dict):
+                continue
+            pin = str(spec["pin"])
+            found.append(
+                Control(
+                    kind=kind,
+                    pin=pin,
+                    active=0 if str(spec.get("level", "LOW")).upper() == "LOW" else 1,
+                    value=int(spec.get("value", 0)),
+                    trace=self.trace(one_net(conns.get(pin)), instance, pin),
+                )
+            )
+        return tuple(found)
+
     def flops(self) -> list[Flop]:
         flops: list[Flop] = []
         for instance, cell in self.cells.items():
@@ -321,25 +404,6 @@ class Netlist:
             if not isinstance(q, int):
                 raise TraceError(f"flop {instance} has no single-bit output net")
             clock_pin = str(ff.get("clock", "CLK"))
-            controls = []
-            for kind in ("clear", "preset"):
-                spec = ff.get(kind)
-                if not isinstance(spec, dict):
-                    continue
-                control_pin = str(spec["pin"])
-                controls.append(
-                    Control(
-                        kind=kind,
-                        pin=control_pin,
-                        active=(
-                            0 if str(spec.get("level", "LOW")).upper() == "LOW" else 1
-                        ),
-                        value=int(spec.get("value", 0)),
-                        trace=self.trace(
-                            one_net(conns.get(control_pin)), instance, control_pin
-                        ),
-                    )
-                )
             flops.append(
                 Flop(
                     instance=instance,
@@ -348,7 +412,7 @@ class Netlist:
                     clock=self.trace(
                         one_net(conns.get(clock_pin)), instance, clock_pin
                     ),
-                    controls=tuple(controls),
+                    controls=self.controls(instance),
                 )
             )
         return flops

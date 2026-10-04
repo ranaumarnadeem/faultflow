@@ -47,6 +47,16 @@ def scan_pattern_to_dict(pattern: ScanPattern) -> dict[str, Any]:
             if pattern.preamble_cycles
             else {}
         ),
+        **(
+            {
+                "shift_pi_values": {
+                    str(port): bool(value)
+                    for port, value in pattern.shift_pi_values.items()
+                }
+            }
+            if pattern.shift_pi_values
+            else {}
+        ),
     }
 
 
@@ -71,4 +81,8 @@ def scan_pattern_from_dict(data: dict[str, Any]) -> ScanPattern:
         ),
         unload_mask=_int_keyed(unload_mask) if unload_mask is not None else None,
         preamble_cycles=int(data.get("preamble_cycles", 0)),
+        shift_pi_values={
+            str(port): bool(value)
+            for port, value in data.get("shift_pi_values", {}).items()
+        },
     )

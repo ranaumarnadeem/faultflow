@@ -318,6 +318,10 @@ class ScanConfig:
     # every scan pattern (e.g. trst_n:0 keeping the TAP in reset).
     nonscan_cells: tuple[str, ...] = ()
     hold: tuple[tuple[str, int], ...] = ()
+    # A scan flop whose clear or preset isn't held inactive during shift
+    # (scan.shift_controls): scan-check fails ("fail"), or passes with a warning
+    # ("warn": the user has checked those resets).
+    shift_controls: str = "fail"
 
 
 @dataclass(frozen=True)
@@ -608,6 +612,11 @@ def _parse_scan(parser: ConfigParser) -> ScanConfig:
         for glob in parser.get("scan", "nonscan_cells", fallback="").split(",")
         if glob.strip()
     )
+    shift_controls = parser.get("scan", "shift_controls", fallback="fail").strip()
+    if shift_controls not in {"fail", "warn"}:
+        raise ConfigError(
+            f"[scan] shift_controls must be fail or warn, got '{shift_controls}'"
+        )
     return ScanConfig(
         chains=_int(parser, "scan", "chains", 1),
         max_chain_length=_optional_int(parser, "scan", "max_chain_length"),
@@ -617,6 +626,7 @@ def _parse_scan(parser: ConfigParser) -> ScanConfig:
         run_techmap=_bool(parser, "scan", "run_techmap", True),
         nonscan_cells=nonscan_cells,
         hold=_parse_holds(parser, "scan"),
+        shift_controls=shift_controls,
     )
 
 

@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from faultflow.control_trace import CONTROLLING, Netlist, release_faults
+from faultflow.control_trace import CONTROLLING, MUXES, Netlist, release_faults
 from faultflow.runner.runner import _load_core
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -93,6 +93,83 @@ def test_each_controlling_value_sets_the_output_the_simulator_computes(
             controlled = any(v == c for v, c in zip(values, setting))
             expected = output if controlled else 1 - output
             assert int(result[f"y_{gate}"]) == expected, (gate, values)
+
+
+OSU_MAP_PATH = ROOT / "cells/osu/osu035.json"
+MUX_CELLS = {  # gate -> (cell map, cell type, input pins in order, output pin)
+    "MUX2_NI": (CELL_MAP_PATH, "sky130_fd_sc_hd__mux2_1", ["A0", "A1", "S"], "X"),
+    "MUX2I": (CELL_MAP_PATH, "sky130_fd_sc_hd__mux2i_1", ["A0", "A1", "S"], "Y"),
+    "MUX4": (
+        CELL_MAP_PATH,
+        "sky130_fd_sc_hd__mux4_1",
+        ["A0", "A1", "A2", "A3", "S0", "S1"],
+        "X",
+    ),
+    "MUX2": (OSU_MAP_PATH, "MUX2X1", ["A", "B", "S"], "Y"),
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("gate", sorted(MUXES))
+def test_each_mux_picks_the_input_the_simulator_computes(
+    gate: str, tmp_path: Path, require_cpp_core: None
+) -> None:
+    """In every input combination, a mux's output is the data input MUXES says its
+    selects pick, complemented when it says so -- as gate_eval.cpp computes it."""
+    cell_map, cell, pins, out = MUX_CELLS[gate]
+    names = [f"i{i}" for i in range(len(pins))]
+    ports: dict[str, Any] = {
+        name: {"direction": "input", "bits": [2 + i]} for i, name in enumerate(names)
+    }
+    ports["y"] = {"direction": "output", "bits": [100]}
+    module = {
+        "attributes": {"top": "00000000000000000000000000000001"},
+        "ports": ports,
+        "cells": {
+            "g": {
+                "type": cell,
+                "port_directions": {**{p: "input" for p in pins}, out: "output"},
+                "connections": {
+                    **{p: [2 + i] for i, p in enumerate(pins)},
+                    out: [100],
+                },
+            }
+        },
+        "netnames": {n: {"bits": p["bits"]} for n, p in ports.items()},
+    }
+    netlist = tmp_path / "mux.json"
+    netlist.write_text(json.dumps({"modules": {"mux": module}}), encoding="utf-8")
+    vectors = [
+        dict(zip(names, values))
+        for values in itertools.product((False, True), repeat=len(names))
+    ]
+    core = _load_core()
+    assert core is not None
+    results = core.fault_free_outputs(
+        str(netlist), str(cell_map), vectors, names, ["y"]
+    )
+    data, selects, inverted = MUXES[gate]
+    for vector, result in zip(vectors, results):
+        values = [int(vector[n]) for n in names]
+        pick = sum(values[s] << bit for bit, s in enumerate(selects))
+        assert int(result["y"]) == values[data[pick]] ^ int(inverted), values
+
+
+@pytest.mark.unit
+def test_a_mux_follows_the_input_its_held_select_picks() -> None:
+    """mux2: S ? A1 : A0, with S from trst_n, A0 from en and A1 from rst_n."""
+    net = _netlist(
+        m0=_cell("mux2_1", A0=3, A1=4, S=2, X=10),
+        f0=_cell("dfrtp_1", CLK=5, D=3, RESET_B=10, Q=12),
+    )
+    found = net.forced("f0", "RESET_B", {"trst_n": 1, "rst_n": 1})
+    assert found is not None and found.value == 1
+    assert (4, "m0", "A1", 1) in found.steps and (2, "m0", "S", 1) in found.steps
+    assert net.forced("f0", "RESET_B", {"trst_n": 0, "rst_n": 1}) is None  # en free
+    # With the select free, the data inputs must all hold one value.
+    free = net.forced("f0", "RESET_B", {"en": 1, "rst_n": 1})
+    assert free is not None and free.value == 1
+    assert net.forced("f0", "RESET_B", {"en": 0, "rst_n": 1}) is None
 
 
 def _cell(cell_type: str, **conns: Any) -> dict[str, Any]:

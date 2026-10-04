@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX
@@ -164,6 +164,11 @@ class ScanPattern:
     # synchronizer: faultflow.scan.nonscan). A tester gives them once, before the
     # first load; a replay of one pattern gives them before its load.
     preamble_cycles: int = 0
+    # Inputs held at these values, not capture_pi_values', while the chains shift
+    # (the preamble, load and unload): testing the reset, a capture may set a
+    # reset input active, and it stays inactive while a real scan flop's reset
+    # would wipe the load (faultflow.scan.shift_controls). Empty: none.
+    shift_pi_values: dict[str, bool] = field(default_factory=dict)
 
 
 def _chain_lengths(manifest: dict[str, Any]) -> dict[int, int]:

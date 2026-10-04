@@ -100,6 +100,7 @@ def verify_golden_scan_protocol(
             los_launch_scan_in=los_launch_scan_in or {},
             active_clock_ports=active_clock_ports or [],
             preamble_cycles=pattern.preamble_cycles,
+            shift_pi_values=pattern.shift_pi_values,
         )
     )
     real_po_values = dict(result.get("real_po_values", {}))

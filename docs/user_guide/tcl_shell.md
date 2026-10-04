@@ -98,7 +98,7 @@ See [Test-point insertion](testpoints.md) for the full workflow.
 | Command | Summary |
 |---|---|
 | `add_scan -chains N [-max_length N] [-SI NAME] [-SO NAME] [-SE NAME] [-dry_run]` | Insert and stitch generic `$scanff_faultflow` chains. `-chains` is required. Does not run checking or techmap. `-dry_run` previews the plan without inserting. |
-| `check_scan [-structural]` | Structural + normal-mode equivalence checks on the current scan insertion. `-structural` runs the structural check only. |
+| `check_scan [-structural]` | Structural + normal-mode equivalence checks on the current scan insertion, including that every scan flop's async clear and preset is held inactive during shift (`[scan] shift_controls`). `-structural` runs the structural checks only. |
 
 ### Run
 

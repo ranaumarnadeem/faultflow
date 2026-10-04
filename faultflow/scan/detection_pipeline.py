@@ -54,7 +54,7 @@ from faultflow.scan.atpg_view import (
 )
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.manifest import manifest_clock_net_ids
-from faultflow.scan.stitch import SCAN_CELL_TYPES, _top_module
+from faultflow.scan.stitch import _top_module
 from faultflow.scan.protocol import ScanPattern, serialize_vector
 from faultflow.scan.domain_reach import (
     compute_cross_domain_net_ids,
@@ -70,6 +70,7 @@ from faultflow.scan.compaction import CompactionMap, build_compactor_fanout
 from faultflow.scan.compression import CompressionMap, build_broadcast_fanout
 from faultflow.scan.errors import ScanError
 from faultflow.scan.nonscan import NonscanSetup, jtag_sites, settled_sites
+from faultflow.scan.shift_controls import reset_holds
 from faultflow.scan.ring_generator import (
     bitmask_to_index_list,
     care_bit_rows,
@@ -173,11 +174,13 @@ class _FaultRow:
 def _scan_reset_pi_holds(
     generic_json: Path, top: str, cell_map: dict[str, Any]
 ) -> dict[str, bool]:
-    """Primary inputs that drive a scannable async-reset/set FF's control pin,
-    mapped to the INACTIVE value to hold them at during the scan test.
+    """Primary inputs that reach a scannable async-reset/set FF's control pin
+    through buffers and inverters, mapped to the value that keeps the pin INACTIVE,
+    held during the whole scan test (scan.shift_controls.reset_holds).
 
-    Only direct PI controls are returned (the common rst_n case); a control net
-    driven by logic cannot be held via a PI value and is skipped.
+    An input two pins need at opposite values isn't held, and a control driven by
+    other logic can't be held through an input: scan-check refuses a scan flop whose
+    control isn't held inactive during shift.
     """
     try:
         data = json.loads(Path(generic_json).read_text(encoding="utf-8"))
@@ -186,30 +189,7 @@ def _scan_reset_pi_holds(
     module = data.get("modules", {}).get(top)
     if not isinstance(module, dict):
         return {}
-    bit_to_input: dict[int, str] = {}
-    for name, port in module.get("ports", {}).items():
-        if isinstance(port, dict) and port.get("direction") == "input":
-            bits = port.get("bits", [])
-            if isinstance(bits, list) and len(bits) == 1 and isinstance(bits[0], int):
-                bit_to_input[bits[0]] = str(name)
-    holds: dict[str, bool] = {}
-    for cell in module.get("cells", {}).values():
-        if not isinstance(cell, dict) or cell.get("type") not in SCAN_CELL_TYPES:
-            continue
-        ctype = str(cell.get("type"))
-        entry = cell_map.get(ctype) or cell_map.get(ctype.lstrip("\\"))
-        ff = entry.get("ff", {}) if isinstance(entry, dict) else {}
-        for ctrl_key in ("clear", "preset"):
-            spec = ff.get(ctrl_key) if isinstance(ff, dict) else None
-            if not isinstance(spec, dict):
-                continue
-            conn = cell.get("connections", {}).get(spec.get("pin"))
-            if isinstance(conn, list) and len(conn) == 1 and isinstance(conn[0], int):
-                pi = bit_to_input.get(conn[0])
-                if pi is not None:
-                    # Active-low control (level LOW) is inactive when driven high.
-                    holds[pi] = spec.get("level") == "LOW"
-    return holds
+    return {port: bool(value) for port, value in reset_holds(module, cell_map).items()}
 
 
 def build_scan_pipeline_context(
@@ -502,6 +482,9 @@ def _protocol_fault_sim_kwargs(
         "blackbox_instances": list(ctx.cfg.blackbox_instances),
         "unload_mask": pattern.unload_mask or {},
         "preamble_cycles": pattern.preamble_cycles,
+        "shift_pi_values": {
+            rename.get(k, k): v for k, v in pattern.shift_pi_values.items()
+        },
     }
 
 
@@ -523,8 +506,9 @@ def _serialize(
     ctx: ScanPipelineContext, serialize_input: dict[str, bool]
 ) -> ScanPattern:
     """serialize_vector, with the X-masked expected bits marked don't-care, the
-    held inputs, which the view ties rather than lists, at their values, and the
-    preamble that settles the non-scan flops the scan clock settles."""
+    held inputs, which the view ties rather than lists, at their values, the
+    preamble that settles the non-scan flops the scan clock settles, and, testing
+    the reset, the reset holds while the chains shift."""
     pattern = serialize_vector(
         {**serialize_input, **ctx.input_holds},
         ctx.pseudo_port_map,
@@ -533,7 +517,11 @@ def _serialize(
         masked_outputs=ctx.x_mask.outputs,
     )
     preamble = ctx.nonscan.preamble if ctx.nonscan is not None else 0
-    return replace(pattern, preamble_cycles=preamble) if preamble else pattern
+    # Testing the reset, a capture may set a reset input active (_process_scan_
+    # candidate leaves it free); it stays inactive while the chains shift, where
+    # a real scan flop's reset would wipe the load (scan.shift_controls).
+    shift = dict(ctx.reset_pi_holds) if ctx.cfg.fault_model.include_reset_faults else {}
+    return replace(pattern, preamble_cycles=preamble, shift_pi_values=shift)
 
 
 def _seed_kwargs(

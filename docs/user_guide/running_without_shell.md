@@ -175,7 +175,11 @@ Print scan-insertion status.
 python3 ff.py scan-check --top <top> -c config.ofs [options]
 ```
 
-Validate the inserted scan chains (structural and normal-mode checks).
+Validate the inserted scan chains (structural and normal-mode checks). It also fails
+on a scan flop whose asynchronous clear or preset isn't held inactive while the chains
+shift -- a scanned reset synchronizer's output, say: a real scan flop's clear and preset
+act during shift, which FaultFlow's simulation doesn't model. The error names each flop
+and what drives its pin; see `[scan] shift_controls` in [Configuration](configuration.md).
 
 | Option | Meaning |
 |---|---|
