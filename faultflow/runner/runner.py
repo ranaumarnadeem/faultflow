@@ -180,8 +180,13 @@ def _expand_bus_bits(
 ) -> list[str]:
     """Expand a multi-bit port to individual bit-indexed names via netnames.
 
-    Tries portname[N] entries in netnames, matching each bit by net ID.
-    Falls back to [port_name] (first-bit only) if any bit can't be resolved.
+    Tries portname[N] entries in netnames, matching each bit by net ID. If any
+    bit can't be resolved -- Yosys writes no per-bit netnames for a plain bus
+    port -- every bit is named by position, "<port>[<i>]" for bits[i]
+    (_positional_bus_bits), which the C++ core resolves the same way. (It used to
+    fall back to the bare port name, which resolves to bit 0: the scan flow's
+    golden gate, protocol sims and exported patterns saw bit 0 of such a bus
+    only.)
     """
     prefix = port_name + "["
     bit_id_to_indexed: dict[int, str] = {}
@@ -200,7 +205,7 @@ def _expand_bus_bits(
     result = []
     for bit_id in bits:
         if bit_id not in bit_id_to_indexed:
-            return [port_name]
+            return _positional_bus_bits(port_name, len(bits))
         result.append(bit_id_to_indexed[bit_id])
     return result if result else [port_name]
 

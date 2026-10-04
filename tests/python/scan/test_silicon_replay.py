@@ -101,6 +101,16 @@ def _with_memory() -> dict[str, Any]:
     return _chip(cells, inputs, {"y": 20})
 
 
+def _bus_out() -> dict[str, Any]:
+    """_ring with a two-bit output y = {r1 & d1, r2 ^ r0}, and no per-bit netnames
+    (as Yosys writes a plain bus port)."""
+    chip = _ring()
+    module = chip["modules"][TOP]
+    module["cells"]["g_z"] = _gate("and2", 17, 5, 21)
+    module["ports"]["y"] = {"direction": "output", "bits": [20, 21]}
+    return chip
+
+
 @pytest.fixture
 def flow_tools() -> None:
     from faultflow.runner.runner import _load_core
@@ -178,6 +188,16 @@ def test_two_clock_domains_patterns_unload_on_real_cells(
         _two_domains(),
         "[clocks]\nports = clk_a, clk_b\n\n[scan]\nchains = 2\n",
     )
+
+
+@pytest.mark.integration
+def test_every_bit_of_an_output_bus_is_compared(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """Without per-bit netnames, the bus's bits are y[0] and y[1] by position: each
+    pattern gives both their values, and both match on the cells."""
+    exported = _replay(tmp_path, _bus_out(), "[scan]\nchains = 1\n")
+    assert all({"y[0]", "y[1]"} <= set(p["capture_pi_values"]) for p in exported)
 
 
 @pytest.mark.integration

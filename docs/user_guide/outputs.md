@@ -108,7 +108,10 @@ scan enable off and the holds applied, to give before the first load. With
 those inputs hold everywhere but the capture (inactive: a scan flop's reset acts
 during shift too). A transition pattern carries `launch`: `loc`, a functional clock
 pulse between the load and the capture, or `los`, one more shift with scan enable on
-and each chain's `launch_scan_in` bit at its scan input. External vectors supplied
+and each chain's `launch_scan_in` bit at its scan input. `capture_pi_values` holds the
+primary inputs' values and the primary outputs' expected values at the capture
+(but an output a blackbox's unknown value reaches); a bus port's bits are named
+`port[i]`. External vectors supplied
 with `sim --ext` use the same plain-text format as `patterns.test` and require a
 same-stem `.bench` sidecar that fixes the primary-input order.
 
