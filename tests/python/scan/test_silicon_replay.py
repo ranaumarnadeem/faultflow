@@ -16,11 +16,7 @@ from typing import Any
 import pytest
 
 from faultflow.config import load_config
-from scan_replay import (
-    replay_compacted_on_cells,
-    replay_compressed_on_cells,
-    replay_on_cells,
-)
+from scan_replay import replay_on_cells
 
 ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP_PATH = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
@@ -213,12 +209,6 @@ def test_every_bit_of_an_output_bus_is_compared(
     assert all({"y[0]", "y[1]"} <= set(p["capture_pi_values"]) for p in exported)
 
 
-def _exported_seed(number: int, raw: dict[str, Any]) -> int:
-    """The seed a compressed pattern carries: what a tester holds on the
-    channels."""
-    return int(raw["seed"])
-
-
 COMPRESSION = "[compression]\nenabled = true\nchannels = 8\n"
 COMPACTION = "[compaction]\nenabled = true\nchannels = 2\n"
 
@@ -240,10 +230,7 @@ def test_compressed_patterns_load_through_the_decompressor_cells(
             compose=("scan-compress",),
         )
         assert json.loads(patterns.read_text(encoding="utf-8"))
-        replayed = replay_compressed_on_cells(
-            cfg, patterns, tmp_path / "r", _exported_seed
-        )
-        assert replayed == []
+        assert replay_on_cells(cfg, patterns, tmp_path / "replay") == []
 
 
 @pytest.mark.integration
@@ -273,10 +260,7 @@ def test_compressed_and_compacted_patterns_replay_on_the_whole_chip(
             module["cells"]
         )
         assert json.loads(patterns.read_text(encoding="utf-8"))
-        replayed = replay_compressed_on_cells(
-            cfg, patterns, tmp_path / "r", _exported_seed
-        )
-        assert replayed == []
+        assert replay_on_cells(cfg, patterns, tmp_path / "replay") == []
 
 
 @pytest.mark.integration
@@ -297,7 +281,7 @@ def test_compacted_patterns_unload_through_the_compactor_cells(
         manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
         assert len(manifest["compaction"]["fanout"]) == 2
         assert json.loads(patterns.read_text(encoding="utf-8"))
-        assert replay_compacted_on_cells(cfg, patterns, tmp_path / "replay") == []
+        assert replay_on_cells(cfg, patterns, tmp_path / "replay") == []
 
 
 @pytest.mark.integration
