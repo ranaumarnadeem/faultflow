@@ -169,7 +169,7 @@ def stil_problems(
     """What is wrong with the STIL of `program`: expanded by STIL's rules it must
     give exactly the cycles replayed on the cells, whichever signal states a
     reader gives a procedure (stil_expand.expand), and an independent parser
-    (Semi-ATE-STIL, when importable) must take it."""
+    (Semi-ATE-STIL) must take it."""
     text = write_stil(chip, program, chains=manifest.get("chains", []))
     work.mkdir(parents=True, exist_ok=True)
     path = work / "patterns.stil"
@@ -198,14 +198,18 @@ def stil_problems(
 
 
 def parser_verdict(path: Path) -> str:
-    """Semi-ATE-STIL's error for the STIL at `path`, empty when it takes it or
-    isn't installed (warptap's tests use it too; it's optional here)."""
+    """Semi-ATE-STIL's error for the STIL at `path`, empty when it takes it. The
+    parser is a test dependency (requirements-dev.txt; the Nix check packages
+    it), so without it a replay fails rather than skip the check."""
     try:
-        from Semi_ATE.STIL.parsers.STILParser import (  # type: ignore[import-not-found]
+        from Semi_ATE.STIL.parsers.STILParser import (  # type: ignore[import-untyped]
             STILParser,
         )
-    except ImportError:
-        return ""
+    except ImportError as error:
+        raise RuntimeError(
+            f"the STIL check needs Semi-ATE-STIL and lark ({error}): "
+            "pip install -r requirements-dev.txt"
+        ) from error
     parser = STILParser(str(path))
     parser.parse_syntax()
     if parser.err_msg == "":

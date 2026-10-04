@@ -118,7 +118,7 @@ faultflow itself yet). Create a virtual environment and install the dependencies
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt        # runtime (jsonschema)
-pip install -r requirements-dev.txt    # adds pytest, black, flake8, mypy
+pip install -r requirements-dev.txt    # adds pytest, black, flake8, mypy, Semi-ATE-STIL
 ```
 
 ```{note}

@@ -290,7 +290,8 @@ wsl -e bash -c "cd /mnt/c/Users/Potato/Desktop/faultflow && source venv/bin/acti
     `_preflight` that answers with real OT's records for it
   - `scan_replay.py` — replays exported scan patterns, as the cycles a tester
     applies (`faultflow.scan.tester_program`), on the chip's sky130 netlist with the
-    PDK's cell models (iverilog), and checks the STIL they make
+    PDK's cell models (iverilog), and checks the STIL they make, with Semi-ATE-STIL
+    (a test dependency, requirements-dev.txt) as an independent parser
   - `stil_expand.py` — expands the STIL `write-patterns` writes back into cycles by
     STIL's own rules
 

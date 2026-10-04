@@ -101,6 +101,8 @@
             flake8
             mypy
             types-pyyaml
+            (ps.callPackage ./nix/semi-ate-stil.nix { })
+            lark
             sphinx
             furo
             myst-parser
