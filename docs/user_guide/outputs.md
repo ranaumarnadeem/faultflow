@@ -102,7 +102,9 @@ output of unknown value reaches a scan flop, each exported pattern carries an
 `false` bit is don't-care, since that flop captured the unknown value. When a
 non-scan flop settles during the test (a reset synchronizer, see `[scan]
 nonscan_cells`), each pattern carries `preamble_cycles`: the scan-clock pulses,
-scan enable off and the holds applied, to give before the first load. With
+scan enable off and the holds applied, to give before its load. With scan
+compression every pattern carries at least one: it arms the decompressor's reseed,
+which a load right after the previous unload wouldn't give. With
 `include_reset_faults`, a pattern may set a reset input active in its
 `capture_pi_values` to test the reset; it then carries `shift_pi_values`, the values
 those inputs hold everywhere but the capture (inactive: a scan flop's reset acts

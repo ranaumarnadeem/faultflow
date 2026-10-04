@@ -16,10 +16,12 @@ from typing import Any
 import pytest
 
 from faultflow.config import load_config
-from scan_replay import replay_on_cells
+from scan_replay import replay_compressed_on_cells, replay_on_cells
+from warptap_helpers import skip_unless_warptap
 
 ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP_PATH = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
+LIBERTY = ROOT / "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib"
 TOP = "chip"
 DFXTP = "sky130_fd_sc_hd__dfxtp_1"
 
@@ -121,29 +123,37 @@ def flow_tools() -> None:
         pytest.skip("needs iverilog")
 
 
-def _replay(work: Path, chip: dict[str, Any], sections: str) -> list[dict[str, Any]]:
-    """init, scan, scan-check and sim --scan on `chip` with `sections`; the exported
-    patterns, after asserting every one unloads on the cells as expected."""
+def _flow(
+    work: Path, chip: dict[str, Any], sections: str, *, compress: bool = False
+) -> Any:
+    """init, scan, scan-check (scan-compress) and sim --scan on `chip` with
+    `sections`; the config and the exported patterns' path. Run in `work`."""
     from faultflow.cli import main
 
     netlist = work / "chip.json"
     netlist.write_text(json.dumps(chip), encoding="utf-8")
     ofs = work / "chip.ofs"
     ofs.write_text(
-        f"[design]\nnetlist = {netlist}\ncell_lib = {CELL_MAP_PATH}\n\n{sections}",
+        f"[design]\nnetlist = {netlist}\ncell_lib = {CELL_MAP_PATH}\n"
+        f"liberty = {LIBERTY}\n\n{sections}",
         encoding="utf-8",
     )
     patterns = work / "patterns.json"
+    steps = [["init"], ["scan"], ["scan-check"]]
+    if compress:
+        steps.append(["scan-compress"])
+    steps.append(["sim", "--scan", "--export-patterns", str(patterns)])
+    for step in steps:
+        assert main([*step, "--top", TOP, "-c", str(ofs)]) == 0, step
+    return load_config(ofs, TOP), patterns
+
+
+def _replay(work: Path, chip: dict[str, Any], sections: str) -> list[dict[str, Any]]:
+    """_flow, then every exported pattern must unload on the cells as expected; the
+    exported patterns."""
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(work)
-        for step in (
-            ["init"],
-            ["scan"],
-            ["scan-check"],
-            ["sim", "--scan", "--export-patterns", str(patterns)],
-        ):
-            assert main([*step, "--top", TOP, "-c", str(ofs)]) == 0, step
-        cfg = load_config(ofs, TOP)
+        cfg, patterns = _flow(work, chip, sections)
         assert replay_on_cells(cfg, patterns, work / "replay") == []
     return list(json.loads(patterns.read_text(encoding="utf-8")))
 
@@ -198,6 +208,46 @@ def test_every_bit_of_an_output_bus_is_compared(
     pattern gives both their values, and both match on the cells."""
     exported = _replay(tmp_path, _bus_out(), "[scan]\nchains = 1\n")
     assert all({"y[0]", "y[1]"} <= set(p["capture_pi_values"]) for p in exported)
+
+
+@pytest.mark.integration
+def test_compressed_patterns_load_through_the_decompressor_cells(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """With scan compression a pattern is one seed's load: the seed, solved as a
+    tester solves it, held on the channel bus of the composed chip, the
+    decompressor's own cells load the three chains, and every pattern unloads and
+    strobes what FaultFlow expects."""
+    skip_unless_warptap("warptap.faultflow_compression")
+    from warptap.faultflow_compression import (
+        care_bit_rows,
+        polynomial_from_manifest,
+        solve_pattern_seed,
+    )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(tmp_path)
+        cfg, patterns = _flow(
+            tmp_path,
+            _ring(),
+            "[scan]\nchains = 3\n\n[compression]\nenabled = true\nchannels = 8\n",
+            compress=True,
+        )
+        manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+        compression = manifest["compression"]
+        poly = polynomial_from_manifest(compression)
+        rows = care_bit_rows(
+            poly, compression["phase_shifter_taps"], int(manifest["max_chain_length"])
+        )
+
+        def seed_of(number: int, raw: dict[str, Any]) -> int:
+            return int(solve_pattern_seed(raw["load_seqs"], rows, poly.width, number))
+
+        assert json.loads(patterns.read_text(encoding="utf-8"))
+        assert (
+            replay_compressed_on_cells(cfg, patterns, tmp_path / "replay", seed_of)
+            == []
+        )
 
 
 @pytest.mark.integration

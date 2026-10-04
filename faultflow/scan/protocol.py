@@ -160,9 +160,9 @@ class ScanPattern:
     # retarget.transform.SocScanPattern.unload_mask. None compares every bit.
     unload_mask: dict[int, list[bool]] | None = None
     # Scan-clock pulses before the load, scan enable off and the holds applied,
-    # that settle the non-scan flops the scan clock keeps clocking (a reset
-    # synchronizer: faultflow.scan.nonscan). A tester gives them once, before the
-    # first load; a replay of one pattern gives them before its load.
+    # given before every pattern's load: they settle the non-scan flops the scan
+    # clock keeps clocking (a reset synchronizer: faultflow.scan.nonscan), and with
+    # scan compression they arm the decompressor's reseed (at least one).
     preamble_cycles: int = 0
     # Inputs held at these values, not capture_pi_values', while the chains shift
     # (the preamble, load and unload): testing the reset, a capture may set a
