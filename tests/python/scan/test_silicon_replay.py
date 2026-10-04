@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -128,11 +128,11 @@ def flow_tools() -> None:
 
 
 def _flow(
-    work: Path, chip: dict[str, Any], sections: str, *, compose: str | None = None
+    work: Path, chip: dict[str, Any], sections: str, *, compose: tuple[str, ...] = ()
 ) -> Any:
-    """init, scan, scan-check, `compose` (scan-compress or scan-compact) and sim
-    --scan on `chip` with `sections`; the config and the exported patterns' path.
-    Run in `work`."""
+    """init, scan, scan-check, the `compose` steps (scan-compress, scan-compact)
+    and sim --scan on `chip` with `sections`; the config and the exported
+    patterns' path. Run in `work`."""
     from faultflow.cli import main
 
     netlist = work / "chip.json"
@@ -145,8 +145,7 @@ def _flow(
     )
     patterns = work / "patterns.json"
     steps = [["init"], ["scan"], ["scan-check"]]
-    if compose is not None:
-        steps.append([compose])
+    steps += [[step] for step in compose]
     steps.append(["sim", "--scan", "--export-patterns", str(patterns)])
     for step in steps:
         assert main([*step, "--top", TOP, "-c", str(ofs)]) == 0, step
@@ -215,6 +214,32 @@ def test_every_bit_of_an_output_bus_is_compared(
     assert all({"y[0]", "y[1]"} <= set(p["capture_pi_values"]) for p in exported)
 
 
+def _seed_solver(cfg: Any) -> Callable[[int, dict[str, Any]], int]:
+    """Each exported pattern's seed, solved as a tester solves it (warptap), for
+    the decompressor the manifest records."""
+    from warptap.faultflow_compression import (
+        care_bit_rows,
+        polynomial_from_manifest,
+        solve_pattern_seed,
+    )
+
+    manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+    compression = manifest["compression"]
+    poly = polynomial_from_manifest(compression)
+    rows = care_bit_rows(
+        poly, compression["phase_shifter_taps"], int(manifest["max_chain_length"])
+    )
+
+    def seed_of(number: int, raw: dict[str, Any]) -> int:
+        return int(solve_pattern_seed(raw["load_seqs"], rows, poly.width, number))
+
+    return seed_of
+
+
+COMPRESSION = "[compression]\nenabled = true\nchannels = 8\n"
+COMPACTION = "[compaction]\nenabled = true\nchannels = 2\n"
+
+
 @pytest.mark.integration
 def test_compressed_patterns_load_through_the_decompressor_cells(
     tmp_path: Path, flow_tools: None
@@ -224,35 +249,51 @@ def test_compressed_patterns_load_through_the_decompressor_cells(
     decompressor's own cells load the three chains, and every pattern unloads and
     strobes what FaultFlow expects."""
     skip_unless_warptap("warptap.faultflow_compression")
-    from warptap.faultflow_compression import (
-        care_bit_rows,
-        polynomial_from_manifest,
-        solve_pattern_seed,
-    )
-
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(tmp_path)
         cfg, patterns = _flow(
             tmp_path,
             _ring(),
-            "[scan]\nchains = 3\n\n[compression]\nenabled = true\nchannels = 8\n",
-            compose="scan-compress",
+            f"[scan]\nchains = 3\n\n{COMPRESSION}",
+            compose=("scan-compress",),
+        )
+        assert json.loads(patterns.read_text(encoding="utf-8"))
+        seed_of = _seed_solver(cfg)
+        replayed = replay_compressed_on_cells(cfg, patterns, tmp_path / "r", seed_of)
+        assert replayed == []
+
+
+@pytest.mark.integration
+def test_compressed_and_compacted_patterns_replay_on_the_whole_chip(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """With both, scan-compact composes the decompressor, the core and the
+    compactor into one netlist, the core still core_inst: each seed held on the
+    compression channels, every pattern's unload, read on the compactor's
+    channels, matches on its cells."""
+    skip_unless_warptap("warptap.faultflow_compression")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(tmp_path)
+        cfg, patterns = _flow(
+            tmp_path,
+            _ring(),
+            f"[scan]\nchains = 3\n\n{COMPRESSION}\n{COMPACTION}",
+            compose=("scan-compress", "scan-compact"),
         )
         manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
-        compression = manifest["compression"]
-        poly = polynomial_from_manifest(compression)
-        rows = care_bit_rows(
-            poly, compression["phase_shifter_taps"], int(manifest["max_chain_length"])
+        compaction = manifest["compaction"]
+        assert compaction["with_decompressor"] is True
+        chip = json.loads(Path(compaction["composed_json"]).read_text("utf-8"))
+        module = chip["modules"][compaction["composed_top"]]
+        assert {"tdi", "tdo"} <= set(module["ports"])
+        assert "lfsr_reg" in module["netnames"]
+        assert {f"core_inst__{flop}" for flop in ("r0", "r1", "r2")} <= set(
+            module["cells"]
         )
-
-        def seed_of(number: int, raw: dict[str, Any]) -> int:
-            return int(solve_pattern_seed(raw["load_seqs"], rows, poly.width, number))
-
         assert json.loads(patterns.read_text(encoding="utf-8"))
-        assert (
-            replay_compressed_on_cells(cfg, patterns, tmp_path / "replay", seed_of)
-            == []
-        )
+        seed_of = _seed_solver(cfg)
+        replayed = replay_compressed_on_cells(cfg, patterns, tmp_path / "r", seed_of)
+        assert replayed == []
 
 
 @pytest.mark.integration
@@ -267,8 +308,8 @@ def test_compacted_patterns_unload_through_the_compactor_cells(
         cfg, patterns = _flow(
             tmp_path,
             _ring(),
-            "[scan]\nchains = 3\n\n[compaction]\nenabled = true\nchannels = 2\n",
-            compose="scan-compact",
+            f"[scan]\nchains = 3\n\n{COMPACTION}",
+            compose=("scan-compact",),
         )
         manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
         assert len(manifest["compaction"]["fanout"]) == 2

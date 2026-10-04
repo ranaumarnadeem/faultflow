@@ -219,7 +219,11 @@ Written by `ff.py autombist-generate` (see [External tools](../external_tools.md
 Scan test-pattern compression (`ff.py scan-compress`: a ring-generator and
 phase-shifter decompressor in front of the scan inputs) and response compaction
 (`ff.py scan-compact`: an XOR-tree space compactor behind the scan outputs). Each
-wraps the scanned design, which becomes the instance `core_inst`.
+wraps the scanned design, which becomes the instance `core_inst`, in
+`<top>_compressed.json` or `<top>_compacted.json`. With both, the compacted netlist
+holds the decompressor too: it is the whole chip, the design still `core_inst`.
+`scan-compact` builds it around the decompressor `scan-compress` inserted, and
+`scan-compress` run afterwards builds it again around its new one.
 
 | Key | Default | Meaning |
 |---|---|---|

@@ -54,7 +54,7 @@ from faultflow.rule_check.model import RuleCheckReport
 from faultflow.scan.checks import check_scan_structure
 from faultflow.scan.atpg_view import build_scan_atpg_view
 from faultflow.scan.cell_map import resolve_scan_cell_map
-from faultflow.scan.compression import insert_compression
+from faultflow.scan.compression import Decompressor, insert_compression
 from faultflow.scan.compression_checks import check_compression_structure
 from faultflow.scan.compaction import insert_compaction
 from faultflow.scan.compaction_checks import check_compaction_structure
@@ -839,6 +839,9 @@ class Runner:
         addressable ``scan_in_N`` ports that only exist there (the composed
         netlist's scan inputs become internal wires driven by the phase
         shifter). See the compression CLI-wiring plan for the full rationale.
+
+        After scan-compact, the compacted chip is composed again, around this
+        decompressor too (``_compose_compaction``).
         """
         manifest_path = self._scan_manifest_path()
         if not manifest_path.exists():
@@ -940,10 +943,22 @@ class Runner:
             output_json.name,
             prefix="core_inst__",
         )
+        compacted = ""
+        compaction = manifest.get("compaction")
+        if isinstance(compaction, dict) and compaction.get("enabled"):
+            # scan-compact composed the chip without this decompressor: compose it
+            # again around it, so <top>_compacted.json stays the whole chip.
+            composed, _ = self._compose_compaction(
+                manifest,
+                int(compaction["num_outputs"]),
+                str(compaction.get("channel_port", "tdo")),
+            )
+            compacted = f" compacted={composed}"
         return (
             f"scan compress complete top={core_top} "
             f"channels={compression_map.num_channels} composed={output_json}"
             + (f" sdc={sdc}" if sdc is not None else "")
+            + compacted
         )
 
     def scan_compact(self) -> str:
@@ -959,6 +974,9 @@ class Runner:
         manufacturing artifact plus a structural self-check
         (``check_compaction_structure``), never simulated for per-fault
         pass/fail. See the compactor plan for the full rationale.
+
+        After scan-compress, the compactor's wrapper holds the decompressor too,
+        so the composed netlist is the whole chip (``_compose_compaction``).
         """
         manifest_path = self._scan_manifest_path()
         if not manifest_path.exists():
@@ -974,7 +992,27 @@ class Runner:
         latest = manifest.get("latest_check")
         if not isinstance(latest, dict) or latest.get("status") != "PASS":
             raise RunnerError("run scan-check successfully before scan-compact")
+        output_json, sdc = self._compose_compaction(
+            manifest, self.cfg.compaction.channels, self.cfg.compaction.channel_port
+        )
+        return (
+            f"scan compact complete top={manifest['top']} "
+            f"channels={self.cfg.compaction.channels} composed={output_json}"
+            + (f" sdc={sdc}" if sdc is not None else "")
+        )
 
+    def _compose_compaction(
+        self, manifest: dict[str, Any], channels: int, channel_port: str
+    ) -> tuple[Path, Path | None]:
+        """Compose the compactor around the scanned core into
+        <top>_compacted.json -- and the decompressor too once scan-compress has
+        run, so with both it is the whole chip, the core still core_inst -- then
+        record it in manifest["compaction"], check it and write the manifest.
+        The composed netlist and its SDC (None without one)."""
+        liberty = self.cfg.liberty
+        if liberty is None or not liberty.exists():
+            raise RunnerError(f"liberty file not found: {liberty}")
+        generic_json = Path(str(manifest["generic_json"]))
         raw_scan_out_ports = manifest.get("scan_outputs", [])
         scan_out_ports = (
             [str(p) for p in raw_scan_out_ports]
@@ -982,26 +1020,32 @@ class Runner:
             else []
         )
         core_top = str(manifest["top"])
-        if self.cfg.liberty is None or not self.cfg.liberty.exists():
-            raise RunnerError(f"liberty file not found: {self.cfg.liberty}")
+        compression = manifest.get("compression")
+        decompressor = (
+            Decompressor.from_manifest(compression)
+            if isinstance(compression, dict) and compression.get("enabled")
+            else None
+        )
         output_json = self.cfg.output_dir / f"{self.cfg.top}_compacted.json"
         workdir = self.cfg.intermediate_dir / "compaction"
         t0 = time.perf_counter()
         log.info(
-            "compact  running (top=%s, channels=%d) ...",
+            "compact  running (top=%s, channels=%d%s) ...",
             core_top,
-            self.cfg.compaction.channels,
+            channels,
+            ", with the decompressor" if decompressor is not None else "",
         )
         try:
             _, compaction_map = insert_compaction(
                 generic_json,
                 core_top,
                 scan_out_ports,
-                self.cfg.compaction.channels,
-                self.cfg.liberty,
+                channels,
+                liberty,
                 output_json,
                 workdir=workdir,
-                channel_port=self.cfg.compaction.channel_port,
+                channel_port=channel_port,
+                decompressor=decompressor,
             )
         except (ScanError, ValueError) as exc:
             raise RunnerError(str(exc)) from exc
@@ -1012,43 +1056,56 @@ class Runner:
             time.perf_counter() - t0,
         )
 
+        composed_top = f"{core_top}_compacted"
         compaction_entry: dict[str, object] = {
             "enabled": True,
             "num_outputs": compaction_map.num_outputs,
             "scan_out_ports": scan_out_ports,
-            "channel_port": self.cfg.compaction.channel_port,
+            "channel_port": channel_port,
             "fanout": compaction_map.fanout,
             "composed_json": str(output_json),
-            "composed_top": f"{core_top}_compacted",
+            "composed_top": composed_top,
             "composed_json_hash": _hash_file(output_json),
+            "with_decompressor": decompressor is not None,
         }
         manifest["compaction"] = compaction_entry
         structural = check_compaction_structure(manifest)
+        errors = list(structural.errors)
+        if isinstance(compression, dict) and decompressor is not None:
+            # The decompressor in the whole chip, checked as scan-compress checks
+            # its own netlist's.
+            within = check_compression_structure(
+                {
+                    **manifest,
+                    "compression": {
+                        **compression,
+                        "composed_json": str(output_json),
+                        "composed_top": composed_top,
+                    },
+                }
+            )
+            errors += [f"decompressor: {error}" for error in within.errors]
         compaction_entry["structural_check"] = {
-            "status": "PASS" if structural.passed else "FAIL",
-            "errors": structural.errors,
+            "status": "FAIL" if errors else "PASS",
+            "errors": errors,
         }
         write_scan_artifacts(
             self.cfg.manifests_dir,
             self.cfg.scan_report_path,
             manifest,
         )
-        if not structural.passed:
+        if errors:
             raise RunnerError(
-                "compaction structural check failed: " + "; ".join(structural.errors)
+                "compaction structural check failed: " + "; ".join(errors)
             )
         sdc = self._write_inserted_sdc(
             output_json,
-            f"{core_top}_compacted",
+            composed_top,
             self.cfg.output_dir / f"{self.cfg.top}_compacted.sdc",
             output_json.name,
             prefix="core_inst__",
         )
-        return (
-            f"scan compact complete top={core_top} "
-            f"channels={compaction_map.num_outputs} composed={output_json}"
-            + (f" sdc={sdc}" if sdc is not None else "")
-        )
+        return output_json, sdc
 
     def _scan_vector_source(
         self,

@@ -15,7 +15,8 @@ generic scan cells techmapped as `ff.py scan` maps them: each pattern's seed is 
 the channel bus and the decompressor's own cells load the chains
 (replay_compressed_on_cells). With scan compaction it is the composed netlist
 scan-compact wrote, and the unload is compared where a tester sees it, on the
-compactor's channels (replay_compacted_on_cells).
+compactor's channels (replay_compacted_on_cells) -- with both, the composed
+netlist holding the decompressor, the core and the compactor.
 
 FaultFlow's own simulators are the reference everywhere else; this asks whether a real
 chip -- whose scan flops' clear and preset act during shift too -- does what the
@@ -301,67 +302,90 @@ def _unloads(index: int, scan_outs: list[str]) -> str:
 CORE_INSTANCE = "core_inst"
 
 
+class _Channels:
+    """The compactor's channels on a composed chip: their $displays at an unload
+    cycle, and the channel bits that differ from the XOR of the expected unload
+    bits each reads (manifest["compaction"]["fanout"])."""
+
+    def __init__(self, manifest: dict[str, Any]) -> None:
+        compaction = manifest["compaction"]
+        channel = str(compaction.get("channel_port", "tdo"))
+        self.fanout = [[int(c) for c in row] for row in compaction["fanout"]]
+        scan_outs = [str(p) for p in manifest["scan_outputs"]]
+        self.chain_of = [scan_outs.index(str(p)) for p in compaction["scan_out_ports"]]
+        self.refs = [
+            f"{_escaped(channel)}[{o}]" if len(self.fanout) > 1 else _escaped(channel)
+            for o in range(len(self.fanout))
+        ]
+
+    def sample(self, index: int) -> str:
+        return " ".join(
+            f'$display("C {index} {o} %b", {ref});' for o, ref in enumerate(self.refs)
+        )
+
+    def compare(
+        self,
+        lines: list[str],
+        patterns: list[dict[str, Any]],
+        length: int,
+        lengths: dict[int, int] | None = None,
+    ) -> list[str]:
+        """The channel bits that differ, where none of the bits they read is
+        masked -- an unknown bit makes the XOR unknown -- and, given `lengths`,
+        each is within its chain: a shorter chain's later bits are what the
+        decompressor shifts in."""
+        got: dict[tuple[int, int], str] = {}
+        for line in lines:
+            if line.startswith("C "):
+                _, pattern_index, output_index, bit = line.split()
+                key = (int(pattern_index), int(output_index))
+                got[key] = got.get(key, "") + bit
+        differ: list[str] = []
+        for index, pattern in enumerate(patterns):
+            masks = pattern.get("unload_mask") or {}
+            for o, row in enumerate(self.fanout):
+                chains = [self.chain_of[c] for c in row]
+                have = got.get((index, o), "")
+                for t in range(length):
+                    if lengths is not None and any(t >= lengths[c] for c in chains):
+                        continue
+                    if any(not masks.get(str(c), [True] * length)[t] for c in chains):
+                        continue
+                    want = 0
+                    for c in chains:
+                        want ^= int(pattern["expected_unload"][str(c)][t])
+                    if have[t : t + 1] != str(want):
+                        differ.append(
+                            f"pattern {index} channel {o} cycle {t}: expected "
+                            f"{want}, cells {have[t : t + 1]}"
+                        )
+        return differ
+
+
 def replay_compacted_on_cells(cfg: Any, patterns_path: Path, work: Path) -> list[str]:
     """replay_on_cells on the compacted chip: the composed netlist scan-compact
     wrote, techmapped to sky130 cells. A tester sees only the compactor's channels:
     each channel bit at each unload cycle is compared with the XOR of the expected
-    unload bits it reads (fanout), when none of them is masked. Without compression:
-    with both, scan-compress and scan-compact each compose the core alone, and no
-    netlist holds the whole chip."""
+    unload bits it reads, when none of them is masked. With compression too,
+    replay_compressed_on_cells replays the chip."""
     manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
     if manifest.get("compression"):
-        raise ValueError(
-            "no composed netlist holds both the decompressor and compactor"
-        )
+        raise ValueError("with compression, replay_compressed_on_cells replays it")
     compaction = manifest["compaction"]
     composed = Path(str(compaction["composed_json"])).resolve()
     top = str(compaction["composed_top"])
-    channel = str(compaction.get("channel_port", "tdo"))
-    fanout = [[int(c) for c in row] for row in compaction["fanout"]]
-    scan_outs = [str(p) for p in manifest["scan_outputs"]]
-    chain_of = [scan_outs.index(str(p)) for p in compaction["scan_out_ports"]]
     module = json.loads(composed.read_text(encoding="utf-8"))["modules"][top]
     patterns = json.loads(patterns_path.read_text(encoding="utf-8"))
     netlist = _techmapped(composed, manifest, work)
     bench = _Bench(top, module["ports"], _clocks(manifest))
-    refs = [
-        f"{_escaped(channel)}[{o}]" if len(fanout) > 1 else _escaped(channel)
-        for o in range(len(fanout))
-    ]
-
-    def unload_sample(index: int) -> str:
-        return " ".join(
-            f'$display("C {index} {o} %b", {ref});' for o, ref in enumerate(refs)
-        )
-
-    compared_outputs = _drive(manifest, bench, patterns, unload_sample)
+    channels = _Channels(manifest)
+    compared_outputs = _drive(manifest, bench, patterns, channels.sample)
     blackboxes = {f"{CORE_INSTANCE}__{name}" for name in cfg.blackbox_instances}
     lines = bench.run(work, netlist, _stubs(module, blackboxes))
-    differ = _compare(lines, patterns, [], compared_outputs)
-    got: dict[tuple[int, int], str] = {}
-    for line in lines:
-        if line.startswith("C "):
-            _, pattern_index, output_index, bit = line.split()
-            key = (int(pattern_index), int(output_index))
-            got[key] = got.get(key, "") + bit
     length = int(manifest["max_chain_length"])
-    for index, pattern in enumerate(patterns):
-        masks = pattern.get("unload_mask") or {}
-        for o, row in enumerate(fanout):
-            chains = [chain_of[c] for c in row]
-            have = got.get((index, o), "")
-            for t in range(length):
-                if any(not masks.get(str(c), [True] * length)[t] for c in chains):
-                    continue  # an unknown bit makes the XOR unknown
-                want = 0
-                for c in chains:
-                    want ^= int(pattern["expected_unload"][str(c)][t])
-                if have[t : t + 1] != str(want):
-                    differ.append(
-                        f"pattern {index} channel {o} cycle {t}: expected {want}, "
-                        f"cells {have[t : t + 1]}"
-                    )
-    return differ
+    return _compare(lines, patterns, [], compared_outputs) + channels.compare(
+        lines, patterns, length
+    )
 
 
 def replay_compressed_on_cells(
@@ -375,16 +399,18 @@ def replay_compressed_on_cells(
     exported pattern)`, a tester's solve) held on the channel bus through the load,
     the capture and the unload, the decompressor's cells loading the chains. An
     unload bit is compared within its chain's length: the bits a shorter chain
-    shifts in are the decompressor's. Stuck-at and launch-on-capture patterns only;
-    no compaction."""
+    shifts in are the decompressor's. With compaction too, the chip is the
+    composed netlist scan-compact wrote around both, and the unload is compared
+    on its channels (replay_compacted_on_cells). Stuck-at and launch-on-capture
+    patterns only."""
     manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
     compression = manifest["compression"]
-    if manifest.get("compaction"):
-        raise ValueError(
-            "no composed netlist holds both the decompressor and compactor"
-        )
-    composed = Path(str(compression["composed_json"])).resolve()
-    composed_top = str(compression["composed_top"])
+    compaction = manifest.get("compaction")
+    if compaction and not compaction.get("with_decompressor"):
+        raise ValueError("scan-compact composed this chip without the decompressor")
+    chip = compaction or compression
+    composed = Path(str(chip["composed_json"])).resolve()
+    composed_top = str(chip["composed_top"])
     channel = str(compression.get("channel_port", "tdi"))
     width = int(compression["num_channels"])
     module = json.loads(composed.read_text(encoding="utf-8"))["modules"][composed_top]
@@ -395,6 +421,7 @@ def replay_compressed_on_cells(
     patterns = json.loads(patterns_path.read_text(encoding="utf-8"))
     netlist = _techmapped(composed, manifest, work)
     bench = _Bench(composed_top, module["ports"], _clocks(manifest))
+    channels = _Channels(manifest) if compaction else None
     base = {n: 0 for n in bench.inputs if n not in bench.clocks}
     compared_outputs: list[list[tuple[str, bool]]] = []
     for index, pattern in enumerate(patterns):
@@ -415,8 +442,13 @@ def replay_compressed_on_cells(
         outputs = bench.strobes(pattern["capture_pi_values"])
         compared_outputs.append(outputs)
         bench.cycle(capture, sample=bench.strobe_sample(index, outputs))
+        unload = channels.sample(index) if channels else _unloads(index, scan_outs)
         for _ in range(length):
-            bench.cycle(dict(shift, **{se: 1}), sample=_unloads(index, scan_outs))
+            bench.cycle(dict(shift, **{se: 1}), sample=unload)
     blackboxes = {f"{CORE_INSTANCE}__{name}" for name in cfg.blackbox_instances}
     lines = bench.run(work, netlist, _stubs(module, blackboxes))
-    return _compare(lines, patterns, scan_outs, compared_outputs, lengths)
+    if channels is None:
+        return _compare(lines, patterns, scan_outs, compared_outputs, lengths)
+    return _compare(lines, patterns, [], compared_outputs) + channels.compare(
+        lines, patterns, length, lengths
+    )

@@ -174,7 +174,8 @@ python3 ff.py jtag --top chip_top -c mbist_chip_top/chip_top_mbist.ofs
   the synchronizers to the collars. See [Running without the shell](running_without_shell.md).
 - `ff.py scan` writes `<top>_scan.sdc` beside `<top>_scan.v`: the inserted crossings by
   pin of the scanned netlist. `scan-compress` and `scan-compact` write
-  `<top>_compressed.sdc` and `<top>_compacted.sdc`, where the chip is `core_inst`.
+  `<top>_compressed.sdc` and `<top>_compacted.sdc`, where the chip is `core_inst`
+  (with both, the compacted netlist is the whole chip).
   With a TAP, the `.ofs` names the compression and compaction channels `comp_si` and
   `comp_so`, away from the TAP's `tdi` and `tdo`.
 - The coverage report breaks coverage down by category, `mbist_shell` included

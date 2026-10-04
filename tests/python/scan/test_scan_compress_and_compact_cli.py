@@ -123,6 +123,46 @@ channels = 2
     return path
 
 
+def _assert_whole_chip(compaction: dict[str, object]) -> None:
+    """The compacted netlist holds the decompressor (its ring generator and
+    channel input), the compactor's channel output, and the core once, as
+    core_inst."""
+    composed = Path(str(compaction["composed_json"]))
+    chip = json.loads(composed.read_text(encoding="utf-8"))
+    module = chip["modules"][str(compaction["composed_top"])]
+    assert module["ports"]["tdi"]["direction"] == "input"
+    assert module["ports"]["tdo"]["direction"] == "output"
+    assert {"scan_in_0", "scan_out_0"}.isdisjoint(module["ports"])
+    assert "lfsr_reg" in module["netnames"]
+    assert {f"core_inst__u{i}" for i in range(4)} <= set(module["cells"])
+
+
+@pytest.mark.integration
+def test_scan_compress_after_scan_compact_composes_the_chip_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run the other way round, scan-compress composes the compacted chip again,
+    around its decompressor: the compacted netlist is still the whole chip."""
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+    monkeypatch.chdir(tmp_path)
+    source = _write_json(tmp_path / "core_top.json", _four_independent_d_chain_json())
+    cfg_path = _write_config(tmp_path / "config.ofs", source)
+    for step in (["scan", "--no-techmap"], ["scan-check"], ["scan-compact"]):
+        assert main([*step, "--top", "core_top", "-c", str(cfg_path)]) == 0, step
+    manifest_path = tmp_path / "output/core_top/.faultflow/manifests/scan_manifest.json"
+    compacted = json.loads(manifest_path.read_text(encoding="utf-8"))["compaction"]
+    assert compacted["with_decompressor"] is False
+
+    assert main(["scan-compress", "--top", "core_top", "-c", str(cfg_path)]) == 0
+    compaction = json.loads(manifest_path.read_text(encoding="utf-8"))["compaction"]
+    assert compaction["with_decompressor"] is True
+    assert compaction["structural_check"]["status"] == "PASS", compaction[
+        "structural_check"
+    ]["errors"]
+    _assert_whole_chip(compaction)
+
+
 @pytest.mark.integration
 def test_scan_compress_and_compact_cli_end_to_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -168,6 +208,10 @@ def test_scan_compress_and_compact_cli_end_to_end(
     assert compaction["structural_check"]["status"] == "PASS", compaction[
         "structural_check"
     ]["errors"]
+    # The compacted netlist is the whole chip: the decompressor and the
+    # compactor around the one core.
+    assert compaction["with_decompressor"] is True
+    _assert_whole_chip(compaction)
 
     from faultflow.config import load_config
     from faultflow.runner.runner import Runner
