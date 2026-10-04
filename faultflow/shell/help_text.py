@@ -348,9 +348,15 @@ COMMAND_HELP = {
     ),
     "write_patterns": CommandHelp(
         "Output",
-        "write_patterns",
-        "Export ATPG patterns",
-        "Reserved for future scan-aware STIL/WGL export and currently unsupported.",
+        "write_patterns -patterns <file.json> -o <file.stil> [-no_overlap]",
+        "Write exported scan patterns as STIL",
+        "The patterns run_atpg -export-patterns wrote, as the cycles a tester "
+        "applies to the chip -- the scanned netlist, or the one scan compression "
+        "or compaction composed -- in STIL (IEEE 1450), loads and unloads calls of "
+        "one load_unload procedure. Each load also unloads the pattern before; "
+        "-no_overlap applies each pattern alone, as FaultFlow grades it. No WGL.",
+        "add_scan, and patterns exported from this scan campaign.",
+        "write_patterns -patterns patterns.json -o chip.stil",
     ),
     "WORKERS": CommandHelp(
         "Options",

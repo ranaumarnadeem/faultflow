@@ -123,6 +123,11 @@ def test_scan_compact_cli_end_to_end(
     composed_json = Path(compaction["composed_json"])
     assert composed_json.exists()
     composed = json.loads(composed_json.read_text(encoding="utf-8"))
+    # The chip as sky130 Verilog: the design's generic scan cells mapped too.
+    verilog = Path(compaction["sky130_verilog"])
+    assert verilog.name == "tiny_dff_compacted.v"
+    netlist = verilog.read_text(encoding="utf-8")
+    assert "$scanff" not in netlist and "sky130_fd_sc_hd__sdf" in netlist
     assert compaction["composed_top"] in composed["modules"]
 
     from faultflow.config import load_config

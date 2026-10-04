@@ -114,7 +114,7 @@ See [Test-point insertion](testpoints.md) for the full workflow.
 | Command | Summary |
 |---|---|
 | `write_netlist [-scan] [-techmap\|-notech] [-o PATH] [-verify]` | Publish a functional or scanned netlist. `-scan` writes generic scan Verilog; `-techmap` binds physical scan cells. `-verify` (requires `-scan -techmap`) fault-free-simulates the written techmapped netlist against the generic scan design over the scan vectors and fails if their outputs diverge — catching a broken or drifted physical-cell binding at write time. |
-| `write_patterns` | Reserved for future scan-aware STIL/WGL export. **Not implemented** — raises a clear error today. |
+| `write_patterns -patterns PATH -o PATH [-no_overlap]` | Write the scan patterns `run_atpg -export-patterns` wrote as STIL (IEEE 1450): the cycles a tester applies to the chip, the scanned netlist or the one scan compression or compaction composed, each load also unloading the pattern before (`-no_overlap`: each pattern alone). See [`write-patterns`](running_without_shell.md#write-patterns). No WGL. |
 
 ### Options
 

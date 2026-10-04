@@ -182,7 +182,9 @@ def _campaign_rows(cfg: Any, query: str) -> list[Any]:
 def _assert_every_pattern_is_one_seeds_load(cfg: Any, patterns: Path) -> None:
     """Even read the strictest way -- every load position a hard constraint,
     as warptap reads a pattern without load_care -- each pattern is one
-    seed's load, and its load_care names every position."""
+    seed's load, and its load_care names every position. The seed it carries,
+    the one a tester applies, makes exactly that load in warptap's own model of
+    the decompressor."""
     rows, seed_of, max_chain_length = _rows_and_seed_solver(cfg)
     exported = json.loads(patterns.read_text(encoding="utf-8"))
     assert exported
@@ -191,11 +193,11 @@ def _assert_every_pattern_is_one_seeds_load(cfg: Any, patterns: Path) -> None:
         assert sorted(map(tuple, raw["load_care"])) == [
             (c, t) for c in chains for t in range(max_chain_length)
         ], number
-        seed = seed_of(number, {**raw, "load_care": None})
-        for chain in chains:
-            assert raw["load_seqs"][str(chain)] == [
-                _parity(rows[t][chain], seed) for t in range(max_chain_length)
-            ], (number, chain)
+        for seed in (seed_of(number, {**raw, "load_care": None}), raw["seed"]):
+            for chain in chains:
+                assert raw["load_seqs"][str(chain)] == [
+                    _parity(rows[t][chain], seed) for t in range(max_chain_length)
+                ], (number, chain, seed)
 
 
 def _assert_nothing_rejected_for_compression(cfg: Any) -> None:

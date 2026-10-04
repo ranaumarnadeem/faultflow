@@ -172,6 +172,33 @@ def test_a_mux_follows_the_input_its_held_select_picks() -> None:
     assert net.forced("f0", "RESET_B", {"en": 0, "rst_n": 1}) is None
 
 
+@pytest.mark.unit
+def test_any_other_cell_is_held_when_its_free_inputs_cant_change_it(
+    require_cpp_core: None,
+) -> None:
+    """o21ai: ~((A1 | A2) & B1), with A1 from en, A2 from rst_n, B1 from trst_n --
+    evaluated by the simulator's own gate function over every value of the inputs
+    nothing holds."""
+    net = _netlist(
+        g0=_cell("o21ai_1", A1=3, A2=4, B1=2, Y=10),
+        f0=_cell("dfrtp_1", CLK=5, D=3, RESET_B=10, Q=12),
+    )
+    found = net.forced("f0", "RESET_B", {"trst_n": 0})  # B1 = 0: Y = 1
+    assert found is not None and found.value == 1
+    assert (2, "g0", "B1", 0) in found.steps
+    found = net.forced("f0", "RESET_B", {"trst_n": 1, "rst_n": 1})  # Y = 0
+    assert found is not None and found.value == 0
+    assert net.forced("f0", "RESET_B", {"trst_n": 1}) is None  # Y = ~(en | rst_n)
+    # xor2 of two held inputs; of one, it follows the other.
+    xor = _netlist(
+        g0=_cell("xor2_1", A=2, B=4, X=10),
+        f0=_cell("dfrtp_1", CLK=5, D=3, RESET_B=10, Q=12),
+    )
+    found = xor.forced("f0", "RESET_B", {"trst_n": 1, "rst_n": 0})
+    assert found is not None and found.value == 1
+    assert xor.forced("f0", "RESET_B", {"trst_n": 1}) is None
+
+
 def _cell(cell_type: str, **conns: Any) -> dict[str, Any]:
     outputs = {"Q", "X", "Y"}
     return {
@@ -256,7 +283,9 @@ def test_a_bubbled_input_is_set_by_the_opposite_value() -> None:
 
 
 @pytest.mark.unit
-def test_known_flop_outputs_and_constants_hold_a_pin_and_other_logic_does_not() -> None:
+def test_known_flop_outputs_and_constants_hold_a_pin_and_free_logic_does_not(
+    require_cpp_core: None,
+) -> None:
     net = _netlist(
         s0=_cell("dfrtp_1", CLK=5, D="1", RESET_B=4, Q=10),
         c0=_cell("dfrtp_1", CLK=5, D=3, RESET_B=10, Q=11),
@@ -271,4 +300,7 @@ def test_known_flop_outputs_and_constants_hold_a_pin_and_other_logic_does_not() 
     tied = net.forced("c1", "RESET_B", {})
     assert tied is not None and tied.value == 0
     assert tied.steps == ((12, "c1", "RESET_B", 0),)  # a constant bit has no site
-    assert net.forced("c2", "RESET_B", {"rst_n": 0, "en": 0}) is None  # xor
+    # The xor holds the pin only with both its inputs held: a free one flips it.
+    assert net.forced("c2", "RESET_B", {"rst_n": 0}) is None
+    both = net.forced("c2", "RESET_B", {"rst_n": 0, "en": 1})
+    assert both is not None and both.value == 1

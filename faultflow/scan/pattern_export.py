@@ -57,6 +57,18 @@ def scan_pattern_to_dict(pattern: ScanPattern) -> dict[str, Any]:
             if pattern.shift_pi_values
             else {}
         ),
+        **({"launch": pattern.launch} if pattern.launch else {}),
+        **(
+            {
+                "launch_scan_in": {
+                    str(chain): bool(bit)
+                    for chain, bit in pattern.launch_scan_in.items()
+                }
+            }
+            if pattern.launch_scan_in
+            else {}
+        ),
+        **({"seed": pattern.seed} if pattern.seed is not None else {}),
     }
 
 
@@ -85,4 +97,10 @@ def scan_pattern_from_dict(data: dict[str, Any]) -> ScanPattern:
             str(port): bool(value)
             for port, value in data.get("shift_pi_values", {}).items()
         },
+        launch=str(data.get("launch", "")),
+        launch_scan_in={
+            int(chain): bool(bit)
+            for chain, bit in data.get("launch_scan_in", {}).items()
+        },
+        seed=int(data["seed"]) if data.get("seed") is not None else None,
     )

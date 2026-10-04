@@ -140,12 +140,14 @@ def ring_generator_wrapper_verilog(
     by construction, not by coincidence -- insert_compression() below always
     passes the same value to both.
     """
-    if len(phase_shifter_taps) != len(scan_in_ports):
-        raise ValueError(
-            f"fanout has {len(phase_shifter_taps)} rows but there are "
-            f"{len(scan_in_ports)} scan_in_ports -- exactly one fanout row "
-            "per scan chain is required"
-        )
+    decompressor = Decompressor(
+        scan_in_ports,
+        polynomial,
+        phase_shifter_taps,
+        channel_port=channel_port,
+        scan_enable_port=scan_enable_port,
+        clock_port=clock_port,
+    )
     modules = core_json.get("modules")
     if not isinstance(modules, dict) or core_module not in modules:
         raise ValueError(f"core JSON has no module {core_module!r}")
@@ -155,24 +157,7 @@ def ring_generator_wrapper_verilog(
 
     scan_in_set = set(scan_in_ports)
     passthrough_names = [name for name in ports if name not in scan_in_set]
-
-    if scan_enable_port not in passthrough_names:
-        raise ValueError(
-            f"scan_enable_port {scan_enable_port!r} is not a port of "
-            f"{core_module!r} (or is itself one of scan_in_ports)"
-        )
-    if clock_port not in passthrough_names:
-        raise ValueError(
-            f"clock_port {clock_port!r} is not a port of {core_module!r} "
-            "(or is itself one of scan_in_ports)"
-        )
-    if channel_port in passthrough_names:
-        raise ValueError(
-            f"the channel port {channel_port!r} is a port of {core_module!r} too; "
-            "name the channels something else ([compression] channel_port)"
-        )
-
-    width = polynomial.width
+    decompressor.check_ports(passthrough_names, core_module)
 
     port_decls: list[str] = []
     port_list: list[str] = passthrough_names + [channel_port]
@@ -181,15 +166,9 @@ def ring_generator_wrapper_verilog(
         direction = port.get("direction", "input")
         port_width = len(port.get("bits", []))
         port_decls.append(_port_decl(name, direction, port_width))
-    port_decls.append(_port_decl(channel_port, "input", width))
+    port_decls.append(_port_decl(channel_port, "input", polynomial.width))
 
-    reg_width = f"[{width - 1}:0] " if width > 1 else ""
     wire_decls = [f"  wire {name};" for name in scan_in_ports]
-    assigns = []
-    for name, taps in zip(scan_in_ports, phase_shifter_taps):
-        terms = " ^ ".join(f"effective_state[{t}]" for t in taps)
-        assigns.append(f"  assign {name} = {terms};")
-
     inst_conns = [f"    .{name}({name})" for name in passthrough_names + scan_in_ports]
 
     lines = [
@@ -198,12 +177,94 @@ def ring_generator_wrapper_verilog(
         "",
         *wire_decls,
         "",
-        f"  localparam {reg_width}TAP_MASK = {tap_mask_verilog_literal(polynomial)};",
+        *decompressor_verilog(decompressor),
+        "",
+        f"  {core_module} {instance_name} (",
+        ",\n".join(inst_conns),
+        "  );",
+        "endmodule",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class Decompressor:
+    """The decompressor of a wrapper around a scanned core: the ring generator,
+    loaded from ``channel_port`` on each load's first shift, and the phase
+    shifter driving each of ``scan_in_ports`` (ring_generator_wrapper_verilog).
+    With compaction too, the compactor's wrapper holds it
+    (faultflow.scan.compaction.compactor_wrapper_verilog)."""
+
+    scan_in_ports: list[str]
+    polynomial: LfsrPolynomial
+    phase_shifter_taps: list[list[int]]
+    channel_port: str = "tdi"
+    scan_enable_port: str = "scan_en"
+    clock_port: str = "clk"
+
+    @classmethod
+    def from_manifest(cls, compression: dict[str, Any]) -> "Decompressor":
+        """The decompressor scan-compress composed, from its manifest entry
+        (manifest["compression"])."""
+        return cls(
+            [str(p) for p in compression["scan_in_ports"]],
+            lookup_polynomial(int(compression["num_channels"])),
+            [[int(t) for t in row] for row in compression["phase_shifter_taps"]],
+            channel_port=str(compression.get("channel_port", "tdi")),
+            scan_enable_port=str(compression["scan_enable_port"]),
+            clock_port=str(compression["clock_port"]),
+        )
+
+    def __post_init__(self) -> None:
+        if len(self.phase_shifter_taps) != len(self.scan_in_ports):
+            raise ValueError(
+                f"fanout has {len(self.phase_shifter_taps)} rows but there are "
+                f"{len(self.scan_in_ports)} scan_in_ports -- exactly one fanout "
+                "row per scan chain is required"
+            )
+
+    def check_ports(self, passthrough_names: list[str], core_module: str) -> None:
+        """Scan enable and the clock must be ports the wrapper passes through to
+        the core; the channel port must not be one."""
+        if self.scan_enable_port not in passthrough_names:
+            raise ValueError(
+                f"scan_enable_port {self.scan_enable_port!r} is not a port of "
+                f"{core_module!r} (or is itself one of scan_in_ports)"
+            )
+        if self.clock_port not in passthrough_names:
+            raise ValueError(
+                f"clock_port {self.clock_port!r} is not a port of "
+                f"{core_module!r} (or is itself one of scan_in_ports)"
+            )
+        if self.channel_port in passthrough_names:
+            raise ValueError(
+                f"the channel port {self.channel_port!r} is a port of "
+                f"{core_module!r} too; name the channels something else "
+                "([compression] channel_port)"
+            )
+
+
+def decompressor_verilog(decompressor: Decompressor) -> list[str]:
+    """The decompressor's lines in a wrapper module whose scan inputs are wires
+    and whose channel port, scan enable and clock are ports: the ring generator,
+    then the phase shifter's assigns, one per scan input."""
+    width = decompressor.polynomial.width
+    channel = decompressor.channel_port
+    scan_enable = decompressor.scan_enable_port
+    reg_width = f"[{width - 1}:0] " if width > 1 else ""
+    assigns = []
+    for name, taps in zip(decompressor.scan_in_ports, decompressor.phase_shifter_taps):
+        terms = " ^ ".join(f"effective_state[{t}]" for t in taps)
+        assigns.append(f"  assign {name} = {terms};")
+    mask = tap_mask_verilog_literal(decompressor.polynomial)
+    return [
+        f"  localparam {reg_width}TAP_MASK = {mask};",
         "",
         f"  reg {reg_width}lfsr_reg;",
         "  reg prev_scan_en;",
-        f"  wire reseed = {scan_enable_port} & ~prev_scan_en;",
-        f"  wire {reg_width}effective_state = reseed ? {channel_port} : lfsr_reg;",
+        f"  wire reseed = {scan_enable} & ~prev_scan_en;",
+        f"  wire {reg_width}effective_state = reseed ? {channel} : lfsr_reg;",
         f"  wire fb = effective_state[{width - 1}];",
         f"  wire {reg_width}next_state;",
         "  assign next_state[0] = fb;",
@@ -215,21 +276,14 @@ def ring_generator_wrapper_verilog(
         "    end",
         "  endgenerate",
         "",
-        f"  always @(posedge {clock_port}) begin",
-        f"    prev_scan_en <= {scan_enable_port};",
-        f"    if ({scan_enable_port})",
+        f"  always @(posedge {decompressor.clock_port}) begin",
+        f"    prev_scan_en <= {scan_enable};",
+        f"    if ({scan_enable})",
         "      lfsr_reg <= next_state;",
         "  end",
         "",
         *assigns,
-        "",
-        f"  {core_module} {instance_name} (",
-        ",\n".join(inst_conns),
-        "  );",
-        "endmodule",
-        "",
     ]
-    return "\n".join(lines)
 
 
 @dataclass(frozen=True)

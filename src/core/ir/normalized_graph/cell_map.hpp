@@ -99,4 +99,8 @@ std::string normalize_cell_name(const std::string& raw);
 
 GateType lookup_gate_type(const CellMap& map, const std::string& raw);
 
+// The GateType a cell map's "gate_type" names ("AND2B", "O21AI", ...); throws
+// ParseError on a name it doesn't know.
+GateType gate_type_from_name(const std::string& name);
+
 }  // namespace faultflow

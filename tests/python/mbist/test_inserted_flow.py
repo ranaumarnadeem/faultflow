@@ -20,6 +20,7 @@ import pytest
 from faultflow.config import load_config
 from mbist_chip import LIBERTY, ROOT, chip_copy
 from scan_credit import compressed_credit_not_reproduced, credit_not_reproduced
+from scan_replay import replay_on_cells
 from warptap_helpers import skip_unless_warptap
 
 CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
@@ -123,6 +124,19 @@ def test_every_credited_fault_reproduces_in_the_full_protocol(
     out, cfg = flowed
     monkeypatch.chdir(out)
     assert credit_not_reproduced(cfg, out / "patterns.json") == []
+
+
+def test_its_patterns_unload_on_real_cells(
+    flowed: tuple[Path, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replayed on the scanned chip's sky130 cells -- the memories stubbed, the
+    synchronizers settled by the preamble, the TAP held in reset -- every pattern
+    unloads what FaultFlow expects."""
+    if shutil.which("iverilog") is None or shutil.which("vvp") is None:
+        pytest.skip("needs iverilog")
+    out, cfg = flowed
+    monkeypatch.chdir(out)
+    assert replay_on_cells(cfg, out / "patterns.json", out / "replay") == []
 
 
 def test_the_categories_add_up_and_jtag_adds_its_credit(
@@ -271,4 +285,9 @@ def test_with_compression_every_credit_holds_on_the_compressed_chip(
         "not_reproduced": [],
         "golden": [],
     }
+    # Back to back on the composed chip's sky130 cells, from power-up, each
+    # pattern's own seed on comp_si: each pattern's pulse arms the reseed, and
+    # every unload and output matches.
+    if shutil.which("iverilog") is not None and shutil.which("vvp") is not None:
+        assert replay_on_cells(cfg, patterns, out / "replay") == []
     assert _report(cfg, out)["summary"]["compression_unresolved"] > 0

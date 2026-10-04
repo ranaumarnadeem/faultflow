@@ -25,6 +25,8 @@ tests/
 │   ├── soc2_fixtures.py      SoC 2-block hierarchical test fixture data
 │   ├── db_v3_helpers.py      Database schema helpers
 │   ├── preflight_fixtures.py Reconvergent netlist + a fake OpenTestability preflight
+│   ├── scan_replay.py        Replays exported scan patterns on the sky130 cell models
+│   ├── stil_expand.py        Expands the STIL write-patterns writes back into cycles
 │   │
 │   ├── cli/              Shell and CLI command tests
 │   ├── sim/              Core simulation flow tests
@@ -286,6 +288,11 @@ wsl -e bash -c "cd /mnt/c/Users/Potato/Desktop/faultflow && source venv/bin/acti
   - `db_v3_helpers.py` — database schema and initialization helpers
   - `preflight_fixtures.py` — a reconvergent netlist and a fake OpenTestability
     `_preflight` that answers with real OT's records for it
+  - `scan_replay.py` — replays exported scan patterns, as the cycles a tester
+    applies (`faultflow.scan.tester_program`), on the chip's sky130 netlist with the
+    PDK's cell models (iverilog), and checks the STIL they make
+  - `stil_expand.py` — expands the STIL `write-patterns` writes back into cycles by
+    STIL's own rules
 
 ### C++ Tests
 

@@ -37,22 +37,24 @@ def test_expand_bus_bits_with_indexed_netnames() -> None:
     assert len(result) == 3
 
 
-def test_expand_bus_bits_fallback_when_missing() -> None:
-    # netnames only has the bus-level entry, not individual bits
+def test_expand_bus_bits_by_position_when_missing() -> None:
+    # netnames only has the bus-level entry, not individual bits (as Yosys writes
+    # a plain bus port): each bit by position, as the C++ core resolves it. The
+    # bare port name would be bit 0 alone.
     netnames = {"o_result": {"bits": [42, 43, 44]}}
     result = _expand_bus_bits("o_result", [42, 43, 44], netnames)
-    assert result == ["o_result"]
+    assert result == ["o_result[0]", "o_result[1]", "o_result[2]"]
 
 
-def test_expand_bus_bits_fallback_partial() -> None:
-    # Only some bits have indexed names — must fall back
+def test_expand_bus_bits_by_position_when_partial() -> None:
+    # Only some bits have indexed names: every bit by position
     netnames = {
         "o_result[0]": {"bits": [42]},
         "o_result[1]": {"bits": [43]},
         # bit 44 is missing
     }
     result = _expand_bus_bits("o_result", [42, 43, 44], netnames)
-    assert result == ["o_result"]
+    assert result == ["o_result[0]", "o_result[1]", "o_result[2]"]
 
 
 def test_expand_bus_bits_empty_bits() -> None:
@@ -112,15 +114,17 @@ def test_port_names_expand_buses_with_indexed_netnames(tmp_path: Path) -> None:
     assert len(result) == 3
 
 
-def test_port_names_expand_buses_fallback_to_port_name(tmp_path: Path) -> None:
-    # netnames only has bus-level entry (fastfir case)
+def test_port_names_expand_buses_by_position_without_indexed_netnames(
+    tmp_path: Path,
+) -> None:
+    # netnames only has bus-level entry (fastfir case): every bit by position
     data = _module(
         ports={"o_result": {"direction": "output", "bits": [10, 11, 12]}},
         netnames={"o_result": {"bits": [10, 11, 12]}},
     )
     p = _write_json(tmp_path, data)
     result = _port_names(p, "top", "output", expand_buses=True)
-    assert result == ["o_result"]
+    assert result == ["o_result[0]", "o_result[1]", "o_result[2]"]
 
 
 def test_port_names_expand_buses_single_bit_unchanged(tmp_path: Path) -> None:

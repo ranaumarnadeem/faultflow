@@ -283,15 +283,18 @@ def test_native_tcl_procedures_and_loops_remain_available(tmp_path: Path) -> Non
     assert str(result) == "7 6"
 
 
-def test_write_patterns_is_registered_but_unsupported(tmp_path: Path) -> None:
+def test_write_patterns_needs_its_files_and_a_scanned_design(tmp_path: Path) -> None:
     bridge = TclBridge(
         ProjectSession(output_root=tmp_path / "output", service=FakeService())
     )
 
     with pytest.raises(ShellError) as exc:
-        bridge.call("write_patterns")
-
-    assert exc.value.code == ("FAULTFLOW", "UNSUPPORTED", "PATTERN_EXPORT")
+        bridge.call("write_patterns", "-patterns", "patterns.json")
+    assert exc.value.code == ("FAULTFLOW", "CONFIG", "INVALID_OPTION")
+    for flags in ([], ["-no_overlap"]):
+        with pytest.raises(ShellError) as exc:
+            bridge.call("write_patterns", "-patterns", "p.json", "-o", "x.stil", *flags)
+        assert exc.value.code == ("FAULTFLOW", "PRECONDITION", "SCAN_REQUIRED")
 
 
 def test_workers_command_updates_readable_global(tmp_path: Path) -> None:
