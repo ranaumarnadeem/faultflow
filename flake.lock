@@ -37,7 +37,8 @@
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "warptap": "warptap"
       }
     },
     "systems": {
@@ -52,6 +53,23 @@
       "original": {
         "owner": "nix-systems",
         "repo": "default",
+        "type": "github"
+      }
+    },
+    "warptap": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1790842380,
+        "narHash": "sha256-reIwMo9wm/B0GqkdhfX7pYWr/XylpX5Zi9NEmKZjbMc=",
+        "owner": "ranaumarnadeem",
+        "repo": "warptap",
+        "rev": "6f6041717d1a85c990658ca77d2a53c49bacf46d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ranaumarnadeem",
+        "repo": "warptap",
+        "rev": "6f6041717d1a85c990658ca77d2a53c49bacf46d",
         "type": "github"
       }
     }

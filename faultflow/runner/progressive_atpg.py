@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
 import logging
 import shutil
 import sqlite3
-import tempfile
 import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
@@ -335,7 +333,12 @@ def _accept_and_simulate(
     test_mode: str = "",
     sim_threads: int = 1,
     on_vector_accepted: Callable[[dict[str, bool], int | None], None] | None,
-) -> None:
+) -> set[int]:
+    """Returns the fault ids this vector detected, so a caller grading several
+    vectors against the same starting fault_ids in one pass (e.g. a
+    random-fill round) can shrink its own list between vectors instead of
+    re-querying every remaining vector's fault records against the full,
+    un-shrunk set -- see the random-fill loops' own comments."""
     fault_id = fault_ids[0] if len(fault_ids) == 1 else None
     if on_vector_accepted is not None:
         on_vector_accepted(vector, fault_id)
@@ -343,7 +346,7 @@ def _accept_and_simulate(
     core.append_vectors(
         db_path, campaign_id, run_id, vector_source, [key], vector_index
     )
-    core.simulate_incremental(
+    detections = core.simulate_incremental(
         json_path,
         cell_map_path,
         db_path,
@@ -359,6 +362,7 @@ def _accept_and_simulate(
         sim_threads,
     )
     core.update_run_vector_count(db_path, run_id, vector_index)
+    return {int(row["fault_id"]) for row in detections}
 
 
 def transition_pattern_key(
@@ -402,7 +406,9 @@ def _accept_and_simulate_transition(
     unsupported: str,
     blackbox_instances: list[str],
     sim_threads: int = 1,
-) -> None:
+) -> set[int]:
+    """Returns the fault ids this pair detected -- see _accept_and_simulate's
+    docstring."""
     launch_key = pattern_key(launch, input_order)
     capture_key = pattern_key(capture, input_order)
     # Capture frame in `pattern`, launch frame in `launch_pattern`.
@@ -415,7 +421,7 @@ def _accept_and_simulate_transition(
         vector_index,
         [launch_key],
     )
-    core.simulate_transition_incremental(
+    detections = core.simulate_transition_incremental(
         json_path,
         cell_map_path,
         db_path,
@@ -430,40 +436,7 @@ def _accept_and_simulate_transition(
         sim_threads,
     )
     core.update_run_vector_count(db_path, run_id, vector_index)
-
-
-def _precertify_redundant(
-    db_path: str, fault_ids: "frozenset[int] | set[int]", redundancy_model_id: str
-) -> int:
-    """Preflight Phase B: mark canceling-path faults redundant in ONE guarded,
-    batched transaction.
-
-    Only active faults are eligible: a fault the simulator already DETECTED is
-    empirical ground truth (the structural claim lost), and excluded/collapsed
-    faults sit outside the denominator -- Phase B's id set is derived from net
-    ids over ALL campaign faults, so the guards are load-bearing, not
-    defensive. One connection + one transaction replaces the previous fresh
-    autocommit connection per fault (~51 ms/fault on /mnt/c)."""
-    if not fault_ids:
-        return 0
-    conn = connect(db_path)
-    try:
-        cur = conn.executemany(
-            """
-            UPDATE faults
-            SET status = 'redundant', redundancy_model_id = ?,
-                detected_by_vector = NULL
-            WHERE id = ?
-              AND status = 'undetected'
-              AND exclusion = 'none'
-              AND collapsed_into IS NULL
-            """,
-            [(redundancy_model_id, int(fid)) for fid in sorted(fault_ids)],
-        )
-        conn.commit()
-        return int(cur.rowcount)
-    finally:
-        conn.close()
+    return {int(row["fault_id"]) for row in detections}
 
 
 # NOTE: no termination sweep here. protocol_unresolved is a scan-protocol
@@ -527,39 +500,6 @@ def _escalation_headroom(
     )
 
 
-def _tie_xz_netlist(src: Path, dst: Path) -> int:
-    """Replace all 'x'/'z' constant bits with 0 in a Yosys JSON netlist.
-
-    Fixes bits in ports, cell connections, and netnames (all three places
-    where Yosys JSON can carry x/z literals).  Returns the number tied.
-    """
-    netlist = json.loads(src.read_text())
-    count = 0
-
-    def fix_bits(bits: list) -> list:
-        nonlocal count
-        out = []
-        for b in bits:
-            if b in ("x", "z"):
-                out.append(0)
-                count += 1
-            else:
-                out.append(b)
-        return out
-
-    for mod in netlist.get("modules", {}).values():
-        for port in mod.get("ports", {}).values():
-            port["bits"] = fix_bits(port.get("bits", []))
-        for cell in mod.get("cells", {}).values():
-            for pin in cell.get("connections", {}):
-                cell["connections"][pin] = fix_bits(cell["connections"][pin])
-        for nn in mod.get("netnames", {}).values():
-            nn["bits"] = fix_bits(nn.get("bits", []))
-
-    dst.write_text(json.dumps(netlist, indent=2))
-    return count
-
-
 def run_progressive_native_atpg(
     cfg: FaultflowConfig,
     netlist: Path,
@@ -620,16 +560,7 @@ def run_progressive_native_atpg(
     input_order = _atpg_pi_names(netlist, cfg.top)
     effective_db_path = str(db_path if db_path is not None else cfg.db_path)
 
-    _tmpdir: tempfile.TemporaryDirectory | None = None
-    if cfg.simulation.tie_xz:
-        _tmpdir = tempfile.TemporaryDirectory(prefix="faultflow_tiexz_")
-        _tied_path = Path(_tmpdir.name) / netlist.name
-        _n = _tie_xz_netlist(netlist, _tied_path)
-        if _n:
-            log.info("tie_xz: tied %d x/z bits to 0 in %s", _n, netlist.name)
-        json_path = str(_tied_path)
-    else:
-        json_path = str(netlist)
+    json_path = str(netlist)
 
     effective_cell_map = str(
         cell_map_path if cell_map_path is not None else cfg.cell_lib
@@ -730,10 +661,10 @@ def run_progressive_native_atpg(
             )
             _parallel = False
 
-    # OT structural reconvergence preflight (cfg.atpg.preflight).
-    # Phase A: reconvergent-site faults sorted last + tier bumped to skip the
-    # short timeout tier.
-    # Phase B: canceling-path stems marked UNSAT directly (no SAT call needed).
+    # OT structural reconvergence preflight (cfg.atpg.preflight): reconvergent-
+    # site faults sorted last + tier bumped to skip the short timeout tier.
+    # Ordering only: a reconvergent stem is no redundancy proof (its faults, and
+    # each branch's, can be testable), so every verdict still comes from SAT.
     # Falls back silently if opentest is not on PATH.
     _preflight: PreflightData | None = None
     _reconv_fault_ids: frozenset[int] = frozenset()
@@ -751,7 +682,7 @@ def run_progressive_native_atpg(
                 _tech,
             )
             if _preflight:
-                # Build fault_id → net_id mapping from DB (one query, reused below).
+                # Build fault_id → net_id mapping from DB (one query).
                 with connect(effective_db_path) as conn:
                     _fid_to_netid: dict[int, int] = {
                         int(r["id"]): int(r["net_id"])
@@ -772,29 +703,10 @@ def run_progressive_native_atpg(
                     for fid, nid in _fid_to_netid.items()
                     if nid in _preflight.fanout_yosys_ids
                 )
-                _redundant_fault_ids = frozenset(
-                    fid
-                    for fid, nid in _fid_to_netid.items()
-                    if nid in _preflight.redundant_stem_ids
-                )
                 log.info(
-                    "atpg   preflight: %d reconvergent stems, %d canceling stems",
+                    "atpg   preflight: %d reconvergent stems",
                     len(_preflight.fanout_yosys_ids),
-                    len(_preflight.redundant_stem_ids),
                 )
-                # Phase B: pre-certify canceling-path faults as UNSAT -- one
-                # guarded batched txn (never touches detected/excluded/collapsed
-                # faults; see _precertify_redundant).
-                if _redundant_fault_ids:
-                    _b_count = _precertify_redundant(
-                        effective_db_path, _redundant_fault_ids, redundancy_model
-                    )
-                    if _b_count:
-                        log.info(
-                            "atpg   preflight Phase B: pre-certified %d faults"
-                            " as UNSAT",
-                            _b_count,
-                        )
 
     _easy_reserve = cfg.atpg.easy_fault_reserve
     if _parallel and _easy_reserve > 0 and cfg.atpg.workers >= 4:
@@ -844,11 +756,21 @@ def run_progressive_native_atpg(
                     lambda: _live_detected(effective_db_path, campaign_id),
                 )
                 random_denom = _coverage_denominator(effective_db_path, campaign_id)
+                # Shrinks as vectors are graded, so each subsequent vector's
+                # fault-record load is against only the still-undetected
+                # faults from THIS round, not the full round-start set every
+                # time (previously fault_ids stayed the static `active_ids`
+                # for all random_vectors iterations -- a real, measured cost
+                # on large designs: db::load_faults re-queries the whole
+                # un-shrunk list, chunked, every single vector).
+                random_remaining = set(active_ids)
                 graded = 0
                 for offset, vector in enumerate(new_random):
+                    if not random_remaining:
+                        break
                     vector_index = base_index + offset
                     sim_started = time.perf_counter()
-                    _accept_and_simulate(
+                    newly = _accept_and_simulate(
                         core,
                         json_path=json_path,
                         cell_map_path=effective_cell_map,
@@ -858,7 +780,7 @@ def run_progressive_native_atpg(
                         vector_source=vector_source,
                         vector=vector,
                         input_order=input_order,
-                        fault_ids=active_ids,
+                        fault_ids=sorted(random_remaining),
                         vector_index=vector_index,
                         unsupported=unsupported,
                         blackbox_instances=bb_instances,
@@ -866,6 +788,7 @@ def run_progressive_native_atpg(
                         sim_threads=sim_threads,
                         on_vector_accepted=on_vector_accepted,
                     )
+                    random_remaining.difference_update(newly)
                     fault_sim_seconds += time.perf_counter() - sim_started
                     graded += 1
                     heartbeat.tick(offset + 1)
@@ -1050,7 +973,16 @@ def run_progressive_native_atpg(
                 min(prior_timeout_count.get(fault_id, 0), len(timeout_tiers) - 1)
             ]
             if _parallel_results:
-                _pre_res, _pre_slv = _parallel_results.get(
+                # pop, not get: each fault_id in active_ids is read exactly
+                # once (this loop never revisits one), and a wave's results
+                # can include a full SAT 'vector' assignment per detected
+                # fault -- leaving consumed entries in the dict for the rest
+                # of a large round accumulates real memory (profiled: this is
+                # the dominant per-fault growth in the ATPG parent process,
+                # not the SAT solver itself). Popping bounds _parallel_results
+                # to roughly one wave's outstanding results instead of the
+                # whole round's.
+                _pre_res, _pre_slv = _parallel_results.pop(
                     fault_id, ("UNKNOWN", {"result": "UNKNOWN"})
                 )
                 solved = dict(_pre_slv)
@@ -1105,7 +1037,7 @@ def run_progressive_native_atpg(
                     stats.accepted_vectors += 1
                     vector_index = len(vectors)
                     sim_started = time.perf_counter()
-                    _accept_and_simulate(
+                    newly = _accept_and_simulate(
                         core,
                         json_path=json_path,
                         cell_map_path=effective_cell_map,
@@ -1125,12 +1057,23 @@ def run_progressive_native_atpg(
                     )
                     fault_sim_seconds += time.perf_counter() - sim_started
                     if drop_sat:
-                        with connect(effective_db_path) as conn:
-                            init_schema(conn)
-                            remaining.intersection_update(
-                                int(r["id"])
-                                for r in _active_fault_rows(conn, campaign_id)
-                            )
+                        # A pure in-memory diff, not a DB re-query: `newly`
+                        # already IS this vector's detected set. A fault
+                        # this same round's earlier UNSAT results marked
+                        # redundant (core.mark_fault_redundant, below) can
+                        # linger in `remaining` under this approach instead
+                        # of being dropped immediately, but harmlessly --
+                        # each fault_id is visited once by the outer loop
+                        # (so a stale entry is never wrongly re-skipped) and
+                        # load_active_fault_records re-checks live DB status
+                        # before including anything in a simulation batch
+                        # (so a stale entry is never wrongly re-simulated).
+                        # Previously this re-queried the WHOLE campaign's
+                        # active-fault list from a fresh connection on every
+                        # single accepted vector -- the "per-accepted-vector
+                        # full active-fault re-read" lead from
+                        # deep_audit_fixes.md.
+                        remaining.difference_update(newly)
                     round_tracker.sat_outcomes.append("SAT")
                 else:
                     stats.rejected_candidates += 1
@@ -1270,16 +1213,7 @@ def run_progressive_transition_atpg(
     input_order = _atpg_pi_names(netlist, cfg.top)
     effective_db_path = str(db_path if db_path is not None else cfg.db_path)
 
-    _tmpdir2: tempfile.TemporaryDirectory | None = None
-    if cfg.simulation.tie_xz:
-        _tmpdir2 = tempfile.TemporaryDirectory(prefix="faultflow_tiexz_")
-        _tied_path2 = Path(_tmpdir2.name) / netlist.name
-        _n2 = _tie_xz_netlist(netlist, _tied_path2)
-        if _n2:
-            log.info("tie_xz: tied %d x/z bits to 0 in %s", _n2, netlist.name)
-        json_path = str(_tied_path2)
-    else:
-        json_path = str(netlist)
+    json_path = str(netlist)
 
     effective_cell_map = str(
         cell_map_path if cell_map_path is not None else cfg.cell_lib
@@ -1422,10 +1356,16 @@ def run_progressive_transition_atpg(
                 len(new_random),
                 lambda: _live_detected(effective_db_path, campaign_id),
             )
+            # Shrinks as pairs are graded -- see the stuck-at random-fill
+            # loop's identical comment (run_progressive_native_atpg) for why
+            # a static, un-shrunk fault_ids list here is a real cost.
+            random_remaining = set(active_ids)
             for offset, (launch, capture) in enumerate(new_random):
+                if not random_remaining:
+                    break
                 vector_index = base_index + offset
                 sim_started = time.perf_counter()
-                _accept_and_simulate_transition(
+                newly = _accept_and_simulate_transition(
                     core,
                     json_path=json_path,
                     cell_map_path=effective_cell_map,
@@ -1436,12 +1376,13 @@ def run_progressive_transition_atpg(
                     launch=launch,
                     capture=capture,
                     input_order=input_order,
-                    fault_ids=active_ids,
+                    fault_ids=sorted(random_remaining),
                     vector_index=vector_index,
                     unsupported=unsupported,
                     blackbox_instances=bb_instances,
                     sim_threads=sim_threads,
                 )
+                random_remaining.difference_update(newly)
                 fault_sim_seconds += time.perf_counter() - sim_started
                 heartbeat.tick(offset + 1)
 
@@ -1561,7 +1502,16 @@ def run_progressive_transition_atpg(
                 min(prior_timeout_count.get(fault_id, 0), len(timeout_tiers) - 1)
             ]
             if _parallel_results:
-                _pre_res, _pre_slv = _parallel_results.get(
+                # pop, not get: each fault_id in active_ids is read exactly
+                # once (this loop never revisits one), and a wave's results
+                # can include a full SAT 'vector' assignment per detected
+                # fault -- leaving consumed entries in the dict for the rest
+                # of a large round accumulates real memory (profiled: this is
+                # the dominant per-fault growth in the ATPG parent process,
+                # not the SAT solver itself). Popping bounds _parallel_results
+                # to roughly one wave's outstanding results instead of the
+                # whole round's.
+                _pre_res, _pre_slv = _parallel_results.pop(
                     fault_id, ("UNKNOWN", {"result": "UNKNOWN"})
                 )
                 solved = dict(_pre_slv)
@@ -1615,7 +1565,7 @@ def run_progressive_transition_atpg(
                     stats.accepted_vectors += 1
                     vector_index = len(pairs)
                     sim_started = time.perf_counter()
-                    _accept_and_simulate_transition(
+                    newly = _accept_and_simulate_transition(
                         core,
                         json_path=json_path,
                         cell_map_path=effective_cell_map,
@@ -1634,12 +1584,11 @@ def run_progressive_transition_atpg(
                     )
                     fault_sim_seconds += time.perf_counter() - sim_started
                     if drop_sat:
-                        with connect(effective_db_path) as conn:
-                            init_schema(conn)
-                            remaining.intersection_update(
-                                int(r["id"])
-                                for r in _active_fault_rows(conn, campaign_id)
-                            )
+                        # Pure in-memory diff -- see the stuck-at loop's
+                        # identical comment (run_progressive_native_atpg)
+                        # for why this is safe and why the DB re-query it
+                        # replaces was real, measured waste.
+                        remaining.difference_update(newly)
                     round_tracker.sat_outcomes.append("SAT")
                 else:
                     stats.rejected_candidates += 1

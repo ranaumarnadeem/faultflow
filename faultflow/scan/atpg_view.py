@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Sequence
 
 from faultflow.coverage.site_key import (
     SiteProvenance,
@@ -20,10 +20,19 @@ from faultflow.scan.stitch import (
     _top_module,
 )
 
+if TYPE_CHECKING:
+    from faultflow.scan.nonscan import NonscanSetup
+
 PPI_PREFIX = "__ppi_"
 PPO_PREFIX = "__ppo_"
 OBSERVE_BUF_CELL = "$faultflow_observe_buf"
 D_BRANCH_BUF_CELL = "$faultflow_d_branch_buf"
+# A constant-0 cell with no inputs: each opaque blackbox output gets its own,
+# rather than a buffer on the design's shared constant-0 net -- that net is a
+# fault site of the real netlist, and a tie hanging off it would give its
+# stuck-at-1 a path through the blackbox the real netlist doesn't have.
+TIE0_CELL = "$faultflow_tie0"
+TIE1_CELL = "$faultflow_tie1"
 # Bare (unescaped) spelling of stitch.py's YOSYS_CAPTURE_*_CELL constants --
 # derived, not re-typed, so the two producers of these cell types can't drift.
 CAPTURE_AND_CELL = YOSYS_CAPTURE_AND_CELL.lstrip("\\")
@@ -35,7 +44,40 @@ DATA_PIN = "D"
 #   set   variant ($scanff_s): SET_B,   captured value 1 when active.
 SCAN_RESET_TYPES = frozenset({"$scanff_r_faultflow", "\\$scanff_r_faultflow"})
 SCAN_SET_TYPES = frozenset({"$scanff_s_faultflow", "\\$scanff_s_faultflow"})
-ATPG_VIEW_SCHEMA_VER = "scan-atpg-view-observe-buf-1"
+ATPG_VIEW_SCHEMA_VER = "scan-atpg-view-observe-buf-2"
+# In an opaque view (_model_blackboxes_opaque) a tie cell named with the first
+# prefix drives each blackbox output, and a dangling reader named with the
+# second reads each net a blackbox input read. The view's blackbox-transparent
+# twin (make_blackbox_transparent) feeds each tie from an input port named with
+# the third prefix and observes each reader through an output port named with
+# the fourth. The C++ held_real_pis skips the third prefix too.
+BLACKBOX_TIE_PREFIX = "$bbtie0_"
+BLACKBOX_SINK_PREFIX = "$bbsink_"
+BLACKBOX_FREE_PORT_PREFIX = "__bbfree_"
+BLACKBOX_OBSERVE_PORT_PREFIX = "__bbobs_"
+# Each tie cell's attribute naming the blackbox instance it stands in for.
+BLACKBOX_INSTANCE_ATTR = "faultflow_blackbox"
+# Non-scan cells (_model_nonscan): a tie named with the first prefix and its value
+# drives a forced non-scan flop's output, one named with the second an X source's; a
+# dangling reader named with the third reads each of its input pins; and a tie named
+# with the fourth drives each held input, whose port the view drops. Each flop's cells
+# name it in the attribute; an X source's tie is also marked with the last.
+NONSCAN_TIE_PREFIX = "$nstie"
+NONSCAN_X_PREFIX = "$nsx_"
+NONSCAN_SINK_PREFIX = "$nssink_"
+HOLD_TIE_PREFIX = "$nshold_"
+NONSCAN_INSTANCE_ATTR = "faultflow_nonscan"
+NONSCAN_X_ATTR = "faultflow_nonscan_x"
+# The view's hold twin (make_nonscan_free) feeds each of those ties from an input
+# port named with the first prefix and observes each reader through an output port
+# named with the second. The C++ held_real_pis skips the first prefix too.
+NONSCAN_FREE_PORT_PREFIX = "__nsfree_"
+NONSCAN_OBSERVE_PORT_PREFIX = "__nsobs_"
+# Top-module attribute of a scan ATPG view: space-separated net ids of output
+# bits nothing may observe (x_mask.py). Mirrors kUnobservedNetsAttr in
+# src/core/ir/normalized_graph/normalized_graph.hpp, which drops them from
+# every simulator's and SAT miter's observable set.
+UNOBSERVED_NETS_ATTR = "faultflow_unobserved_nets"
 
 
 def _ppi_name(instance: str) -> str:
@@ -325,20 +367,6 @@ class _BitIndex:
             self._net_locs.setdefault(new_bit, set()).update(moved_nets)
 
 
-def _consumers_of_net(cells: dict[str, Any], net_bit: int) -> list[tuple[str, str]]:
-    consumers: list[tuple[str, str]] = []
-    for instance, cell in cells.items():
-        if not isinstance(cell, dict):
-            continue
-        conns = cell.get("connections", {})
-        if not isinstance(conns, dict):
-            continue
-        for pin, bits in conns.items():
-            if net_bit in _all_int_bits(bits):
-                consumers.append((str(instance), str(pin)))
-    return consumers
-
-
 def _add_internal_buf_cell(
     cells: dict[str, Any],
     instance: str,
@@ -405,6 +433,7 @@ def _add_ctrl_branch(
     *,
     instance: str,
     control: tuple[str, str, int],
+    generic_net: int,
     next_id: int,
     index: "_BitIndex | None" = None,
 ) -> tuple[int, str, int]:
@@ -415,6 +444,10 @@ def _add_ctrl_branch(
     fault on it models the generic netlist's control-pin branch fault (consumer
     = the scan FF, pin RESET_B/SET_B; the FF cell is removed from the reduced
     view).  Mirrors the D-observe boundary's dedicated-net mechanism.
+
+    The site key names the control net as the generic netlist does
+    (`generic_net`): a scan flop driving the control -- a reset synchronizer
+    -- may already have rewired the live pin to its pseudo-input.
     """
     _kind, pin, control_net = control
     control_branch_net = next_id
@@ -429,7 +462,7 @@ def _add_ctrl_branch(
     )
     control_site_key = canonical_site_key(
         SiteProvenance(
-            yosys_net_id=control_net,
+            yosys_net_id=generic_net,
             kind="branch",
             consumer_instance=instance,
             input_pin=pin,
@@ -501,20 +534,25 @@ def _resolve_d_observe_boundary(
     *,
     instance: str,
     d_net: int,
+    generic_d_net: int,
+    shared: bool,
     next_id: int,
     index: "_BitIndex | None" = None,
 ) -> tuple[int, str, int, int]:
-    """Return (observe_input_net, d_boundary_site_key, next_id, d_observe_net_id)."""
-    consumer_count = (
-        index.consumer_count(d_net)
-        if index is not None
-        else len(_consumers_of_net(cells, d_net))
-    )
+    """Return (observe_input_net, d_boundary_site_key, next_id, d_observe_net_id).
+
+    `d_net` is the D pin as currently wired, `generic_d_net` as the generic
+    netlist wires it: a flop processed earlier may have rewired D to its own
+    pseudo-input, but the site key must name the generic net. `shared` says
+    the generic D net has other sites than this D pin -- decided on the
+    generic netlist, so the view is the same whatever order flops are
+    processed in. A shared D gets a branch buffer that only this flop's
+    capture reads."""
     observe_input = d_net
-    d_boundary_site_key = stem_site_key(d_net)
+    d_boundary_site_key = stem_site_key(generic_d_net)
     d_observe_net_id = d_net
 
-    if consumer_count > 1:
+    if shared:
         d_branch_bit = next_id
         next_id += 1
         branch_instance = f"$ffbranch_{instance}"
@@ -530,7 +568,7 @@ def _resolve_d_observe_boundary(
         d_observe_net_id = d_branch_bit
         d_boundary_site_key = canonical_site_key(
             SiteProvenance(
-                yosys_net_id=d_net,
+                yosys_net_id=generic_d_net,
                 kind="branch",
                 consumer_instance=instance,
                 input_pin=DATA_PIN,
@@ -540,17 +578,306 @@ def _resolve_d_observe_boundary(
     return observe_input, d_boundary_site_key, next_id, d_observe_net_id
 
 
+def _parsed_net(bit: object) -> object:
+    """A connection bit as the netlist parser sees it: "x"/"z" tie to the same
+    constant-0 net as "0"."""
+    return "0" if bit in ("x", "z") else bit
+
+
+def _model_blackboxes_opaque(module: dict[str, Any], instances: Sequence[str]) -> None:
+    """Replace each blackbox instance with what a scan test can see of it:
+    nothing. Its outputs are tied to constant 0 -- the value the scan protocol
+    simulator already reads from an undriven blackbox output -- and its inputs
+    are left unobserved, since no scan test can observe them. A scan test
+    can't know a memory's output either, so the tie is only a placeholder a
+    two-valued simulator needs: x_mask.py masks every observation point it
+    can reach.
+
+    The reduced view is what SAT and every reduced-view simulator run on, and
+    it must see exactly what the full scan protocol does. Left as a boundary
+    (outputs controllable, inputs observable test points), SAT sets outputs
+    the protocol can't and credits observations the protocol can't make.
+
+    Each net a blackbox input read keeps a dangling internal reader. It holds
+    the net in the view even if nothing else reads it -- typically a constant
+    tie-off -- since the real netlist keeps its fault sites, which need a site
+    in the view to be graded; and it marks the blackbox's inputs for
+    make_blackbox_transparent to observe.
+    """
+    cells = module.get("cells", {})
+    input_bits: list[tuple[str, object]] = []
+    for inst in instances:
+        cell = cells.pop(inst, None)
+        if not isinstance(cell, dict):
+            raise ScanError(f"blackbox instance {inst!r} not found in the scan view")
+        dirs = cell.get("port_directions")
+        if not isinstance(dirs, dict) or not dirs:
+            raise ScanError(
+                f"blackbox instance {inst!r} has no port_directions: its outputs "
+                "can't be told from its inputs"
+            )
+        for pin, bits in cell.get("connections", {}).items():
+            if pin not in dirs:
+                raise ScanError(f"blackbox instance {inst!r}: no direction for {pin}")
+            for i, bit in enumerate(bits):
+                if dirs[pin] != "output":
+                    input_bits.append((f"{inst}_{pin}_{i}", bit))
+                elif isinstance(bit, int):
+                    cells[f"{BLACKBOX_TIE_PREFIX}{inst}_{pin}_{i}"] = {
+                        "hide_name": 0,
+                        "type": TIE0_CELL,
+                        "parameters": {},
+                        "attributes": {
+                            "faultflow_internal": "1",
+                            BLACKBOX_INSTANCE_ATTR: inst,
+                        },
+                        "port_directions": {"Y": "output"},
+                        "connections": {"Y": [bit]},
+                    }
+    next_id = _next_net_id(module)
+    read: set[object] = set()
+    for name, bit in input_bits:
+        if _parsed_net(bit) in read:
+            continue
+        read.add(_parsed_net(bit))
+        cells[f"{BLACKBOX_SINK_PREFIX}{name}"] = {
+            "hide_name": 0,
+            "type": OBSERVE_BUF_CELL,
+            "parameters": {},
+            "attributes": {"faultflow_internal": "1"},
+            "port_directions": {"A": "input", "Y": "output"},
+            "connections": {"A": [bit], "Y": [next_id]},
+        }
+        next_id += 1
+
+
+def _tie(value: int, bit: int, attributes: dict[str, str]) -> dict[str, Any]:
+    return {
+        "hide_name": 0,
+        "type": TIE1_CELL if value else TIE0_CELL,
+        "parameters": {},
+        "attributes": {"faultflow_internal": "1", **attributes},
+        "port_directions": {"Y": "output"},
+        "connections": {"Y": [bit]},
+    }
+
+
+def _model_nonscan(module: dict[str, Any], nonscan: NonscanSetup) -> None:
+    """Replace each non-scan flop with what a scan test sees of it (scan/nonscan.py):
+    a forced flop's output is tied to the value its held reset forces; an X source's
+    to 0, a placeholder x_mask.py masks. Each of its input pins keeps a dangling
+    reader of its own, which holds the net in the view as the flop's pin did and
+    marks it for the hold twin to observe. Each held input's port is dropped and a
+    tie drives its net, so ATPG can't assign it either."""
+    cells = module.get("cells", {})
+    next_id = _next_net_id(module)
+    for flop in nonscan.flops:
+        if cells.pop(flop.instance, None) is None:
+            raise ScanError(
+                f"non-scan flop {flop.instance!r} not found in the scan view"
+            )
+        attributes = {NONSCAN_INSTANCE_ATTR: flop.instance}
+        if flop.value is None:
+            name = f"{NONSCAN_X_PREFIX}{flop.instance}"
+            cells[name] = _tie(0, flop.q, {**attributes, NONSCAN_X_ATTR: "1"})
+        else:
+            name = f"{NONSCAN_TIE_PREFIX}{flop.value}_{flop.instance}"
+            cells[name] = _tie(flop.value, flop.q, attributes)
+        for pin, bit in flop.inputs:
+            cells[f"{NONSCAN_SINK_PREFIX}{flop.instance}_{pin}"] = {
+                "hide_name": 0,
+                "type": OBSERVE_BUF_CELL,
+                "parameters": {},
+                "attributes": {"faultflow_internal": "1", **attributes},
+                "port_directions": {"A": "input", "Y": "output"},
+                "connections": {"A": [bit], "Y": [next_id]},
+            }
+            next_id += 1
+    ports = module.get("ports", {})
+    for port, value in sorted(nonscan.holds.items()):
+        entry = ports.pop(port, None)
+        if not isinstance(entry, dict) or len(entry.get("bits", [])) != 1:
+            raise ScanError(f"held input {port!r} is not a single-bit port of the view")
+        cells[f"{HOLD_TIE_PREFIX}{port}"] = _tie(value, entry["bits"][0], {})
+
+
+def _branch_flop_outputs(
+    module: dict[str, Any], pseudo_port_map: dict[str, dict[str, Any]]
+) -> None:
+    """Give a flop output's single reader a branch of its own when the flop
+    output also drives a primary output.
+
+    In the generic netlist that reader's pin is a branch: the flop's Q also
+    feeds the next flop's scan-in. The view has no scan-in, so the reader
+    would share one net with the output port, and a fault on its branch
+    would be graded where the output sees it too. A buffer between the net
+    and the output port keeps the two apart."""
+    cells = module.get("cells", {})
+    ports = module.get("ports", {})
+    netnames = module.get("netnames", {})
+    q_drives = {
+        int(entry["q_drive_net_id"]): instance
+        for instance, entry in pseudo_port_map.items()
+    }
+    # A flop output is driven by its PPI or its control mux; every other
+    # site on it reads it.
+    readers: dict[int, int] = {}
+    for cell in cells.values():
+        if not isinstance(cell, dict):
+            continue
+        directions = cell.get("port_directions") or {}
+        for pin, bits in cell.get("connections", {}).items():
+            if directions.get(pin) == "output":
+                continue
+            for bit in _all_int_bits(bits):
+                if bit in q_drives:
+                    readers[bit] = readers.get(bit, 0) + 1
+    next_id = _next_net_id(module)
+    for net, instance in sorted(q_drives.items(), key=lambda item: item[1]):
+        if readers.get(net, 0) != 1:
+            continue
+        outputs = [
+            name
+            for name, port in ports.items()
+            if isinstance(port, dict)
+            and port.get("direction") == "output"
+            and not str(name).startswith(PPO_PREFIX)
+            and net in _all_int_bits(port.get("bits"))
+        ]
+        if not outputs:
+            continue
+        branch = next_id
+        next_id += 1
+        _add_internal_buf_cell(
+            cells, f"$ffqpo_{instance}", D_BRANCH_BUF_CELL, net, branch
+        )
+        for name in outputs:
+            for table in (ports, netnames):
+                entry = table.get(name)
+                if isinstance(entry, dict) and isinstance(entry.get("bits"), list):
+                    entry["bits"] = [branch if b == net else b for b in entry["bits"]]
+
+
+def make_blackbox_transparent(view: dict[str, Any], top: str) -> bool:
+    """Turn an opaque scan ATPG view into its blackbox-transparent twin, in
+    place: every blackbox tie cell becomes a buffer fed by its own new input
+    port, so SAT may give each blackbox output any value; every blackbox
+    input's reader drives a new output port, so SAT may observe it; and the
+    points x_mask.py left unobserved, because a blackbox output's unknown
+    value reaches them, are observed again. Returns False, leaving the view
+    untouched, if the view models no blackbox.
+
+    Only ties, ports and the mask change, so every fault site keeps its site
+    key. A fault UNSAT in the view but SAT in its twin has a test only if a
+    blackbox could be driven, observed or known, which no scan test can do:
+    it is untestable because of the blackbox (Tessent's AU.BB), not
+    redundant. UNSAT in both, it is redundant whatever the blackbox does. The
+    twin serves that classification alone -- no pattern found on it is a
+    pattern the scan protocol can apply.
+    """
+    _, module = _top_module(view, top)
+    cells = module.get("cells", {})
+    ties = {
+        name: BLACKBOX_FREE_PORT_PREFIX + name[len(BLACKBOX_TIE_PREFIX) :]
+        for name in cells
+        if name.startswith(BLACKBOX_TIE_PREFIX)
+    }
+    sinks = {
+        name: BLACKBOX_OBSERVE_PORT_PREFIX + name[len(BLACKBOX_SINK_PREFIX) :]
+        for name in cells
+        if name.startswith(BLACKBOX_SINK_PREFIX)
+    }
+    if not ties and not sinks:
+        return False
+    attributes = module.get("attributes")
+    if isinstance(attributes, dict):
+        attributes.pop(UNOBSERVED_NETS_ATTR, None)
+    _free_and_observe(module, ties, sinks, "blackbox twin")
+    return True
+
+
+def make_nonscan_free(view: dict[str, Any], top: str) -> bool:
+    """Turn a scan ATPG view that models non-scan cells (_model_nonscan) into its
+    hold twin, in place: every non-scan tie -- a forced flop's output, an X
+    source's, a held input's -- becomes a buffer fed by its own new input port, so
+    SAT may give it any value, and every non-scan flop pin's reader drives a new
+    output port, so SAT may observe it. An X source's tie stops being one; what
+    else is unknown, the caller masks. Returns False, leaving the view untouched,
+    if the view models no non-scan cell.
+
+    Only ties and ports change, so every fault site keeps its site key. A fault
+    UNSAT in the view but SAT in its hold twin has a test only if the held inputs,
+    and the non-scan flops they keep in reset, were free: it is untestable because
+    of [scan] hold (Tessent's AU.PC), not redundant. Like the blackbox twin, it
+    serves that classification alone.
+    """
+    _, module = _top_module(view, top)
+    cells = module.get("cells", {})
+    ties = {
+        name: NONSCAN_FREE_PORT_PREFIX + name.lstrip("$")
+        for name in cells
+        if name.startswith((NONSCAN_TIE_PREFIX, NONSCAN_X_PREFIX, HOLD_TIE_PREFIX))
+    }
+    sinks = {
+        name: NONSCAN_OBSERVE_PORT_PREFIX + name[len(NONSCAN_SINK_PREFIX) :]
+        for name in cells
+        if name.startswith(NONSCAN_SINK_PREFIX)
+    }
+    if not ties and not sinks:
+        return False
+    for name in ties:
+        cells[name].get("attributes", {}).pop(NONSCAN_X_ATTR, None)
+    _free_and_observe(module, ties, sinks, "hold twin")
+    return True
+
+
+def _free_and_observe(
+    module: dict[str, Any], ties: dict[str, str], sinks: dict[str, str], twin: str
+) -> None:
+    """Make each tie cell of `ties` a buffer fed by a new input port, named as
+    `ties` maps it, and give each dangling reader of `sinks` a new output port,
+    named as `sinks` maps it."""
+    cells = module.get("cells", {})
+    ports = module.setdefault("ports", {})
+    netnames = module.setdefault("netnames", {})
+
+    def add_port(name: str, direction: str, bit: int) -> None:
+        if name in ports or name in netnames:
+            raise ScanError(f"{twin} port name {name!r} is already taken")
+        ports[name] = {"direction": direction, "bits": [bit]}
+        netnames[name] = {"hide_name": 0, "bits": [bit], "attributes": {}}
+
+    next_id = _next_net_id(module)
+    for name, port in sorted(ties.items()):
+        add_port(port, "input", next_id)
+        tie = cells[name]
+        tie["type"] = OBSERVE_BUF_CELL
+        tie["port_directions"] = {"A": "input", "Y": "output"}
+        tie["connections"] = {"A": [next_id], "Y": tie["connections"]["Y"]}
+        next_id += 1
+    for name, port in sorted(sinks.items()):
+        (bit,) = cells[name]["connections"]["Y"]
+        add_port(port, "output", bit)
+
+
 def build_scan_atpg_view(
     generic_json: dict[str, Any],
     manifest: dict[str, Any],
     *,
     active_clock_net: int | None = None,
+    blackbox_instances: Sequence[str] = (),
+    nonscan: NonscanSetup | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """Return (reduced Yosys JSON, pseudo_port_map keyed by FF instance).
 
     When active_clock_net is given, only FFs clocked by that net get a PPO
     observe buffer (per-domain transition view).  All FFs still get a PPI so
     inactive-domain FF state can be controlled as held inputs.
+
+    `blackbox_instances` are modeled opaque (`_model_blackboxes_opaque`), so
+    the returned view contains none of them: load it with no blackbox list.
+    `nonscan` (scan/nonscan.py) replaces the non-scan flops and held inputs
+    with ties (`_model_nonscan`).
     """
     top = str(manifest["top"])
     _, source_module = _top_module(generic_json, top)
@@ -561,7 +888,11 @@ def build_scan_atpg_view(
     if not records:
         # A wrapper-only EXTEST graybox has NO internal scan FFs to reduce to
         # pseudo-ports; its IEEE-1500 WBR cells are handled downstream by
-        # fuse_wbr_into_view. Return the netlist unchanged (no pseudo-ports).
+        # fuse_wbr_into_view. Return the netlist otherwise unchanged (no
+        # pseudo-ports); blackboxes are still modeled opaque.
+        _model_blackboxes_opaque(module, blackbox_instances)
+        if nonscan is not None:
+            _model_nonscan(module, nonscan)
         return view, {}
 
     instances = [str(record["instance"]) for record in records]
@@ -580,6 +911,10 @@ def build_scan_atpg_view(
     # Incremental bit -> location index so per-FF net rewiring and consumer counts
     # touch only each net's actual sites, not a full-module scan every iteration.
     bit_index = _BitIndex(module)
+    # The same over the untouched generic netlist: site keys and branch
+    # decisions follow it, whatever order the flops are processed in.
+    source_index = _BitIndex(source_module)
+    source_cells = source_module.get("cells", {})
 
     for record in records:
         instance = str(record["instance"])
@@ -588,6 +923,7 @@ def build_scan_atpg_view(
             raise ScanError(f"scan cell missing from generic JSON: {instance}")
         if cell.get("type") not in SCAN_CELL_TYPES:
             raise ScanError(f"{instance}: expected scan FF cell type")
+        source_cell = source_cells.get(instance, {})
 
         q_net = int(record["q_net"])
         record_clock_net = int(record.get("clock_net", -1))
@@ -598,10 +934,14 @@ def build_scan_atpg_view(
         control_branch_net: int | None = None
         control_site_key: str | None = None
         if control is not None:
+            generic_control = _async_capture_control(source_cell)
             control_branch_net, control_site_key, next_id = _add_ctrl_branch(
                 cells,
                 instance=instance,
                 control=control,
+                generic_net=(
+                    generic_control[2] if generic_control is not None else control[2]
+                ),
                 next_id=next_id,
                 index=bit_index,
             )
@@ -633,6 +973,7 @@ def build_scan_atpg_view(
         # d_net within this same iteration. Reading it only once, before that
         # rewrite, would tap the stale (soon-orphaned) net instead of the PPI.
         d_net = _current_data_net(cell, int(record["data_net"]))
+        generic_d_net = _current_data_net(source_cell, int(record["data_net"]))
 
         # Create PPO only for FFs in the active domain (or always when single-domain).
         ppo_is_active = active_clock_net is None or record_clock_net == active_clock_net
@@ -650,6 +991,8 @@ def build_scan_atpg_view(
                     cells,
                     instance=instance,
                     d_net=d_net,
+                    generic_d_net=generic_d_net,
+                    shared=source_index.consumer_count(generic_d_net) > 1,
                     next_id=next_id,
                     index=bit_index,
                 )
@@ -703,6 +1046,9 @@ def build_scan_atpg_view(
             "ppi_port": ppi_port,
             "ppo_port": ppo_port,
             "ppi_net_id": ppi_bit,
+            # The net the flop's readers read: the PPI, or for an async flop
+            # the control mux's output.
+            "q_drive_net_id": q_drive,
             "ppo_net_id": ppo_bit,
             "original_q_net": net_name_by_bit.get(q_net) or str(q_net),
             "original_d_net": net_name_by_bit.get(d_net) or str(d_net),
@@ -714,6 +1060,10 @@ def build_scan_atpg_view(
 
     clock_nets_list = manifest_clock_net_ids(manifest)
     _drop_dangling_scan_ports(module, manifest, clock_nets_list)
+    _model_blackboxes_opaque(module, blackbox_instances)
+    if nonscan is not None:
+        _model_nonscan(module, nonscan)
+    _branch_flop_outputs(module, pseudo_port_map)
 
     attrs = module.setdefault("attributes", {})
     if isinstance(attrs, dict):
@@ -727,9 +1077,13 @@ def build_scan_atpg_view_from_paths(
     manifest: dict[str, Any],
     *,
     active_clock_net: int | None = None,
+    blackbox_instances: Sequence[str] = (),
+    nonscan: NonscanSetup | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     return build_scan_atpg_view(
         _load_json(Path(generic_json_path)),
         manifest,
         active_clock_net=active_clock_net,
+        blackbox_instances=blackbox_instances,
+        nonscan=nonscan,
     )

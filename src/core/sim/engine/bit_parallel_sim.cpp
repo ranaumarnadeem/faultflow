@@ -462,6 +462,87 @@ uint64_t BitParallelSim::simulate_batch(const CompiledSimGraph& cg,
   return detected & batch.mask;
 }
 
+uint64_t BitParallelSim::simulate_batch_observed(
+    const CompiledSimGraph& cg, const TestVector& vec, const FaultBatch& batch,
+    const std::vector<uint32_t>& observe, std::array<int32_t, 64>& first_sample,
+    bool early_exit, std::vector<std::vector<bool>>* lane0) const {
+  first_sample.fill(-1);
+  SimState state;
+  state.init(cg.net_count, 1, static_cast<int>(cg.ff_configs.size()));
+  for (const auto& [idx, value] : vec.initial_ff_state) {
+    if (idx < state.initial_ff_state.size()) {
+      state.initial_ff_state[idx] = value ? ~0ULL : 0ULL;
+    }
+  }
+  state.reset_ff_states();
+
+  // Same use_mode dispatch as simulate_batch.
+  const bool use_mode =
+      vec.test_mode != TestMode::FUNCTIONAL && !cg.wrapper_cells.empty();
+  const ModeConfig mode_cfg =
+      use_mode ? build_mode_config(cg, vec.test_mode) : ModeConfig{};
+  const auto eval = [&](const FaultBatch& b) {
+    if (use_mode) {
+      evaluate_combinational_mode(state, cg, b, mode_cfg);
+    } else {
+      evaluate_combinational(state, cg, b);
+    }
+  };
+
+  uint64_t detected = 0ULL;
+  int32_t sample_index = 0;
+  std::vector<TestCycle> cyc_scratch;
+  for (const TestCycle& cycle : cycles_for(vec, cyc_scratch)) {
+    FaultBatch inactive_batch;
+    const FaultBatch& active_batch = cycle.fault_active ? batch : inactive_batch;
+    broadcast_cycle_inputs(state, cg, cycle);
+    for (int i = 0; i < active_batch.size; ++i) {
+      inject_faults(state.current_values(), active_batch,
+                    active_batch.faults[i].net_index);
+    }
+    seed_ff_outputs(state, cg, active_batch);
+    eval(active_batch);
+    update_ff_states(state, cg);
+    seed_ff_outputs(state, cg, active_batch);
+    eval(active_batch);
+    for (int i = 0; i < cycle.settle_cycles; ++i) {
+      seed_ff_outputs(state, cg, active_batch);
+      eval(active_batch);
+    }
+    if (cycle.sample_outputs) {
+      const auto& nv = state.current_values();
+      uint64_t diff = 0ULL;
+      for (uint32_t obs : observe) {
+        const uint64_t word = nv[obs];
+        diff |= word ^ ((word & 1ULL) ? ~0ULL : 0ULL);
+      }
+      if (lane0 != nullptr) {
+        std::vector<bool> values;
+        values.reserve(observe.size());
+        for (uint32_t obs : observe) {
+          values.push_back((nv[obs] & 1ULL) != 0);
+        }
+        lane0->push_back(std::move(values));
+      }
+      const uint64_t fresh = diff & batch.mask & ~detected;
+      if (fresh != 0ULL) {
+        for (int lane = 1; lane < 64; ++lane) {
+          if ((fresh >> lane) & 1ULL) {
+            first_sample[static_cast<size_t>(lane)] = sample_index;
+          }
+        }
+        detected |= fresh;
+      }
+      ++sample_index;
+      if (early_exit && detected == batch.mask) {
+        break;
+      }
+    }
+    state.prev_values = state.current_values();
+  }
+  return detected;
+}
+
 std::vector<std::vector<uint64_t>> BitParallelSim::simulate_batch_samples(
     const CompiledSimGraph& cg, const TestVector& vec,
     const FaultBatch& batch) const {

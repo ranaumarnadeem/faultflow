@@ -29,6 +29,34 @@ def scan_pattern_to_dict(pattern: ScanPattern) -> dict[str, Any]:
             str(chain): [bool(b) for b in seq]
             for chain, seq in pattern.expected_unload.items()
         },
+        "load_care": (
+            [[int(chain), int(cycle)] for chain, cycle in pattern.load_care]
+            if pattern.load_care is not None
+            else None
+        ),
+        "unload_mask": (
+            {
+                str(chain): [bool(b) for b in seq]
+                for chain, seq in pattern.unload_mask.items()
+            }
+            if pattern.unload_mask is not None
+            else None
+        ),
+        **(
+            {"preamble_cycles": pattern.preamble_cycles}
+            if pattern.preamble_cycles
+            else {}
+        ),
+        **(
+            {
+                "shift_pi_values": {
+                    str(port): bool(value)
+                    for port, value in pattern.shift_pi_values.items()
+                }
+            }
+            if pattern.shift_pi_values
+            else {}
+        ),
     }
 
 
@@ -38,10 +66,23 @@ def scan_pattern_from_dict(data: dict[str, Any]) -> ScanPattern:
     def _int_keyed(raw: dict[str, Any]) -> dict[int, list[bool]]:
         return {int(chain): [bool(b) for b in seq] for chain, seq in raw.items()}
 
+    load_care = data.get("load_care")
+    unload_mask = data.get("unload_mask")
     return ScanPattern(
         load_seqs=_int_keyed(data["load_seqs"]),
         capture_pi_values={
             str(port): bool(value) for port, value in data["capture_pi_values"].items()
         },
         expected_unload=_int_keyed(data["expected_unload"]),
+        load_care=(
+            tuple((int(chain), int(cycle)) for chain, cycle in load_care)
+            if load_care is not None
+            else None
+        ),
+        unload_mask=_int_keyed(unload_mask) if unload_mask is not None else None,
+        preamble_cycles=int(data.get("preamble_cycles", 0)),
+        shift_pi_values={
+            str(port): bool(value)
+            for port, value in data.get("shift_pi_values", {}).items()
+        },
     )

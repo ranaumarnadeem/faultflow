@@ -106,6 +106,7 @@ user_guide/examples
 user_guide/configuration
 user_guide/running_without_shell
 user_guide/testpoints
+user_guide/mbist
 user_guide/outputs
 ```
 

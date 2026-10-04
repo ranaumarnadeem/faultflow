@@ -186,6 +186,87 @@ COMMAND_HELP = {
         "retarget -patterns blkA_patterns.json -soc_access soc_access.json "
         "-block blkA -o blkA_retargeted.json",
     ),
+    "autombist_generate": CommandHelp(
+        "Project",
+        "autombist_generate -config PATH -out PATH [-autombist_cmd CMD] "
+        "[-algo NAME] -liberty PATH -cell_lib PATH [-test_access [-tap_nonscan]]",
+        "Generate a FaultFlow synthesis from an autoMBIST manifest",
+        "Runs `autombist generate --emit-manifest` (or the command given by "
+        "-autombist_cmd, e.g. 'python3 -m autombist.cli'; -algo passes its "
+        "--algo, e.g. march-raw, autoMBIST's default otherwise), synthesizes each "
+        "distinct test-instrument instance standalone plus the wrapper glue "
+        "(memories and instruments as blackboxes), splices the real block "
+        "netlists back in, and loads the composed design into this session "
+        "with each memory instance declared blackbox -- run_atpg works "
+        "afterward with no further setup. Also writes a `.ofs` for later "
+        "standalone use with `ff.py sim`. -test_access first runs `autombist "
+        "wrap-test-access`, which puts the control/status ports behind a JTAG "
+        "TAP and an IJTAG network, and synthesizes that wrapped design; its "
+        "clocks (the MBIST clock and tck) are declared in the session, and "
+        "scan insertion needs a chain per clock (add_scan -chains 2). "
+        "-tap_nonscan keeps that TAP and IJTAG network out of scan instead, "
+        "held in reset (trst_n and tck at 0), leaving one clock and one chain "
+        "(add_scan -chains 1); `ff.py jtag` grades their faults through TCK.",
+        "autoMBIST installed and reachable via -autombist_cmd (or on PATH); "
+        "for -test_access, warptap importable by autoMBIST.",
+        "autombist_generate -config mbist.yml -out build -liberty "
+        "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib -cell_lib "
+        "cells/sky130/sky130_fd_sc_hd.json",
+    ),
+    "list_memories": CommandHelp(
+        "Project",
+        "list_memories -top NAME -spec PATH [-pattern GLOB ...]",
+        "List a design's memory instances, to help write an MBIST insertion file",
+        "Reads the design the MBIST insertion file names (-spec: its sources, "
+        "macro stubs read as blackboxes, defines and include directories), "
+        "elaborated with Yosys under -top, nothing optimized. Lists every "
+        "instance of a blackbox module whose name matches the file's "
+        "memory_patterns (or -pattern, repeatable), by its instance path "
+        "(u_core.g[0].u_mem), and says whether the file configures it. Each pin "
+        "shows its direction, width and connection: a constant, unconnected, "
+        "a net (and any other pin on the same net), or an output nothing reads. "
+        "For an unconfigured memory it prints an insertion-file entry to paste, "
+        "with its constant inputs as tie, a pin sharing another's net as "
+        "share_clock and unread outputs as unused_outputs -- take the pins your "
+        "autoMBIST config gives a role out of those lists. Never writes a file.",
+        "Yosys on PATH; PyYAML for a YAML insertion file.",
+        "list_memories -top chip_top -spec mbist.yml -pattern sky130_sram_*",
+    ),
+    "mbist_insert": CommandHelp(
+        "Project",
+        "mbist_insert -top NAME -spec PATH [-out DIR] [-config OFS] [-tap_nonscan]",
+        "Insert MBIST into a design's RTL, in place of the configured memories",
+        "For every memory the insertion file (-spec) configures, runs `autombist "
+        "generate` (once per config and algorithm) and puts the collar, inside a "
+        "shell, in place of the memory instance, keeping the design's hierarchy. "
+        "The shell synchronizes the collar's reset and control inputs to its "
+        "clock and delays its done outputs two cycles, so fail is final when done "
+        "rises. The memory's pins outside the collar's roles must be declared in "
+        "the file -- tie (checked against the design's constant), share_clock "
+        "(on the clock pin's net) or unused_outputs (read by nothing) -- and are "
+        "driven inside the collar as the design drove them. A module on the path "
+        "to a memory that is instantiated more than once gets its own copy, "
+        "<module>__mbist_<path>; no new name may collide with a module of the "
+        "design or a cell of the -config .ofs's liberty. The control and status "
+        "ports reach the top as <memory>_<port> (test_mode, bist_start, "
+        "bist_done, bist_fail); the chip reset (reset: port, active) reaches "
+        "every shell. With jtag: {tck_max_mhz: N}, a TAP and an IJTAG network "
+        "take the ports instead (a dedicated IJTAG_ACCESS instruction selects it), "
+        "and the ICL, the TAP-only BSDL and the BIST program (PDL and TCK "
+        "vectors) are written too. Writes <top>_mbist.v (written by Yosys), "
+        "<top>_mbist.sdc, manifest.json and insertion.json in -out (default "
+        "mbist_<top>), after checking the written design elaborates with no "
+        "Yosys check problem the original didn't have. With -config, the design "
+        "is also synthesized, its DFT frozen, and <top>_mbist.ofs written: the "
+        ".ofs given, with the synthesized netlist, outputs under -out, the "
+        "memories blackboxed, each shell's reset synchronizer non-scan and the "
+        "chip reset held inactive in scan (an .ofs that holds it active, or "
+        "names it a scan port or clock, is refused). -tap_nonscan also runs the "
+        "TAP and the network non-scan, trst_n and tck held at 0.",
+        "autoMBIST (the file's autombist_cmd), Yosys on PATH, PyYAML; warptap "
+        "with jtag.",
+        "mbist_insert -top chip_top -spec mbist.yml -out build/mbist",
+    ),
     "add_scan": CommandHelp(
         "Scan",
         "add_scan -chains N [-max_length N] [-SI NAME] [-SO NAME] "
@@ -196,12 +277,29 @@ COMMAND_HELP = {
         "A synthesized design and selected PDK profile.",
         "add_scan -chains 4 -SI scan_in -SO scan_out -SE scan_en",
     ),
+    "run_jtag": CommandHelp(
+        "Run",
+        "run_jtag [-program PATH] [-verify] [-force] [-threads N] [-export PATH]",
+        "Grade faults with a JTAG network-integrity program",
+        "Plays a TCK program through the TAP of the scanned netlist and grades the "
+        "scan campaign's stuck-at faults at TDO, after proving TDO X-free and "
+        "checking the netlist's own TDO against the program. The program is "
+        "-program PATH (warptap-tck-program JSON), [jtag] program, or built from "
+        "the [autombist] manifest with warptap. The credit is reported beside the "
+        "scan coverage (jtag and combined). -verify also replays the program on "
+        "the techmapped netlist in Icarus Verilog; -force grades again when an "
+        "identical grade is recorded; -export writes the program played.",
+        "A completed scan ATPG run (run_atpg -scan).",
+        "run_jtag -verify",
+    ),
     "check_scan": CommandHelp(
         "Scan",
         "check_scan [-structural]",
         "Validate current scan insertion",
-        "Runs structural and normal-mode checks and records the result. "
-        "-structural runs the structural check only.",
+        "Runs structural and normal-mode checks and records the result. It also "
+        "fails on a scan flop whose async clear or preset isn't held inactive "
+        "during shift ([scan] shift_controls). -structural runs the structural "
+        "checks only.",
         "A current generic scan insertion.",
         "check_scan",
     ),
@@ -271,13 +369,16 @@ COMMAND_HELP = {
         "Options",
         "set_option KEY VALUE",
         "Set a persistent flow option",
-        "Keys: atpg.easy_fault_reserve, atpg.incremental_sat, atpg.max_rounds,"
-        " atpg.preflight, atpg.random_stop_coverage, atpg.random_vectors,"
+        "Keys: atpg.compaction, atpg.cone_restrict, atpg.easy_fault_reserve,"
+        " atpg.fault_drop_sat, atpg.incremental_sat, atpg.max_rounds,"
+        " atpg.order_by_cone_size, atpg.pack_orders, atpg.preflight,"
+        " atpg.preflight_tech, atpg.random_stop_coverage, atpg.random_vectors,"
         " atpg.sat_conflict_limit,"
         " atpg.sat_timeout_seconds, atpg.sat_timeout_schedule, atpg.workers,"
         " fault_model.collapsing, fault_model.include_reset_faults,"
-        " fault_model.include_clock_faults, report.threshold,"
-        " simulation.sim_threads, simulation.unsupported_cells, wrap.wbr_model."
+        " fault_model.include_clock_faults, report.output, report.threshold,"
+        " simulation.sim_threads, simulation.unsupported_cells,"
+        " simulation.verify, simulation.verify_use_power_pins, wrap.wbr_model."
         " atpg.sat_timeout_schedule is a comma list like 2,10,60 that"
         " escalates a fault's SAT timeout only when it times out."
         " atpg.workers sets parallel workers (1=serial); prefer WORKERS."
@@ -285,15 +386,42 @@ COMMAND_HELP = {
         " this many slots per wave for easy (small-cone) faults while the"
         " rest tackle hard faults simultaneously. Set to 0 to disable."
         " atpg.preflight (true/false) enables OT reconvergence pre-ordering"
-        " and pre-certification (default true)."
+        " (default true); atpg.preflight_tech overrides"
+        " the auto-detected PDK tech tag (sky130/osu035) passed to it."
         " atpg.random_vectors (default 64) is the random-fill budget per round;"
         " atpg.random_stop_coverage (default 85.0) stops random-fill grading"
         " early once coverage crosses this percent and switches to SAT."
+        " atpg.compaction (none/reverse/dynamic, default reverse) selects the"
+        " post-ATPG test-set compaction strategy; atpg.pack_orders (default 1)"
+        " is the number of packing orders tried under compaction=dynamic."
+        " atpg.order_by_cone_size / atpg.cone_restrict / atpg.fault_drop_sat"
+        " (true/false, all default true) are ATPG solve-shape toggles: ascending"
+        " cone-size fault ordering, restricting each fault's CNF to its"
+        " structural cone, and dropping incidental fallout detections when an"
+        " accepted SAT vector is fault-simulated against the remaining faults."
         " fault_model.include_reset_faults (true/false, default false) grades"
         " async reset/set-tree faults via implication instead of excluding them;"
-        " it is fingerprinted, so toggling it forces a fresh campaign.",
+        " it is fingerprinted, so toggling it forces a fresh campaign."
+        " report.output overrides where the coverage report is written"
+        " (default coverage.rpt)."
+        " simulation.verify (true/false, default false) enables the external"
+        " iverilog verification gate; simulation.verify_use_power_pins drives"
+        " VPWR/VGND and -DUSE_POWER_PINS for behavioral models that need it."
+        " NOT settable here, on purpose: fault_model.model/launch are chosen"
+        " via `run_atpg -tf broadside|los` instead of set_option, so there is"
+        " one mechanism for switching to transition-fault ATPG, not two."
+        " atpg.tool is validated on load but nothing in the runner currently"
+        " branches on its value (native SAT always runs) -- exposing it here"
+        " would imply a control that does not exist yet."
+        " atpg.mode and simulation.verify_tool each currently accept exactly"
+        " one value (comb; iverilog -- Verilator is explicitly not supported),"
+        " so there is no real choice to make."
+        " atpg.output is a rarely-produced internal fallback path, not a"
+        " normal ATPG deliverable.",
         "",
-        "set_option atpg.sat_timeout_schedule 2,10,60",
+        "set_option atpg.sat_timeout_schedule 2,10,60\n"
+        "set_option atpg.compaction dynamic\n"
+        "set_option simulation.verify true",
     ),
     "unset_option": CommandHelp(
         "Options",

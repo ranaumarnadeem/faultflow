@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
-from faultflow.db import connect, init_schema
+from faultflow.db import connect, init_schema, summary
 from faultflow.db.candidates import (
     CandidateCommit,
     CandidateRejection,
@@ -14,6 +15,8 @@ from faultflow.db.candidates import (
     insert_pending_candidate,
     load_blocked_patterns,
 )
+from faultflow.config import CompressionConfig
+from faultflow.scan.compaction import CompactionMap, build_compactor_fanout
 from faultflow.runner.progressive_atpg import (
     _should_stall,
     pattern_key,
@@ -398,50 +401,89 @@ def test_reconverge_fanout_branches_enumerate_distinct_site_keys(
     assert "net:2:branch:u1:A" in keys
 
 
+def _add_blackbox_memory(module: dict[str, Any]) -> str:
+    """Give tiny_dff a blackboxed memory `u_mem`, whose cell type is absent
+    from the cell map: Y = u_mem.dout & A, so a test for Y s-a-0 needs
+    dout = 1; u_mem.din = BUF(D), a buffer whose output reaches nothing but
+    the memory; and u_mem.cfg = {1'b1, 1'b0}, tie-offs nothing else uses.
+    Returns the config section that lists the memory."""
+
+    def cell(
+        kind: str, dirs: dict[str, str], conns: dict[str, list[int | str]]
+    ) -> dict:
+        return {
+            "hide_name": 0,
+            "type": kind,
+            "parameters": {},
+            "attributes": {},
+            "port_directions": dirs,
+            "connections": conns,
+        }
+
+    module["ports"]["A"] = {"direction": "input", "bits": [5]}
+    module["ports"]["Y"] = {"direction": "output", "bits": [7]}
+    module["cells"]["u_mem"] = cell(
+        "sram_like",
+        {"din": "input", "cfg": "input", "dout": "output"},
+        {"din": [8], "cfg": ["0", "1"], "dout": [6]},
+    )
+    module["cells"]["g_and"] = cell(
+        "sky130_fd_sc_hd__and2_1",
+        {"A": "input", "B": "input", "X": "output"},
+        {"A": [6], "B": [5], "X": [7]},
+    )
+    module["cells"]["g_buf"] = cell(
+        "sky130_fd_sc_hd__buf_1", {"A": "input", "X": "output"}, {"A": [3], "X": [8]}
+    )
+    for name, bit in (("A", 5), ("dout", 6), ("Y", 7), ("din", 8)):
+        module["netnames"][name] = {"hide_name": 0, "bits": [bit], "attributes": {}}
+    return "[blackbox]\ninstances = u_mem\n"
+
+
 def _tiny_dff_scan_workspace(
-    tmp_path: Path, *, wbr_model: str = "scan"
+    tmp_path: Path,
+    *,
+    wbr_model: str = "scan",
+    with_memory: bool = False,
+    launch_mode: str | None = None,
 ) -> tuple[Any, Path, Path, ScanPipelineContext, dict[str, object]]:
+    """`launch_mode` (x_mask.launch_mode_key: None for stuck-at) is the mode
+    the memory's X mask is computed for."""
     from faultflow.config import load_config
     from faultflow.scan import stitch_scan_json
     from faultflow.scan.reports import hash_file, manifest_from_result, utc_timestamp
 
+    module: dict[str, Any] = {
+        "attributes": {"top": "1"},
+        "ports": {
+            "CLK": {"direction": "input", "bits": [2]},
+            "D": {"direction": "input", "bits": [3]},
+            "Q": {"direction": "output", "bits": [4]},
+        },
+        "cells": {
+            "u0": {
+                "hide_name": 0,
+                "type": "sky130_fd_sc_hd__dfxtp_1",
+                "parameters": {},
+                "attributes": {},
+                "port_directions": {
+                    "CLK": "input",
+                    "D": "input",
+                    "Q": "output",
+                },
+                "connections": {"CLK": [2], "D": [3], "Q": [4]},
+            }
+        },
+        "netnames": {
+            "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+            "D": {"hide_name": 0, "bits": [3], "attributes": {}},
+            "Q": {"hide_name": 0, "bits": [4], "attributes": {}},
+        },
+    }
+    blackbox_section = _add_blackbox_memory(module) if with_memory else ""
     source = tmp_path / "tiny_dff.json"
     source.write_text(
-        json.dumps(
-            {
-                "modules": {
-                    "tiny_dff": {
-                        "attributes": {"top": "1"},
-                        "ports": {
-                            "CLK": {"direction": "input", "bits": [2]},
-                            "D": {"direction": "input", "bits": [3]},
-                            "Q": {"direction": "output", "bits": [4]},
-                        },
-                        "cells": {
-                            "u0": {
-                                "hide_name": 0,
-                                "type": "sky130_fd_sc_hd__dfxtp_1",
-                                "parameters": {},
-                                "attributes": {},
-                                "port_directions": {
-                                    "CLK": "input",
-                                    "D": "input",
-                                    "Q": "output",
-                                },
-                                "connections": {"CLK": [2], "D": [3], "Q": [4]},
-                            }
-                        },
-                        "netnames": {
-                            "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
-                            "D": {"hide_name": 0, "bits": [3], "attributes": {}},
-                            "Q": {"hide_name": 0, "bits": [4], "attributes": {}},
-                        },
-                    }
-                }
-            },
-            indent=2,
-        )
-        + "\n",
+        json.dumps({"modules": {"tiny_dff": module}}, indent=2) + "\n",
         encoding="utf-8",
     )
     cfg_path = tmp_path / "config.ofs"
@@ -460,7 +502,7 @@ random_vectors = 0
 max_rounds = 3
 [wrap]
 wbr_model = {wbr_model}
-""".strip() + "\n",
+""".strip() + "\n" + blackbox_section,
         encoding="utf-8",
     )
     cfg = load_config(cfg_path, "tiny_dff")
@@ -482,7 +524,9 @@ wbr_model = {wbr_model}
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     view, pseudo_port_map = build_scan_atpg_view(
-        json.loads(generic.read_text(encoding="utf-8")), manifest
+        json.loads(generic.read_text(encoding="utf-8")),
+        manifest,
+        blackbox_instances=cfg.blackbox_instances,
     )
     atpg_view = cfg.intermediate_dir / "scan_atpg_view.json"
     atpg_view.write_text(json.dumps(view, indent=2) + "\n", encoding="utf-8")
@@ -494,8 +538,23 @@ wbr_model = {wbr_model}
         for port in _port_names(atpg_view, cfg.top, "output")
         if not port.startswith("__ppo_")
     ]
+    x_mask = None
+    if with_memory:
+        from faultflow.runner.runner import _load_core
+        from faultflow.scan.x_mask import mask_scan_view
+
+        x_mask = mask_scan_view(
+            _load_core(),
+            cfg,
+            view,
+            atpg_view,
+            manifest,
+            generic,
+            functional_outputs,
+            launch_mode=launch_mode,
+        )
     scan_ctx = build_scan_pipeline_context(
-        cfg, manifest, generic, pseudo_port_map, functional_outputs
+        cfg, manifest, generic, pseudo_port_map, functional_outputs, x_mask=x_mask
     )
     fp = {
         "top": cfg.top,
@@ -949,6 +1008,785 @@ def test_q_stem_unsat_sets_protocol_unresolved_not_redundant(
     assert row["redundancy_model_id"] in ("", None)
 
 
+def _with_compression(scan_ctx: ScanPipelineContext) -> ScanPipelineContext:
+    """The same context with 8-channel compression on, built the way a real
+    campaign builds it -- the decompressor's seed rows included. These tests
+    exercise the round loop's handling of it; the rows themselves are tested
+    in test_seeded_compression.py."""
+    cfg = dataclasses.replace(
+        scan_ctx.cfg, compression=CompressionConfig(enabled=True, channels=8)
+    )
+    return build_scan_pipeline_context(
+        cfg,
+        scan_ctx.manifest,
+        scan_ctx.generic_json,
+        scan_ctx.pseudo_port_map,
+        scan_ctx.functional_output_order,
+        x_mask=scan_ctx.x_mask,
+    )
+
+
+def _non_q_stem_fault_id(
+    cfg: Any, generic: Path, campaign_id: int, scan_ctx: ScanPipelineContext
+) -> int:
+    """Populate `faults` (core.ensure_faults_enumerated -- the round loop's
+    own first step, replicated here standalone since we need a real fault_id
+    to seed candidate_rejections against BEFORE the round loop runs) and
+    return one non-q-stem fault's id."""
+    import faultflow.runner.runner as runner_mod
+
+    core = runner_mod._load_core()
+    assert core is not None
+    core.ensure_faults_enumerated(
+        str(generic),
+        str(CELL_MAP),
+        str(cfg.db_path),
+        campaign_id,
+        False,
+        False,
+        False,
+        "fail",
+    )
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        rows = conn.execute(
+            "SELECT id, fault_site_key FROM faults WHERE campaign_id = ? "
+            "AND status = 'undetected'",
+            (campaign_id,),
+        ).fetchall()
+    for row in rows:
+        if str(row["fault_site_key"]) not in scan_ctx.q_stem_site_keys:
+            return int(row["id"])
+    raise AssertionError("no non-q-stem fault found in tiny_dff fixture")
+
+
+def _seeded_solve(
+    target_id: int, *, seeded: str, free: str, log: list[tuple[int, bool]]
+) -> Any:
+    """A solve_fault_atpg stand-in: the target's verdict through the
+    decompressor (`seeded`: the call carries its seed constraints) and without
+    it (`free`); every other fault times out. Logs (fault id, seeded)."""
+
+    def solve(
+        _json: str,
+        _cell: str,
+        _db: str,
+        fault_id: int,
+        *_rest: object,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        through = "seeded_inputs" in kwargs
+        log.append((fault_id, through))
+        if fault_id != target_id:
+            return {"result": "TIMEOUT", "vector": {}}
+        return {"result": seeded if through else free, "vector": {}}
+
+    return solve
+
+
+@pytest.mark.unit
+def test_compressed_campaign_solves_through_the_decompressor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """With [compression] every scan solve carries the decompressor's seed
+    constraints -- one row of seed bits per scan cell -- so a SAT vector is a
+    load it can make. Without compression no solve does."""
+    import faultflow.runner.runner as runner_mod
+    from faultflow.db.campaign import ensure_campaign
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, _generic, plain_ctx, fp = _tiny_dff_scan_workspace(tmp_path)
+    compressed_ctx = _with_compression(plain_ctx)
+    assert compressed_ctx.seeded_inputs
+    core = runner_mod._load_core()
+    assert core is not None
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    for scan_ctx in (plain_ctx, compressed_ctx):
+        calls: list[dict[str, object]] = []
+
+        def timeout_solve(*_args: object, **kwargs: object) -> dict[str, object]:
+            calls.append(kwargs)
+            return {"result": "TIMEOUT", "vector": {}}
+
+        monkeypatch.setattr(core, "solve_fault_atpg", timeout_solve)
+        run_progressive_scan_atpg(
+            cfg,
+            atpg_view,
+            redundancy_model_id(fp),
+            campaign_id=campaign_id,
+            scan_ctx=scan_ctx,
+            max_rounds=1,
+            target_coverage=100.0,
+        )
+        assert calls
+        if scan_ctx is plain_ctx:
+            assert not any("seeded_inputs" in kwargs for kwargs in calls)
+        else:
+            for kwargs in calls:
+                assert kwargs["seed_width"] == 8
+                assert kwargs["seeded_inputs"] == compressed_ctx.seeded_inputs
+
+
+@pytest.mark.unit
+def test_unsat_only_through_the_decompressor_is_compression_unresolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """UNSAT through the decompressor proves no redundancy: the fault is solved
+    again without it, and a test there leaves it compression_unresolved --
+    testable, not through this decompressor; undetected, never redundant."""
+    import faultflow.runner.runner as runner_mod
+    from faultflow.db.campaign import ensure_campaign
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, generic, scan_ctx_base, fp = _tiny_dff_scan_workspace(tmp_path)
+    scan_ctx = _with_compression(scan_ctx_base)
+    core = runner_mod._load_core()
+    assert core is not None
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        campaign_id = ensure_campaign(conn, "scan", fp)
+    target_id = _non_q_stem_fault_id(cfg, generic, campaign_id, scan_ctx)
+
+    log: list[tuple[int, bool]] = []
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        core,
+        "solve_fault_atpg",
+        _seeded_solve(target_id, seeded="UNSAT", free="SAT", log=log),
+    )
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        redundancy_model_id(fp),
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=1,
+        target_coverage=100.0,
+    )
+
+    assert (target_id, True) in log and (target_id, False) in log
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        row = conn.execute(
+            """
+            SELECT status, compression_unresolved, redundancy_model_id
+            FROM faults WHERE id = ?
+            """,
+            (target_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "undetected"
+    assert int(row["compression_unresolved"]) == 1
+    assert row["redundancy_model_id"] in ("", None)
+
+
+@pytest.mark.unit
+def test_unsat_through_and_without_the_decompressor_is_redundant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    import faultflow.runner.runner as runner_mod
+    from faultflow.db.campaign import ensure_campaign
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, generic, scan_ctx_base, fp = _tiny_dff_scan_workspace(tmp_path)
+    scan_ctx = _with_compression(scan_ctx_base)
+    core = runner_mod._load_core()
+    assert core is not None
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        campaign_id = ensure_campaign(conn, "scan", fp)
+    target_id = _non_q_stem_fault_id(cfg, generic, campaign_id, scan_ctx)
+
+    log: list[tuple[int, bool]] = []
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        core,
+        "solve_fault_atpg",
+        _seeded_solve(target_id, seeded="UNSAT", free="UNSAT", log=log),
+    )
+    model_id = redundancy_model_id(fp)
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        model_id,
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=1,
+        target_coverage=100.0,
+    )
+
+    assert (target_id, False) in log
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        row = conn.execute(
+            """
+            SELECT status, compression_unresolved, redundancy_model_id
+            FROM faults WHERE id = ?
+            """,
+            (target_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "redundant"
+    assert int(row["compression_unresolved"]) == 0
+    assert row["redundancy_model_id"] == model_id
+
+
+def _with_fake_compaction(scan_ctx: ScanPipelineContext) -> ScanPipelineContext:
+    """Attach a minimal CompactionMap to an otherwise-real ScanPipelineContext
+    so the round loop's rejection_reasons-loading branch (gated on
+    `compaction_map is not None`) actually executes -- these tests only
+    exercise the UNSAT-branch classification logic, not compaction_map's own
+    (separately tested) construction."""
+    return dataclasses.replace(scan_ctx, compaction_map=CompactionMap(1, [[0]]))
+
+
+@pytest.mark.unit
+def test_build_scan_pipeline_context_populates_compaction_map(
+    tmp_path: Path,
+) -> None:
+    from faultflow.config import CompactionConfig
+
+    cfg, _atpg_view, generic, scan_ctx, _fp = _tiny_dff_scan_workspace(tmp_path)
+    # Compaction disabled by default (the workspace config has no
+    # [compaction] section) -- confirm the no-op case first.
+    assert scan_ctx.compaction_map is None
+
+    manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+    enabled_cfg = dataclasses.replace(
+        cfg, compaction=CompactionConfig(enabled=True, channels=2)
+    )
+    ctx_with_compaction = build_scan_pipeline_context(
+        enabled_cfg,
+        manifest,
+        generic,
+        scan_ctx.pseudo_port_map,
+        scan_ctx.functional_output_order,
+    )
+
+    assert ctx_with_compaction.compaction_map is not None
+    num_chains = len(manifest.get("scan_outputs", []))
+    assert ctx_with_compaction.compaction_map.num_outputs == 2
+    assert ctx_with_compaction.compaction_map.fanout == build_compactor_fanout(
+        2, num_chains
+    )
+
+
+@pytest.mark.unit
+def test_compaction_only_rejected_fault_unsat_sets_compaction_unresolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    import faultflow.runner.runner as runner_mod
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, generic, scan_ctx_base, fp = _tiny_dff_scan_workspace(tmp_path)
+    scan_ctx = _with_fake_compaction(scan_ctx_base)
+    core = runner_mod._load_core()
+    assert core is not None
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    target_id = _non_q_stem_fault_id(cfg, generic, campaign_id, scan_ctx)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        seed_run_id = insert_run(conn, campaign_id)
+        insert_pending_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            pattern="seed",
+            source="sat",
+            sat_target_fault_id=target_id,
+        )
+        commit_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            commit=CandidateCommit(
+                status="rejected",
+                protocol_sim_rejections=[
+                    CandidateRejection(target_id, "compaction_indistinguishable")
+                ],
+                blocked_patterns=[(target_id, "seed")],
+            ),
+        )
+        conn.commit()
+
+    def unsat_solve(
+        _json: str,
+        _cell: str,
+        _db: str,
+        fault_id: int,
+        *_rest: object,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        if fault_id == target_id:
+            return {"result": "UNSAT", "vector": {}}
+        return {"result": "TIMEOUT", "vector": {}}
+
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(core, "solve_fault_atpg", unsat_solve)
+
+    model_id = redundancy_model_id(fp)
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        model_id,
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=1,
+        target_coverage=100.0,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        row = conn.execute(
+            """
+            SELECT status, compaction_unresolved, redundancy_model_id
+            FROM faults WHERE id = ?
+            """,
+            (target_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "undetected"
+    assert int(row["compaction_unresolved"]) == 1
+    assert row["redundancy_model_id"] in ("", None)
+
+
+@pytest.mark.unit
+def test_mixed_compaction_rejection_history_unsat_still_marks_redundant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """Regression guard: a fault whose blocked history mixes a compaction
+    rejection with an unrelated (here: protocol) rejection reason must NOT be
+    reclassified -- the old mark_fault_redundant behavior must be preserved
+    exactly."""
+    import faultflow.runner.runner as runner_mod
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, generic, scan_ctx_base, fp = _tiny_dff_scan_workspace(tmp_path)
+    scan_ctx = _with_fake_compaction(scan_ctx_base)
+    core = runner_mod._load_core()
+    assert core is not None
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    target_id = _non_q_stem_fault_id(cfg, generic, campaign_id, scan_ctx)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        seed_run_id = insert_run(conn, campaign_id)
+        insert_pending_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            pattern="seed1",
+            source="sat",
+            sat_target_fault_id=target_id,
+        )
+        commit_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            commit=CandidateCommit(
+                status="rejected",
+                protocol_sim_rejections=[
+                    CandidateRejection(target_id, "compaction_indistinguishable")
+                ],
+                blocked_patterns=[(target_id, "seed1")],
+            ),
+        )
+        insert_pending_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=2,
+            pattern="seed2",
+            source="sat",
+            sat_target_fault_id=target_id,
+        )
+        commit_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=2,
+            commit=CandidateCommit(
+                status="rejected",
+                protocol_sim_rejections=[
+                    CandidateRejection(target_id, "no_capture_or_unload_effect")
+                ],
+                blocked_patterns=[(target_id, "seed2")],
+            ),
+        )
+        conn.commit()
+
+    def unsat_solve(
+        _json: str,
+        _cell: str,
+        _db: str,
+        fault_id: int,
+        *_rest: object,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        if fault_id == target_id:
+            return {"result": "UNSAT", "vector": {}}
+        return {"result": "TIMEOUT", "vector": {}}
+
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(core, "solve_fault_atpg", unsat_solve)
+
+    model_id = redundancy_model_id(fp)
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        model_id,
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=1,
+        target_coverage=100.0,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        row = conn.execute(
+            """
+            SELECT status, compaction_unresolved, redundancy_model_id
+            FROM faults WHERE id = ?
+            """,
+            (target_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "redundant"
+    assert int(row["compaction_unresolved"]) == 0
+    assert row["redundancy_model_id"] == model_id
+
+
+def _with_compression_and_compaction(
+    scan_ctx: ScanPipelineContext,
+) -> ScanPipelineContext:
+    """Compression (_with_compression) AND a CompactionMap on one context: the
+    round loop with both active on the same campaign, proving the two compose
+    rather than just each classification in isolation (see the "Combined
+    Compression + Compaction" plan)."""
+    return dataclasses.replace(
+        _with_compression(scan_ctx), compaction_map=CompactionMap(1, [[0]])
+    )
+
+
+@pytest.mark.unit
+def test_testable_only_without_the_decompressor_with_compaction_also_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """A fault UNSAT through the decompressor but testable without it is
+    compression_unresolved (not compaction_unresolved, not redundant) with
+    compaction ALSO active -- even when its rejection history is
+    compaction-only: the decompressor verdict comes first."""
+    import faultflow.runner.runner as runner_mod
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, generic, scan_ctx_base, fp = _tiny_dff_scan_workspace(tmp_path)
+    scan_ctx = _with_compression_and_compaction(scan_ctx_base)
+    core = runner_mod._load_core()
+    assert core is not None
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    target_id = _non_q_stem_fault_id(cfg, generic, campaign_id, scan_ctx)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        seed_run_id = insert_run(conn, campaign_id)
+        insert_pending_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            pattern="seed",
+            source="sat",
+            sat_target_fault_id=target_id,
+        )
+        commit_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            commit=CandidateCommit(
+                status="rejected",
+                protocol_sim_rejections=[
+                    CandidateRejection(target_id, "compaction_indistinguishable")
+                ],
+                blocked_patterns=[(target_id, "seed")],
+            ),
+        )
+        conn.commit()
+
+    log: list[tuple[int, bool]] = []
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        core,
+        "solve_fault_atpg",
+        _seeded_solve(target_id, seeded="UNSAT", free="SAT", log=log),
+    )
+
+    model_id = redundancy_model_id(fp)
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        model_id,
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=1,
+        target_coverage=100.0,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        row = conn.execute(
+            """
+            SELECT status, compression_unresolved, compaction_unresolved,
+                   redundancy_model_id
+            FROM faults WHERE id = ?
+            """,
+            (target_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "undetected"
+    assert int(row["compression_unresolved"]) == 1
+    assert int(row["compaction_unresolved"]) == 0
+    assert row["redundancy_model_id"] in ("", None)
+
+
+@pytest.mark.unit
+def test_compaction_only_rejected_with_compression_also_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """A fault whose entire rejection history is compaction-only, UNSAT
+    through the decompressor and without it, must land compaction_unresolved
+    (not compression_unresolved, not redundant) when compression is ALSO
+    active."""
+    import faultflow.runner.runner as runner_mod
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, generic, scan_ctx_base, fp = _tiny_dff_scan_workspace(tmp_path)
+    scan_ctx = _with_compression_and_compaction(scan_ctx_base)
+    core = runner_mod._load_core()
+    assert core is not None
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    target_id = _non_q_stem_fault_id(cfg, generic, campaign_id, scan_ctx)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        seed_run_id = insert_run(conn, campaign_id)
+        insert_pending_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            pattern="seed",
+            source="sat",
+            sat_target_fault_id=target_id,
+        )
+        commit_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            commit=CandidateCommit(
+                status="rejected",
+                protocol_sim_rejections=[
+                    CandidateRejection(target_id, "compaction_indistinguishable")
+                ],
+                blocked_patterns=[(target_id, "seed")],
+            ),
+        )
+        conn.commit()
+
+    def unsat_solve(
+        _json: str,
+        _cell: str,
+        _db: str,
+        fault_id: int,
+        *_rest: object,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        if fault_id == target_id:
+            return {"result": "UNSAT", "vector": {}}
+        return {"result": "TIMEOUT", "vector": {}}
+
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(core, "solve_fault_atpg", unsat_solve)
+
+    model_id = redundancy_model_id(fp)
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        model_id,
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=1,
+        target_coverage=100.0,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        row = conn.execute(
+            """
+            SELECT status, compression_unresolved, compaction_unresolved,
+                   redundancy_model_id
+            FROM faults WHERE id = ?
+            """,
+            (target_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "undetected"
+    assert int(row["compression_unresolved"]) == 0
+    assert int(row["compaction_unresolved"]) == 1
+    assert row["redundancy_model_id"] in ("", None)
+
+
+@pytest.mark.unit
+def test_mixed_compaction_history_both_active_marks_redundant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """A fault rejected by the protocol in one round and compaction in
+    another, UNSAT through the decompressor and without it (compression and
+    compaction both active), must fall through to mark_fault_redundant --
+    _is_compaction_only_rejected can't match a mixed reason set, and the
+    decompressor's re-solve found no test either."""
+    import faultflow.runner.runner as runner_mod
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, generic, scan_ctx_base, fp = _tiny_dff_scan_workspace(tmp_path)
+    scan_ctx = _with_compression_and_compaction(scan_ctx_base)
+    core = runner_mod._load_core()
+    assert core is not None
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    target_id = _non_q_stem_fault_id(cfg, generic, campaign_id, scan_ctx)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        seed_run_id = insert_run(conn, campaign_id)
+        insert_pending_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            pattern="seed1",
+            source="sat",
+            sat_target_fault_id=target_id,
+        )
+        commit_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=1,
+            commit=CandidateCommit(
+                status="rejected",
+                protocol_sim_rejections=[
+                    CandidateRejection(target_id, "no_capture_or_unload_effect")
+                ],
+                blocked_patterns=[(target_id, "seed1")],
+            ),
+        )
+        insert_pending_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=2,
+            pattern="seed2",
+            source="sat",
+            sat_target_fault_id=target_id,
+        )
+        commit_candidate(
+            conn,
+            campaign_id=campaign_id,
+            run_id=seed_run_id,
+            candidate_id=2,
+            commit=CandidateCommit(
+                status="rejected",
+                protocol_sim_rejections=[
+                    CandidateRejection(target_id, "compaction_indistinguishable")
+                ],
+                blocked_patterns=[(target_id, "seed2")],
+            ),
+        )
+        conn.commit()
+
+    def unsat_solve(
+        _json: str,
+        _cell: str,
+        _db: str,
+        fault_id: int,
+        *_rest: object,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        if fault_id == target_id:
+            return {"result": "UNSAT", "vector": {}}
+        return {"result": "TIMEOUT", "vector": {}}
+
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    monkeypatch.setattr(core, "solve_fault_atpg", unsat_solve)
+
+    model_id = redundancy_model_id(fp)
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        model_id,
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=1,
+        target_coverage=100.0,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        row = conn.execute(
+            """
+            SELECT status, compression_unresolved, compaction_unresolved,
+                   redundancy_model_id
+            FROM faults WHERE id = ?
+            """,
+            (target_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "redundant"
+    assert int(row["compression_unresolved"]) == 0
+    assert int(row["compaction_unresolved"]) == 0
+    assert row["redundancy_model_id"] == model_id
+
+
 @pytest.mark.unit
 @pytest.mark.golden
 def test_scan_colliding_sat_witness_does_not_permanently_stall_a_fault(
@@ -987,8 +1825,8 @@ def test_scan_colliding_sat_witness_does_not_permanently_stall_a_fault(
 
     def colliding_sat_solve(*args: object, **kwargs: object) -> dict[str, object]:
         del kwargs
-        fault_id = int(args[3])  # type: ignore[arg-type]
-        blocked = list(args[4])  # type: ignore[arg-type]
+        fault_id = int(cast(Any, args[3]))
+        blocked = list(cast(Any, args[4]))
         if fault_a_id[0] is None:
             fault_a_id[0] = fault_id
         elif fault_b_id[0] is None and fault_id != fault_a_id[0]:
@@ -1145,3 +1983,127 @@ def test_q_stem_sa_credited_from_reduced_functional_grade(
     assert statuses.get("sa1") == "detected"
     # ...and the per-fault protocol sim was never needed to confirm them.
     assert protocol_calls == []
+
+
+def _classified_sites(
+    cfg: Any, campaign_id: int
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]], dict[str, Any]]:
+    """(blackbox_unresolved sites, redundant sites, summary) of a campaign."""
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT fault_site_key, fault_type, status, blackbox_unresolved
+            FROM faults
+            WHERE campaign_id = ? AND exclusion = 'none' AND collapsed_into IS NULL
+            """,
+            (campaign_id,),
+        ).fetchall()
+        data = summary(conn, campaign_id=campaign_id)
+    blocked = set()
+    redundant = set()
+    for row in rows:
+        site = (str(row["fault_site_key"]), str(row["fault_type"]).lower())
+        if int(row["blackbox_unresolved"]):
+            assert row["status"] == "undetected", site
+            blocked.add(site)
+        if row["status"] == "redundant":
+            redundant.add(site)
+    return blocked, redundant, data
+
+
+def _both(site: str) -> set[tuple[str, str]]:
+    return {(site, "sa0"), (site, "sa1")}
+
+
+# What only the memory's inputs see: u_mem.din (net 8, BUF(D)) and the
+# constant nets tied off to u_mem.cfg (-1 and -2 are the netlist's constant-0
+# and constant-1 nets). A tie holding a blackbox output at 0 must not hang off
+# net -1, or its s-a-1 would reach Y through the tie and read as detected.
+_MEMORY_INPUT_SIDE = (
+    _both("net:8:stem")
+    | _both("net:3:branch:g_buf:A")
+    | _both("net:-1:stem")
+    | _both("net:-2:stem")
+)
+# A constant net stuck at its own value is never excited, whatever the memory
+# does: redundant.
+_CONSTANT_AT_ITS_VALUE = {("net:-1:stem", "sa0"), ("net:-2:stem", "sa1")}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("launch_mode", "expected_blocked", "expected_redundant"),
+    [
+        (
+            None,
+            # Y = dout & A is the only point dout, Y and A reach, and a scan
+            # test doesn't know dout: Y is unobserved. With dout tied to 0,
+            # dout s-a-1 and Y s-a-1 used to read as detected at Y.
+            _both("net:6:stem")
+            | _both("net:7:stem")
+            | _both("net:5:stem")
+            | (_MEMORY_INPUT_SIDE - _CONSTANT_AT_ITS_VALUE),
+            _CONSTANT_AT_ITS_VALUE,
+        ),
+        (
+            "loc",
+            # dout and Y transition only if dout changes between the frames.
+            _both("net:6:stem") | _both("net:7:stem"),
+            # A and D are real PIs, held launch -> capture, and the constants
+            # are constant: none of them ever transitions.
+            _MEMORY_INPUT_SIDE
+            | _both("net:5:stem")
+            | _both("net:3:stem")
+            | _both("net:3:branch:u0:D"),
+        ),
+    ],
+)
+def test_unsat_only_because_of_a_blackbox_is_blackbox_unresolved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+    launch_mode: str | None,
+    expected_blocked: set[tuple[str, str]],
+    expected_redundant: set[tuple[str, str]],
+) -> None:
+    """The scan view makes the memory opaque -- its inputs unobserved, and its
+    output unknown, so Y, which it reaches, is unobserved too -- so a fault
+    only Y or the memory's input sees is UNSAT. It is not redundant, though:
+    the UNSAT branch re-solves it on the blackbox-transparent twin, finds a
+    test, and marks it blackbox_unresolved (Tessent's AU.BB) -- undetected,
+    counted in the denominator, and never retried. Only a fault untestable
+    whatever the memory does stays redundant.
+
+    The LOC case also pins that the twin's free dout port is not held between
+    the launch and capture frames the way a real PI is: held, dout could never
+    transition and its faults would be misfiled as redundant."""
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(
+        tmp_path, with_memory=True, launch_mode=launch_mode
+    )
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        from faultflow.db.campaign import ensure_campaign
+
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    _vectors, stats, *_rest = run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        redundancy_model_id(fp),
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=3,
+        target_coverage=100.0,
+        transition=launch_mode is not None,
+        launch_mode=launch_mode or "loc",
+    )
+
+    blocked, redundant, data = _classified_sites(cfg, campaign_id)
+    assert blocked == expected_blocked
+    assert redundant == expected_redundant
+    assert data["blackbox_unresolved"] == len(expected_blocked)
+    # Classified once, then out of the active set: nothing is left to retry.
+    assert stats.terminal_reason == "COMPLETE"
+    assert stats.rounds == 1

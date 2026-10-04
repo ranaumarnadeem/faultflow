@@ -68,20 +68,38 @@ def _per_node(conn: sqlite3.Connection, campaign_id: int) -> list[dict[str, Any]
     return nodes
 
 
+def _blackbox_boundary(fp: dict[str, Any], blackbox_instances: tuple[str, ...]) -> str:
+    """How a blackboxed instance's boundary was modeled -- a documented coverage
+    assumption. A scan campaign models it opaque: its inputs are unobserved,
+    and its outputs are whatever blackbox_output_values says -- unknown by
+    default, so no observation point they reach gets credit (scan.x_mask).
+    The scan protocol can neither set a memory's outputs, know them, nor
+    observe its inputs. Combinational and EXTEST campaigns model it as a test
+    interface (inputs observable, outputs controllable), parallel to scan
+    pseudo-PI/PO."""
+    if not blackbox_instances:
+        return "none"
+    return "opaque" if fp.get("campaign_type") == "scan" else "pseudo_port"
+
+
 def _policy(
-    fp: dict[str, Any], blackbox_instances: tuple[str, ...] = ()
+    fp: dict[str, Any],
+    blackbox_instances: tuple[str, ...] = (),
+    blackbox_output_values: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, Any]:
-    return {
+    policy: dict[str, Any] = {
         "unsupported_cells": fp.get("unsupported_cells", "fail"),
         "include_clock_faults": bool(fp.get("include_clock_faults", 0)),
         "include_reset_faults": bool(fp.get("include_reset_faults", 0)),
         "collapsing": bool(fp.get("collapsing", 0)),
         "blackbox_instances": list(blackbox_instances),
-        # When instances are blackboxed, their boundary is modeled as a test
-        # interface (inputs observable, outputs controllable) — a documented
-        # coverage assumption, parallel to scan pseudo-PI/PO.
-        "blackbox_boundary": "pseudo_port" if blackbox_instances else "none",
+        "blackbox_boundary": _blackbox_boundary(fp, blackbox_instances),
     }
+    if policy["blackbox_boundary"] == "opaque":
+        # What each opaque blackbox's outputs hold in the scan test: "x"
+        # (unknown) or "0" ([blackbox] output_value).
+        policy["blackbox_output_values"] = dict(blackbox_output_values)
+    return policy
 
 
 def _sat_outcomes(conn: sqlite3.Connection, campaign_id: int) -> dict[int, str]:
@@ -105,13 +123,44 @@ def _sat_outcomes(conn: sqlite3.Connection, campaign_id: int) -> dict[int, str]:
     }
 
 
-def _undetected_reason(protocol_unresolved: bool, sat_outcome: str | None) -> str:
+def _undetected_reason(
+    protocol_unresolved: bool,
+    compression_unresolved: bool,
+    compaction_unresolved: bool,
+    sat_outcome: str | None,
+    blackbox_unresolved: bool = False,
+    hold_unresolved: bool = False,
+) -> str:
     """Classify an undetected fault. protocol_unresolved (the simulator could not
-    resolve it) is structural; a recorded SAT verdict gives timeout/unknown; no
-    record at all means it was never SAT-attempted (or its pattern was rejected
-    without a verdict). Tier C refines the residue into structurally_uncontrollable."""
+    resolve it) is structural; compression_unresolved means no load the scan
+    decompressor can make tests the fault, though a test exists (SAT UNSAT
+    through the decompressor, not without it -- see the UNSAT branch of
+    detection_pipeline.run_progressive_scan_atpg; Tessent's AU.EDT) --
+    compaction_unresolved means every witness SAT could find detected this
+    fault through the real, uncompacted scan-out ports, but its diff aliased
+    to zero at every compacted output bit, every cycle (see
+    detection_pipeline._is_compaction_only_rejected) -- both mean the fault
+    genuinely has a functional test, it's just not deliverable/observable
+    through the compressor/compactor, so it stays counted as undetected
+    rather than excluded; blackbox_unresolved means it has a test only if a
+    blackbox (memory) could be driven or observed, which no scan test can do
+    (see detection_pipeline._testable_on_twin; Tessent's AU.BB), and
+    hold_unresolved that it has one only if the [scan] hold inputs, and the
+    non-scan flops they keep in reset, were free (Tessent's AU.PC), both
+    counted the same way;
+    a recorded SAT verdict gives timeout/unknown; no record at all means it
+    was never SAT-attempted (or its pattern was rejected without a verdict).
+    Tier C refines the residue into structurally_uncontrollable."""
     if protocol_unresolved:
         return "structurally_unresolved"
+    if compression_unresolved:
+        return "compression_unresolved"
+    if compaction_unresolved:
+        return "compaction_unresolved"
+    if blackbox_unresolved:
+        return "blackbox_unresolved"
+    if hold_unresolved:
+        return "hold_unresolved"
     if sat_outcome == "timeout":
         return "sat_timeout"
     if sat_outcome == "unknown":
@@ -124,7 +173,9 @@ def _undetected_faults(
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT id, net_id, net_name, fault_type, fault_site_key, protocol_unresolved
+        SELECT id, net_id, net_name, fault_type, fault_site_key,
+               protocol_unresolved, compression_unresolved, compaction_unresolved,
+               blackbox_unresolved, hold_unresolved
         FROM faults
         WHERE campaign_id = ?
           AND status = 'undetected'
@@ -138,6 +189,10 @@ def _undetected_faults(
     faults: list[dict[str, Any]] = []
     for row in rows:
         po = bool(row["protocol_unresolved"])
+        co = bool(row["compression_unresolved"])
+        cao = bool(row["compaction_unresolved"])
+        bbo = bool(row["blackbox_unresolved"])
+        ho = bool(row["hold_unresolved"])
         sat_outcome = outcomes.get(int(row["id"]))
         fault: dict[str, Any] = {
             "id": int(row["id"]),
@@ -146,7 +201,11 @@ def _undetected_faults(
             "fault_type": row["fault_type"],
             "fault_site_key": row["fault_site_key"],
             "protocol_unresolved": po,
-            "reason": _undetected_reason(po, sat_outcome),
+            "compression_unresolved": co,
+            "compaction_unresolved": cao,
+            "blackbox_unresolved": bbo,
+            "hold_unresolved": ho,
+            "reason": _undetected_reason(po, co, cao, sat_outcome, bbo, ho),
         }
         if sat_outcome in ("timeout", "unknown"):
             fault["sat_outcome"] = sat_outcome
@@ -290,6 +349,7 @@ def _reason_summary(
             "excluded_scan_chain",
             "excluded_cross_domain",
             "excluded_wbr_decoupled",
+            "excluded_jtag",
         )
     )
     summary = {
@@ -360,7 +420,12 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         "excluded_scan_chain",
         "excluded_cross_domain",
         "excluded_wbr_decoupled",
+        "excluded_jtag",
         "protocol_unresolved",
+        "compression_unresolved",
+        "compaction_unresolved",
+        "blackbox_unresolved",
+        "hold_unresolved",
         "fault_coverage_percent",
         "test_coverage_percent",
         "coverage_percent",
@@ -372,6 +437,114 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         report["undetected_faults"], list
     ):
         raise CoverageError("coverage report node/fault sections must be arrays")
+
+
+def _autombist_categories(
+    conn: sqlite3.Connection,
+    cfg: FaultflowConfig,
+    campaign_id: int,
+    campaign_type: str,
+    jtag_detected: frozenset[int] | None = None,
+) -> dict[str, Any] | None:
+    """Coverage by autoMBIST instance category, for a netlist built from an
+    autoMBIST manifest ([autombist] manifest). A scan campaign's fault sites
+    name the scan ATPG view's nets and cells. With JTAG results, each category
+    also counts scan and JTAG credit together."""
+    if cfg.autombist_manifest is None:
+        return None
+    from faultflow.integrations.autombist import load_autombist_manifest
+    from faultflow.integrations.autombist_coverage import (
+        category_coverage,
+        instance_categories,
+    )
+
+    netlist = cfg.netlist
+    view = cfg.intermediate_dir / "scan_atpg_view.json"
+    if campaign_type == "scan" and view.exists():
+        netlist = view
+    return category_coverage(
+        conn,
+        campaign_id,
+        netlist_json=netlist,
+        cell_map_json=cfg.cell_lib,
+        top=cfg.top,
+        categories=instance_categories(load_autombist_manifest(cfg.autombist_manifest)),
+        jtag_detected=jtag_detected,
+    )
+
+
+def _category_lines(
+    categories: dict[str, Any], jtag: bool, nonscan: bool = False
+) -> list[str]:
+    from faultflow.integrations.autombist_coverage import JTAG_CATEGORIES
+
+    # hold_unresolved only with non-scan cells: it is 0 everywhere without.
+    lines = [
+        "autombist categories (detected / denominator, blackbox_unresolved"
+        + (", hold_unresolved):" if nonscan else "):")
+    ]
+    for name, entry in categories.items():
+        percent = entry["coverage_percent"]
+        line = (
+            f"  {name:17s} {entry['detected']:6d} / {entry['denominator']:<6d} "
+            f"{entry['blackbox_unresolved']:6d}  "
+            + (f"{entry['hold_unresolved']:6d}  " if nonscan else "")
+            + ("n/a" if percent is None else f"{percent:.3f}%")
+        )
+        if "combined_detected" in entry:
+            combined = entry["combined_coverage_percent"]
+            line += (
+                f"  with jtag {entry['combined_detected']} / "
+                f"{entry['combined_denominator']} "
+                + ("n/a" if combined is None else f"{combined:.3f}%")
+            )
+        lines.append(line)
+    if JTAG_CATEGORIES & set(categories) and nonscan:
+        lines.append(
+            "  note: the TAP and the IJTAG network run non-scan ([scan] "
+            "nonscan_cells): scan leaves their faults to JTAG (excluded_jtag)"
+            + (
+                ", and ff.py jtag's network-integrity program graded them "
+                "through TCK (with jtag)"
+                if jtag
+                else "; ff.py jtag grades them"
+            )
+        )
+    elif JTAG_CATEGORIES & set(categories):
+        lines.append(
+            "  note: scan patterns grade the TAP and the IJTAG network like any "
+            "other logic"
+            + (
+                ", and ff.py jtag's network-integrity program graded them "
+                "through TCK too (with jtag)"
+                if jtag
+                else "; the IJTAG network-integrity patterns are not graded (ff.py "
+                "jtag grades them), and [scan] nonscan_cells runs them non-scan"
+            )
+        )
+    return lines
+
+
+def _jtag_lines(jtag: dict[str, Any], combined: dict[str, Any]) -> list[str]:
+    def percent(value: float | None) -> str:
+        return "n/a" if value is None else f"{value:.3f}"
+
+    lines = [
+        f"jtag (TCK program, {jtag['tck_periods']} periods, "
+        f"{len(jtag['tests'])} tests):",
+        f"  graded:              {jtag['graded']}",
+        f"  detected:            {jtag['detected']}",
+        f"  detected_only_jtag:  {jtag['detected_only_by_jtag']}",
+        f"  reset_path_ungraded: {jtag['reset_path_ungraded']}",
+        f"  scan_redundant_conflicts: {len(jtag['scan_redundant_conflicts'])}",
+        "combined (scan + jtag):",
+        f"  denominator:         {combined['denominator']}",
+        f"  detected:            {combined['detected']}",
+        f"  redundant:           {combined['redundant']}",
+        f"  fault_coverage_%:    {percent(combined['fault_coverage_percent'])}",
+        f"  test_coverage_%:     {percent(combined['test_coverage_percent'])}",
+    ]
+    return lines
 
 
 def _translate_scan_net_name(net_name: str) -> str:
@@ -411,6 +584,7 @@ def write_reports(
         + data["excluded_scan"]
         + data.get("excluded_cross_domain", 0)
         + data.get("excluded_wbr_decoupled", 0)
+        + data.get("excluded_jtag", 0)
     )
     if data["total_raw_faults"] != invariant:
         raise CoverageError(
@@ -453,7 +627,7 @@ def write_reports(
             "config_hash": fp.get("config_hash", ""),
             "template_hash": fp.get("template_hash", ""),
         },
-        "policy": _policy(fp, cfg.blackbox_instances),
+        "policy": _policy(fp, cfg.blackbox_instances, cfg.blackbox_output_values),
         "summary": data,
         "run": _latest_run(conn, campaign_id),
         "per_node": per_node,
@@ -464,6 +638,20 @@ def write_reports(
         run = cast(dict[str, Any], report["run"])
         run["scan_mode"] = True
         run["scan_manifest_hash"] = scan_context.get("manifest_hash", "")
+    from faultflow.jtag import store as jtag_store
+
+    jtag_blocks = jtag_store.report_blocks(conn, campaign_id, data)
+    jtag_detected: frozenset[int] | None = None
+    if jtag_blocks is not None:
+        report["jtag"], report["combined"] = jtag_blocks
+        jtag_run = jtag_store.latest_run(conn, campaign_id)
+        assert jtag_run is not None
+        jtag_detected = jtag_store.detected_fault_ids(conn, int(jtag_run["id"]))
+    categories = _autombist_categories(
+        conn, cfg, campaign_id, str(fp.get("campaign_type", "")), jtag_detected
+    )
+    if categories is not None:
+        report["autombist_categories"] = categories
     _validate_report(report)
     run = cast(dict[str, Any], report["run"])
     json_path = cfg.coverage_json_path
@@ -500,7 +688,12 @@ def write_reports(
             f"excluded_scan_chain:{data['excluded_scan_chain']}",
             f"excluded_cross_domain:{data.get('excluded_cross_domain', 0)}",
             f"excluded_wbr_decoupled:{data.get('excluded_wbr_decoupled', 0)}",
+            f"excluded_jtag:       {data.get('excluded_jtag', 0)}",
             f"protocol_unresolved: {data['protocol_unresolved']}",
+            f"compression_unresolved: {data.get('compression_unresolved', 0)}",
+            f"compaction_unresolved: {data.get('compaction_unresolved', 0)}",
+            f"blackbox_unresolved: {data.get('blackbox_unresolved', 0)}",
+            f"hold_unresolved:     {data.get('hold_unresolved', 0)}",
             f"fault_coverage_%:    {data['fault_coverage_percent']:.3f}",
             f"test_coverage_%:     {data['test_coverage_percent']:.3f}",
             f"coverage_percent:    {data['coverage_percent']:.3f}",
@@ -533,6 +726,16 @@ def write_reports(
     for _rk, _rv in sorted(cast(dict[str, int], report["reason_summary"]).items()):
         txt.append(f"  {_rk}: {_rv}")
     txt.append("")
+    if jtag_blocks is not None:
+        txt.extend(_jtag_lines(*jtag_blocks))
+        txt.append("")
+    if categories is not None:
+        txt.extend(
+            _category_lines(
+                categories, jtag_blocks is not None, bool(cfg.scan.nonscan_cells)
+            )
+        )
+        txt.append("")
     txt.append("undetected faults:")
     for fault in cast(list[dict[str, Any]], report["undetected_faults"]):
         txt.append(

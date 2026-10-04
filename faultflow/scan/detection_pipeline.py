@@ -7,7 +7,7 @@ import sqlite3
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
@@ -27,8 +27,9 @@ from faultflow.db.candidates import (
     commit_candidate,
     insert_pending_candidate,
     load_blocked_patterns,
+    load_rejection_reasons,
 )
-from faultflow.runner.parallel_solve import solve_fault_worker
+from faultflow.runner.parallel_solve import install_seed, solve_fault_worker
 from faultflow.runner.progressive_atpg import (
     ATPGRANDOM_SEED,
     AtpgStats,
@@ -44,10 +45,16 @@ from faultflow.runner.progressive_atpg import (
     pattern_key,
 )
 from faultflow.runner.runner import RunnerError
-from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX
+from faultflow.scan.atpg_view import (
+    PPI_PREFIX,
+    PPO_PREFIX,
+    UNOBSERVED_NETS_ATTR,
+    make_blackbox_transparent,
+    make_nonscan_free,
+)
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.manifest import manifest_clock_net_ids
-from faultflow.scan.stitch import SCAN_CELL_TYPES
+from faultflow.scan.stitch import _top_module
 from faultflow.scan.protocol import ScanPattern, serialize_vector
 from faultflow.scan.domain_reach import (
     compute_cross_domain_net_ids,
@@ -59,8 +66,25 @@ from faultflow.scan.site_resolution import (
     build_site_key_index,
     fault_type_to_sa_code,
 )
+from faultflow.scan.compaction import CompactionMap, build_compactor_fanout
+from faultflow.scan.compression import CompressionMap, build_broadcast_fanout
 from faultflow.scan.errors import ScanError
+from faultflow.scan.nonscan import NonscanSetup, jtag_sites, settled_sites
+from faultflow.scan.shift_controls import reset_holds
+from faultflow.scan.ring_generator import (
+    bitmask_to_index_list,
+    care_bit_rows,
+    lookup_polynomial,
+)
 from faultflow.scan.verify import reduced_protocol_matches
+from faultflow.scan.x_mask import (
+    XMask,
+    apply_x_mask,
+    compute_x_mask,
+    launch_mode_key,
+    recorded_x_mask,
+    x_source_nets,
+)
 from faultflow.testpoint.preflight import PreflightData, run_preflight
 
 log = logging.getLogger(__name__)
@@ -90,6 +114,52 @@ class ScanPipelineContext:
     # scan protocol (which applies it at capture). Empty unless the design has
     # scannable async-reset/set FFs whose control pin is a primary input.
     reset_pi_holds: dict[str, bool] = field(default_factory=dict)
+    # Scan compression (faultflow.scan.compression): None unless
+    # [compression] enabled = true. compression_map.phase_shifter_taps and
+    # compression_care_bit_rows are both reconstructed deterministically from
+    # cfg.compression.channels + the manifest's chain count -- pure functions
+    # of the same inputs insert_compression used, so no persisted manifest
+    # section is needed to rebuild them (see build_scan_pipeline_context).
+    # care_bit_rows is precomputed ONCE per campaign, not per-candidate, over
+    # max_chain_length + 1 shift cycles: the load, then the launch-on-shift
+    # shift.
+    compression_map: CompressionMap | None = None
+    compression_care_bit_rows: list[list[int]] | None = None
+    # The decompressor loads every scan cell from one seed per pattern: per
+    # PPI, the seed bits it XORs into that cell (chain c's position p loads at
+    # shift cycle max_chain_length-1-p); per chain head PPI, those of the bit
+    # a launch-on-shift shift brings in. Every scan solve is constrained by
+    # them (_seed_kwargs), so SAT only finds loads the decompressor can make.
+    seeded_inputs: dict[str, list[int]] = field(default_factory=dict)
+    seeded_heads: dict[str, list[int]] = field(default_factory=dict)
+    # Scan compaction (faultflow.scan.compaction): None unless
+    # [compaction] enabled = true. Reconstructed deterministically from
+    # cfg.compaction.channels + the manifest's chain count -- the same
+    # pure-function-of-inputs shape insert_compaction used, so no persisted
+    # manifest section is needed to rebuild it. Simpler than compression_map:
+    # no algebra to precompute ahead of time, just the fanout map itself.
+    # Relies on manifest["scan_outputs"]'s order matching the order
+    # insert_compaction used to build the real compactor's fanout -- true
+    # today by construction (a static artifact written once).
+    compaction_map: CompactionMap | None = None
+    # Precomputed ONCE per campaign (build_scan_pipeline_context), not
+    # per-candidate: resolving a clock net id to its port name
+    # (_port_name_for_net) does a full, uncached JSON parse of generic_json,
+    # and this is otherwise static for the whole campaign. Previously
+    # recomputed inside _protocol_fault_sim_kwargs, called once per
+    # candidate -- a real cost at scale (the "Python per-candidate JSON
+    # re-parse in _protocol_fault_sim_kwargs" lever from cva6_perf_roadmap.md).
+    clock_ports: list[str] = field(default_factory=list)
+    # The observation points a blackbox output's unknown value reaches, for
+    # this campaign's launch mode (faultflow.scan.x_mask): no detection credit,
+    # no SAT target, don't-care in every pattern. Empty without blackboxes.
+    x_mask: XMask = XMask()
+    # [scan] nonscan_cells / [scan] hold (faultflow.scan.nonscan): the view ties
+    # the non-scan flops and the held inputs, so the held inputs aren't view
+    # ports; every pattern applies them in every cycle (_serialize). None and
+    # empty without non-scan cells.
+    nonscan: NonscanSetup | None = None
+    input_holds: dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass
@@ -104,11 +174,13 @@ class _FaultRow:
 def _scan_reset_pi_holds(
     generic_json: Path, top: str, cell_map: dict[str, Any]
 ) -> dict[str, bool]:
-    """Primary inputs that drive a scannable async-reset/set FF's control pin,
-    mapped to the INACTIVE value to hold them at during the scan test.
+    """Primary inputs that reach a scannable async-reset/set FF's control pin
+    through buffers and inverters, mapped to the value that keeps the pin INACTIVE,
+    held during the whole scan test (scan.shift_controls.reset_holds).
 
-    Only direct PI controls are returned (the common rst_n case); a control net
-    driven by logic cannot be held via a PI value and is skipped.
+    An input two pins need at opposite values isn't held, and a control driven by
+    other logic can't be held through an input: scan-check refuses a scan flop whose
+    control isn't held inactive during shift.
     """
     try:
         data = json.loads(Path(generic_json).read_text(encoding="utf-8"))
@@ -117,30 +189,7 @@ def _scan_reset_pi_holds(
     module = data.get("modules", {}).get(top)
     if not isinstance(module, dict):
         return {}
-    bit_to_input: dict[int, str] = {}
-    for name, port in module.get("ports", {}).items():
-        if isinstance(port, dict) and port.get("direction") == "input":
-            bits = port.get("bits", [])
-            if isinstance(bits, list) and len(bits) == 1 and isinstance(bits[0], int):
-                bit_to_input[bits[0]] = str(name)
-    holds: dict[str, bool] = {}
-    for cell in module.get("cells", {}).values():
-        if not isinstance(cell, dict) or cell.get("type") not in SCAN_CELL_TYPES:
-            continue
-        ctype = str(cell.get("type"))
-        entry = cell_map.get(ctype) or cell_map.get(ctype.lstrip("\\"))
-        ff = entry.get("ff", {}) if isinstance(entry, dict) else {}
-        for ctrl_key in ("clear", "preset"):
-            spec = ff.get(ctrl_key) if isinstance(ff, dict) else None
-            if not isinstance(spec, dict):
-                continue
-            conn = cell.get("connections", {}).get(spec.get("pin"))
-            if isinstance(conn, list) and len(conn) == 1 and isinstance(conn[0], int):
-                pi = bit_to_input.get(conn[0])
-                if pi is not None:
-                    # Active-low control (level LOW) is inactive when driven high.
-                    holds[pi] = spec.get("level") == "LOW"
-    return holds
+    return {port: bool(value) for port, value in reset_holds(module, cell_map).items()}
 
 
 def build_scan_pipeline_context(
@@ -152,6 +201,8 @@ def build_scan_pipeline_context(
     wbr_stimulus_name_by_port: dict[str, str] | None = None,
     wbr_observe_name_by_port: dict[str, str] | None = None,
     wbr_decoupled_bits: frozenset[int] | None = None,
+    x_mask: XMask | None = None,
+    nonscan: NonscanSetup | None = None,
 ) -> ScanPipelineContext:
     q_stems = {
         str(entry["boundary"]["q_stem_site_key"])
@@ -170,6 +221,57 @@ def build_scan_pipeline_context(
     reset_pi_holds = _scan_reset_pi_holds(
         generic_json, str(manifest.get("top", cfg.top)), cell_map
     )
+    from faultflow.runner.runner import _port_name_for_net
+
+    clock_ports: list[str] = []
+    for clk_net in manifest_clock_net_ids(manifest, error_cls=RunnerError):
+        port = _port_name_for_net(
+            generic_json, str(manifest.get("top", cfg.top)), clk_net, "input"
+        )
+        if port is None:
+            raise RunnerError(f"cannot map scan clock net {clk_net} to a port")
+        clock_ports.append(port)
+    compression_map: CompressionMap | None = None
+    compression_care_bit_rows: list[list[int]] | None = None
+    seeded_inputs: dict[str, list[int]] = {}
+    seeded_heads: dict[str, list[int]] = {}
+    if cfg.compression.enabled:
+        num_chains = len(manifest.get("scan_inputs", []))
+        polynomial = lookup_polynomial(cfg.compression.channels)
+        phase_shifter_taps = build_broadcast_fanout(
+            cfg.compression.channels, num_chains
+        )
+        compression_map = CompressionMap(
+            cfg.compression.channels, polynomial, phase_shifter_taps
+        )
+        max_chain_length = int(manifest.get("max_chain_length", 0))
+        compression_care_bit_rows = care_bit_rows(
+            polynomial, phase_shifter_taps, max_chain_length + 1
+        )
+        for entry in pseudo_port_map.values():
+            chain = int(entry["chain_id"])
+            position = int(entry["position_in_chain"])
+            if not 0 <= chain < num_chains or not 0 <= position < max_chain_length:
+                raise ScanError(
+                    f"scan cell {entry['ppi_port']} (chain {chain}, position "
+                    f"{position}) is outside the {num_chains} compressed chains "
+                    f"of at most {max_chain_length} cells"
+                )
+            ppi = str(entry["ppi_port"])
+            seeded_inputs[ppi] = bitmask_to_index_list(
+                compression_care_bit_rows[max_chain_length - 1 - position][chain]
+            )
+            if position == 0:
+                seeded_heads[ppi] = bitmask_to_index_list(
+                    compression_care_bit_rows[max_chain_length][chain]
+                )
+    compaction_map: CompactionMap | None = None
+    if cfg.compaction.enabled:
+        num_scan_out_chains = len(manifest.get("scan_outputs", []))
+        compaction_map = CompactionMap(
+            cfg.compaction.channels,
+            build_compactor_fanout(cfg.compaction.channels, num_scan_out_chains),
+        )
     return ScanPipelineContext(
         cfg=cfg,
         manifest=manifest,
@@ -184,7 +286,52 @@ def build_scan_pipeline_context(
             wbr_decoupled_bits if wbr_decoupled_bits is not None else frozenset()
         ),
         reset_pi_holds=reset_pi_holds,
+        compression_map=compression_map,
+        compression_care_bit_rows=compression_care_bit_rows,
+        seeded_inputs=seeded_inputs,
+        seeded_heads=seeded_heads,
+        compaction_map=compaction_map,
+        clock_ports=clock_ports,
+        x_mask=x_mask if x_mask is not None else XMask(),
+        nonscan=nonscan,
+        input_holds=(
+            {port: bool(value) for port, value in nonscan.holds.items()}
+            if nonscan is not None
+            else {}
+        ),
     )
+
+
+def _require_x_mask(
+    scan_ctx: ScanPipelineContext, reduced_json_path: str, mode: str | None
+) -> None:
+    """The view SAT and every reduced simulator run on must mask exactly what
+    scan_ctx.x_mask says, computed for this campaign's launch mode. A view
+    with an unknown blackbox output and no mask would silently credit
+    detections that depend on the memory's content -- or on a non-scan flop's
+    unknown state."""
+    x_instances = scan_ctx.cfg.blackbox_x_instances
+    if not x_instances and not (
+        scan_ctx.nonscan is not None and scan_ctx.nonscan.x_sources
+    ):
+        return
+    top = str(scan_ctx.manifest["top"])
+    view = json.loads(Path(reduced_json_path).read_text(encoding="utf-8"))
+    _, module = _top_module(view, top)
+    if not x_source_nets(module, x_instances):
+        return
+    recorded = recorded_x_mask(view, top)
+    if recorded is None:
+        raise ScanError(
+            "the scan ATPG view has blackbox outputs of unknown value but no X "
+            "mask (faultflow.scan.x_mask.compute_x_mask)"
+        )
+    if recorded != scan_ctx.x_mask.nets or scan_ctx.x_mask.launch_mode != mode:
+        raise ScanError(
+            "the scan ATPG view's X mask does not match the scan context's, or "
+            f"was computed for launch mode {scan_ctx.x_mask.launch_mode!r}, not "
+            f"{mode!r}"
+        )
 
 
 def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_FaultRow]:
@@ -198,6 +345,10 @@ def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_Faul
           AND exclusion = 'none'
           AND collapsed_into IS NULL
           AND protocol_unresolved = 0
+          AND compression_unresolved = 0
+          AND compaction_unresolved = 0
+          AND blackbox_unresolved = 0
+          AND hold_unresolved = 0
         ORDER BY id
         """,
         (campaign_id,),
@@ -290,65 +441,14 @@ def _termination_sweep_q_stems(
     return int(cur.rowcount)
 
 
-def _mark_preflight_redundant(
-    db_path: str,
-    campaign_id: int,
-    stem_ids: frozenset[int],
-    redundancy_model: str,
-    q_stem_site_keys: frozenset[str],
-    core: Any,
-) -> int:
-    """Mark SA0/SA1 faults at canceling-path stems UNSAT without any SAT call.
-
-    Reuses the same core.mark_fault_redundant / core.mark_fault_protocol_unresolved
-    paths the round loop uses, so DB state stays consistent.
-    Returns the count of faults pre-certified.
-    """
-    if not stem_ids:
-        return 0
-    placeholders = ",".join("?" for _ in stem_ids)
-    with connect(db_path) as conn:
-        init_schema(conn)
-        rows = conn.execute(
-            f"""
-            SELECT id, fault_site_key
-            FROM faults
-            WHERE campaign_id = ?
-              AND status = 'undetected'
-              AND exclusion = 'none'
-              AND collapsed_into IS NULL
-              AND net_id IN ({placeholders})
-            """,
-            (campaign_id, *sorted(stem_ids)),
-        ).fetchall()
-    count = 0
-    for row in rows:
-        fault_id = int(row["id"])
-        site_key = str(row["fault_site_key"])
-        if site_key in q_stem_site_keys:
-            core.mark_fault_protocol_unresolved(db_path, fault_id)
-        else:
-            core.mark_fault_redundant(db_path, fault_id, redundancy_model)
-        count += 1
-    if count:
-        log.info("atpg   preflight Phase B: pre-certified %d faults as UNSAT", count)
-    return count
-
-
 def _protocol_fault_sim_kwargs(
     ctx: ScanPipelineContext, pattern: Any
 ) -> dict[str, object]:
-    from faultflow.runner.runner import _port_name_for_net
-
-    clock_net_ids = manifest_clock_net_ids(ctx.manifest, error_cls=RunnerError)
-    clock_ports: list[str] = []
-    for clk_net in clock_net_ids:
-        port = _port_name_for_net(
-            ctx.generic_json, str(ctx.manifest["top"]), clk_net, "input"
-        )
-        if port is None:
-            raise RunnerError(f"cannot map scan clock net {clk_net} to a port")
-        clock_ports.append(port)
+    # ctx.clock_ports is precomputed ONCE per campaign
+    # (build_scan_pipeline_context) -- resolving a clock net id to its port
+    # name does a full, uncached JSON parse of generic_json, and this
+    # function is called once per candidate, so recomputing it here every
+    # time was a real per-candidate cost at scale.
     scan_inputs = ctx.manifest.get("scan_inputs", [])
     scan_outputs = ctx.manifest.get("scan_outputs", [])
     if not isinstance(scan_inputs, list) or not isinstance(scan_outputs, list):
@@ -364,13 +464,14 @@ def _protocol_fault_sim_kwargs(
         if rename
         else pattern.capture_pi_values
     )
+    # No credit where a blackbox output's unknown value lands: its functional
+    # outputs aren't compared, nor its unload bits (pattern.unload_mask).
+    observed_outputs = _observed_outputs(ctx)
     gate_output_ports = (
-        [obs_map.get(p, p) for p in ctx.functional_output_order]
-        if obs_map
-        else ctx.functional_output_order
+        [obs_map.get(p, p) for p in observed_outputs] if obs_map else observed_outputs
     )
     return {
-        "clock_ports": clock_ports,
+        "clock_ports": ctx.clock_ports,
         "scan_enable_port": str(ctx.manifest["scan_enable"]),
         "scan_input_ports": [str(name) for name in scan_inputs],
         "scan_output_ports": [str(name) for name in scan_outputs],
@@ -378,7 +479,532 @@ def _protocol_fault_sim_kwargs(
         "max_chain_length": int(ctx.manifest.get("max_chain_length", 0)),
         "load_seqs": pattern.load_seqs,
         "capture_pi_values": gate_pi_values,
+        "blackbox_instances": list(ctx.cfg.blackbox_instances),
+        "unload_mask": pattern.unload_mask or {},
+        "preamble_cycles": pattern.preamble_cycles,
+        "shift_pi_values": {
+            rename.get(k, k): v for k, v in pattern.shift_pi_values.items()
+        },
     }
+
+
+def _launch_known(ctx: ScanPipelineContext, row: _FaultRow) -> bool:
+    """False for a Q-stem of a flop that captures a blackbox output's unknown
+    value at the launch-on-capture launch edge: its state after launch is
+    unknown, so whether its Q makes a transition is too, and no test may be
+    credited with one."""
+    return ctx.q_stem_to_ppo.get(row.fault_site_key) not in ctx.x_mask.launch_ppo_ports
+
+
+def _observed_outputs(ctx: ScanPipelineContext) -> list[str]:
+    """The functional outputs a test may compare: all but the ones a blackbox
+    output's unknown value reaches."""
+    return [p for p in ctx.functional_output_order if p not in ctx.x_mask.outputs]
+
+
+def _serialize(
+    ctx: ScanPipelineContext, serialize_input: dict[str, bool]
+) -> ScanPattern:
+    """serialize_vector, with the X-masked expected bits marked don't-care, the
+    held inputs, which the view ties rather than lists, at their values, the
+    preamble that settles the non-scan flops the scan clock settles, and, testing
+    the reset, the reset holds while the chains shift."""
+    pattern = serialize_vector(
+        {**serialize_input, **ctx.input_holds},
+        ctx.pseudo_port_map,
+        ctx.manifest,
+        masked_ppo_ports=ctx.x_mask.ppo_ports,
+        masked_outputs=ctx.x_mask.outputs,
+    )
+    preamble = ctx.nonscan.preamble if ctx.nonscan is not None else 0
+    # Testing the reset, a capture may set a reset input active (_process_scan_
+    # candidate leaves it free); it stays inactive while the chains shift, where
+    # a real scan flop's reset would wipe the load (scan.shift_controls).
+    shift = dict(ctx.reset_pi_holds) if ctx.cfg.fault_model.include_reset_faults else {}
+    return replace(pattern, preamble_cycles=preamble, shift_pi_values=shift)
+
+
+def _seed_kwargs(
+    scan_ctx: ScanPipelineContext, *, los: bool = False
+) -> dict[str, object]:
+    """A scan solve's decompressor constraints (the solvers' seeded_inputs, and
+    launching on shift seeded_heads): none without compression."""
+    if scan_ctx.compression_map is None:
+        return {}
+    kwargs: dict[str, object] = {
+        "seed_width": scan_ctx.compression_map.num_channels,
+        "seeded_inputs": scan_ctx.seeded_inputs,
+    }
+    if los:
+        kwargs["seeded_heads"] = scan_ctx.seeded_heads
+    return kwargs
+
+
+def _seeded_bit(row: int, seed: int) -> bool:
+    """The scan-in bit the decompressor gives for `seed`, where `row` is the
+    bit's care_bit_rows bitmask over the seed bits."""
+    return bin(row & seed).count("1") % 2 == 1
+
+
+def _decompressed(
+    core: Any,
+    scan_ctx: ScanPipelineContext,
+    vector: dict[str, bool],
+    pattern: ScanPattern,
+    head_bits: dict[int, bool],
+) -> ScanPattern:
+    """`pattern` as the decompressor shifts it in. The seed is the one that
+    loads each scan cell with its value in `vector` -- and, launching on
+    shift, brings in `head_bits` (by chain) at the launch shift. Every chain's
+    scan-in at every load cycle is that seed's, the cycles whose bits pass
+    through a shorter chain included, and every position is care (load_care):
+    a tester applies only the seed, so this is exactly what the chip loads.
+    Raises ScanError when no seed gives these values: every compressed
+    candidate comes from a seed (the seeded SAT solve, _seeded_random_vectors),
+    so that would be a bug."""
+    assert scan_ctx.compression_map is not None
+    rows = scan_ctx.compression_care_bit_rows
+    assert rows is not None
+    max_chain_length = len(rows) - 1
+    names = sorted(scan_ctx.seeded_inputs)
+    fanout = [scan_ctx.seeded_inputs[name] for name in names]
+    values = [bool(vector[name]) for name in names]
+    for chain, bit in sorted(head_bits.items()):
+        fanout.append(bitmask_to_index_list(rows[max_chain_length][chain]))
+        values.append(bool(bit))
+    solved = core.solve_xor_broadcast(
+        scan_ctx.compression_map.num_channels, fanout, list(enumerate(values))
+    )
+    if not solved["ok"]:
+        raise ScanError(
+            "a compressed scan pattern loads values no decompressor seed gives"
+        )
+    seed = sum(1 << k for k, bit in enumerate(solved["channels"]) if bit)
+    load_seqs = {
+        chain: [
+            _seeded_bit(rows[cycle][chain], seed) for cycle in range(max_chain_length)
+        ]
+        for chain in pattern.load_seqs
+    }
+    for entry in scan_ctx.pseudo_port_map.values():
+        chain = int(entry["chain_id"])
+        cycle = max_chain_length - 1 - int(entry["position_in_chain"])
+        if load_seqs[chain][cycle] != pattern.load_seqs[chain][cycle]:
+            raise ScanError(
+                f"scan cell {entry['ppi_port']} is not loaded at the shift cycle "
+                "its decompressor row is for"
+            )
+    return replace(
+        pattern,
+        load_seqs=load_seqs,
+        load_care=tuple(
+            (chain, cycle)
+            for chain in sorted(load_seqs)
+            for cycle in range(max_chain_length)
+        ),
+    )
+
+
+def _seeded_random_vectors(
+    core: Any,
+    input_order: list[str],
+    scan_ctx: ScanPipelineContext,
+    count: int,
+    *,
+    los: bool = False,
+) -> list[tuple[dict[str, bool], dict[int, bool]]]:
+    """Random patterns for a compressed design: random real inputs and a random
+    seed, each scan cell -- and, launching on shift, each chain's launch
+    scan-in bit (by chain) -- what the decompressor makes of the seed. Random
+    loads would almost never be a load it can make: one seed of [compression]
+    channels bits loads every cell."""
+    assert scan_ctx.compression_map is not None
+    rows = scan_ctx.compression_care_bit_rows
+    assert rows is not None
+    seed_names = [f"__seed[{k}]" for k in range(scan_ctx.compression_map.num_channels)]
+    free = [name for name in input_order if name not in scan_ctx.seeded_inputs]
+    drawn: list[tuple[dict[str, bool], dict[int, bool]]] = []
+    for raw in core.atpg_random_vectors(free + seed_names, count, ATPGRANDOM_SEED):
+        seed = sum(1 << k for k, name in enumerate(seed_names) if raw[name])
+        values = {name: bool(raw[name]) for name in free}
+        for ppi, bits in scan_ctx.seeded_inputs.items():
+            values[ppi] = sum((seed >> bit) & 1 for bit in bits) % 2 == 1
+        heads = (
+            {chain: _seeded_bit(row, seed) for chain, row in enumerate(rows[-1])}
+            if los
+            else {}
+        )
+        drawn.append(({name: values[name] for name in input_order}, heads))
+    return drawn
+
+
+def _reject_compaction_indistinguishable(
+    fault_ids: list[int],
+    track_key: str,
+    protocol_sim_rejections: list[CandidateRejection],
+    blocked: list[tuple[int, str]],
+) -> None:
+    for fault_id in fault_ids:
+        protocol_sim_rejections.append(
+            CandidateRejection(fault_id, "compaction_indistinguishable")
+        )
+        blocked.append((fault_id, track_key))
+
+
+def _is_compaction_only_rejected(reasons: set[str] | None) -> bool:
+    """True iff this fault has been rejected at least once, and EVERY
+    rejection reason recorded against it (this campaign, all rounds so far)
+    is "compaction_indistinguishable" -- i.e. every witness detected it
+    through the real, uncompacted scan-out ports, but its diff aliased to
+    zero at every compacted output bit, every cycle. A MIXED history (some
+    compaction, some other reason) deliberately falls through to the
+    existing mark_fault_redundant behavior unchanged: a mix cannot prove the
+    UNSAT is solely attributable to compaction.
+    """
+    return bool(reasons) and reasons == {"compaction_indistinguishable"}
+
+
+@dataclass(frozen=True)
+class _Twin:
+    """A twin of the scan ATPG view that frees what the view ties -- the hold
+    twin (atpg_view.make_nonscan_free) or the blackbox-transparent one
+    (make_blackbox_transparent) -- and each fault site's compiled net index in
+    it."""
+
+    json_path: str
+    net_index_by_site: dict[str, int]
+
+
+def _mapped_twin(
+    core: Any,
+    scan_ctx: ScanPipelineContext,
+    view: dict[str, Any],
+    twin_path: Path,
+    generic_cell_map: str,
+    reduced_cell_map: str,
+    unsupported: str,
+    blackbox_instances: list[str],
+    execution_map: dict[str, int],
+    what: str,
+) -> _Twin:
+    """Write the twin `view` beside the view and map it by the same
+    build_scan_execution_map. Only ties, ports and the mask differ between the
+    two, so both must map exactly the same fault sites -- anything else is a
+    bug in the twin, raised here rather than mid-round."""
+    twin_path.write_text(json.dumps(view) + "\n", encoding="utf-8")
+    twin_map, _ = build_scan_execution_map(
+        core,
+        scan_ctx.generic_json,
+        twin_path,
+        generic_cell_map,
+        reduced_cell_map,
+        unsupported,
+        scan_ctx.pseudo_port_map,
+        scan_ctx.manifest,
+        scan_ctx.wbr_decoupled_bits,
+        blackbox_instances=blackbox_instances,
+    )
+    if twin_map.keys() != execution_map.keys():
+        raise ScanError(f"{what} maps different fault sites than the scan ATPG view")
+    return _Twin(str(twin_path), twin_map)
+
+
+def _build_hold_twin(
+    core: Any,
+    scan_ctx: ScanPipelineContext,
+    reduced_json_path: str,
+    generic_cell_map: str,
+    reduced_cell_map: str,
+    unsupported: str,
+    blackbox_instances: list[str],
+    execution_map: dict[str, int],
+) -> _Twin | None:
+    """None unless the view models non-scan cells. Blackboxes stay opaque in the
+    hold twin, so what their unknown outputs reach stays unobserved: the mask is
+    recomputed for them alone, the non-scan flops no longer being unknown."""
+    if scan_ctx.nonscan is None:
+        return None
+    reduced = Path(reduced_json_path)
+    view = json.loads(reduced.read_text(encoding="utf-8"))
+    top = str(scan_ctx.manifest["top"])
+    if not make_nonscan_free(view, top):
+        return None
+    twin_path = reduced.with_name(f"{reduced.stem}_holdfree.json")
+    _, module = _top_module(view, top)
+    module.get("attributes", {}).pop(UNOBSERVED_NETS_ATTR, None)
+    x_instances = scan_ctx.cfg.blackbox_x_instances
+    if x_instances:
+        twin_path.write_text(json.dumps(view) + "\n", encoding="utf-8")
+        mask = compute_x_mask(
+            core,
+            twin_path,
+            top=top,
+            cell_map=reduced_cell_map,
+            unsupported=unsupported,
+            x_instances=x_instances,
+            launch_mode=scan_ctx.x_mask.launch_mode,
+            functional_output_order=(),
+        )
+        apply_x_mask(view, top, mask)
+    return _mapped_twin(
+        core,
+        scan_ctx,
+        view,
+        twin_path,
+        generic_cell_map,
+        reduced_cell_map,
+        unsupported,
+        blackbox_instances,
+        execution_map,
+        "hold twin",
+    )
+
+
+def _build_blackbox_twin(
+    core: Any,
+    scan_ctx: ScanPipelineContext,
+    reduced_json_path: str,
+    generic_cell_map: str,
+    reduced_cell_map: str,
+    unsupported: str,
+    blackbox_instances: list[str],
+    execution_map: dict[str, int],
+) -> _Twin | None:
+    """None unless the view models a blackbox. Non-scan cells are set free in it
+    too (make_nonscan_free): tried after the hold twin, it catches a fault only a
+    blackbox and the holds together block."""
+    if not blackbox_instances:
+        return None
+    reduced = Path(reduced_json_path)
+    view = json.loads(reduced.read_text(encoding="utf-8"))
+    top = str(scan_ctx.manifest["top"])
+    if scan_ctx.nonscan is not None:
+        make_nonscan_free(view, top)
+    if not make_blackbox_transparent(view, top):
+        return None
+    return _mapped_twin(
+        core,
+        scan_ctx,
+        view,
+        reduced.with_name(f"{reduced.stem}_bbtransparent.json"),
+        generic_cell_map,
+        reduced_cell_map,
+        unsupported,
+        blackbox_instances,
+        execution_map,
+        "blackbox-transparent view",
+    )
+
+
+def _testable_on_twin(
+    core: Any,
+    twin: _Twin,
+    *,
+    db_path: str,
+    fault_id: int,
+    site_key: str,
+    cell_map: str,
+    conflict_limit: int,
+    timeout: int,
+    unsupported: str,
+    cone_restrict: bool,
+    transition: bool,
+    los: bool,
+    los_couple_ports: list[tuple[str, str]],
+    los_head_ports: list[str],
+) -> bool:
+    """Re-solve a fault that is UNSAT in the scan ATPG view on a twin of it,
+    where what the view ties is free and what it leaves unread observed: False
+    only if it is UNSAT there too. SAT means only what the twin frees could test
+    it: the holds (Tessent's AU.PC), or a blackbox (AU.BB). TIMEOUT and UNKNOWN
+    also return True -- whether such a fault is redundant is unknown, a
+    redundant verdict needs a proof, and the fault is untestable in the scan
+    view either way."""
+    index = twin.net_index_by_site[site_key]
+    if los:
+        solved = core.solve_scan_los_transition_fault_atpg(
+            twin.json_path,
+            cell_map,
+            db_path,
+            fault_id,
+            los_couple_ports,
+            los_head_ports,
+            [],
+            conflict_limit,
+            timeout,
+            unsupported,
+            cone_restrict=cone_restrict,
+            net_index_override=index,
+        )
+    elif transition:
+        solved = core.solve_scan_transition_fault_atpg(
+            twin.json_path,
+            cell_map,
+            db_path,
+            fault_id,
+            [],
+            conflict_limit,
+            timeout,
+            unsupported,
+            cone_restrict=cone_restrict,
+            net_index_override=index,
+        )
+    else:
+        solved = core.solve_fault_atpg(
+            twin.json_path,
+            cell_map,
+            db_path,
+            fault_id,
+            [],
+            conflict_limit,
+            timeout,
+            unsupported,
+            net_index_override=index,
+        )
+    return str(solved["result"]) != "UNSAT"
+
+
+def _fault_has_raw_scan_diff(diff_unload_seqs: dict[int, list[bool]]) -> bool:
+    """True iff a fault's faulty/golden unload sequences differ at ANY
+    (chain, cycle) at all -- i.e. it was actually observed via the real
+    scan-chain unload path, not solely via a functional PO the compactor
+    never touches. A PO-only detection is always compaction-safe regardless
+    of what _compaction_diff_observable's fold would compute on an all-zero
+    map -- there is nothing to fold, so it should never be flagged."""
+    return any(any(bits) for bits in diff_unload_seqs.values())
+
+
+def _compaction_diff_observable(
+    diff_unload_seqs: dict[int, list[bool]],
+    fanout: list[list[int]],
+    max_chain_length: int,
+    unload_mask: dict[int, list[bool]] | None = None,
+) -> bool:
+    """Pure GF(2) evaluation, no simulation, no C++ call, no solve (there is
+    nothing to search for -- the diff is already known). True iff at least
+    one compacted output bit (fanout[o] = chain indices XORed into output o)
+    differs from golden at at least one cycle. A compacted bit that folds in
+    a chain bit `unload_mask` leaves don't-care is itself unknown -- the XOR
+    of an unknown value -- so it can't show a difference."""
+    mask = unload_mask or {}
+
+    def known(chain_id: int, cycle: int) -> bool:
+        bits = mask.get(chain_id)
+        return bits is None or cycle >= len(bits) or bits[cycle]
+
+    for cycle in range(max_chain_length):
+        for row in fanout:
+            if not all(known(chain_id, cycle) for chain_id in row):
+                continue
+            bit = False
+            for chain_id in row:
+                bits = diff_unload_seqs.get(chain_id)
+                if bits and cycle < len(bits) and bits[cycle]:
+                    bit = not bit
+            if bit:
+                return True
+    return False
+
+
+def _check_compaction_distinguishable(
+    core: Any,
+    scan_ctx: ScanPipelineContext,
+    scan_pattern: ScanPattern,
+    generic_cell_map: str,
+    unsupported: str,
+    is_loc: bool,
+    is_los: bool,
+    head_bits: dict[int, bool],
+    active_clock_ports: list[str] | None,
+    active_rows: list[_FaultRow],
+    generic_site_index: dict[str, int],
+    passed_fault_ids: list[int],
+) -> set[int]:
+    """Return the subset of ``passed_fault_ids`` that remain observable
+    through ``scan_ctx.compaction_map``'s static XOR-tree compactor -- i.e.
+    NOT compaction-indistinguishable.
+
+    Compaction distinguishability is a per-fault property: the compactor only
+    affects what a tester can observe at read-out, never what gets
+    loaded/captured, so the candidate vector stays perfectly valid regardless
+    -- only the specific faults whose diff happens to alias to zero lose
+    credit from this witness. The check is NOT scoped to ``source == "sat"``
+    -- a random-fill candidate's incidental detections are exactly as subject
+    to real compacted-output aliasing as a SAT-targeted candidate's, so
+    skipping random-fill here would silently over-credit coverage a real
+    compacted tester could never see.
+
+    One batched ``simulate_scan_protocol_faults(..., capture_diffs=True)``
+    call over ALL of ``passed_fault_ids`` -- required even for
+    reduced-trusted-graded faults, which never call the protocol simulator on
+    their own path, so their diff data doesn't exist yet from any earlier
+    call in this candidate's processing. A ``fault_site_key`` missing from
+    ``generic_site_index`` passes through as observable (under-flag, never
+    false-exclude).
+    """
+    assert scan_ctx.compaction_map is not None
+    row_by_id = {row.fault_id: row for row in active_rows}
+    max_chain_length = int(scan_ctx.manifest.get("max_chain_length", 0))
+    base_kwargs = _protocol_fault_sim_kwargs(scan_ctx, scan_pattern)
+
+    ids: list[int] = []
+    specs: list[tuple[int, int]] = []
+    for fault_id in passed_fault_ids:
+        row = row_by_id.get(fault_id)
+        if row is None:
+            continue
+        cidx = generic_site_index.get(row.fault_site_key)
+        if cidx is None:
+            continue
+        ids.append(fault_id)
+        specs.append((cidx, fault_type_to_sa_code(row.fault_type)))
+
+    result = dict(
+        core.simulate_scan_protocol_faults(
+            str(scan_ctx.generic_json),
+            generic_cell_map,
+            faults=specs,
+            unsupported_policy=unsupported,
+            loc_two_capture=is_loc,
+            los_two_capture=is_los,
+            los_launch_scan_in=head_bits,
+            active_clock_ports=active_clock_ports or [],
+            capture_diffs=True,
+            **base_kwargs,
+        )
+    )
+
+    covered: set[int] = set()
+    observable: set[int] = set()
+    fanout = scan_ctx.compaction_map.fanout
+    for batch in result.get("batches", []):
+        for lane in batch.get("lanes", []):
+            lane_dict = dict(lane)
+            idx = lane_dict.get("fault_index")
+            if idx is None or not (0 <= int(idx) < len(ids)):
+                continue
+            fault_id = ids[int(idx)]
+            covered.add(fault_id)
+            diff_unload_seqs = {
+                int(chain_id): list(bits)
+                for chain_id, bits in dict(
+                    lane_dict.get("diff_unload_seqs", {})
+                ).items()
+            }
+            if not _fault_has_raw_scan_diff(diff_unload_seqs) or (
+                _compaction_diff_observable(
+                    diff_unload_seqs,
+                    fanout,
+                    max_chain_length,
+                    scan_pattern.unload_mask,
+                )
+            ):
+                observable.add(fault_id)
+
+    # A fault_site_key with no generic_site_index entry never entered `ids`,
+    # so it never appears in `covered` either -- pass it through as
+    # observable (under-flag, never false-exclude).
+    return observable | (set(passed_fault_ids) - covered)
 
 
 def _materialize_reduced_outputs(
@@ -632,11 +1258,13 @@ def _process_scan_candidate(
         vector_pattern = pattern_key_str
         launch_pattern = ""
 
-    scan_pattern = serialize_vector(
-        serialize_input,
-        scan_ctx.pseudo_port_map,
-        scan_ctx.manifest,
-    )
+    scan_pattern = _serialize(scan_ctx, serialize_input)
+    if scan_ctx.compression_map is not None:
+        # What the chip shifts in: the gate, the protocol sims and the export
+        # all see the decompressor's whole stream for the candidate's seed.
+        scan_pattern = _decompressed(
+            core, scan_ctx, vector, scan_pattern, head_bits if is_los else {}
+        )
     insert_pending_candidate(
         conn,
         campaign_id=campaign_id,
@@ -658,19 +1286,17 @@ def _process_scan_candidate(
     _obs_map = scan_ctx.wbr_observe_name_by_port
     _rename = {**_stim_map, **_obs_map}
     if _rename:
-        gate_scan_pattern = ScanPattern(
-            load_seqs=scan_pattern.load_seqs,
+        gate_scan_pattern = replace(
+            scan_pattern,
             capture_pi_values={
                 _rename.get(k, k): v for k, v in scan_pattern.capture_pi_values.items()
             },
-            expected_unload=scan_pattern.expected_unload,
         )
     else:
         gate_scan_pattern = scan_pattern
+    observed_outputs = _observed_outputs(scan_ctx)
     gate_output_order = (
-        [_obs_map.get(p, p) for p in scan_ctx.functional_output_order]
-        if _obs_map
-        else scan_ctx.functional_output_order
+        [_obs_map.get(p, p) for p in observed_outputs] if _obs_map else observed_outputs
     )
     gate_reduced = (
         {_obs_map.get(k, k): v for k, v in reduced_expectation.items()}
@@ -849,13 +1475,21 @@ def _process_scan_candidate(
     if protocol_sim_fault_ids:
         if not transition:
             row_by_id = {row.fault_id: row for row in active_rows}
-            fallback_target_id: int | None = None
+            # Left to the protocol sim: the SAT target when its capture value
+            # doesn't credit it, and every Q-stem of a flop that captures a
+            # blackbox output's unknown value. That flop's own unload bit is
+            # masked, but a stuck Q still corrupts each upstream bit it shifts
+            # out, and the protocol sim compares those.
+            protocol_ids: list[int] = []
             for fault_id in protocol_sim_fault_ids:
                 row = row_by_id.get(fault_id)
                 if row is None:
                     continue
                 ppo_port = scan_ctx.q_stem_to_ppo.get(row.fault_site_key)
                 if ppo_port is None:
+                    continue
+                if ppo_port in scan_ctx.x_mask.ppo_ports:
+                    protocol_ids.append(fault_id)
                     continue
                 cap_val = bool(reduced_expectation.get(ppo_port, False))
                 detected = (
@@ -866,14 +1500,18 @@ def _process_scan_candidate(
                 if detected:
                     passed_fault_ids.append(fault_id)
                 elif source == "sat" and fault_id == sat_target_fault_id:
-                    fallback_target_id = fault_id
-            if fallback_target_id is not None:
-                row = row_by_id[fallback_target_id]
-                generic_cidx = generic_site_index.get(row.fault_site_key)
-                if generic_cidx is None:
-                    raise RunnerError(
-                        f"generic compiled index missing for site {row.fault_site_key}"
-                    )
+                    protocol_ids.append(fault_id)
+            if protocol_ids:
+                specs: list[tuple[int, int]] = []
+                for fault_id in protocol_ids:
+                    row = row_by_id[fault_id]
+                    generic_cidx = generic_site_index.get(row.fault_site_key)
+                    if generic_cidx is None:
+                        raise RunnerError(
+                            "generic compiled index missing for site "
+                            f"{row.fault_site_key}"
+                        )
+                    specs.append((generic_cidx, fault_type_to_sa_code(row.fault_type)))
                 protocol_fault_sim_kwargs = _protocol_fault_sim_kwargs(
                     scan_ctx, scan_pattern
                 )
@@ -881,7 +1519,7 @@ def _process_scan_candidate(
                     core.simulate_scan_protocol_faults(
                         str(scan_ctx.generic_json),
                         generic_cell_map,
-                        faults=[(generic_cidx, fault_type_to_sa_code(row.fault_type))],
+                        faults=specs,
                         unsupported_policy=unsupported,
                         loc_two_capture=is_loc,
                         los_two_capture=is_los,
@@ -890,21 +1528,19 @@ def _process_scan_candidate(
                         **protocol_fault_sim_kwargs,
                     )
                 )
-                outcome = "fail"
-                for batch in protocol_fault_sim_result.get("batches", []):
-                    lanes = batch.get("lanes", [])
-                    if lanes:
-                        outcome = str(dict(lanes[0]).get("outcome"))
-                        break
-                if outcome == "pass":
-                    passed_fault_ids.append(fallback_target_id)
-                else:
-                    protocol_sim_rejections.append(
-                        CandidateRejection(
-                            fallback_target_id, "no_capture_or_unload_effect"
+                outcome_by_index = {
+                    int(dict(lane)["fault_index"]): str(dict(lane).get("outcome"))
+                    for batch in protocol_fault_sim_result.get("batches", [])
+                    for lane in batch.get("lanes", [])
+                }
+                for index, fault_id in enumerate(protocol_ids):
+                    if outcome_by_index.get(index) == "pass":
+                        passed_fault_ids.append(fault_id)
+                    elif source == "sat" and fault_id == sat_target_fault_id:
+                        protocol_sim_rejections.append(
+                            CandidateRejection(fault_id, "no_capture_or_unload_effect")
                         )
-                    )
-                    blocked.append((fallback_target_id, track_key))
+                        blocked.append((fault_id, track_key))
         else:
             # Transition faults: full protocol sim required (two-frame detection).
             row_by_id = {row.fault_id: row for row in active_rows}
@@ -913,6 +1549,13 @@ def _process_scan_candidate(
             for fault_id in protocol_sim_fault_ids:
                 row = row_by_id.get(fault_id)
                 if row is None:
+                    continue
+                if not _launch_known(scan_ctx, row):
+                    if source == "sat" and fault_id == sat_target_fault_id:
+                        protocol_sim_rejections.append(
+                            CandidateRejection(fault_id, "no_capture_or_unload_effect")
+                        )
+                        blocked.append((fault_id, track_key))
                     continue
                 generic_cidx = generic_site_index.get(row.fault_site_key)
                 if generic_cidx is None:
@@ -955,6 +1598,32 @@ def _process_scan_candidate(
                         CandidateRejection(fault_id, "no_capture_or_unload_effect")
                     )
                     blocked.append((fault_id, track_key))
+
+    if scan_ctx.compaction_map is not None and passed_fault_ids:
+        observable_ids = _check_compaction_distinguishable(
+            core,
+            scan_ctx,
+            scan_pattern,
+            generic_cell_map,
+            unsupported,
+            is_loc,
+            is_los,
+            head_bits,
+            active_clock_ports,
+            active_rows,
+            generic_site_index,
+            passed_fault_ids,
+        )
+        indistinguishable = [
+            fid for fid in passed_fault_ids if fid not in observable_ids
+        ]
+        if indistinguishable:
+            _reject_compaction_indistinguishable(
+                indistinguishable, track_key, protocol_sim_rejections, blocked
+            )
+            passed_fault_ids = [
+                fid for fid in passed_fault_ids if fid in observable_ids
+            ]
 
     if not passed_fault_ids:
         commit = CandidateCommit(
@@ -1090,6 +1759,23 @@ def run_progressive_scan_atpg(
     )
     generic_cell_map = str(scan_cell_map)
     unsupported = cfg.simulation.unsupported_cells
+    # Every GENERIC-netlist load needs the blackbox list: a blackbox instance's
+    # cell type is usually absent from the cell map, so a load without it fails
+    # outright under unsupported_cells = fail. Reduced-view loads need none --
+    # build_scan_atpg_view models blackboxes opaque, so the view has none.
+    bb = list(cfg.blackbox_instances)
+    _require_x_mask(
+        scan_ctx, reduced_json_path, launch_mode_key(transition, launch_mode)
+    )
+    if scan_ctx.x_mask.nets:
+        log.info(
+            "atpg   unknown values (blackbox outputs, frozen non-scan flops) reach "
+            "%d observation points (%d scan flops, %d outputs): unobserved, "
+            "don't-care in every pattern",
+            len(scan_ctx.x_mask.nets),
+            len(scan_ctx.x_mask.ppo_ports),
+            len(scan_ctx.x_mask.outputs),
+        )
 
     core.ensure_faults_enumerated(
         str(scan_ctx.generic_json),
@@ -1100,6 +1786,7 @@ def run_progressive_scan_atpg(
         cfg.fault_model.include_reset_faults,
         cfg.fault_model.collapsing,
         unsupported,
+        bb,
     )
     execution_map, exclusions = build_scan_execution_map(
         core,
@@ -1111,6 +1798,7 @@ def run_progressive_scan_atpg(
         scan_ctx.pseudo_port_map,
         scan_ctx.manifest,
         scan_ctx.wbr_decoupled_bits,
+        blackbox_instances=bb,
     )
     # For transition faults in multi-domain designs, tag cross-domain fault sites.
     if cfg.fault_model.model == "transition":
@@ -1122,7 +1810,7 @@ def run_progressive_scan_atpg(
             if cross_domain_ids:
                 generic_rows: list[dict[str, Any]] = list(
                     core.list_site_keys(
-                        str(scan_ctx.generic_json), generic_cell_map, unsupported
+                        str(scan_ctx.generic_json), generic_cell_map, unsupported, bb
                     )
                 )
                 exclusions = tag_cross_domain_exclusions(
@@ -1133,6 +1821,38 @@ def run_progressive_scan_atpg(
                     "cross-domain: tagged %d fault sites excluded_cross_domain",
                     n_xd,
                 )
+    # Non-scan cells: their own faults, and what only they see, are left to
+    # JTAG (ff.py jtag) -- tagged before any SAT, which would otherwise call
+    # them redundant -- and so are the stuck-ats that could release a flop the
+    # view ties in reset. A settled flop's own faults are reset faults.
+    jtag_keys: set[str] = set()
+    reset_keys: set[str] = set()
+    if scan_ctx.nonscan is not None:
+        top_name = str(scan_ctx.manifest.get("top", cfg.top))
+        _, generic_module = _top_module(
+            json.loads(scan_ctx.generic_json.read_text(encoding="utf-8")), top_name
+        )
+        site_rows = list(
+            core.list_site_keys(
+                str(scan_ctx.generic_json), generic_cell_map, unsupported, bb
+            )
+        )
+        jtag_keys = jtag_sites(
+            site_rows,
+            generic_module,
+            json.loads(Path(generic_cell_map).read_text(encoding="utf-8")),
+            scan_ctx.nonscan,
+            tdo=cfg.jtag.tdo,
+            blackbox_instances=bb,
+        )
+        reset_keys = settled_sites(site_rows, scan_ctx.nonscan)
+        log.info(
+            "non-scan: %d fault sites left to JTAG (excluded_jtag), %d of settled "
+            "flops (excluded_reset); %d-pulse preamble",
+            len(jtag_keys),
+            len(reset_keys),
+            scan_ctx.nonscan.preamble,
+        )
     with connect(effective_db_path) as conn:
         init_schema(conn)
         apply_scan_execution_map(
@@ -1140,11 +1860,41 @@ def run_progressive_scan_atpg(
             campaign_id,
             execution_map,
             exclusions,
+            jtag_sites=jtag_keys,
+            jtag_faults=(
+                scan_ctx.nonscan.release_faults
+                if scan_ctx.nonscan is not None
+                else frozenset()
+            ),
+            reset_sites=reset_keys,
         )
     core.invalidate_stale_redundant(effective_db_path, campaign_id, redundancy_model)
+    # With blackboxes opaque and non-scan cells tied in the view, UNSAT alone
+    # can't tell a redundant fault from one only lifting the holds, or a
+    # blackbox, could test: the UNSAT branch re-solves on these twins, in this
+    # order, which can.
+    twin_args = (
+        core,
+        scan_ctx,
+        reduced_json_path,
+        generic_cell_map,
+        reduced_cell_map,
+        unsupported,
+        bb,
+        execution_map,
+    )
+    twins = [
+        (label, twin)
+        for label, twin in (
+            ("hold", _build_hold_twin(*twin_args)),
+            ("blackbox", _build_blackbox_twin(*twin_args)),
+        )
+        if twin is not None
+    ]
+    unresolved = {"hold": 0, "blackbox": 0, "compression": 0}
 
     generic_site_index = build_site_key_index(
-        core, scan_ctx.generic_json, generic_cell_map, unsupported
+        core, scan_ctx.generic_json, generic_cell_map, unsupported, bb
     )
 
     with connect(effective_db_path) as conn:
@@ -1222,9 +1972,13 @@ def run_progressive_scan_atpg(
             reduced_json_path, reduced_cell_map, [], [], unsupported
         )
         try:
+            # Each worker gets the decompressor's seed rows once, inherited
+            # through the fork, not pickled into every task.
             _executor = ProcessPoolExecutor(
                 max_workers=cfg.atpg.workers,
                 mp_context=get_context("fork"),
+                initializer=install_seed,
+                initargs=(_seed_kwargs(scan_ctx, los=los),),
             )
         except Exception as _fork_exc:
             log.warning(
@@ -1241,12 +1995,13 @@ def run_progressive_scan_atpg(
     else:
         _solve_kind = "scan_stuck_at"
 
-    # OT structural reconvergence preflight (cfg.atpg.preflight, stuck-at only).
-    # Phase A: reconvergent-site faults are sorted last and their SAT timeout tier
-    # is bumped by 1 so the short (2 s) tier is skipped — these faults are likely
-    # hard or near-redundant and waste the short budget.
-    # Phase B: faults at canceling-path stems are marked UNSAT without any SAT call.
-    # Falls back silently if opentest is not on PATH or the preflight subprocess fails.
+    # OT structural reconvergence preflight (cfg.atpg.preflight, stuck-at only):
+    # reconvergent-site faults are sorted last and their SAT timeout tier is
+    # bumped by 1 so the short (2 s) tier is skipped -- these faults are likely
+    # hard and waste the short budget. Ordering only: a reconvergent stem is no
+    # redundancy proof (its faults, and each branch's, can be testable), so every
+    # verdict still comes from SAT. Falls back silently if opentest is not on
+    # PATH or the preflight subprocess fails.
     _preflight: PreflightData | None = None
     _reconv_ids: frozenset[int] = frozenset()
     if cfg.atpg.preflight and not transition:
@@ -1264,20 +2019,7 @@ def run_progressive_scan_atpg(
             )
             if _preflight:
                 _reconv_ids = _preflight.fanout_yosys_ids
-                log.info(
-                    "atpg   preflight: %d reconvergent stems, %d canceling stems",
-                    len(_preflight.fanout_yosys_ids),
-                    len(_preflight.redundant_stem_ids),
-                )
-                if _preflight.redundant_stem_ids:
-                    _mark_preflight_redundant(
-                        effective_db_path,
-                        campaign_id,
-                        _preflight.redundant_stem_ids,
-                        redundancy_model,
-                        scan_ctx.q_stem_site_keys,
-                        core,
-                    )
+                log.info("atpg   preflight: %d reconvergent stems", len(_reconv_ids))
 
     _easy_reserve = cfg.atpg.easy_fault_reserve
     if _parallel and _easy_reserve > 0 and cfg.atpg.workers >= 4:
@@ -1289,6 +2031,72 @@ def run_progressive_scan_atpg(
             cfg.atpg.workers,
             _easy_reserve,
         )
+
+    def solve(
+        fault_id: int, blocked: list[str], timeout: int, *, seeded: bool
+    ) -> dict[str, Any]:
+        """One scan SAT solve on the view; `seeded`: through the decompressor
+        (no constraint without compression)."""
+        seed = _seed_kwargs(scan_ctx, los=los) if seeded else {}
+        if los:
+            return dict(
+                core.solve_scan_los_transition_fault_atpg(
+                    reduced_json_path,
+                    reduced_cell_map,
+                    effective_db_path,
+                    fault_id,
+                    los_couple_ports,
+                    los_head_ports,
+                    blocked,
+                    cfg.atpg.sat_conflict_limit,
+                    timeout,
+                    unsupported,
+                    cone_restrict=cfg.atpg.cone_restrict,
+                    **seed,
+                )
+            )
+        if transition:
+            return dict(
+                core.solve_scan_transition_fault_atpg(
+                    reduced_json_path,
+                    reduced_cell_map,
+                    effective_db_path,
+                    fault_id,
+                    blocked,
+                    cfg.atpg.sat_conflict_limit,
+                    timeout,
+                    unsupported,
+                    cone_restrict=cfg.atpg.cone_restrict,
+                    **seed,
+                )
+            )
+        return dict(
+            core.solve_fault_atpg(
+                reduced_json_path,
+                reduced_cell_map,
+                effective_db_path,
+                fault_id,
+                blocked,
+                cfg.atpg.sat_conflict_limit,
+                timeout,
+                unsupported,
+                **seed,
+            )
+        )
+
+    head_chain_by_port = {port: chain for chain, port in los_head_by_chain.items()}
+
+    def random_key(vector: dict[str, bool], heads: dict[int, bool]) -> str:
+        """A random candidate's dedup/blocking key: V1, launching on shift
+        followed by its launch-shift scan-in bits in head-port order (V1 ‖
+        head-bits, length-compatible with LOS blocked keys)."""
+        key = pattern_key(vector, input_order)
+        if los:
+            key += "".join(
+                "1" if heads.get(head_chain_by_port[port], False) else "0"
+                for port in los_head_ports
+            )
+        return key
 
     terminal = "MAX_ROUNDS"
     # Random fill runs ONCE (round 1): up to random_vectors patterns, or until
@@ -1308,26 +2116,32 @@ def run_progressive_scan_atpg(
             terminal = "COMPLETE"
             break
 
-        if switched_to_sat:
-            random_batch: list[dict[str, bool]] = []
-        else:
+        # Each random candidate is (V1, LOS launch-shift scan-in bits by chain).
+        # Compressed, both come from a random decompressor seed; otherwise the
+        # head bits are 0.
+        random_batch: list[tuple[dict[str, bool], dict[int, bool]]] = []
+        if not switched_to_sat:
             random_started = time.perf_counter()
-            random_batch = core.atpg_random_vectors(
-                input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
+            random_batch = (
+                _seeded_random_vectors(
+                    core, input_order, scan_ctx, cfg.atpg.random_vectors, los=los
+                )
+                if scan_ctx.compression_map is not None
+                else [
+                    (vector, {})
+                    for vector in core.atpg_random_vectors(
+                        input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
+                    )
+                ]
             )
             atpg_seconds += time.perf_counter() - random_started
-        new_random: list[dict[str, bool]] = []
-        for vector in list(random_batch):
-            # LOS random candidates carry head bits = 0; the composite dedup key
-            # appends a zero head suffix so it stays length-compatible with LOS
-            # blocked keys (V1 ‖ head-bits).
-            key = pattern_key(vector, input_order)
-            if los:
-                key = key + "0" * len(los_head_ports)
+        new_random: list[tuple[dict[str, bool], dict[int, bool]]] = []
+        for vector, heads in random_batch:
+            key = random_key(vector, heads)
             if key in seen_patterns:
                 continue
             seen_patterns.add(key)
-            new_random.append(vector)
+            new_random.append((vector, heads))
         heartbeat = GradeHeartbeat(
             log,
             round_idx,
@@ -1336,7 +2150,7 @@ def run_progressive_scan_atpg(
         )
         random_denom = _coverage_denominator(effective_db_path, campaign_id)
         graded_random = 0
-        for offset, vector in enumerate(new_random):
+        for offset, (vector, heads) in enumerate(new_random):
             stats.generated_vectors += 1
             candidate_counter += 1
             vector_index = len(vectors) + 1
@@ -1365,12 +2179,8 @@ def run_progressive_scan_atpg(
                         unsupported=unsupported,
                         transition=transition,
                         launch_mode=launch_mode,
-                        los_head_scan_in={} if los else None,
-                        candidate_key=(
-                            pattern_key(vector, input_order) + "0" * len(los_head_ports)
-                            if los
-                            else None
-                        ),
+                        los_head_scan_in=heads if los else None,
+                        candidate_key=random_key(vector, heads) if los else None,
                     )
                 )
             fault_sim_seconds += time.perf_counter() - sim_started
@@ -1403,11 +2213,8 @@ def run_progressive_scan_atpg(
         if not switched_to_sat:
             # Release the patterns of any random vectors we did not grade so SAT
             # can generate them for the remaining faults; then stay in SAT mode.
-            for _v in new_random[graded_random:]:
-                _k = pattern_key(_v, input_order)
-                if los:
-                    _k = _k + "0" * len(los_head_ports)
-                seen_patterns.discard(_k)
+            for _v, _h in new_random[graded_random:]:
+                seen_patterns.discard(random_key(_v, _h))
             switched_to_sat = True
             if cfg.atpg.random_only:
                 # Deliberately incomplete "pure random" terminal mode for
@@ -1420,6 +2227,11 @@ def run_progressive_scan_atpg(
             init_schema(conn)
             active_rows = _active_fault_rows(conn, campaign_id)
             db_blocked = load_blocked_patterns(conn, campaign_id)
+            rejection_reasons = (
+                load_rejection_reasons(conn, campaign_id)
+                if scan_ctx.compaction_map is not None
+                else {}
+            )
 
         # Phase A: seed a tier-skip for reconvergent-site faults so they start at
         # the second timeout tier (skipping the short 2 s attempt). This is done
@@ -1505,7 +2317,7 @@ def run_progressive_scan_atpg(
                     cfg.atpg.cone_restrict,
                     list(los_couple_ports) if los else [],
                     list(los_head_ports) if los else [],
-                    [],  # bb_instances: not needed in scan fused-view path
+                    [],  # bb_instances: the reduced view models blackboxes opaque
                     "",  # test_mode: baked into the fused-view netlist
                     cfg.atpg.incremental_sat,  # scan_stuck_at ignores it for now
                 )
@@ -1557,49 +2369,7 @@ def run_progressive_scan_atpg(
                 result = _pre_res
             else:
                 solve_started = time.perf_counter()
-                if los:
-                    solved = dict(
-                        core.solve_scan_los_transition_fault_atpg(
-                            reduced_json_path,
-                            reduced_cell_map,
-                            effective_db_path,
-                            fault_id,
-                            los_couple_ports,
-                            los_head_ports,
-                            blocked,
-                            cfg.atpg.sat_conflict_limit,
-                            tier_timeout,
-                            unsupported,
-                            cone_restrict=cfg.atpg.cone_restrict,
-                        )
-                    )
-                elif transition:
-                    solved = dict(
-                        core.solve_scan_transition_fault_atpg(
-                            reduced_json_path,
-                            reduced_cell_map,
-                            effective_db_path,
-                            fault_id,
-                            blocked,
-                            cfg.atpg.sat_conflict_limit,
-                            tier_timeout,
-                            unsupported,
-                            cone_restrict=cfg.atpg.cone_restrict,
-                        )
-                    )
-                else:
-                    solved = dict(
-                        core.solve_fault_atpg(
-                            reduced_json_path,
-                            reduced_cell_map,
-                            effective_db_path,
-                            fault_id,
-                            blocked,
-                            cfg.atpg.sat_conflict_limit,
-                            tier_timeout,
-                            unsupported,
-                        )
-                    )
+                solved = solve(fault_id, blocked, tier_timeout, seeded=True)
                 atpg_seconds += time.perf_counter() - solve_started
                 result = str(solved["result"])
                 _solved_count += 1
@@ -1685,12 +2455,58 @@ def run_progressive_scan_atpg(
                         stats.protocol_no_progress_rounds += 1
             elif result == "UNSAT":
                 stats.unsat += 1
-                if row.fault_site_key in scan_ctx.q_stem_site_keys:
-                    core.mark_fault_protocol_unresolved(effective_db_path, fault_id)
-                else:
-                    core.mark_fault_redundant(
-                        effective_db_path, fault_id, redundancy_model
+                q_stem = row.fault_site_key in scan_ctx.q_stem_site_keys
+                # Through the decompressor UNSAT proves no redundancy: solved
+                # again without it, a test (or no verdict: a redundant one
+                # needs a proof) makes the fault testable, only not through
+                # this decompressor -- compression_unresolved (Tessent's AU.EDT).
+                testable_free = False
+                if scan_ctx.compression_map is not None and not q_stem:
+                    solve_started = time.perf_counter()
+                    testable_free = (
+                        solve(fault_id, blocked, tier_timeout, seeded=False)["result"]
+                        != "UNSAT"
                     )
+                    atpg_seconds += time.perf_counter() - solve_started
+                if q_stem:
+                    core.mark_fault_protocol_unresolved(effective_db_path, fault_id)
+                elif testable_free:
+                    core.mark_fault_compression_unresolved(effective_db_path, fault_id)
+                    unresolved["compression"] += 1
+                elif _is_compaction_only_rejected(rejection_reasons.get(fault_id)):
+                    core.mark_fault_compaction_unresolved(effective_db_path, fault_id)
+                else:
+                    untestable = None
+                    # UNSAT with patterns blocked isn't a proof to classify.
+                    for label, twin in [] if blocked else twins:
+                        if _testable_on_twin(
+                            core,
+                            twin,
+                            db_path=effective_db_path,
+                            fault_id=fault_id,
+                            site_key=row.fault_site_key,
+                            cell_map=reduced_cell_map,
+                            conflict_limit=cfg.atpg.sat_conflict_limit,
+                            timeout=tier_timeout,
+                            unsupported=unsupported,
+                            cone_restrict=cfg.atpg.cone_restrict,
+                            transition=transition,
+                            los=los,
+                            los_couple_ports=los_couple_ports,
+                            los_head_ports=los_head_ports,
+                        ):
+                            untestable = label
+                            break
+                    if untestable == "hold":
+                        core.mark_fault_hold_unresolved(effective_db_path, fault_id)
+                    elif untestable == "blackbox":
+                        core.mark_fault_blackbox_unresolved(effective_db_path, fault_id)
+                    else:
+                        core.mark_fault_redundant(
+                            effective_db_path, fault_id, redundancy_model
+                        )
+                    if untestable is not None:
+                        unresolved[untestable] += 1
             elif result == "TIMEOUT":
                 stats.timeout += 1
                 round_tracker.sat_outcomes.append("TIMEOUT")
@@ -1753,6 +2569,24 @@ def run_progressive_scan_atpg(
         _executor.shutdown(wait=False)
 
     log.info("atpg   terminated: %s", terminal)
+    if unresolved["hold"]:
+        log.info(
+            "atpg   %d faults are testable only with [scan] hold lifted "
+            "(hold_unresolved)",
+            unresolved["hold"],
+        )
+    if unresolved["blackbox"]:
+        log.info(
+            "atpg   %d faults are testable only through a blackbox "
+            "(blackbox_unresolved)",
+            unresolved["blackbox"],
+        )
+    if unresolved["compression"]:
+        log.info(
+            "atpg   %d faults are testable, but by no load the decompressor "
+            "can make (compression_unresolved)",
+            unresolved["compression"],
+        )
 
     with connect(effective_db_path) as conn:
         init_schema(conn)
@@ -1850,9 +2684,11 @@ def _grade_launch_candidate(
         serialize_input[str(entry["ppo_port"])] = bool(
             reduced_expectation.get(str(entry["ppo_port"]), False)
         )
-    scan_pattern = serialize_vector(
-        serialize_input, scan_ctx.pseudo_port_map, scan_ctx.manifest
-    )
+    scan_pattern = _serialize(scan_ctx, serialize_input)
+    if scan_ctx.compression_map is not None:
+        scan_pattern = _decompressed(
+            core, scan_ctx, vector, scan_pattern, head_bits if is_los else {}
+        )
 
     sim_ids: list[int] = []
     specs: list[tuple[int, int]] = []
@@ -1935,7 +2771,11 @@ def compact_run_scan_transition(
     row_by_id = {row.fault_id: row for row in detected_rows}
     remaining: set[int] = set(row_by_id)
     generic_site_index = build_site_key_index(
-        core, scan_ctx.generic_json, generic_cell_map, unsupported
+        core,
+        scan_ctx.generic_json,
+        generic_cell_map,
+        unsupported,
+        scan_ctx.cfg.blackbox_instances,
     )
     _couples, _heads, head_by_chain = build_los_couples(scan_ctx.pseudo_port_map)
 

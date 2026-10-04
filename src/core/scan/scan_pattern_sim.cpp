@@ -2,11 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
-#include <exception>
 #include <stdexcept>
-#include <thread>
 #include <vector>
 
+#include "common/threads.hpp"
 #include "fault/effect/compact_fault.hpp"
 #include "ir/compiled_graph/compiled_graph.hpp"
 #include "ir/compiled_graph/graph_cache.hpp"
@@ -19,17 +18,6 @@
 
 namespace faultflow::scan {
 namespace {
-
-// Resolve a requested grading thread count. <= 0 means auto (hardware
-// concurrency); the Python layer normally resolves this already, so this is a
-// safe floor.
-int effective_sim_threads(int sim_threads) {
-  if (sim_threads > 0) {
-    return sim_threads;
-  }
-  const unsigned hw = std::thread::hardware_concurrency();
-  return hw == 0 ? 1 : static_cast<int>(hw);
-}
 
 static bool clock_off(const ScanPatternRequest& req, size_t i) {
   return i < req.clock_off_states.size() ? req.clock_off_states[i] : false;
@@ -98,6 +86,7 @@ void append_launch_shift(TestVector& vec, const ParsedGraph& parsed,
   // value), so the capture pulse built from the SE=0 base map still de-asserts.
   // Only active-domain clocks are pulsed during the LOS launch shift.
   values[request.scan_enable_port] = true;
+  for (const auto& [name, value] : request.shift_pi_values) values[name] = value;
   for (size_t chain_id = 0; chain_id < request.scan_input_ports.size();
        ++chain_id) {
     const auto it = request.los_launch_scan_in.find(static_cast<int>(chain_id));
@@ -145,6 +134,7 @@ void append_unload_pulse(TestVector& vec, const ParsedGraph& parsed,
 
 std::map<std::string, bool> base_values(const ScanPatternRequest& request) {
   std::map<std::string, bool> values = request.capture_pi_values;
+  for (const auto& [name, value] : request.shift_pi_values) values[name] = value;
   values[request.scan_enable_port] = false;
   for (size_t i = 0; i < request.clock_ports.size(); ++i)
     values[request.clock_ports[i]] = clock_off(request, i);
@@ -173,7 +163,15 @@ TestVector build_scan_pattern_vector(const ParsedGraph& parsed,
     throw std::runtime_error("scan input/output port count mismatch");
   }
 
+  if (request.preamble_cycles < 0) {
+    throw std::runtime_error("preamble_cycles must be >= 0");
+  }
+
   TestVector vec;
+  for (int pulse = 0; pulse < request.preamble_cycles; ++pulse) {
+    append_clock_pulse(vec, parsed, request.clock_ports, request.clock_off_states,
+                       base_values(request), false, false);
+  }
   for (int offset = 0; offset < request.max_chain_length; ++offset) {
     std::map<std::string, bool> values = base_values(request);
     values[request.scan_enable_port] = true;
@@ -315,6 +313,36 @@ ScanPatternResult extract_scan_lane_observations(
   return result;
 }
 
+bool unload_bit_compared(const std::map<int, std::vector<bool>>& unload_mask,
+                         int chain_id, size_t offset) {
+  const auto it = unload_mask.find(chain_id);
+  return it == unload_mask.end() || offset >= it->second.size() ||
+         it->second[offset];
+}
+
+// !scan_observations_equal, but blind to the unload bits `unload_mask` masks.
+bool observations_differ(const ScanPatternResult& golden,
+                         const ScanPatternResult& faulty,
+                         const std::map<int, std::vector<bool>>& unload_mask) {
+  if (golden.real_po_values != faulty.real_po_values ||
+      golden.unload_seqs.size() != faulty.unload_seqs.size()) {
+    return true;
+  }
+  for (const auto& [chain_id, golden_bits] : golden.unload_seqs) {
+    const auto it = faulty.unload_seqs.find(chain_id);
+    if (it == faulty.unload_seqs.end() || it->second.size() != golden_bits.size()) {
+      return true;
+    }
+    for (size_t t = 0; t < golden_bits.size(); ++t) {
+      if (golden_bits[t] != it->second[t] &&
+          unload_bit_compared(unload_mask, chain_id, t)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 bool scan_observations_equal(const ScanPatternResult& lhs,
@@ -342,9 +370,10 @@ std::vector<int> scan_sample_yids(const ParsedGraph& parsed,
 
 ScanPatternResult simulate_scan_pattern(
     const std::string& json_path, const std::string& cell_map_path,
-    const ScanPatternRequest& request, const std::string& unsupported_policy) {
-  const CachedGraph& graph =
-      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+    const ScanPatternRequest& request, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& graph = load_cached_graph(
+      json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const ParsedGraph& parsed = graph.parsed;
   const CompiledSimGraph& cg = graph.cg;
 
@@ -358,9 +387,10 @@ ScanPatternResult simulate_scan_pattern(
 ScanProtocolFaultSimResult simulate_scan_protocol_faults(
     const std::string& json_path, const std::string& cell_map_path,
     const ScanProtocolFaultRequest& request,
-    const std::string& unsupported_policy, int sim_threads) {
-  const CachedGraph& graph =
-      load_cached_graph(json_path, cell_map_path, unsupported_policy);
+    const std::string& unsupported_policy, int sim_threads,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& graph = load_cached_graph(
+      json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const ParsedGraph& parsed = graph.parsed;
   const CompiledSimGraph& cg = graph.cg;
 
@@ -424,7 +454,20 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
       const int lane_bit_index = static_cast<int>(fault_idx - begin) + 1;
       const ScanPatternResult faulty_obs = extract_scan_lane_observations(
           parsed, cg, request.pattern, batch_samples, lane_bit_index);
-      bool detected = !scan_observations_equal(result.golden, faulty_obs);
+      bool detected =
+          observations_differ(result.golden, faulty_obs, request.unload_mask);
+
+      if (request.capture_diffs) {
+        for (const auto& [chain_id, faulty_bits] : faulty_obs.unload_seqs) {
+          const auto& golden_bits = result.golden.unload_seqs.at(chain_id);
+          std::vector<bool> diff(faulty_bits.size());
+          for (size_t t = 0; t < faulty_bits.size(); ++t) {
+            diff[t] = faulty_bits[t] != golden_bits[t] &&
+                      unload_bit_compared(request.unload_mask, chain_id, t);
+          }
+          lane.diff_unload_seqs[chain_id] = std::move(diff);
+        }
+      }
 
       // LOC transition qualifier: a stuck-at observation difference only counts
       // as a transition fault if the GOOD machine actually made the required
@@ -450,47 +493,7 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
     result.batches[static_cast<size_t>(batch_idx)] = std::move(batch);
   };
 
-  const int threads =
-      std::min(effective_sim_threads(sim_threads), batch_count);
-  if (threads <= 1) {
-    for (int batch_idx = 0; batch_idx < batch_count; ++batch_idx) {
-      process_batch(batch_idx);
-    }
-    return result;
-  }
-
-  // Partition [0, batch_count) into contiguous batch-index ranges, one per
-  // thread (threads-1 workers + the caller). A range that throws is captured and
-  // the lowest-index failure is rethrown after every thread is joined.
-  const int base = batch_count / threads;
-  const int rem = batch_count % threads;
-  std::vector<std::thread> pool;
-  pool.reserve(static_cast<size_t>(threads - 1));
-  std::vector<std::exception_ptr> errors(static_cast<size_t>(threads));
-  const auto run_range = [&](int t) {
-    try {
-      const int lo = t * base + std::min(t, rem);
-      const int hi = lo + base + (t < rem ? 1 : 0);
-      for (int batch_idx = lo; batch_idx < hi; ++batch_idx) {
-        process_batch(batch_idx);
-      }
-    } catch (...) {
-      errors[static_cast<size_t>(t)] = std::current_exception();
-    }
-  };
-
-  for (int t = 1; t < threads; ++t) {
-    pool.emplace_back(run_range, t);
-  }
-  run_range(0);
-  for (std::thread& th : pool) {
-    th.join();
-  }
-  for (int t = 0; t < threads; ++t) {
-    if (errors[static_cast<size_t>(t)]) {
-      std::rethrow_exception(errors[static_cast<size_t>(t)]);
-    }
-  }
+  parallel_ranges(batch_count, effective_sim_threads(sim_threads), process_batch);
   return result;
 }
 

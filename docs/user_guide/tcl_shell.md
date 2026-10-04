@@ -71,6 +71,8 @@ shown by `help`. Run `help <command>` for the live version of this reference, or
 | `report_clocks` | List declared clock domains (port + off-state) |
 | `add_blackbox INSTANCE` | Model an instance as a test boundary: its inputs become observable (pseudo-PO), its outputs controllable (pseudo-PI). The instance itself is not simulated. Repeat calls accumulate; a duplicate is ignored. |
 | `report_blackbox` | List blackboxed instances |
+| `list_memories -top NAME -spec PATH [-pattern GLOB ...]` | List the memory macro instances an MBIST insertion file names, with their pins and an entry to paste ([MBIST insertion](mbist.md)) |
+| `mbist_insert -top NAME -spec PATH [-out DIR] [-config OFS] [-tap_nonscan]` | Insert MBIST into the design's RTL in place of the configured memories; with `-config`, synthesize it and write its `.ofs` ([MBIST insertion](mbist.md)) |
 | `check_cells [-allow PATTERN]...` | Audit every netlist cell type against the selected PDK cell map; report total/uncovered/memory-like types. Report-only — never aborts the session. `-allow` (repeatable) treats a cell-type glob as an intentional blackbox. |
 
 ### Test mode
@@ -96,13 +98,14 @@ See [Test-point insertion](testpoints.md) for the full workflow.
 | Command | Summary |
 |---|---|
 | `add_scan -chains N [-max_length N] [-SI NAME] [-SO NAME] [-SE NAME] [-dry_run]` | Insert and stitch generic `$scanff_faultflow` chains. `-chains` is required. Does not run checking or techmap. `-dry_run` previews the plan without inserting. |
-| `check_scan [-structural]` | Structural + normal-mode equivalence checks on the current scan insertion. `-structural` runs the structural check only. |
+| `check_scan [-structural]` | Structural + normal-mode equivalence checks on the current scan insertion, including that every scan flop's async clear and preset is held inactive during shift (`[scan] shift_controls`). `-structural` runs the structural checks only. |
 
 ### Run
 
 | Command | Summary |
 |---|---|
 | `run_atpg [-sa] [-scan] [-tf broadside\|los] [-serial_ref] [-max ROUNDS] [-target PERCENT] [-export-patterns PATH]` | Run native SAT ATPG. Combinational stuck-at by default; `-sa` is an accepted no-op (stuck-at is already the default). `-scan` runs scan-protocol ATPG (needs a fresh `add_scan` + `check_scan`). `-tf broadside` or `-tf los` switches to transition-fault ATPG (`los` is scan-only). `-serial_ref` runs isolated serial-reference diagnostics without updating production coverage. `-export-patterns PATH` writes scan pattern JSON (input to `retarget`). |
+| `run_jtag [-program PATH] [-verify] [-force] [-threads N] [-export PATH]` | Grade the scan campaign's faults with a JTAG network-integrity program played through the TAP (needs `run_atpg -scan` first); the batch CLI's `jtag`. The credit is reported beside the scan coverage. |
 | `status [-scan]` | Show coverage, classification, terminal reason, and timing. `-scan` reads the scan campaign. |
 | `report` | Regenerate the unified report (`report.rpt`) |
 
@@ -135,7 +138,7 @@ See [Test-point insertion](testpoints.md) for the full workflow.
 | `atpg.workers` | Parallel SAT worker processes (positive integer); prefer the `WORKERS` command |
 | `atpg.easy_fault_reserve` | Easy/hard worker split, only applied when `workers >= 4` (non-negative integer) |
 | `atpg.incremental_sat` | Enable incremental-SAT (IFC) solving (bool) |
-| `atpg.preflight` | Enable OpenTestability structural reconvergence pre-ordering and pre-certification (bool) |
+| `atpg.preflight` | Enable OpenTestability structural reconvergence pre-ordering (bool) |
 | `fault_model.collapsing` | Enable/disable fault collapsing for this session (bool) |
 | `fault_model.include_clock_faults` | Count clock-net faults in the denominator (bool) |
 | `fault_model.include_reset_faults` | Grade async reset/set-tree faults via implication instead of excluding them (bool); fingerprinted, so toggling it forces a fresh campaign |

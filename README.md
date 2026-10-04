@@ -1,11 +1,16 @@
 # faultflow
 
-Gate-level stuck-at and transition fault simulator with native SAT ATPG, for
-post-synthesis netlists from Yosys. Driven from an interactive Tcl shell
-(`python3 ff.py shell`) or a batch CLI (`python3 ff.py <command>`) for scripted,
-one-shot runs.
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-github%20pages-2ea44f)](https://ranaumarnadeem.github.io/faultflow/)
+[![CI](https://github.com/ranaumarnadeem/faultflow/actions/workflows/nix.yml/badge.svg)](https://github.com/ranaumarnadeem/faultflow/actions/workflows/nix.yml)
 
-Full documentation: https://ranaumarnadeem.github.io/faultflow/
+**faultflow is an open-source Automatic Test Pattern Generation (ATPG) and fault simulation engine for post-synthesis gate-level netlists from Yosys, with SAT-based test generation, stuck-at and transition fault models, scan insertion and IEEE 1500 core wrapping.**
+
+Manufacturing test of digital chips depends on ATPG, and the established tools (Synopsys TetraMAX/TestMAX, Cadence Modus, Siemens Tessent) are commercial. faultflow is a design-for-test (DFT) engine for open flows: it reads a Yosys-synthesized netlist, inserts scan, generates and compacts test patterns with a CaDiCaL SAT solver, and reports fault coverage. It runs from an interactive Tcl shell (`python3 ff.py shell`) or a batch CLI (`python3 ff.py <command>`).
+
+- Documentation: https://ranaumarnadeem.github.io/faultflow/
+- Benchmarks: [docs/benchmarking.md](docs/benchmarking.md)
+- Engine: C++17 core, Python bridge (pybind11), CaDiCaL SAT solver
 
 ## Features
 
@@ -20,6 +25,50 @@ Full documentation: https://ranaumarnadeem.github.io/faultflow/
 - **Multi-clock** — domain-aware protocol, per-domain at-speed, cross-domain paths masked.
 - **Fault collapsing** — equivalence-based (incl. compound AOI/OAI cells).
 - **PDKs** — Sky130 HD (default) and OSU035; Yosys front end, optional iverilog verification.
+
+## Results
+
+Stuck-at results, copied from [docs/benchmarking.md](docs/benchmarking.md). Hybrid ATPG is the default flow (random fill, then SAT ATPG on the faults left); Random runs never call SAT.
+
+| Design | Fault model | ATPG mode | FFs | Scan chains | Test coverage | Patterns | Wall time |
+|---|---|---|---:|---:|---:|---:|---:|
+| s5378 | Stuck-at | Hybrid | 162 | 17 | 100.00% | 577 | 994.2 s |
+| s9234_1 | Stuck-at | Hybrid | 135 | 14 | 100.00% | 505 | 769.3 s |
+| s15850 | Stuck-at | Hybrid | 559 | 56 | 100.00% | 866 | 2,654.3 s |
+| boxcar | Stuck-at | Hybrid | 1,130 | 113 | 100.00% | 1,100 | 1,243.3 s |
+| boxcar | Stuck-at | Random | 1,130 | 113 | 98.926% | 288 | 336.1 s |
+| picorv32a | Stuck-at | Hybrid | 1,613 | 162 | 99.969% | 2,441 | 13,044.3 s |
+| picorv32a | Stuck-at | Random | 1,613 | 162 | 99.785% | 1,164 | 4,387.8 s |
+
+Test coverage is detected faults over in-scope faults minus those SAT proved redundant; fault coverage counts redundant faults as undetected. Random runs prove none redundant, so for them the two are equal. The picorv32a Hybrid row is the most recent re-run (fault collapsing on); its FF count is the 1,613-cell scan length in the SoC1 table. Full tables, including every ISCAS-85/89 design, collapsing on and off, and hierarchical SoC roll-ups: [docs/benchmarking.md](docs/benchmarking.md).
+
+### Transition delay faults
+
+| Design | ATPG mode | FFs | Scan chains | Test coverage | Fault coverage | Wall time |
+|---|---|---:|---:|---:|---:|---:|
+| s9234_1 | Hybrid | 135 | 14 | 99.91% | 86.06% | 834.4 s |
+| boxcar¹ | Hybrid | 1,130 | 113 | 100.00% | 80.98% | ~11.7 h |
+| picorv32a | Hybrid | 1,613 | 162 | 94.73% | 89.81% | ~10.5 h |
+
+Pattern counts are not recorded for these runs.
+
+¹ Restarted mid-run after diagnosing a WSL 9P-bridge I/O bottleneck: the SQLite DB had grown large on `/mnt/c` and was moved to native ext4 storage, keeping all prior progress. The run fully converged (`atpg_terminal=COMPLETE`, 0 timeouts, 0 unknowns) and was stopped after all 27,988 faults resolved (0 undetected), once a subsequent vector-compaction phase began growing the DB unboundedly (29 GB in <1 h) with no further effect on the coverage numerator or denominator.
+
+## How faultflow compares
+
+| | faultflow | Fault (AUCOHL) | Atalanta | Commercial (TetraMAX/TestMAX, Modus, Tessent) |
+|---|---|---|---|---|
+| License | Apache-2.0 | Apache-2.0 | Academic | Proprietary |
+| Input | Yosys gate-level netlist | Gate-level Verilog netlist | ISCAS bench | Industry netlists |
+| Test generation | SAT (CaDiCaL) + random | Random/LFSR + Quaigh, Atalanta or PODEM | FAN | Proprietary |
+| Stuck-at | Yes | Yes | Yes | Yes |
+| Transition (LOC/LOS) | Yes | No | No | Yes; LOC/LOS: Unverified |
+| Scan insertion | Yes | Yes | No | Yes |
+| IEEE 1500 wrapper | Yes | No | No | Yes |
+| Hierarchical SoC roll-up | Yes | No | No | Tessent: Yes; TestMAX, Modus: Unverified |
+| Scan compression | Yes | No | No | Yes |
+
+Fault and Atalanta were checked against their source and documentation, and the commercial tools against vendor product pages and datasheets (October 2026); Unverified marks what public sources do not confirm. Fault inserts an IEEE 1149.1 JTAG TAP, which is not an IEEE 1500 wrapper. The commercial column covers each vendor's DFT product family: scan insertion, compression and core wrapping ship as companion tools to the ATPG engine.
 
 ## Quick start
 
@@ -96,6 +145,33 @@ python3 ff.py scan --top <top> -c config.ofs
 python3 ff.py scan-check --top <top> -c config.ofs
 python3 ff.py sim --scan --top <top> -c config.ofs
 ```
+
+## Part of an open-source DFT toolchain
+
+| Tool | What it does |
+|---|---|
+| **faultflow** | ATPG and fault simulation for Yosys gate-level netlists |
+| [OpenTestability](https://github.com/ranaumarnadeem/OpenTestability) | SCOAP/COP testability analysis and test point insertion; feeds reconvergence data to faultflow |
+| [autoMBIST](https://github.com/ranaumarnadeem/autoMBIST) | MBIST, BIRA and BISR generation for OpenRAM memories |
+| [warptap](https://github.com/ranaumarnadeem/warptap) | IEEE 1149.1 / 1687 test-access insertion; retargets faultflow scan patterns to JTAG |
+
+## FAQ
+
+**Is there an open-source ATPG tool?**
+Yes. faultflow generates stuck-at and transition test patterns for gate-level netlists using a SAT solver, and reports fault coverage.
+
+**Can I run ATPG on a Yosys netlist?**
+Yes. faultflow reads technology-mapped Yosys output for sky130 HD and OSU035 cell libraries.
+
+**Does faultflow support scan chains?**
+Yes. It inserts full scan, validates chains structurally and runs scan ATPG, including launch-on-capture and launch-on-shift for transition faults.
+
+**What fault coverage does it reach?**
+See Results above and [docs/benchmarking.md](docs/benchmarking.md); for example, 99.969% stuck-at test coverage on picorv32a with 2,441 patterns.
+
+## Citing
+
+Use the "Cite this repository" button on GitHub or [CITATION.cff](CITATION.cff). A paper describing faultflow is under review; this section will link it once published.
 
 ## Build
 

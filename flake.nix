@@ -4,6 +4,14 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # warptap inserts the TAP and IJTAG network the JTAG and MBIST-insertion
+    # tests build and grade. Pinned to the commit they were written against
+    # (branch mbist-jtag: W1-W3); stdlib-only, so its source on PYTHONPATH is
+    # enough.
+    warptap = {
+      url = "github:ranaumarnadeem/warptap/6f6041717d1a85c990658ca77d2a53c49bacf46d";
+      flake = false;
+    };
   };
 
   outputs =
@@ -11,6 +19,7 @@
       self,
       nixpkgs,
       flake-utils,
+      warptap,
     }:
     let
       # Single source of truth for the version (see the top-level VERSION file
@@ -27,6 +36,7 @@
         ps: with ps; [
           jsonschema
           rich
+          pyyaml
           tkinter
         ];
 
@@ -90,11 +100,14 @@
             black
             flake8
             mypy
+            types-pyyaml
             sphinx
             furo
             myst-parser
             sphinx-copybutton
             sphinx-design
+            sphinxcontrib-mermaid
+            sphinx-sitemap
           ])
         );
       in
@@ -148,6 +161,9 @@
                 ./schemas
                 ./cells
                 ./tests/benchmarks
+                # test_cell_liberty.py checks each cell against its Liberty
+                # function with the parser in tools/derive_gate_truth_tables.py.
+                ./tools
                 # Already git-tracked (see .gitignore's comment) —
                 # test_flow_service.py, test_serial_simulation.py, and
                 # others read it directly.
@@ -203,7 +219,9 @@
               regen_benchmark tests/benchmarks/iscas85/c17.v c17 tests/benchmarks/iscas85/synth "$osu035_liberty"
 
               cp ${faultflow-core}/lib/_faultflow_core*.so .
-              PYTHONPATH=. pytest tests/python -q
+              # With FAULTFLOW_REQUIRE_WARPTAP=1 a test that needs warptap fails
+              # instead of skipping when it can't import it.
+              PYTHONPATH=.:${warptap}/src FAULTFLOW_REQUIRE_WARPTAP=1 pytest tests/python -q
 
               runHook postCheck
             '';

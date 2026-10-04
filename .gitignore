@@ -119,3 +119,9 @@ examples/dspfilters/
 # Paper source/build artifacts (not part of the tool or its docs)
 paper/
 paper.zip
+
+# Internal engineering reference doc (LaTeX source + build artifacts): a deep,
+# unabridged internals writeup for the team's own use (meetings/discussion),
+# distinct from the published Sphinx docs/ site and from paper/ (the IEEE
+# conference submission) -- not meant for external distribution, kept local.
+docs/internal_reference/

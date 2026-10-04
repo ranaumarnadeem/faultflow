@@ -94,6 +94,10 @@ CREATE TABLE IF NOT EXISTS faults (
     detected_by_vector INTEGER,
     redundancy_model_id TEXT,
     protocol_unresolved INTEGER NOT NULL DEFAULT 0,
+    compression_unresolved INTEGER NOT NULL DEFAULT 0,
+    compaction_unresolved INTEGER NOT NULL DEFAULT 0,
+    blackbox_unresolved INTEGER NOT NULL DEFAULT 0,
+    hold_unresolved INTEGER NOT NULL DEFAULT 0,
     UNIQUE (campaign_id, fault_site_key, fault_type),
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
 );
@@ -395,7 +399,12 @@ def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[st
                 "excluded_scan_chain": 0,
                 "excluded_cross_domain": 0,
                 "excluded_wbr_decoupled": 0,
+                "excluded_jtag": 0,
                 "protocol_unresolved": 0,
+                "compression_unresolved": 0,
+                "compaction_unresolved": 0,
+                "blackbox_unresolved": 0,
+                "hold_unresolved": 0,
                 "coverage_percent": None,
                 "fault_coverage_percent": None,
                 "test_coverage_percent": None,
@@ -430,9 +439,23 @@ def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[st
                     THEN 1 ELSE 0 END) AS excluded_cross_domain,
           SUM(CASE WHEN exclusion = 'wbr_decoupled'
                     THEN 1 ELSE 0 END) AS excluded_wbr_decoupled,
+          SUM(CASE WHEN exclusion = 'jtag' AND collapsed_into IS NULL
+                    THEN 1 ELSE 0 END) AS excluded_jtag,
           SUM(CASE WHEN protocol_unresolved = 1 AND exclusion = 'none'
                     AND collapsed_into IS NULL AND status != 'detected'
-                    THEN 1 ELSE 0 END) AS protocol_unresolved
+                    THEN 1 ELSE 0 END) AS protocol_unresolved,
+          SUM(CASE WHEN compression_unresolved = 1 AND exclusion = 'none'
+                    AND collapsed_into IS NULL AND status != 'detected'
+                    THEN 1 ELSE 0 END) AS compression_unresolved,
+          SUM(CASE WHEN compaction_unresolved = 1 AND exclusion = 'none'
+                    AND collapsed_into IS NULL AND status != 'detected'
+                    THEN 1 ELSE 0 END) AS compaction_unresolved,
+          SUM(CASE WHEN blackbox_unresolved = 1 AND exclusion = 'none'
+                    AND collapsed_into IS NULL AND status != 'detected'
+                    THEN 1 ELSE 0 END) AS blackbox_unresolved,
+          SUM(CASE WHEN hold_unresolved = 1 AND exclusion = 'none'
+                    AND collapsed_into IS NULL AND status != 'detected'
+                    THEN 1 ELSE 0 END) AS hold_unresolved
         FROM faults
         WHERE campaign_id = ?
         """,

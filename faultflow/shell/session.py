@@ -62,6 +62,13 @@ class ProjectSession:
         self.declared_clocks: list[ClockSpec] = []
         self.declared_blackbox: list[str] = []
         self.test_mode: str = "functional"
+        # The autoMBIST manifest the loaded design was built from: its
+        # coverage report breaks coverage down by instance category.
+        self.autombist_manifest: Path | None = None
+        # [scan] nonscan_cells and [scan] hold: the TAP and IJTAG network an
+        # autoMBIST design runs non-scan (autombist_generate -tap_nonscan).
+        self.scan_nonscan_cells: tuple[str, ...] = ()
+        self.scan_holds: tuple[tuple[str, int], ...] = ()
 
     @property
     def checkpoint_path(self) -> Path:
@@ -90,6 +97,11 @@ class ProjectSession:
         ]
         snap["declared_blackbox"] = list(self.declared_blackbox)
         snap["test_mode"] = self.test_mode
+        if self.autombist_manifest is not None:
+            snap["autombist_manifest"] = str(self.autombist_manifest)
+        if self.scan_nonscan_cells or self.scan_holds:
+            snap["scan_nonscan_cells"] = list(self.scan_nonscan_cells)
+            snap["scan_holds"] = [[port, value] for port, value in self.scan_holds]
         return snap
 
     def checkpoint(self) -> tuple[Path, str]:
@@ -153,6 +165,20 @@ class ProjectSession:
             )
         self.declared_clocks = [cs for cs in self.declared_clocks if cs.port != port]
         self.declared_clocks.append(ClockSpec(port=port, off_state=off_state))
+        if self.top is not None:
+            self.checkpoint()
+
+    def set_autombist_manifest(self, path: Path) -> None:
+        self.autombist_manifest = path
+        if self.top is not None:
+            self.checkpoint()
+
+    def set_scan_nonscan(
+        self, cells: tuple[str, ...], holds: tuple[tuple[str, int], ...]
+    ) -> None:
+        """Keep the flops `cells` names out of scan, held by `holds`."""
+        self.scan_nonscan_cells = cells
+        self.scan_holds = holds
         if self.top is not None:
             self.checkpoint()
 
@@ -382,6 +408,7 @@ class ProjectSession:
                 clocks=tuple(self.declared_clocks),
                 blackbox_instances=tuple(self.declared_blackbox),
                 test_mode=self.test_mode,
+                autombist_manifest=self.autombist_manifest,
             )
         else:
             cfg = FaultflowConfig(
@@ -401,6 +428,7 @@ class ProjectSession:
                 clocks=tuple(self.declared_clocks),
                 blackbox_instances=tuple(self.declared_blackbox),
                 test_mode=self.test_mode,
+                autombist_manifest=self.autombist_manifest,
             )
         for key, value in self.options.items():
             if key == "atpg.max_rounds":
@@ -486,6 +514,55 @@ class ProjectSession:
                 )
             elif key == "wrap.wbr_model":
                 cfg = replace(cfg, wbr_model=value)
+            elif key == "atpg.compaction":
+                cfg = replace(cfg, atpg=replace(cfg.atpg, compaction=value))
+            elif key == "atpg.pack_orders":
+                cfg = replace(cfg, atpg=replace(cfg.atpg, pack_orders=int(value)))
+            elif key == "atpg.order_by_cone_size":
+                cfg = replace(
+                    cfg,
+                    atpg=replace(
+                        cfg.atpg, order_by_cone_size=parse_bool_value(value, key)
+                    ),
+                )
+            elif key == "atpg.cone_restrict":
+                cfg = replace(
+                    cfg,
+                    atpg=replace(cfg.atpg, cone_restrict=parse_bool_value(value, key)),
+                )
+            elif key == "atpg.fault_drop_sat":
+                cfg = replace(
+                    cfg,
+                    atpg=replace(cfg.atpg, fault_drop_sat=parse_bool_value(value, key)),
+                )
+            elif key == "atpg.preflight_tech":
+                cfg = replace(cfg, atpg=replace(cfg.atpg, preflight_tech=value))
+            elif key == "report.output":
+                cfg = replace(cfg, report=replace(cfg.report, output=Path(value)))
+            elif key == "simulation.verify":
+                cfg = replace(
+                    cfg,
+                    simulation=replace(
+                        cfg.simulation, verify=parse_bool_value(value, key)
+                    ),
+                )
+            elif key == "simulation.verify_use_power_pins":
+                cfg = replace(
+                    cfg,
+                    simulation=replace(
+                        cfg.simulation,
+                        verify_use_power_pins=parse_bool_value(value, key),
+                    ),
+                )
+        if self.scan_nonscan_cells or self.scan_holds:
+            cfg = replace(
+                cfg,
+                scan=replace(
+                    cfg.scan,
+                    nonscan_cells=self.scan_nonscan_cells,
+                    hold=self.scan_holds,
+                ),
+            )
         return cfg
 
     def synthesize(self) -> OperationResult:
@@ -719,6 +796,33 @@ class ProjectSession:
         self._refresh_report()
         return result
 
+    def run_jtag(self, **options: Any) -> OperationResult:
+        """ff.py jtag: grade the scan campaign's faults with a JTAG
+        network-integrity program (faultflow.jtag.command)."""
+        if self.top is None:
+            raise precondition("run read_netlist first", "NO_DESIGN")
+        if not self.scan_inserted:
+            raise precondition("run add_scan first", "SCAN_REQUIRED")
+        from faultflow.jtag.command import run_jtag
+
+        cfg = self.materialize_config()
+        try:
+            outcome = run_jtag(cfg, **options)
+        except RuntimeError as exc:
+            raise ShellError(str(exc), "RUNNER", "JTAG_FAILED") from exc
+        self._refresh_report()
+        return OperationResult(
+            operation="jtag",
+            top=cfg.top,
+            message=outcome.message(cfg.top),
+            metrics={
+                "graded": outcome.graded,
+                "detected": outcome.detected,
+                "reset_path_ungraded": outcome.reset_path,
+                "periods": outcome.periods,
+            },
+        )
+
     def status(self, *, scan: bool = False) -> OperationResult:
         return self.service.status(self.materialize_config(), scan=scan)
 
@@ -783,6 +887,26 @@ class ProjectSession:
             "simulation.sim_threads",
             "simulation.unsupported_cells",
             "wrap.wbr_model",
+            # Deliberately NOT here, even though config.ofs has them:
+            #   fault_model.model / fault_model.launch -- controlled by
+            #     `run_atpg -tf broadside|los` instead; a second path via
+            #     set_option would duplicate/conflict with that mechanism.
+            #   atpg.tool -- validated but inert (nothing branches on it besides
+            #     fingerprint recording); exposing it here would imply a control
+            #     that does not exist.
+            #   atpg.mode, simulation.verify_tool -- each has exactly one
+            #     currently-valid value, so there is no real choice to make.
+            #   atpg.output -- a rarely-produced internal fallback path, not a
+            #     normal ATPG deliverable; minimal practical effect if set.
+            "atpg.compaction",
+            "atpg.pack_orders",
+            "atpg.order_by_cone_size",
+            "atpg.cone_restrict",
+            "atpg.fault_drop_sat",
+            "atpg.preflight_tech",
+            "report.output",
+            "simulation.verify",
+            "simulation.verify_use_power_pins",
         }
         if key not in allowed:
             raise ShellError(f"unsupported option: {key}", "CONFIG", "INVALID_OPTION")
@@ -801,6 +925,7 @@ class ProjectSession:
             "atpg.sat_conflict_limit",
             "atpg.sat_timeout_seconds",
             "atpg.workers",
+            "atpg.pack_orders",
         }:
             try:
                 if int(value) < 1:
@@ -852,11 +977,23 @@ class ProjectSession:
             "fault_model.collapsing",
             "fault_model.include_reset_faults",
             "fault_model.include_clock_faults",
+            "atpg.order_by_cone_size",
+            "atpg.cone_restrict",
+            "atpg.fault_drop_sat",
+            "simulation.verify",
+            "simulation.verify_use_power_pins",
         }:
             try:
                 parse_bool_value(value, key)
             except ConfigError as exc:
                 raise ShellError(str(exc), "CONFIG", "INVALID_VALUE")
+        if key == "atpg.compaction":
+            if value not in {"none", "reverse", "dynamic"}:
+                raise ShellError(
+                    "atpg.compaction must be 'none', 'reverse', or 'dynamic'",
+                    "CONFIG",
+                    "INVALID_VALUE",
+                )
         if key == "wrap.wbr_model":
             if value not in {"buffer", "scan"}:
                 raise ShellError(
@@ -921,6 +1058,14 @@ class ProjectSession:
             str(name) for name in data.get("declared_blackbox", [])
         ]
         self.test_mode = str(data.get("test_mode", "functional"))
+        manifest = data.get("autombist_manifest")
+        self.autombist_manifest = Path(str(manifest)) if manifest else None
+        self.scan_nonscan_cells = tuple(
+            str(glob) for glob in data.get("scan_nonscan_cells", [])
+        )
+        self.scan_holds = tuple(
+            (str(row[0]), int(row[1])) for row in data.get("scan_holds", [])
+        )
         if resume and self.scan_inserted:
             cfg = self.materialize_config()
             if not cfg.scan_manifest_path.exists():
@@ -968,3 +1113,6 @@ class ProjectSession:
         self.declared_clocks.clear()
         self.declared_blackbox.clear()
         self.test_mode = "functional"
+        self.autombist_manifest = None
+        self.scan_nonscan_cells = ()
+        self.scan_holds = ()

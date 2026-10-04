@@ -26,8 +26,10 @@ from faultflow.retarget.soc_access import SocAccess, SocAccessError
 @dataclass(frozen=True)
 class SocScanPattern:
     """A retargeted pattern in SoC scan-chain space (mirrors scan.ScanPattern, plus
-    a per-chain ``unload_mask`` marking the positions owned by ``source_block`` —
-    the only positions whose unload is meaningful; sibling/BYPASS bits are masked)."""
+    a per-chain ``unload_mask`` marking the positions owned by ``source_block``
+    whose unload is known — the only meaningful ones; sibling/BYPASS bits, and
+    block bits the block pattern's own ``unload_mask`` leaves don't-care, are
+    masked)."""
 
     load_seqs: dict[int, list[bool]]
     capture_pi_values: dict[str, bool]
@@ -74,6 +76,9 @@ def retarget_block_pattern(
     ``faultflow.scan.protocol.ScanPattern``)."""
     bp_load = dict(getattr(block_pattern, "load_seqs", {}))
     bp_unload = dict(getattr(block_pattern, "expected_unload", {}))
+    # The block's own don't-care unload bits (ScanPattern.unload_mask; None or
+    # absent compares every bit).
+    bp_care = dict(getattr(block_pattern, "unload_mask", None) or {})
 
     load_seqs: dict[int, list[bool]] = {}
     expected_unload: dict[int, list[bool]] = {}
@@ -96,6 +101,13 @@ def retarget_block_pattern(
             bunload = _strip_block_level_padding(
                 list(bp_unload.get(bc, [])), seg.length, pad_at_front=False
             )
+            bcare = (
+                _strip_block_level_padding(
+                    list(bp_care[bc]), seg.length, pad_at_front=False
+                )
+                if bc in bp_care
+                else None
+            )
             for p in range(seg.length):
                 soc_pos = seg.soc_offset + p
                 if soc_pos >= length:
@@ -105,7 +117,7 @@ def retarget_block_pattern(
                     )
                 load_v[soc_pos] = _block_value_at(bload, seg.length, p)
                 unload_v[soc_pos] = _block_value_at(bunload, seg.length, p)
-                mask_v[soc_pos] = True
+                mask_v[soc_pos] = bcare is None or _block_value_at(bcare, seg.length, p)
 
         # Re-encode position-indexed values to descending-position shift order, then
         # pad up to the SoC max chain length -- LOAD and UNLOAD pad on OPPOSITE

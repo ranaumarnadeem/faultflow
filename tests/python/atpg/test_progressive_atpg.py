@@ -56,39 +56,6 @@ def _four_fault_campaign(db: Path) -> tuple[int, dict[int, int]]:
     return cid, ids
 
 
-def test_precertify_redundant_batches_and_guards(tmp_path: Path) -> None:
-    """Preflight Phase B pre-certifies canceling-path stems as redundant. It
-    must (a) run as ONE batched transaction, not a fresh autocommit connection
-    per fault (~51 ms/fault on /mnt/c), and (b) never touch faults that are
-    detected (simulation evidence beats the structural claim), excluded, or
-    collapsed -- Phase B's id set is derived from net ids over ALL campaign
-    faults, so without guards it clobbers all of them and NULLs the detection."""
-    from faultflow.runner.progressive_atpg import _precertify_redundant
-
-    db = tmp_path / "faultflow.sqlite"
-    _cid, ids = _four_fault_campaign(db)
-
-    marked = _precertify_redundant(str(db), frozenset(ids.values()), "model-x")
-
-    assert marked == 1
-    conn = connect(db)
-    status_by_net = {
-        int(r["net_id"]): str(r["status"])
-        for r in conn.execute("SELECT net_id, status FROM faults")
-    }
-    model_n1 = conn.execute(
-        "SELECT redundancy_model_id FROM faults WHERE net_id = 1"
-    ).fetchone()[0]
-    conn.close()
-    assert status_by_net == {
-        1: "redundant",
-        2: "detected",
-        3: "excluded",
-        4: "undetected",
-    }
-    assert model_n1 == "model-x"
-
-
 def test_mark_fault_redundant_never_overwrites_detected(
     tmp_path: Path, require_cpp_core: None
 ) -> None:
@@ -389,6 +356,168 @@ threshold = 95.0
         data = summary(conn)
     assert data["undetected"] > 0
     assert float(data["coverage_percent"] or 0.0) >= 95.0
+
+
+@pytest.mark.integration
+def test_random_fill_shrinks_fault_ids_across_vectors_in_one_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the random-fill loop must shrink the fault set it grades
+    each subsequent vector against, not pass the same round-start
+    `active_ids` to every one of random_vectors calls. A static list means
+    core.simulate_incremental's own db::load_faults re-queries fault records
+    for faults ALREADY known detected by an earlier vector in this same
+    round -- real, measured cost on large designs (this is what
+    deep_audit_fixes.md's "~6min/vector genericfir waste" / "no intra-round
+    drop" lead was pointing at). Spies on the real core's
+    simulate_incremental to record len(fault_ids) per call and asserts the
+    sequence is non-increasing, with real shrinkage (not just coincidentally
+    flat) somewhere in it."""
+    root = Path(__file__).resolve().parents[3]
+    netlist = root / "tests/benchmarks/iscas85/synth_sky130/c432.json"
+    if not netlist.exists():
+        pytest.skip("c432 netlist missing")
+
+    cfg_path = tmp_path / "config.ofs"
+    cfg_path.write_text(
+        f"""
+[design]
+netlist = {netlist}
+cell_lib = {root / "cells/sky130/sky130_fd_sc_hd.json"}
+
+[fault_model]
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+random_vectors = 8
+random_only = true
+random_stop_coverage = 100.0
+max_rounds = 20
+sat_timeout_seconds = 10
+
+[report]
+threshold = 100.0
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    from faultflow.config import load_config
+    from faultflow.runner import runner as runner_mod
+
+    cfg = load_config(cfg_path, top="c432")
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+
+    real_core = runner_mod._load_core()
+    if real_core is None:
+        pytest.skip("C++ extension _faultflow_core is required")
+    fault_ids_sizes: list[int] = []
+    real_simulate_incremental = real_core.simulate_incremental
+
+    class _SpyCore:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real_core, name)
+
+        def simulate_incremental(self, *args: Any, **kwargs: Any) -> Any:
+            fault_ids_sizes.append(len(args[7]))
+            return real_simulate_incremental(*args, **kwargs)
+
+    # run_progressive_native_atpg does `from faultflow.runner.runner import
+    # _load_core` INSIDE its own body, a fresh lookup on runner_mod's
+    # namespace every call -- so the patch target is runner_mod's own
+    # `_load_core`, not progressive_atpg's (it has no module-level binding
+    # of its own to patch).
+    monkeypatch.setattr(runner_mod, "_load_core", lambda: _SpyCore())
+
+    _, stats, _, _, _ = _run_atpg(cfg, netlist, _model_id(), target_coverage=100.0)
+
+    assert stats.rounds == 1
+    assert (
+        len(fault_ids_sizes) >= 2
+    ), "need at least 2 graded vectors to prove shrinkage"
+    assert fault_ids_sizes == sorted(fault_ids_sizes, reverse=True), (
+        f"fault_ids size must be non-increasing across the round's vectors, "
+        f"got {fault_ids_sizes}"
+    )
+    assert fault_ids_sizes[-1] < fault_ids_sizes[0], (
+        "no shrinkage observed at all across the round -- fault_ids stayed "
+        f"static: {fault_ids_sizes}"
+    )
+
+
+@pytest.mark.integration
+def test_fault_drop_sat_does_not_requery_db_per_accepted_vector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: M1's fault-drop bookkeeping (`remaining`) must be updated
+    from the accepted vector's own already-known detections (a pure
+    in-memory diff), not by re-querying the WHOLE campaign's active-fault
+    list from a fresh DB connection on every single accepted SAT vector --
+    the "per-accepted-vector full active-fault re-read in fault_drop" lead
+    from deep_audit_fixes.md. Spies on _active_fault_rows (called once per
+    round to seed active_ids, and previously ALSO once per accepted vector
+    for the M1 resync) and asserts its call count stays close to the round
+    count, not anywhere near the accepted-vector count."""
+    from faultflow.config import load_config
+    from faultflow.runner import progressive_atpg as pa
+
+    root = Path(__file__).resolve().parents[3]
+    netlist = root / "tests/benchmarks/iscas85/synth_sky130/c432.json"
+    if not netlist.exists():
+        pytest.skip("c432 netlist missing")
+
+    cfg_path = tmp_path / "config.ofs"
+    cfg_path.write_text(
+        f"""
+[design]
+netlist = {netlist}
+cell_lib = {root / "cells/sky130/sky130_fd_sc_hd.json"}
+
+[fault_model]
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+random_vectors = 64
+max_rounds = 20
+sat_timeout_seconds = 10
+fault_drop_sat = true
+
+[report]
+threshold = 100.0
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    cfg = load_config(cfg_path, top="c432")
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+
+    call_count = 0
+    real_active_fault_rows = pa._active_fault_rows
+
+    def _spy(conn: Any, campaign_id: int) -> Any:
+        nonlocal call_count
+        call_count += 1
+        return real_active_fault_rows(conn, campaign_id)
+
+    monkeypatch.setattr(pa, "_active_fault_rows", _spy)
+
+    _, stats, _, _, _ = _run_atpg(cfg, netlist, _model_id(), target_coverage=100.0)
+
+    assert stats.accepted_vectors > 0
+    # One call per round to seed active_ids (plus a couple more for
+    # preflight/Phase-A bookkeeping) -- NOT one per accepted SAT vector.
+    # Pre-fix, call_count tracked accepted_vectors almost 1:1; post-fix it's
+    # bounded by rounds, independent of how many vectors got accepted.
+    assert call_count <= stats.rounds * 2 + 2, (
+        f"_active_fault_rows called {call_count} times across {stats.rounds} "
+        f"rounds and {stats.accepted_vectors} accepted vectors -- looks like "
+        "it's still being called per accepted vector, not just per round"
+    )
 
 
 @pytest.mark.integration
@@ -961,6 +1090,160 @@ def test_broken_worker_pool_fails_loudly_not_silent_unknowns(
 
     with pytest.raises(RunnerError, match="worker"):
         _run_atpg(cfg, netlist, _model_id(), max_rounds=3, target_coverage=100.0)
+
+
+def _independent_inverters_json(top: str, n: int) -> str:
+    """`n` independent inverters (own A_i/Y_i port pair each) in one flat,
+    purely combinational module -- mirrors tiny_inv.json's single-gate shape
+    exactly, just replicated, so it enumerates the same way tiny_inv.json
+    already does. Enough raw faults (2 per net: each PI + each cell output)
+    to force multiple SAT-dispatch waves at a small `workers` count, unlike
+    tiny_inv.json's single gate."""
+    ports = {}
+    cells = {}
+    netnames = {}
+    for i in range(n):
+        a_net = 2 * i + 2
+        y_net = 2 * i + 3
+        ports[f"A{i}"] = {"direction": "input", "bits": [a_net]}
+        ports[f"Y{i}"] = {"direction": "output", "bits": [y_net]}
+        cells[f"u{i}"] = {
+            "hide_name": 0,
+            "type": "sky130_fd_sc_hd__inv_1",
+            "parameters": {},
+            "attributes": {},
+            "port_directions": {"A": "input", "Y": "output"},
+            "connections": {"A": [a_net], "Y": [y_net]},
+        }
+        netnames[f"A{i}"] = {"hide_name": 0, "bits": [a_net], "attributes": {}}
+        netnames[f"Y{i}"] = {"hide_name": 0, "bits": [y_net], "attributes": {}}
+    module = {
+        top: {
+            "attributes": {"top": "00000000000000000000000000000001"},
+            "ports": ports,
+            "cells": cells,
+            "netnames": netnames,
+        }
+    }
+    return json.dumps(
+        {"creator": "faultflow test fixture", "modules": module}, indent=2
+    )
+
+
+@pytest.mark.unit
+def test_parallel_results_releases_consumed_entries_within_a_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the parallel-wave SAT dispatch loop must POP each fault's
+    solved-result entry out of _parallel_results once consumed, not merely
+    read it. Profiled as the dominant per-fault memory-growth source in the
+    ATPG parent process (unrelated to incremental_sat -- an empirical
+    incremental_sat=true vs. false comparison showed forked SAT workers stay
+    essentially flat in both modes, while the parent grows in both; the
+    growing structure is this dict, which used to retain every consumed
+    entry -- including a full SAT 'vector' payload for every detected fault
+    -- for the entire round instead of releasing it once read).
+
+    Proven via weakref: a marker embedded in each fake wave result must
+    become collectible once its fault_id has been consumed by the processing
+    loop, strictly before the round's SECOND wave is dispatched -- which can
+    only happen after the loop has advanced past every fault_id in wave one
+    (the loop visits active_ids strictly in order), so wave one's entries
+    have no legitimate reason to still be reachable at that point.
+    """
+    import gc
+    import weakref
+    from concurrent.futures import ProcessPoolExecutor
+
+    root = Path(__file__).resolve().parents[3]
+    top = "inv_bank"
+    # workers=2 -> wave_size = 2 * SAT_WAVE_FACTOR(8) = 16; 24 independent
+    # inverters give 2 raw faults per net (24 PIs + 24 outputs) = 96 faults,
+    # comfortably forcing at least two waves.
+    n = 24
+    netlist = tmp_path / f"{top}.json"
+    netlist.write_text(_independent_inverters_json(top, n), encoding="utf-8")
+
+    cfg_path = tmp_path / "config.ofs"
+    cfg_path.write_text(
+        f"""
+[design]
+netlist = {netlist}
+cell_lib = {root / "cells/sky130/sky130_fd_sc_hd.json"}
+
+[fault_model]
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+random_vectors = 1
+random_stop_coverage = 0.0
+sat_conflict_limit = 100000
+max_rounds = 1
+sat_timeout_seconds = 10
+workers = 2
+
+[report]
+threshold = 100.0
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    from faultflow.config import load_config
+
+    cfg = load_config(cfg_path, top=top)
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy(netlist, cfg.output_dir / f"{top}.json")
+    assert cfg.atpg.workers == 2
+
+    live_markers: list[weakref.ReferenceType] = []
+    wave_calls = 0
+    # Recorded (not asserted) inside fake_map: an AssertionError raised there
+    # would be swallowed by the production code's own
+    # `except Exception as _exc: log.warning(...)` around the wave-dispatch
+    # loop, silently "passing" this test no matter what it actually observed.
+    # The real assertion happens after _run_atpg returns, outside that
+    # exception-swallowing context.
+    wave2_pre_dispatch_alive: list[bool] | None = None
+
+    class _Marker:
+        pass
+
+    def fake_map(_self: object, _fn: object, args_iter: Any) -> Any:
+        nonlocal wave_calls, wave2_pre_dispatch_alive
+        wave_calls += 1
+        if wave_calls == 2:
+            gc.collect()
+            wave2_pre_dispatch_alive = [ref() is not None for ref in live_markers]
+        results = []
+        for args in args_iter:
+            fault_id = args[4]
+            marker = _Marker()
+            live_markers.append(weakref.ref(marker))
+            results.append((fault_id, "UNSAT", {"result": "UNSAT", "_m": marker}))
+        return results
+
+    monkeypatch.setattr(ProcessPoolExecutor, "map", fake_map)
+
+    _run_atpg(cfg, netlist, _model_id(), max_rounds=1, target_coverage=100.0)
+
+    assert wave_calls >= 2, "test design didn't force a second wave"
+    assert wave2_pre_dispatch_alive, "no markers recorded from wave 1"
+    # At most the single most-recently-processed fault's `solved` local can
+    # still legitimately reference its marker at this exact instant (it is
+    # only overwritten on the NEXT loop iteration, which is what triggers
+    # wave 2's dispatch in the first place) -- every earlier wave-1 entry
+    # must already be unreachable. With the pre-fix `.get()`, ALL 16 stay
+    # reachable (never removed from the dict at all).
+    still_alive = sum(wave2_pre_dispatch_alive)
+    assert still_alive <= 1, (
+        "wave 1's consumed _parallel_results entries are still reachable "
+        "when wave 2 is dispatched -- .get() is retaining them instead of "
+        f".pop() ({still_alive}/{len(wave2_pre_dispatch_alive)} still alive)"
+    )
 
 
 @pytest.mark.unit

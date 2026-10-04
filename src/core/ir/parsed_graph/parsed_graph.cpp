@@ -64,7 +64,8 @@ int parse_bit(const nlohmann::json& b) {
     }
     if (s == "x" || s == "z") {
       // Post-synthesis x/z means "unconnected/don't-care input pin". Tie to
-      // CONST0 conservatively. True X-state propagation is Phase 2.5d.
+      // CONST0: the core is two-valued by design, X-state is permanently out
+      // of scope.
       return CONST0_NET_ID;
     }
     throw ParseError("Unknown constant bit: " + s);
@@ -137,6 +138,15 @@ ParsedGraph ParsedGraph::from_json(const nlohmann::json& j) {
           for (auto conn = c.value()["connections"].begin();
                conn != c.value()["connections"].end(); ++conn) {
             cell.conns[conn.key()] = parse_bits(conn.value());
+          }
+        }
+        if (c.value().contains("port_directions") &&
+            c.value()["port_directions"].is_object()) {
+          for (auto d = c.value()["port_directions"].begin();
+               d != c.value()["port_directions"].end(); ++d) {
+            if (d.value().is_string()) {
+              cell.port_directions[d.key()] = d.value().get<std::string>();
+            }
           }
         }
         mod.cells[cell.instance] = std::move(cell);

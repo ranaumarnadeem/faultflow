@@ -1,0 +1,17 @@
+# The autoMBIST config the collar fixture
+# tests/fixtures/autombist/input_demo_8x16_scn4m_march_x was generated from
+# (with --algo march-x): sram_demo.yml with a wrapper of its own, so a chip can
+# carry a march-c collar and a march-x collar side by side.
+memory_name: "input_demo_8x16_scn4m"
+wrapper_module_name: "input_demo_8x16_scn4m_mbist_x"
+addr_width: 4
+data_width: 8
+we_active_low: true
+read_latency: 0
+ports:
+  clk: "clk0"
+  addr: "addr0"
+  din: "din0"
+  dout: "dout0"
+  we: "web0"
+  csb: "csb0"

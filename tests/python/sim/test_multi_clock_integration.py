@@ -14,7 +14,9 @@ Test layers:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -93,6 +95,84 @@ def test_stitch_scan_port_names_numbered_for_multiple_chains(
     result = stitch_scan_json(PRE_STITCH, CELL_MAP, TOP, out, scan_chains=2)
     assert result.scan_inputs == ["scan_in_0", "scan_in_1"]
     assert result.scan_outputs == ["scan_out_0", "scan_out_1"]
+
+
+def _two_domain_design(tmp_path: Path, size_a: int, size_b: int) -> Path:
+    """A shift register of `size_a` FFs on clk_a and one of `size_b` on clk_b."""
+    ports: dict[str, Any] = {
+        "clk_a": {"direction": "input", "bits": [2]},
+        "clk_b": {"direction": "input", "bits": [3]},
+        "d": {"direction": "input", "bits": [4]},
+    }
+    cells: dict[str, Any] = {}
+    net = 10
+    for domain, clock, size in (("a", 2, size_a), ("b", 3, size_b)):
+        previous = 4
+        for i in range(size):
+            cells[f"ff_{domain}{i}"] = {
+                "type": "sky130_fd_sc_hd__dfxtp_1",
+                "connections": {"CLK": [clock], "D": [previous], "Q": [net]},
+            }
+            previous, net = net, net + 1
+        ports[f"q_{domain}"] = {"direction": "output", "bits": [previous]}
+    path = tmp_path / "two_domain.json"
+    path.write_text(
+        json.dumps(
+            {
+                "modules": {
+                    "two_domain": {
+                        "attributes": {"top": "1"},
+                        "ports": ports,
+                        "cells": cells,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.parametrize(
+    ("sizes", "scan_chains", "lengths"),
+    [
+        # An even split whose chain boundaries fall between the domains stays.
+        ((4, 2), 3, [2, 2, 2]),
+        # [3, 2] would straddle the boundary after clk_a's 2 FFs: each domain
+        # gets a whole chain instead.
+        ((2, 3), 2, [2, 3]),
+        # [2, 2, 1] straddles too; the spare chain goes to the larger domain.
+        ((3, 2), 3, [2, 1, 2]),
+    ],
+)
+def test_plan_scan_never_lets_a_chain_span_two_domains(
+    tmp_path: Path, sizes: tuple[int, int], scan_chains: int, lengths: list[int]
+) -> None:
+    from faultflow.scan.stitch import plan_scan_json
+
+    plan = plan_scan_json(
+        _two_domain_design(tmp_path, *sizes), CELL_MAP, "two_domain", scan_chains
+    )
+
+    assert [len(chain.cells) for chain in plan.chains] == lengths
+    for chain in plan.chains:
+        assert len({r.clock_net for r in chain.cells}) == 1
+
+
+def test_max_chain_length_counts_chains_per_domain(tmp_path: Path) -> None:
+    """5 + 3 FFs fit two chains of 4 only by mixing domains: each domain needs
+    its own, three in all."""
+    from faultflow.scan.stitch import plan_scan_json
+
+    plan = plan_scan_json(
+        _two_domain_design(tmp_path, 5, 3),
+        CELL_MAP,
+        "two_domain",
+        scan_chains=1,
+        max_chain_length=4,
+    )
+
+    assert [len(chain.cells) for chain in plan.chains] == [3, 2, 3]
 
 
 # ---------------------------------------------------------------------------

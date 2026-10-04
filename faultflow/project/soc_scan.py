@@ -38,6 +38,23 @@ def _one_bit(cell: dict[str, Any], pin: str, instance: str) -> int:
     return int(bits[0])
 
 
+def _data_net(cell: dict[str, Any], pin: str, instance: str) -> int:
+    """A WBR cell's capture-data net, or 0 when that pin is tied to a constant
+    (the SoC glue ties a wrapped input off, or Yosys ties an unused core output
+    bit) -- stitch.py's own manifest convention for a WBR cell with no
+    functional net. Only the chain pins are validated by the scan checker."""
+    conns = cell.get("connections", {})
+    bits = conns.get(pin) if isinstance(conns, dict) else None
+    if (
+        isinstance(bits, list)
+        and len(bits) == 1
+        and isinstance(bits[0], str)
+        and bits[0] in {"0", "1", "x", "z"}
+    ):
+        return 0
+    return _one_bit(cell, pin, instance)
+
+
 def _port_net(module: dict[str, Any], name: str, direction: str) -> int:
     ports = module.get("ports", {})
     port = ports.get(name) if isinstance(ports, dict) else None
@@ -130,7 +147,7 @@ def build_soc_scan_manifest(
                 "chain_index": 0,
                 "chain_position": pos,
                 "clock_net": _one_bit(cell, "CLK", inst),
-                "data_net": _one_bit(
+                "data_net": _data_net(
                     cell,
                     (
                         "FROM_SYS"

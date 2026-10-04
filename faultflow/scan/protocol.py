@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX
@@ -149,6 +149,26 @@ class ScanPattern:
     load_seqs: dict[int, list[bool]]
     capture_pi_values: dict[str, bool]
     expected_unload: dict[int, list[bool]]
+    # (chain_id, cycle) positions of load_seqs a tester must reproduce. With
+    # scan compression every position: the pattern is one decompressor seed's
+    # whole scan-in stream (detection_pipeline._decompressed), so any seed
+    # making them all is that load. None without compression.
+    load_care: tuple[tuple[int, int], ...] | None = None
+    # Per chain, parallel to expected_unload: False where the expected bit is
+    # don't-care -- a flop that captured a blackbox output's unknown value
+    # (faultflow.scan.x_mask) -- True where it is compared. Same convention as
+    # retarget.transform.SocScanPattern.unload_mask. None compares every bit.
+    unload_mask: dict[int, list[bool]] | None = None
+    # Scan-clock pulses before the load, scan enable off and the holds applied,
+    # that settle the non-scan flops the scan clock keeps clocking (a reset
+    # synchronizer: faultflow.scan.nonscan). A tester gives them once, before the
+    # first load; a replay of one pattern gives them before its load.
+    preamble_cycles: int = 0
+    # Inputs held at these values, not capture_pi_values', while the chains shift
+    # (the preamble, load and unload): testing the reset, a capture may set a
+    # reset input active, and it stays inactive while a real scan flop's reset
+    # would wipe the load (faultflow.scan.shift_controls). Empty: none.
+    shift_pi_values: dict[str, bool] = field(default_factory=dict)
 
 
 def _chain_lengths(manifest: dict[str, Any]) -> dict[int, int]:
@@ -170,13 +190,21 @@ def serialize_vector(
     vector: dict[str, bool],
     pseudo_port_map: dict[str, dict[str, Any]],
     manifest: dict[str, Any],
+    *,
+    masked_ppo_ports: frozenset[str] = frozenset(),
+    masked_outputs: frozenset[str] = frozenset(),
 ) -> ScanPattern:
+    """`masked_ppo_ports` and `masked_outputs` are the observation points a
+    blackbox output's unknown value reaches (x_mask.XMask): their expected
+    bits are don't-care, marked in unload_mask or left out of the output
+    values carried in capture_pi_values."""
     lengths = _chain_lengths(manifest)
     max_chain_length = int(
         manifest.get("max_chain_length", max(lengths.values(), default=0))
     )
     load_by_chain: dict[int, dict[int, bool]] = {}
     unload_by_chain: dict[int, dict[int, bool]] = {}
+    care_by_chain: dict[int, dict[int, bool]] = {}
     for entry in pseudo_port_map.values():
         chain_id = int(entry["chain_id"])
         position = int(entry["position_in_chain"])
@@ -190,8 +218,12 @@ def serialize_vector(
             # Inactive-domain FF: no PPO; it holds its loaded value.
             unload_val = bool(vector.get(str(entry["ppi_port"]), False))
         unload_by_chain.setdefault(chain_id, {})[position] = unload_val
+        care_by_chain.setdefault(chain_id, {})[position] = (
+            ppo is None or str(ppo) not in masked_ppo_ports
+        )
     load_seqs: dict[int, list[bool]] = {}
     expected_unload: dict[int, list[bool]] = {}
+    unload_mask: dict[int, list[bool]] = {}
     for chain_id, targets in load_by_chain.items():
         chain_length = lengths.get(chain_id, len(targets))
         padding = max_chain_length - chain_length
@@ -210,13 +242,25 @@ def serialize_vector(
             *unload_sequence(targets, chain_length),
             *([False] * padding),
         ]
+        # Padding bits are the zeros the unload shifts in: always known.
+        unload_mask[chain_id] = [
+            *unload_sequence(care_by_chain[chain_id], chain_length),
+            *([True] * padding),
+        ]
     capture_pi_values = {
         name: bool(value)
         for name, value in vector.items()
-        if not name.startswith(PPI_PREFIX) and not name.startswith(PPO_PREFIX)
+        if not name.startswith(PPI_PREFIX)
+        and not name.startswith(PPO_PREFIX)
+        and name not in masked_outputs
     }
     return ScanPattern(
         load_seqs=load_seqs,
         capture_pi_values=capture_pi_values,
         expected_unload=expected_unload,
+        unload_mask=(
+            unload_mask
+            if any(not care for bits in unload_mask.values() for care in bits)
+            else None
+        ),
     )

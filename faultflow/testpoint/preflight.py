@@ -15,12 +15,14 @@ log = logging.getLogger(__name__)
 class PreflightData:
     """Reconvergence analysis output from OT _preflight.
 
-    fanout_yosys_ids:  stem net IDs of reconvergent fanouts (Phase A ordering).
-    redundant_stem_ids: stem net IDs where diverging paths cancel (Phase B UNSAT).
+    fanout_yosys_ids: stem net IDs of reconvergent fanouts, an ATPG ordering
+    hint. Never a redundancy verdict: OT's reconvergence records are purely
+    structural (two branches of a stem meet again), and a reconvergent stem's
+    faults -- and a single branch's, which reaches one reader -- can be
+    testable. Only a SAT UNSAT makes a fault redundant.
     """
 
     fanout_yosys_ids: frozenset[int]
-    redundant_stem_ids: frozenset[int]
 
 
 def run_preflight(
@@ -89,20 +91,11 @@ def run_preflight(
         return None
 
     manifest_path = summary.get("manifest")
-    reconv_ids_path = summary.get("reconv_ids")
-
     fanout_ids: frozenset[int] = frozenset()
-    redundant_ids: frozenset[int] = frozenset()
-
     if manifest_path:
         fanout_ids = _parse_manifest(Path(manifest_path))
-    if reconv_ids_path:
-        redundant_ids = _parse_reconv_ids(Path(reconv_ids_path))
 
-    return PreflightData(
-        fanout_yosys_ids=fanout_ids,
-        redundant_stem_ids=redundant_ids,
-    )
+    return PreflightData(fanout_yosys_ids=fanout_ids)
 
 
 def _parse_manifest(path: Path) -> frozenset[int]:
@@ -121,21 +114,4 @@ def _parse_manifest(path: Path) -> frozenset[int]:
         net_id = item.get("yosys_net_id")
         if isinstance(net_id, int):
             ids.add(net_id)
-    return frozenset(ids)
-
-
-def _parse_reconv_ids(path: Path) -> frozenset[int]:
-    """Extract canceling-path stem net IDs from *_reconv_ids.json (advanced format)."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        log.debug("atpg   preflight: reconv_ids read error: %s", exc)
-        return frozenset()
-
-    ids: set[int] = set()
-    for reconv in data.get("reconvergences", []):
-        for pair in reconv.get("pairs", []):
-            stem_id = pair.get("stem_net_id")
-            if isinstance(stem_id, int):
-                ids.add(stem_id)
     return frozenset(ids)

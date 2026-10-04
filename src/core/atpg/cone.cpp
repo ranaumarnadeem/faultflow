@@ -1,5 +1,8 @@
 #include "atpg/cone.hpp"
 
+#include <set>
+#include <stdexcept>
+
 #include "common/types.hpp"
 
 namespace faultflow::atpg {
@@ -176,6 +179,51 @@ int nearest_reconvergent_stem(const CompiledSimGraph& cg, uint32_t fault_net,
     }
   }
   return -1;
+}
+
+CombinationalReach combinational_reach(const CompiledSimGraph& cg,
+                                       const std::vector<uint32_t>& sources) {
+  const size_t n = static_cast<size_t>(cg.net_count);
+  CombinationalReach reach;
+  std::vector<char> seen(n, 0);
+  std::set<std::pair<uint32_t, int>> flop_inputs;
+  std::vector<uint32_t> work;
+  for (uint32_t net : sources) {
+    if (net >= n) {
+      throw std::runtime_error("combinational_reach: source net out of range");
+    }
+    if (!seen[net]) {
+      seen[net] = 1;
+      reach.nets.push_back(net);
+      work.push_back(net);
+    }
+  }
+  while (!work.empty()) {
+    const uint32_t net = work.back();
+    work.pop_back();
+    for (uint32_t i = cg.fanout_offsets[net]; i < cg.fanout_offsets[net + 1];
+         ++i) {
+      const uint32_t t = cg.fanout_targets[i];
+      const int d = cg.driver_index[t];
+      if (d >= 0 && cg.nodes[static_cast<size_t>(d)].type == GateType::DFF) {
+        const SimNode& ff = cg.nodes[static_cast<size_t>(d)];
+        const uint32_t ins[] = {ff.in0, ff.in1, ff.in2, ff.in3, ff.in4, ff.in5};
+        for (int slot = 0; slot < 6; ++slot) {
+          if (ins[slot] == net) {
+            flop_inputs.insert({static_cast<uint32_t>(d), slot});
+          }
+        }
+        continue;
+      }
+      if (!seen[t]) {
+        seen[t] = 1;
+        reach.nets.push_back(t);
+        work.push_back(t);
+      }
+    }
+  }
+  reach.flop_inputs.assign(flop_inputs.begin(), flop_inputs.end());
+  return reach;
 }
 
 }  // namespace faultflow::atpg

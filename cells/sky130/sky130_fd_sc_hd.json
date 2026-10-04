@@ -960,6 +960,22 @@
     "node_type": "GATE", "gate_type": "INV",
     "inputs": ["A"], "outputs": {"Y": "Y"}
   },
+  "$faultflow_tie0": {
+    "node_type": "CONST", "gate_type": "CONST0",
+    "inputs": [], "outputs": {"Y": "Y"}
+  },
+  "\\$faultflow_tie0": {
+    "node_type": "CONST", "gate_type": "CONST0",
+    "inputs": [], "outputs": {"Y": "Y"}
+  },
+  "$faultflow_tie1": {
+    "node_type": "CONST", "gate_type": "CONST1",
+    "inputs": [], "outputs": {"Y": "Y"}
+  },
+  "\\$faultflow_tie1": {
+    "node_type": "CONST", "gate_type": "CONST1",
+    "inputs": [], "outputs": {"Y": "Y"}
+  },
   "$wbc_in_faultflow": {
     "node_type": "GATE",
     "gate_type": "WBR_IN",
