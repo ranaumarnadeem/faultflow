@@ -1,0 +1,284 @@
+"""Exported scan patterns as STIL (IEEE 1450): the cycles a tester applies
+(``faultflow.scan.tester_program``), one pattern after another, written with STIL's
+scan constructs. Each load and unload is a call of one ``load_unload`` procedure
+whose Shift takes every chain's bits; a preamble is a Loop; a launch and a capture
+are one vector each.
+
+One WaveformTable: inputs change at the start of the period, outputs are strobed
+before the scan clocks rise, and the clocks pulse after the strobe. In STIL every
+signal keeps its last waveform character. Readers differ on whether a procedure
+starts from its caller's characters and leaves its own, or starts afresh and gives
+its caller's back, so the STIL relies on neither: the procedure sets every signal
+itself, a call passing the inputs' values, and a vector sets every signal. Each
+pattern starts with a condition statement setting its inputs and leaving every
+output uncompared (X), and only the capture vector and the unload's shifts compare
+anything.
+
+With scan compression, the scan inputs are the compression channels: a call passes
+the pattern's seed, held on them through the shifts, and a character per shift for
+each scan output. With compaction, the scan outputs are the compactor's channels.
+
+ScanStructures, describing each chain by its pins and cells, are written only for
+a chip without compression or compaction, whose chains are its pins'. They leave
+out ScanEnable, which is optional, and which the one independent parser this is
+checked with (Semi-ATE-STIL) doesn't take in its standard form."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from itertools import groupby
+from typing import Any, Mapping, Sequence
+
+from faultflow.scan.errors import ScanError
+from faultflow.scan.tester_program import Chip, Cycle
+
+WAVEFORM_TABLE = "_wft_"
+PROCEDURE = "load_unload"
+PATTERN = "_pattern_"
+BURST = "_burst_"
+
+
+@dataclass(frozen=True)
+class Timing:
+    """The WaveformTable's period and edges, in ns."""
+
+    period: int = 100
+    strobe: int = 40
+    clock_rise: int = 50
+    clock_fall: int = 80
+
+    def __post_init__(self) -> None:
+        if not 0 < self.strobe < self.clock_rise < self.clock_fall < self.period:
+            raise ScanError(
+                "STIL timing: the strobe, then the clock's rise and fall, must "
+                "come in that order within the period"
+            )
+
+
+def _quoted(name: str) -> str:
+    return f'"{name}"'
+
+
+@dataclass(frozen=True)
+class _Groups:
+    pi: list[str]
+    po: list[str]
+    si: list[str]
+    so: list[str]
+    clk: list[str]
+    se: str
+
+
+def _groups(chip: Chip) -> _Groups:
+    si = list(chip.scan_ins or chip.seed_bits)
+    so = list(chip.scan_outs or chip.channel_bits)
+    clk = list(chip.clocks)
+    taken = set(si) | set(clk) | {chip.scan_enable}
+    return _Groups(
+        pi=[name for name in chip.inputs if name not in taken],
+        po=[name for name in chip.outputs if name not in set(so)],
+        si=si,
+        so=so,
+        clk=clk,
+        se=chip.scan_enable,
+    )
+
+
+def _drive(cycle: Cycle, names: Sequence[str]) -> str:
+    return "".join(str(int(cycle.inputs[name])) for name in names)
+
+
+def _compare(cycle: Cycle, names: Sequence[str]) -> str:
+    def wfc(name: str) -> str:
+        value = cycle.expect.get(name)
+        return "X" if value is None else "H" if value else "L"
+
+    return "".join(wfc(name) for name in names)
+
+
+def _assign(pairs: Sequence[tuple[str, str]]) -> str:
+    return " ".join(f"{_quoted(group)} = {data};" for group, data in pairs if data)
+
+
+def write_stil(
+    chip: Chip,
+    program: Sequence[Cycle],
+    *,
+    chains: Sequence[Mapping[str, Any]] = (),
+    title: str = "",
+    timing: Timing = Timing(),
+) -> str:
+    """`program` (tester_program.cycles on `chip`) as STIL. `chains` are the scan
+    manifest's chains, for ScanStructures."""
+    groups = _groups(chip)
+    lines = ["STIL 1.0;", "", "Header {"]
+    lines.append(
+        f"    Title {_quoted(title or f'FaultFlow scan patterns: {chip.top}')};"
+    )
+    lines += [
+        '    Source "FaultFlow";',
+        "    Ann {* Each pattern alone: its preamble, load, launch, capture and "
+        "unload, as FaultFlow grades it. *}",
+        "}",
+        "",
+        "Signals {",
+    ]
+    lines += [f"    {_quoted(name)} In;" for name in chip.inputs]
+    lines += [f"    {_quoted(name)} Out;" for name in chip.outputs]
+    lines += ["}", "", "SignalGroups {"]
+    named = (
+        ("_pi", groups.pi),
+        ("_po", groups.po),
+        ("_si", groups.si),
+        ("_so", groups.so),
+        ("_clk", groups.clk),
+        ("_se", [groups.se]),
+    )
+    present = {group: members for group, members in named if members}
+    for group, members in present.items():
+        expression = " + ".join(_quoted(member) for member in members)
+        lines.append(f"    {_quoted(group)} = '{expression}';")
+    lines += ["}", "", "Timing {", f"    WaveformTable {_quoted(WAVEFORM_TABLE)} {{"]
+    lines += [f"        Period '{timing.period}ns';", "        Waveforms {"]
+    for group in ("_pi", "_si", "_se"):
+        if group in present:
+            lines.append(f"            {_quoted(group)} {{ 01 {{ '0ns' D/U; }} }}")
+    lines.append(
+        f"            {_quoted('_clk')} {{ 0P {{ '0ns' D; "
+        f"'{timing.clock_rise}ns' D/U; '{timing.clock_fall}ns' D; }} }}"
+    )
+    for group in ("_po", "_so"):
+        if group in present:
+            lines.append(
+                f"            {_quoted(group)} {{ LHX {{ '0ns' X; "
+                f"'{timing.strobe}ns' L/H/X; }} }}"
+            )
+    lines += ["        }", "    }", "}", ""]
+    if chip.scan_ins and chip.scan_outs and chains:
+        lines += _scan_structures(chip, chains)
+    held = [("_pi", "#" * len(groups.pi))]
+    if not chip.scan_ins:
+        held.append(("_si", "#" * len(groups.si)))  # the seed
+    held += [("_se", "1"), ("_po", "X" * len(groups.po))]
+    lines += [
+        f"PatternBurst {_quoted(BURST)} {{",
+        f"    PatList {{ {_quoted(PATTERN)}; }}",
+        "}",
+        "",
+        "PatternExec {",
+        f"    PatternBurst {_quoted(BURST)};",
+        "}",
+        "",
+        "Procedures {",
+        f"    {_quoted(PROCEDURE)} {{",
+        f"        W {_quoted(WAVEFORM_TABLE)};",
+        f"        C {{ {_assign(held)} }}",
+    ]
+    shifted = [("_si", "#" * len(groups.si))] if chip.scan_ins else []
+    shifted += [("_so", "#" * len(groups.so)), ("_clk", "P" * len(groups.clk))]
+    lines += [f"        Shift {{ V {{ {_assign(shifted)} }} }}", "    }", "}", ""]
+    lines += [f"Pattern {_quoted(PATTERN)} {{", f"    W {_quoted(WAVEFORM_TABLE)};"]
+    for index, own in groupby(program, key=lambda cycle: cycle.pattern):
+        lines += _pattern(chip, groups, index, list(own))
+    lines += ["}", ""]
+    return "\n".join(lines)
+
+
+def _scan_structures(chip: Chip, chains: Sequence[Mapping[str, Any]]) -> list[str]:
+    lines = ["ScanStructures {"]
+    for chain in sorted(chains, key=lambda c: int(c["index"])):
+        index = int(chain["index"])
+        cells = " ".join(_quoted(str(cell)) for cell in chain.get("cells", []))
+        lines += [
+            f"    ScanChain {_quoted(f'chain_{index}')} {{",
+            f"        ScanLength {int(chain['length'])};",
+            f"        ScanIn {_quoted(chip.scan_ins[index])};",
+            f"        ScanOut {_quoted(chip.scan_outs[index])};",
+            "        ScanMasterClock "
+            + " ".join(_quoted(clock) for clock in chip.clocks)
+            + ";",
+        ]
+        if cells:
+            lines.append(f"        ScanCells {cells};")
+        lines.append("    }")
+    return lines + ["}", ""]
+
+
+def _same(cycles: Sequence[Cycle], names: Sequence[str], what: str) -> str:
+    """The value every one of `cycles` gives `names`."""
+    values = {_drive(cycle, names) for cycle in cycles}
+    if len(values) != 1:
+        raise ScanError(f"STIL: the {what} cycles don't hold their inputs")
+    return values.pop()
+
+
+def _pattern(chip: Chip, groups: _Groups, index: int, own: list[Cycle]) -> list[str]:
+    """One pattern's statements: the condition it starts from, a Loop for its
+    preamble, a call for its load, a vector for its launch and one for its
+    capture, a call for its unload."""
+    phases = [cycle.phase for cycle in own]
+    order = ["preamble", "load", "launch", "capture", "unload"]
+    if phases != sorted(phases, key=order.index) or phases.count("capture") != 1:
+        raise ScanError(f"STIL: pattern {index}'s cycles are out of order")
+    by = {phase: [c for c in own if c.phase == phase] for phase in order}
+    shifts = by["load"] + by["unload"]
+    if any(not cycle.pulse for cycle in own) or any(
+        any(v is not None for v in cycle.expect.values())
+        for cycle in by["preamble"] + by["load"] + by["launch"]
+    ):
+        raise ScanError(f"STIL: pattern {index} compares outside its strobes")
+    held = groups.pi if chip.scan_ins else groups.pi + groups.si
+    shift_values = _same(shifts + by["preamble"], held, "shift")
+    start = (by["preamble"] or by["load"] or by["capture"])[0]
+    lines = [f'    "pattern {index}":']
+    condition = [
+        ("_pi", shift_values[: len(groups.pi)]),
+        ("_si", _drive(start, groups.si) if by["preamble"] else ""),
+        ("_se", "0" if by["preamble"] else ""),
+        ("_clk", "0" * len(groups.clk)),
+        ("_po", "X" * len(groups.po)),
+        ("_so", "X" * len(groups.so)),
+    ]
+    if not chip.scan_ins:
+        condition[1] = ("_si", shift_values[len(groups.pi) :])
+    lines.append(f"    C {{ {_assign(condition)} }}")
+    if by["preamble"]:
+        if {_drive(c, [groups.se]) for c in by["preamble"]} != {"0"}:
+            raise ScanError(f"STIL: pattern {index}'s preamble shifts")
+        pulse = _assign([("_clk", "P" * len(groups.clk))])
+        lines.append(f"    Loop {len(by['preamble'])} {{ V {{ {pulse} }} }}")
+    lines.append(_call(chip, groups, by["load"], compare=False))
+    for cycle in by["launch"] + by["capture"]:
+        vector = [
+            ("_pi", _drive(cycle, groups.pi)),
+            ("_si", _drive(cycle, groups.si)),
+            ("_se", _drive(cycle, [groups.se])),
+            ("_po", _compare(cycle, groups.po)),
+            ("_so", _compare(cycle, groups.so)),
+            ("_clk", "P" * len(groups.clk)),
+        ]
+        lines.append(f"    V {{ {_assign(vector)} }}")
+    lines.append(_call(chip, groups, by["unload"], compare=True))
+    return lines
+
+
+def _call(chip: Chip, groups: _Groups, shifts: list[Cycle], *, compare: bool) -> str:
+    """A call of the load_unload procedure: the inputs' values (with compression,
+    the seed too), and a character per shift for each scan input (the load's
+    bits) and each scan output (compared or not)."""
+    if {_drive(cycle, [groups.se]) for cycle in shifts} != {"1"}:
+        raise ScanError("STIL: a load or unload cycle has scan enable off")
+    data = [("_pi", _same(shifts, groups.pi, "shift"))]
+    if chip.scan_ins:
+        for pin in groups.si:
+            data.append((pin, "".join(str(int(c.inputs[pin])) for c in shifts)))
+    else:
+        data.append(("_si", _same(shifts, groups.si, "shift")))  # the seed
+    for pin in groups.so:
+        if compare:
+            data.append((pin, "".join(_compare(c, [pin]) for c in shifts)))
+        elif any(c.expect.get(pin) is not None for c in shifts):
+            raise ScanError("STIL: a load compares a scan output")
+        else:
+            data.append((pin, "X" * len(shifts)))
+    return f"    Call {_quoted(PROCEDURE)} {{ {_assign(data)} }}"

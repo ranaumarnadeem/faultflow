@@ -4,7 +4,7 @@ import tkinter
 from pathlib import Path
 from typing import Any, Callable
 
-from faultflow.shell.errors import ShellError, unsupported
+from faultflow.shell.errors import ShellError
 from faultflow.shell.help_text import (
     COMMAND_HELP,
     render_command_help,
@@ -862,7 +862,27 @@ proc {name} {{args}} {{
         return "quit"
 
     def _write_patterns(self, args: list[str]) -> Any:
-        del args
-        raise unsupported(
-            "STIL/WGL pattern export is not implemented", "PATTERN_EXPORT"
-        )
+        patterns: Path | None = None
+        output: Path | None = None
+        index = 0
+        while index < len(args):
+            key = args[index]
+            if key == "-patterns" and index + 1 < len(args):
+                patterns = Path(args[index + 1])
+                index += 2
+            elif key == "-o" and index + 1 < len(args):
+                output = Path(args[index + 1])
+                index += 2
+            else:
+                raise ShellError(
+                    f"invalid write_patterns option: {key}",
+                    "CONFIG",
+                    "INVALID_OPTION",
+                )
+        if patterns is None or output is None:
+            raise ShellError(
+                "usage: write_patterns -patterns <file.json> -o <file.stil>",
+                "CONFIG",
+                "INVALID_OPTION",
+            )
+        return self.session.write_patterns(patterns=patterns, output=output)

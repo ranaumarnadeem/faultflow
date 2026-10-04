@@ -18,7 +18,9 @@ from pathlib import Path
 from typing import Any
 
 from faultflow.jtag.verify import _stubs
+from faultflow.scan.stil import write_stil
 from faultflow.scan.tester_program import Chip, Cycle, chip_of, cycles
+from stil_expand import expand, model
 
 ROOT = Path(__file__).resolve().parents[2]
 MODELS = ROOT / "cells/sky130/sky130_fd_sc_hd.v"
@@ -140,9 +142,62 @@ def differences(program: list[Cycle], lines: list[str]) -> list[str]:
 def replay_on_cells(cfg: Any, patterns_path: Path, work: Path) -> list[str]:
     """Every exported pattern, one after another from power-up, on the chip's
     cells: each compared output that differs (differences); empty when every one
-    matches."""
+    matches. The STIL write-patterns makes of them must be these cycles too
+    (stil_problems)."""
     manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
     chip = chip_of(manifest)
     program = cycles(chip, json.loads(patterns_path.read_text(encoding="utf-8")))
     lines = run(chip, bench(chip, program), work, set(cfg.blackbox_instances))
-    return differences(program, lines)
+    return differences(program, lines) + stil_problems(manifest, chip, program, work)
+
+
+def stil_problems(
+    manifest: dict[str, Any], chip: Chip, program: list[Cycle], work: Path
+) -> list[str]:
+    """What is wrong with the STIL of `program`: expanded by STIL's rules it must
+    give exactly the cycles replayed on the cells, whichever signal states a
+    reader gives a procedure (stil_expand.expand), and an independent parser
+    (Semi-ATE-STIL, when importable) must take it."""
+    text = write_stil(chip, program, chains=manifest.get("chains", []))
+    work.mkdir(parents=True, exist_ok=True)
+    path = work / "patterns.stil"
+    path.write_text(text, encoding="utf-8")
+    problems: list[str] = []
+    wanted = model(program)
+    for inherit in (False, True):
+        expanded = expand(text, inherit=inherit)
+        if expanded == wanted:
+            continue
+        first = next(
+            (n for n, (a, b) in enumerate(zip(expanded, wanted)) if a != b),
+            min(len(expanded), len(wanted)),
+        )
+        reading = "inheriting" if inherit else "own"
+        problems.append(
+            f"STIL ({reading} procedure states) cycle {first} of {len(expanded)} "
+            f"(the model has {len(wanted)}): "
+            f"{expanded[first] if first < len(expanded) else None} != "
+            f"{wanted[first] if first < len(wanted) else None}"
+        )
+    parsed = parser_verdict(path)
+    if parsed:
+        problems.append(f"Semi-ATE-STIL: {parsed}")
+    return problems
+
+
+def parser_verdict(path: Path) -> str:
+    """Semi-ATE-STIL's error for the STIL at `path`, empty when it takes it or
+    isn't installed (warptap's tests use it too; it's optional here)."""
+    try:
+        from Semi_ATE.STIL.parsers.STILParser import (  # type: ignore[import-not-found]
+            STILParser,
+        )
+    except ImportError:
+        return ""
+    parser = STILParser(str(path))
+    parser.parse_syntax()
+    if parser.err_msg == "":
+        parser.parse_semantic()  # always returns None: the verdict is err_msg
+    if parser.is_parsing_done and parser.err_msg == "":
+        return ""
+    return str(parser.err_msg).strip() or "not parsed"

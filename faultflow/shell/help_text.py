@@ -348,9 +348,14 @@ COMMAND_HELP = {
     ),
     "write_patterns": CommandHelp(
         "Output",
-        "write_patterns",
-        "Export ATPG patterns",
-        "Reserved for future scan-aware STIL/WGL export and currently unsupported.",
+        "write_patterns -patterns <file.json> -o <file.stil>",
+        "Write exported scan patterns as STIL",
+        "The patterns run_atpg -export-patterns wrote, as the cycles a tester "
+        "applies to the chip -- the scanned netlist, or the one scan compression "
+        "or compaction composed -- in STIL (IEEE 1450): each pattern alone, its "
+        "loads and unloads calls of one load_unload procedure. No WGL.",
+        "add_scan, and patterns exported from this scan campaign.",
+        "write_patterns -patterns patterns.json -o chip.stil",
     ),
     "WORKERS": CommandHelp(
         "Options",

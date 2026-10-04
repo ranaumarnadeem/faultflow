@@ -193,6 +193,13 @@ class FlowService:
         message = str(self._runner(cfg).scan_compact())
         return OperationResult("scan-compact", cfg.top, message)
 
+    def write_patterns(
+        self, cfg: FaultflowConfig, patterns: Path, output: Path
+    ) -> OperationResult:
+        log.info("patterns start  top=%s", cfg.top)
+        message = str(self._runner(cfg).write_patterns(patterns, output))
+        return OperationResult("write-patterns", cfg.top, message)
+
     def run_atpg(self, cfg: FaultflowConfig, **options: object) -> AtpgResult:
         log.info("sim    start  top=%s", cfg.top)
         message = str(self._runner(cfg).sim(**options))

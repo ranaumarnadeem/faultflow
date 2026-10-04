@@ -9,6 +9,7 @@ otherwise."""
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -296,3 +297,30 @@ def test_blackbox_patterns_unload_on_real_cells(
         "[blackbox]\ninstances = u_mem\n\n[scan]\nchains = 1\n",
     )
     assert any(p.get("unload_mask") for p in exported)
+
+
+@pytest.mark.integration
+def test_write_patterns_writes_the_exported_patterns_as_stil(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """ff.py write-patterns writes the export as STIL -- each chain's cells in
+    ScanStructures, a load and an unload call per pattern -- whose cycles every
+    replay here checks (replay_on_cells); an export that isn't there is an
+    error."""
+    from faultflow.cli import main
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(tmp_path)
+        _, patterns = _flow(tmp_path, _ring(), "[scan]\nchains = 3\n")
+        common = ["write-patterns", "--top", TOP, "-c", str(tmp_path / "chip.ofs")]
+        stil = tmp_path / "chip.stil"
+        assert main([*common, "--patterns", str(patterns), "-o", str(stil)]) == 0
+        text = stil.read_text(encoding="utf-8")
+        assert text.startswith("STIL 1.0;")
+        assert set(re.findall(r'ScanCells "([^"]+)";', text)) == {"r0", "r1", "r2"}
+        exported = json.loads(patterns.read_text(encoding="utf-8"))
+        assert text.count('Call "load_unload"') == 2 * len(exported)
+        missing = ["--patterns", str(tmp_path / "none.json"), "-o", str(stil)]
+        with pytest.raises(SystemExit) as exc:
+            main([*common, *missing])
+        assert exc.value.code == 2

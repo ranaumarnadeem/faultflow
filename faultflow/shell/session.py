@@ -868,6 +868,11 @@ class ProjectSession:
             output=output,
         )
 
+    def write_patterns(self, *, patterns: Path, output: Path) -> OperationResult:
+        if not self.scan_inserted:
+            raise precondition("run add_scan first", "SCAN_REQUIRED")
+        return self.service.write_patterns(self.materialize_config(), patterns, output)
+
     def set_option(self, key: str, value: str) -> OperationResult:
         allowed = {
             "atpg.easy_fault_reserve",

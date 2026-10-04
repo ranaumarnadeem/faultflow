@@ -409,6 +409,21 @@ def _parser() -> argparse.ArgumentParser:
     )
     add_common(scan_compact)
 
+    write_patterns = sub.add_parser(
+        "write-patterns",
+        help="Write exported scan patterns as STIL (IEEE 1450)",
+    )
+    add_common(write_patterns)
+    write_patterns.add_argument(
+        "--patterns",
+        type=Path,
+        required=True,
+        help="Patterns sim --scan --export-patterns wrote",
+    )
+    write_patterns.add_argument(
+        "-o", "--output", type=Path, required=True, help="The STIL file to write"
+    )
+
     rule_check = sub.add_parser(
         "rule_check",
         help="Run DFT structural rules (DRC) on the synthesized netlist",
@@ -637,6 +652,8 @@ def main(argv: list[str] | None = None) -> int:
             print(service.scan_compress(cfg).message)
         elif args.command == "scan-compact":
             print(service.scan_compact(cfg).message)
+        elif args.command == "write-patterns":
+            print(service.write_patterns(cfg, args.patterns, args.output).message)
         elif args.command == "rule_check":
             result = service.rule_check(cfg, strict=args.strict)
             print(result.message)
