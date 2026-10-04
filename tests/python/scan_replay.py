@@ -10,13 +10,13 @@ with the values the pattern gives them (in capture_pi_values). A bus bit is name
 "port[i]", like the pattern names it. A blackbox is a port-only stub, its outputs
 unknown on the cells.
 
-With scan compression the chip is the composed netlist scan-compress wrote, its
-generic scan cells techmapped as `ff.py scan` maps them: each pattern's seed is held on
-the channel bus and the decompressor's own cells load the chains
-(replay_compressed_on_cells). With scan compaction it is the composed netlist
-scan-compact wrote, and the unload is compared where a tester sees it, on the
-compactor's channels (replay_compacted_on_cells) -- with both, the composed
-netlist holding the decompressor, the core and the compactor.
+With scan compression the chip is the sky130 netlist scan-compress wrote
+(<top>_compressed.v): each pattern's seed is held on the channel bus and the
+decompressor's own cells load the chains (replay_compressed_on_cells). With scan
+compaction it is the one scan-compact wrote (<top>_compacted.v), and the unload is
+compared where a tester sees it, on the compactor's channels
+(replay_compacted_on_cells) -- with both, that netlist holds the decompressor, the
+core and the compactor.
 
 FaultFlow's own simulators are the reference everywhere else; this asks whether a real
 chip -- whose scan flops' clear and preset act during shift too -- does what the
@@ -209,24 +209,6 @@ def _clocks(manifest: dict[str, Any]) -> list[str]:
     ]
 
 
-def _techmapped(composed: Path, manifest: dict[str, Any], work: Path) -> Path:
-    """A composed netlist as Verilog of sky130 cells, its generic scan cells mapped
-    as `ff.py scan` maps them."""
-    work.mkdir(parents=True, exist_ok=True)
-    netlist = work / "composed.v"
-    script = work / "composed.ys"
-    script.write_text(
-        f'read_json "{composed}"\n'
-        f'techmap -map "{Path(str(manifest["techmap_verilog"])).resolve()}"\n'
-        f'clean\nwrite_verilog -noattr "{netlist}"\n',
-        encoding="utf-8",
-    )
-    subprocess.run(
-        ["yosys", "-q", "-s", str(script)], check=True, capture_output=True, text=True
-    )
-    return netlist
-
-
 def _drive(
     manifest: dict[str, Any],
     bench: _Bench,
@@ -363,8 +345,8 @@ class _Channels:
 
 
 def replay_compacted_on_cells(cfg: Any, patterns_path: Path, work: Path) -> list[str]:
-    """replay_on_cells on the compacted chip: the composed netlist scan-compact
-    wrote, techmapped to sky130 cells. A tester sees only the compactor's channels:
+    """replay_on_cells on the compacted chip: the sky130 netlist scan-compact
+    wrote (<top>_compacted.v). A tester sees only the compactor's channels:
     each channel bit at each unload cycle is compared with the XOR of the expected
     unload bits it reads, when none of them is masked. With compression too,
     replay_compressed_on_cells replays the chip."""
@@ -376,7 +358,7 @@ def replay_compacted_on_cells(cfg: Any, patterns_path: Path, work: Path) -> list
     top = str(compaction["composed_top"])
     module = json.loads(composed.read_text(encoding="utf-8"))["modules"][top]
     patterns = json.loads(patterns_path.read_text(encoding="utf-8"))
-    netlist = _techmapped(composed, manifest, work)
+    netlist = Path(str(compaction["sky130_verilog"])).resolve()
     bench = _Bench(top, module["ports"], _clocks(manifest))
     channels = _Channels(manifest)
     compared_outputs = _drive(manifest, bench, patterns, channels.sample)
@@ -394,15 +376,15 @@ def replay_compressed_on_cells(
     work: Path,
     seed_of: Callable[[int, dict[str, Any]], int],
 ) -> list[str]:
-    """replay_on_cells on the compressed chip: the composed netlist scan-compress
-    wrote, techmapped to sky130 cells, each pattern's seed (`seed_of(index,
+    """replay_on_cells on the compressed chip: the sky130 netlist scan-compress
+    wrote (<top>_compressed.v), each pattern's seed (`seed_of(index,
     exported pattern)`, a tester's solve) held on the channel bus through the load,
     the capture and the unload, the decompressor's cells loading the chains. An
     unload bit is compared within its chain's length: the bits a shorter chain
     shifts in are the decompressor's. With compaction too, the chip is the
-    composed netlist scan-compact wrote around both, and the unload is compared
-    on its channels (replay_compacted_on_cells). Stuck-at and launch-on-capture
-    patterns only."""
+    netlist scan-compact wrote around both, and the unload is compared on its
+    channels (replay_compacted_on_cells). Stuck-at and launch-on-capture patterns
+    only."""
     manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
     compression = manifest["compression"]
     compaction = manifest.get("compaction")
@@ -419,7 +401,7 @@ def replay_compressed_on_cells(
     length = int(manifest["max_chain_length"])
     lengths = {int(c["index"]): int(c["length"]) for c in manifest["chains"]}
     patterns = json.loads(patterns_path.read_text(encoding="utf-8"))
-    netlist = _techmapped(composed, manifest, work)
+    netlist = Path(str(chip["sky130_verilog"])).resolve()
     bench = _Bench(composed_top, module["ports"], _clocks(manifest))
     channels = _Channels(manifest) if compaction else None
     base = {n: 0 for n in bench.inputs if n not in bench.clocks}

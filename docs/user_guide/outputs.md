@@ -13,8 +13,10 @@ output/<top>/
 ├── report.rpt             # unified report (shell `report` command)
 ├── <top>_scan.v           # scan deliverable (after scan + techmap)
 ├── <top>_scan.json        # scanned generic JSON
-├── <top>_compressed.json  # scan-compress: the decompressor around the design
-├── <top>_compacted.json   # scan-compact: the compactor around it (with both: the chip)
+├── <top>_compressed.v     # scan-compress deliverable: the decompressor around the design
+├── <top>_compressed.json  # the same, generic JSON
+├── <top>_compacted.v      # scan-compact deliverable: the compactor around it (with both: the chip)
+├── <top>_compacted.json   # the same, generic JSON
 ├── scan.rpt               # scan-insertion report
 └── .faultflow/            # internal workspace (removed by --clean)
     ├── faultflow.sqlite    # campaign database (combinational + scan)

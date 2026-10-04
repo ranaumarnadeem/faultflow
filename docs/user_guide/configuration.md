@@ -220,10 +220,12 @@ Scan test-pattern compression (`ff.py scan-compress`: a ring-generator and
 phase-shifter decompressor in front of the scan inputs) and response compaction
 (`ff.py scan-compact`: an XOR-tree space compactor behind the scan outputs). Each
 wraps the scanned design, which becomes the instance `core_inst`, in
-`<top>_compressed.json` or `<top>_compacted.json`. With both, the compacted netlist
-holds the decompressor too: it is the whole chip, the design still `core_inst`.
-`scan-compact` builds it around the decompressor `scan-compress` inserted, and
-`scan-compress` run afterwards builds it again around its new one.
+`<top>_compressed.json` or `<top>_compacted.json`, and in `<top>_compressed.v` or
+`<top>_compacted.v`, the same as sky130 Verilog (the design's scan cells mapped as
+`ff.py scan` maps them; not with `[scan] run_techmap = false`). With both, the
+compacted netlist holds the decompressor too: it is the whole chip, the design still
+`core_inst`. `scan-compact` builds it around the decompressor `scan-compress`
+inserted, and `scan-compress` run afterwards builds it again around its new one.
 
 | Key | Default | Meaning |
 |---|---|---|

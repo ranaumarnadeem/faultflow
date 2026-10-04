@@ -927,6 +927,14 @@ class Runner:
             "status": "PASS" if structural.passed else "FAIL",
             "errors": structural.errors,
         }
+        verilog = None
+        if structural.passed:
+            verilog = self._composed_verilog(
+                manifest, output_json, f"{core_top}_compressed", "compressed"
+            )
+            compression_entry["sky130_verilog"] = (
+                str(verilog) if verilog is not None else None
+            )
         write_scan_artifacts(
             self.cfg.manifests_dir,
             self.cfg.scan_report_path,
@@ -940,7 +948,7 @@ class Runner:
             output_json,
             f"{core_top}_compressed",
             self.cfg.output_dir / f"{self.cfg.top}_compressed.sdc",
-            output_json.name,
+            (verilog or output_json).name,
             prefix="core_inst__",
         )
         compacted = ""
@@ -1089,6 +1097,14 @@ class Runner:
             "status": "FAIL" if errors else "PASS",
             "errors": errors,
         }
+        verilog = None
+        if not errors:
+            verilog = self._composed_verilog(
+                manifest, output_json, composed_top, "compacted"
+            )
+            compaction_entry["sky130_verilog"] = (
+                str(verilog) if verilog is not None else None
+            )
         write_scan_artifacts(
             self.cfg.manifests_dir,
             self.cfg.scan_report_path,
@@ -1102,10 +1118,36 @@ class Runner:
             output_json,
             composed_top,
             self.cfg.output_dir / f"{self.cfg.top}_compacted.sdc",
-            output_json.name,
+            (verilog or output_json).name,
             prefix="core_inst__",
         )
         return output_json, sdc
+
+    def _composed_verilog(
+        self, manifest: dict[str, Any], composed_json: Path, top: str, name: str
+    ) -> Path | None:
+        """A composed chip as sky130 Verilog, <top>_<name>.v beside its JSON: the
+        decompressor's and compactor's cells as synthesized, the design's generic
+        scan cells mapped by the scan techmap as ``ff.py scan`` maps them. None with
+        [scan] run_techmap off."""
+        if not self.cfg.scan.run_techmap:
+            return None
+        techmap_v = Path(str(manifest["techmap_verilog"]))
+        write_scan_techmap(techmap_v)
+        t0 = time.perf_counter()
+        try:
+            verilog = run_scan_techmap(
+                generic_json=composed_json,
+                techmap_verilog=techmap_v,
+                output_verilog=self.cfg.output_dir / f"{self.cfg.top}_{name}.v",
+                top=top,
+                log_path=self.cfg.logs_dir / f"yosys_{name}.log",
+                script_path=self.cfg.generated_scripts_dir / f"yosys_{name}.ys",
+            )
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+        log.info("%-8s techmapped  %s  %.1fs", name, verilog, time.perf_counter() - t0)
+        return verilog
 
     def _scan_vector_source(
         self,
