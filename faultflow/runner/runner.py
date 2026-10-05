@@ -76,7 +76,10 @@ from faultflow.scan.shift_controls import (
     shift_control_violations,
 )
 from faultflow.scan.x_mask import XMask, launch_mode_key, mask_scan_view
+from faultflow.scan.yosys import json_to_verilog
 from faultflow.verify import IverilogVerifier, VerificationError
+from faultflow.wrap.block import WrapOptions, format_decisions, wrap_block
+from faultflow.wrap.errors import WrapError
 
 log = logging.getLogger(__name__)
 
@@ -1154,6 +1157,53 @@ class Runner:
             f"patterns written top={self.cfg.top} chip={chip.top} "
             f"patterns={len(exported)} cycles={len(program)} "
             f"overlapped={'yes' if overlap else 'no'} stil={output}"
+        )
+
+    def wrap(self, *, dry_run: bool = False) -> str:
+        """[wrap] on the design: an IEEE 1500 boundary cell on each port bit it wraps
+        (faultflow.wrap.block). ``dry_run``: just the table of port bits; otherwise
+        also the wrapped netlist, as JSON and as Verilog, and the table as a
+        report."""
+        self.cfg.ensure_workspace()
+        netlist = self._find_netlist()
+        options = WrapOptions(
+            clock=self.cfg.wrap.clock,
+            intest_pin=self.cfg.wrap.intest_pin,
+            extest_pin=self.cfg.wrap.extest_pin,
+            exclude=self.cfg.wrap.exclude,
+        )
+        try:
+            result = wrap_block(
+                json.loads(netlist.read_text(encoding="utf-8")),
+                self.cfg.top,
+                _load_json_object(self.cfg.cell_lib),
+                options,
+            )
+        except WrapError as exc:
+            raise RunnerError(str(exc)) from exc
+        table = format_decisions(result)
+        if dry_run:
+            return table
+        top = self.cfg.top
+        wrapped_json = self.cfg.output_dir / f"{top}_wrapped.json"
+        wrapped_json.write_text(json.dumps(result.netlist, indent=2), encoding="utf-8")
+        try:
+            verilog = json_to_verilog(
+                wrapped_json,
+                self.cfg.output_dir / f"{top}_wrapped.v",
+                self.cfg.logs_dir / "yosys_wrap.log",
+                self.cfg.generated_scripts_dir / "yosys_wrap.ys",
+            )
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+        report = self.cfg.output_dir / "wrap.rpt"
+        report.write_text(table + "\n", encoding="utf-8")
+        inputs = sum(cell.side == "input" for cell in result.cells)
+        return (
+            f"wrap complete top={top} cells={len(result.cells)} inputs={inputs} "
+            f"outputs={len(result.cells) - inputs} clock={result.clock} "
+            f"intest={options.intest_pin} extest={options.extest_pin} "
+            f"json={wrapped_json} verilog={verilog} report={report}"
         )
 
     def _composed_verilog(

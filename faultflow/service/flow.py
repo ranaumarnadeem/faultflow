@@ -206,6 +206,11 @@ class FlowService:
         message = str(runner.write_patterns(patterns, output, overlap=overlap))
         return OperationResult("write-patterns", cfg.top, message)
 
+    def wrap(self, cfg: FaultflowConfig, *, dry_run: bool = False) -> OperationResult:
+        log.info("wrap   start  top=%s", cfg.top)
+        message = str(self._runner(cfg).wrap(dry_run=dry_run))
+        return OperationResult("wrap", cfg.top, message)
+
     def run_atpg(self, cfg: FaultflowConfig, **options: object) -> AtpgResult:
         log.info("sim    start  top=%s", cfg.top)
         message = str(self._runner(cfg).sim(**options))

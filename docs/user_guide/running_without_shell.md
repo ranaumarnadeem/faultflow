@@ -64,6 +64,36 @@ The `--ext` sidecar (`.bench`) is a BENCH-format netlist of the same circuit; fa
 reads it only to recover the primary-input ordering that the `.test` vector columns map
 onto.
 
+## `wrap`
+
+```bash
+python3 ff.py wrap --top <top> -c config.ofs [--dry-run]
+```
+
+Put an IEEE 1500 wrapper on the design's ports, as `[wrap]` says. Every data input
+and every output bit gets a boundary cell of three sky130 cells: a mux choosing the
+bit's functional value or the cell's flop, an and2b gate driving the bit's safe value
+(0) when the cell's side is decoupled, and a flop capturing the mux's output (scan
+insertion makes it a scan cell). Two mode pins choose the mode:
+
+| `intest` | `extest` | Mode | Input cells | Output cells |
+|---|---|---|---|---|
+| 0 | 0 | functional | pass the port bit to the core | pass the core's value to the port |
+| 1 | 0 | INTEST | drive the core from their flops, holding them | drive their ports at 0, capture the core |
+| 0 | 1 | EXTEST | drive the core at 0, capture their ports | drive their ports from their flops, holding them |
+
+Clocks and asynchronous clears and presets stay unwrapped. So do the ports or bits
+`[wrap] exclude` names. An input that reaches a clock, clear or preset only through
+other logic is refused, and so is an inout port: name it in `exclude`. The design
+must not be scanned yet.
+
+It writes `<top>_wrapped.json` and `<top>_wrapped.v` under `output/<top>/`, and the
+table of port bits (wrapped or not, and why) as `wrap.rpt`.
+
+| Option | Meaning |
+|---|---|
+| `--dry-run` | Only print which port bits get a boundary cell, and why |
+
 ## `intest`
 
 ```bash
@@ -398,6 +428,7 @@ side.
 | Operation | Tcl shell | Batch CLI |
 |---|---|---|
 | Load / synthesize | `read_netlist`, `synth` | implicit from `[design]` |
+| IEEE 1500 wrapper | `wrap` | `wrap` (`[wrap]`) |
 | Combinational ATPG | `run_atpg` | `sim` |
 | Insert scan | `add_scan` | `scan` |
 | Check scan | `check_scan` | `scan-check` |

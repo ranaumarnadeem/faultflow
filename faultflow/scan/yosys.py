@@ -100,6 +100,39 @@ def run_scan_techmap_json(
     return output_json
 
 
+def json_to_verilog(
+    netlist_json: Path,
+    output_verilog: Path,
+    log_path: Path,
+    script_path: Path,
+) -> Path:
+    """Write a JSON netlist of library cells as gate-level Verilog."""
+    yosys = shutil.which("yosys")
+    if yosys is None:
+        raise ScanError("writing Verilog requires yosys on PATH")
+    if not netlist_json.exists():
+        raise ScanError(f"missing JSON netlist: {netlist_json}")
+    output_verilog.parent.mkdir(parents=True, exist_ok=True)
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"read_json {_quote(netlist_json)}",
+        f"write_verilog -noattr {_quote(output_verilog)}",
+    ]
+    script_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    proc = subprocess.run(
+        [yosys, "-Q", "-s", str(script_path)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(proc.stdout, encoding="utf-8")
+    if proc.returncode != 0:
+        raise ScanError(f"writing Verilog failed; see {log_path}")
+    return output_verilog
+
+
 def verilog_to_json(
     verilog: Path,
     top: str,

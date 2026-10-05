@@ -397,6 +397,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     jtag.add_argument("--export", type=Path, help="Write the TCK program played")
 
+    wrap = sub.add_parser(
+        "wrap",
+        help="Put an IEEE 1500 wrapper on the design's ports ([wrap])",
+    )
+    add_common(wrap)
+    wrap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only print which port bits get a boundary cell, and why",
+    )
+
     scan_compress = sub.add_parser(
         "scan-compress",
         help="Insert scan test-pattern compression (ring generator + phase shifter)",
@@ -653,6 +664,8 @@ def main(argv: list[str] | None = None) -> int:
                 verify=args.verify,
             )
             print(outcome.message(cfg.top))
+        elif args.command == "wrap":
+            print(service.wrap(cfg, dry_run=args.dry_run).message)
         elif args.command == "scan-compress":
             print(service.scan_compress(cfg).message)
         elif args.command == "scan-compact":

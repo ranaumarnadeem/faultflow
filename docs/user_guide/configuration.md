@@ -202,9 +202,17 @@ one-shot from the CLI with `add-clock`).
 
 ## `[wrap]`
 
+The IEEE 1500 wrapper `ff.py wrap` puts on the design's ports (see
+[Running without the shell](running_without_shell.md)).
+
 | Key | Allowed values | Default | Meaning |
 |---|---|---|---|
-| `wbr_model` | `buffer`, `scan` | `scan` | Wrapper boundary register model used by the shell's `wrap` command: `buffer` is transparent, `scan` is a native shiftable WBR |
+| `clock` | a port name | the design's one clock | The port the wrapper's flops run on. A design with several clocks must name one; a block without flops gets it as a new input |
+| `intest_pin` | a port name | `wbr_intest` | The INTEST mode pin the wrapper adds |
+| `extest_pin` | a port name | `wbr_extest` | The EXTEST mode pin the wrapper adds |
+| `exclude` | comma list of globs on `port` or `port[bit]` | empty | Port bits left unwrapped; `*` and `?` are wildcards, brackets match themselves (`b[1]`, `b[*]`) |
+| `control` | `pins` | `pins` | How the mode is set: the two mode pins |
+| `wbr_model` | `buffer`, `scan` | `scan` | The abstract wrapper cells the shell's `wrap -model` puts on instead: `buffer` is transparent, `scan` is a native shiftable WBR |
 
 ## `[autombist]`
 
