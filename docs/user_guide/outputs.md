@@ -71,7 +71,7 @@ Its top-level structure is:
 | `autombist_categories` | Only with `[autombist] manifest`: `detected`, `denominator`, `blackbox_unresolved`, `hold_unresolved` and `coverage_percent` per autoMBIST instance category, `glue` holding what no instance owns; they add up to the `summary` totals. After `ff.py jtag`, also `combined_detected`, `combined_denominator` and `combined_coverage_percent` (scan and JTAG credit together). `coverage.rpt` shows the same as a table. See [External tools](../external_tools.md) |
 | `jtag` | Only after `ff.py jtag`: the latest JTAG network-integrity grade of this campaign's faults -- the program (`program_digest`, `tck_periods`, `tests`), `graded`, `detected`, `detected_by_test` (each fault credited to the first test that detects it), `detected_only_by_jtag`, `reset_path_ungraded` (faults that could keep a flop out of reset, which a two-valued grade can't judge), `scan_redundant_conflicts` (scan-redundant faults JTAG detects; expected empty) and the `holds` used. The `summary` block is unchanged |
 | `combined` | Only after `ff.py jtag`: scan and JTAG credit together -- `detected` by either, `redundant` only if scan proved it and JTAG didn't detect it, and the two coverage figures over them. The Policy-3 totals hold with these numbers too |
-| `wrapper` | Only for `intest` on the wrapper `ff.py wrap` puts on: the `mode`, the number of boundary `cells`, and per part -- `core`, `boundary` (the boundary cells' faults, an input cell's port bit among them) and `mode` (the mode pins') -- `detected`, `denominator`, `decoupled` (left to the other mode, `excluded_wbr_decoupled`), `blackbox_unresolved`, `hold_unresolved` and `coverage_percent`. The parts add up to the `summary` totals. `coverage.rpt` shows the same as a table |
+| `wrapper` | Only for `intest` and `extest` on the wrapper `ff.py wrap` puts on: the `mode`, the number of boundary `cells`, and per part -- `core` (in EXTEST, the core blackbox's boundary nets alone), `boundary` (the boundary cells' faults, an input cell's port bit among them) and `mode` (the mode pins') -- `detected`, `denominator`, `decoupled` (left to the other mode, `excluded_wbr_decoupled`), `blackbox_unresolved`, `hold_unresolved` and `coverage_percent`. The parts add up to the `summary` totals. `coverage.rpt` shows the same as a table |
 
 ### The `summary` block
 
@@ -136,7 +136,9 @@ pulse between the load and the capture, or `los`, one more shift with scan enabl
 and each chain's `launch_scan_in` bit at its scan input. `capture_pi_values` holds the
 primary inputs' values and the primary outputs' expected values at the capture
 (but an output a blackbox's unknown value reaches); a bus port's bits are named
-`port[i]`. `write-patterns` writes the export as STIL, the cycles a tester applies
+`port[i]`. An EXTEST pattern of the wrapper `ff.py wrap` puts on loads and unloads
+the wrapper chains alone: it carries `shift_length`, their longest, the shifts its
+load and its unload take; the core's chains shift as many bits, uncompared. `write-patterns` writes the export as STIL, the cycles a tester applies
 (see [Running without the shell](running_without_shell.md#write-patterns)). External
 vectors supplied
 with `sim --ext` use the same plain-text format as `patterns.test` and require a

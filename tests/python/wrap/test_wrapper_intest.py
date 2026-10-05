@@ -12,58 +12,16 @@ from __future__ import annotations
 
 import json
 import shutil
-import sqlite3
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-from faultflow.config import load_config
 from scan_credit import credit_not_reproduced, environment_dependent
 from scan_replay import replay_on_cells
+from wrap_flow import faults as fault_rows
+from wrap_flow import ACCUMULATOR, run_mode
 
-ROOT = Path(__file__).resolve().parents[3]
-CELL_MAP_PATH = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
-LIBERTY = ROOT / "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib"
-TOP = "chip"
-DFXTP = "sky130_fd_sc_hd__dfxtp_1"
 ENVIRONMENT = ["d0", "d1"]
-
-
-def _cell(kind: str, **conns: int) -> dict[str, Any]:
-    outputs = ("Q", "X")
-    return {
-        "hide_name": 0,
-        "type": kind,
-        "parameters": {},
-        "attributes": {},
-        "port_directions": {p: "output" if p in outputs else "input" for p in conns},
-        "connections": {p: [n] for p, n in conns.items()},
-    }
-
-
-def _gate(kind: str, a: int, b: int, x: int) -> dict[str, Any]:
-    return _cell(f"sky130_fd_sc_hd__{kind}_1", A=a, B=b, X=x)
-
-
-def _ring() -> dict[str, Any]:
-    cells = {
-        "g_x": _gate("xor2", 4, 19, 14),
-        "r0": _cell(DFXTP, CLK=2, D=14, Q=15),
-        "g_a": _gate("and2", 15, 5, 16),
-        "r1": _cell(DFXTP, CLK=2, D=16, Q=17),
-        "g_o": _gate("or2", 17, 4, 18),
-        "r2": _cell(DFXTP, CLK=2, D=18, Q=19),
-        "g_y": _gate("xor2", 19, 15, 20),
-    }
-    ports = {
-        **{n: {"direction": "input", "bits": [b]} for n, b in (("clk", 2), ("d0", 4))},
-        "d1": {"direction": "input", "bits": [5]},
-        "y": {"direction": "output", "bits": [20]},
-    }
-    module = {"attributes": {"top": "1"}, "ports": ports, "cells": cells}
-    module["netnames"] = {}
-    return {"modules": {TOP: module}}
 
 
 @pytest.fixture
@@ -76,56 +34,13 @@ def flow_tools() -> None:
         pytest.skip("needs iverilog")
 
 
-def _intest(
-    work: Path,
-    sections: str = "",
-    netlist: Path | None = None,
-    top: str = TOP,
-    wrap: str = "",
-) -> tuple[Any, Path]:
-    """init, scan (the wrapper first), scan-check and intest with exported patterns
-    on `netlist` (the ring by default; RTL Yosys synthesizes), run in `work`: the
-    config and the patterns' path. `wrap`: more [wrap] keys."""
-    from faultflow.cli import main
-
-    if netlist is None:
-        netlist = work / "chip.json"
-        netlist.write_text(json.dumps(_ring()), encoding="utf-8")
-    ofs = work / "chip.ofs"
-    ofs.write_text(
-        f"[design]\nnetlist = {netlist}\ncell_lib = {CELL_MAP_PATH}\n"
-        f"liberty = {LIBERTY}\n\n[wrap]\nenabled = true\n{wrap}\n"
-        f"[scan]\nchains = 1\n\n{sections}",
-        encoding="utf-8",
-    )
-    patterns = work / "patterns.json"
-    for step in (["init"], ["scan"], ["scan-check"]):
-        assert main([*step, "--top", top, "-c", str(ofs)]) == 0, step
-    command = ["intest", "--export-patterns", str(patterns), "--top", top]
-    assert main([*command, "-c", str(ofs)]) == 0
-    return load_config(ofs, top), patterns
-
-
-def _faults(cfg: Any) -> list[sqlite3.Row]:
-    conn = sqlite3.connect(cfg.db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        return conn.execute(
-            "SELECT fault_site_key, lower(fault_type) AS type, status, exclusion, "
-            "blackbox_unresolved, collapsed_into FROM faults WHERE campaign_id = "
-            "(SELECT MAX(id) FROM campaigns WHERE campaign_type = 'scan')"
-        ).fetchall()
-    finally:
-        conn.close()
-
-
 @pytest.mark.integration
 def test_intest_patterns_test_the_core_whatever_drives_the_block(
     tmp_path: Path, flow_tools: None
 ) -> None:
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(tmp_path)
-        cfg, patterns = _intest(tmp_path)
+        cfg, patterns = run_mode(tmp_path, "intest")
         exported = json.loads(patterns.read_text(encoding="utf-8"))
         assert exported
         for pattern in exported:
@@ -144,7 +59,7 @@ def test_intest_patterns_test_the_core_whatever_drives_the_block(
             (cfg.intermediate_dir / "coverage_report.json").read_text("utf-8")
         )
         text = cfg.coverage_report_path.read_text(encoding="utf-8")
-        faults = {(row["fault_site_key"], row["type"]): row for row in _faults(cfg)}
+        faults = {(row["fault_site_key"], row["type"]): row for row in fault_rows(cfg)}
     wrapper = manifest["wrapper"]
     intest_net = wrapper["intest"]["net"]
     # INTEST stuck at 0 would let the environment into the core: no test of it.
@@ -187,8 +102,9 @@ def test_intest_transition_patterns_test_the_core_whatever_drives_the_block(
     is testable only with the mode pins free."""
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(tmp_path)
-        cfg, patterns = _intest(
+        cfg, patterns = run_mode(
             tmp_path,
+            "intest",
             f"[fault_model]\nmodel = transition\nlaunch = {launch}\n"
             "collapsing = false\n",
         )
@@ -202,7 +118,7 @@ def test_intest_transition_patterns_test_the_core_whatever_drives_the_block(
             assert credit_not_reproduced(cfg, patterns, loc=True) == []
             assert environment_dependent(cfg, patterns, ENVIRONMENT, loc=True) == []
         manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
-        faults = {(row["fault_site_key"], row["type"]): row for row in _faults(cfg)}
+        faults = {(row["fault_site_key"], row["type"]): row for row in fault_rows(cfg)}
     wrapper = manifest["wrapper"]
     mode_nets = {wrapper["intest"]["net"], wrapper["extest"]["net"]}
     unresolved = {key for key, row in faults.items() if row["blackbox_unresolved"]}
@@ -219,23 +135,6 @@ def test_intest_transition_patterns_test_the_core_whatever_drives_the_block(
                 assert core_side["status"] == "detected"
     if launch == "los":
         assert unresolved == on_mode_nets
-
-
-ACCUMULATOR = """\
-module acc (input clk, input rst_n, input en, input [1:0] a, input [1:0] b,
-            output [1:0] sum, output carry);
-  reg [1:0] r;
-  reg c;
-  always @(posedge clk or negedge rst_n)
-    if (!rst_n) begin
-      r <= 2'b00;
-      c <= 1'b0;
-    end else if (en)
-      {c, r} <= r + a + b;
-  assign sum = r ^ b;
-  assign carry = c & en;
-endmodule
-"""
 
 
 @pytest.mark.integration
@@ -258,8 +157,13 @@ def test_a_synthesized_blocks_intest_patterns_hold_whatever_drives_it(
     environment = ["en", "a[0]", "a[1]", "b[0]"]
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(tmp_path)
-        cfg, patterns = _intest(
-            tmp_path, fault_model, netlist=rtl, top="acc", wrap="exclude = b[1]\n"
+        cfg, patterns = run_mode(
+            tmp_path,
+            "intest",
+            fault_model,
+            netlist=rtl,
+            top="acc",
+            wrap="exclude = b[1]\n",
         )
         manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
         assert [c["label"] for c in manifest["wrapper"]["cells"]] == [

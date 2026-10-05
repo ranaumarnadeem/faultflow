@@ -152,8 +152,10 @@ def _parser() -> argparse.ArgumentParser:
     extest = sub.add_parser(
         "extest",
         help=(
-            "IEEE 1500 EXTEST: wrapper-boundary / interconnect coverage with the "
-            "core held safe (combinational ATPG on the fused boundary view)"
+            "IEEE 1500 EXTEST: the wrapper's boundary cells at the block's ports, "
+            "the core held off (a scan test of the graybox of the wrapper ff.py "
+            "wrap puts on; combinational ATPG on the fused boundary view of the "
+            "abstract one)"
         ),
     )
     add_wrapper_mode_opts(extest)

@@ -40,7 +40,7 @@ class _Grader:
 
     credited: list[tuple[str, str]]
     patterns: list[Any]
-    detect: Callable[[int, Mapping[str, bool]], set[int]]
+    detect: Callable[..., set[int]]
 
 
 def credit_not_reproduced(
@@ -49,14 +49,18 @@ def credit_not_reproduced(
     *,
     loc: bool = False,
     preamble: int | None = None,
+    campaign_type: str = "scan",
 ) -> list[tuple[str, str]]:
     """The (site key, fault type) of each fault the latest scan campaign
-    credits that none of the exported patterns in `patterns_path` detects in
-    the full protocol. `loc` replays launch-on-capture patterns (two capture
-    pulses); launch-on-shift patterns don't carry their launch shift and
-    can't be replayed from the file. Each pattern is replayed after its own
-    preamble, or `preamble` clock pulses when given."""
-    grader = _grader(cfg, patterns_path, loc=loc, preamble=preamble)
+    (`campaign_type`: "scan_extest" for the real wrapper's EXTEST) credits that
+    none of the exported patterns in `patterns_path` detects in the full protocol
+    on the scanned netlist. `loc` replays launch-on-capture patterns (two capture
+    pulses); launch-on-shift patterns don't carry their launch shift and can't be
+    replayed from the file. Each pattern is replayed after its own preamble, or
+    `preamble` clock pulses when given."""
+    grader = _grader(
+        cfg, patterns_path, loc=loc, preamble=preamble, campaign_type=campaign_type
+    )
     reproduced: set[int] = set()
     for number in range(len(grader.patterns)):
         reproduced |= grader.detect(number, {})
@@ -87,8 +91,55 @@ def environment_dependent(
     return [grader.credited[i] for i in range(len(grader.credited)) if i not in robust]
 
 
+def core_dependent(
+    cfg: Any, patterns_path: Path, *, loc: bool = False
+) -> list[tuple[str, str]]:
+    """For a wrapped block's EXTEST, whose patterns load the wrapper chains alone
+    and leave the core's state unknown: the credited faults no exported pattern
+    detects in every state of the core, on the whole block -- each pattern
+    tried with every load of the core chains."""
+    manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+    longest = int(manifest["max_chain_length"])
+    core_chains = {
+        int(c["index"]): int(c["length"])
+        for c in manifest["chains"]
+        if c.get("kind", "core") == "core"
+    }
+    states = sum(core_chains.values())
+    assert states <= 10, "every state of the core is tried"
+    grader = _grader(
+        cfg, patterns_path, loc=loc, preamble=None, campaign_type="scan_extest"
+    )
+    robust: set[int] = set()
+    for number, pattern in enumerate(grader.patterns):
+        shifts = pattern.shift_length or longest
+        # The whole chip's shift: the wrapper chains' loads behind as many
+        # zeros as it shifts more, so they end where their own shift puts them.
+        loads = {
+            chain: [False] * (longest - shifts) + list(bits)
+            for chain, bits in pattern.load_seqs.items()
+        }
+        always: set[int] | None = None
+        for state in itertools.product((False, True), repeat=states):
+            bits = iter(state)
+            for chain, length in core_chains.items():
+                own = [next(bits) for _ in range(length)]
+                loads[chain] = [False] * (longest - length) + own
+            found = grader.detect(number, {}, loads=loads, shifts=longest)
+            always = found if always is None else always & found
+            if not always:
+                break
+        robust |= always or set()
+    return [grader.credited[i] for i in range(len(grader.credited)) if i not in robust]
+
+
 def _grader(
-    cfg: Any, patterns_path: Path, *, loc: bool, preamble: int | None
+    cfg: Any,
+    patterns_path: Path,
+    *,
+    loc: bool,
+    preamble: int | None,
+    campaign_type: str = "scan",
 ) -> _Grader:
     core = _load_core()
     assert core is not None
@@ -112,7 +163,7 @@ def _grader(
     blackboxes = list(cfg.blackbox_instances)
     conn = sqlite3.connect(cfg.db_path)
     (campaign,) = conn.execute(
-        "SELECT MAX(id) FROM campaigns WHERE campaign_type = 'scan'"
+        "SELECT MAX(id) FROM campaigns WHERE campaign_type = ?", (campaign_type,)
     ).fetchone()
     credited = conn.execute(
         "SELECT fault_site_key, fault_type FROM faults "
@@ -132,9 +183,28 @@ def _grader(
         for raw in json.loads(patterns_path.read_text(encoding="utf-8"))
     ]
 
-    def detect(number: int, given: Mapping[str, bool]) -> set[int]:
+    def detect(
+        number: int,
+        given: Mapping[str, bool],
+        *,
+        loads: Mapping[int, list[bool]] | None = None,
+        shifts: int | None = None,
+    ) -> set[int]:
+        """Pattern `number`'s detections; `loads` and `shifts` instead of its own
+        load and shift length. A chain it doesn't unload isn't compared."""
         pattern = patterns[number]
         assert not set(given) & set(pattern.capture_pi_values), "the pattern sets it"
+        length = shifts or pattern.shift_length or int(manifest["max_chain_length"])
+        mask = {
+            chain: (list(bits) + [False] * length)[:length]
+            for chain, bits in (pattern.unload_mask or {}).items()
+        }
+        for chain in range(len(manifest["scan_outputs"])):
+            if chain not in pattern.expected_unload:
+                mask[chain] = [False] * length
+            elif chain not in mask:
+                own = len(pattern.expected_unload[chain])
+                mask[chain] = [t < own for t in range(length)]
         result = core.simulate_scan_protocol_faults(
             str(generic),
             cell_map,
@@ -143,14 +213,14 @@ def _grader(
             scan_input_ports=[str(p) for p in manifest["scan_inputs"]],
             scan_output_ports=[str(p) for p in manifest["scan_outputs"]],
             functional_output_ports=outputs,
-            max_chain_length=int(manifest["max_chain_length"]),
-            load_seqs=pattern.load_seqs,
+            max_chain_length=length,
+            load_seqs=dict(loads) if loads is not None else pattern.load_seqs,
             capture_pi_values={**pattern.capture_pi_values, **given},
             faults=specs,
             unsupported_policy=unsupported,
             loc_two_capture=loc,
             blackbox_instances=blackboxes,
-            unload_mask=pattern.unload_mask or {},
+            unload_mask=mask,
             preamble_cycles=(pattern.preamble_cycles if preamble is None else preamble),
             shift_pi_values=pattern.shift_pi_values,
         )

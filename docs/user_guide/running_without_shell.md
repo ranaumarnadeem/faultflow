@@ -100,7 +100,7 @@ the core's (`[scan] wrapper_chains`), and the scan manifest's `wrapper` entry re
 each boundary cell, its nets and its place on those chains. A scan test of the wrapped
 design holds both mode pins at 0, so it tests the core and the wrapper in functional
 mode; its patterns replay on the sky130 cells and export as STIL like any other. INTEST
-of this wrapper is `intest`; its EXTEST comes next, and until then `extest` refuses it.
+and EXTEST of this wrapper are `intest` and `extest`.
 
 ## `intest`
 
@@ -148,10 +148,31 @@ core, the boundary cells and the mode pins.
 python3 ff.py extest --top <top> -c config.ofs [options]
 ```
 
-IEEE 1500 EXTEST: wrapper-boundary / interconnect coverage, with the core held
-safe (combinational ATPG on the fused boundary view). Takes the same options as
-`intest`, but exports no patterns yet; on the wrapper `ff.py wrap` puts on it isn't
-supported yet.
+IEEE 1500 EXTEST: the wrapper's own test, at the block's ports. Takes the same
+options as `intest`.
+
+On the wrapper `ff.py wrap` puts on (`[wrap] enabled`), it is a scan test of the
+block's graybox, with the INTEST mode pin held at 0 and the EXTEST one at 1: each
+output cell drives its port from its flop and holds it, each input cell captures its
+port and keeps the core at 0. The graybox is the block's boundary cells; everything
+else, the core, is one blackbox whose outputs are unknown -- the held output cells'
+muxes keep them out, so the core costs nothing and none of its faults is graded:
+- The test shifts the wrapper chains alone. Each exported pattern says how long
+  (`shift_length`); the core's chains shift along, uncompared.
+- A stuck-at that would let the core out -- the EXTEST mode pin, or an output
+  cell's mux select, stuck at 0 -- is `blackbox_unresolved` from the start.
+- What INTEST owns (see `intest`) is left to it, `excluded_wbr_decoupled`.
+- The core's asynchronous resets are held inactive, as the block's own scan test
+  holds them.
+- It is a campaign of its own, beside INTEST's: switching between the two needs no
+  `--clean`.
+- At speed it launches on shift (`[fault_model] launch = los`): on capture it
+  launches nothing at the boundary, where the output cells hold and the input cells
+  capture the same port values twice, so `launch = loc` is refused.
+
+Otherwise -- the abstract wrapper of the shell's `wrap -model` -- it is
+combinational ATPG on the fused boundary view, with the core held safe, and exports
+no patterns.
 
 ## `project`
 
