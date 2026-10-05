@@ -103,6 +103,16 @@ def _with_memory() -> dict[str, Any]:
     return _chip(cells, inputs, {"y": 20})
 
 
+def _with_enable() -> dict[str, Any]:
+    """_ring with r1 an enable flop (sky130 edfxtp, DE = en 6): it loads r0 & d1
+    only while en is 1."""
+    chip = _ring()
+    module = chip["modules"][TOP]
+    module["cells"]["r1"] = _cell("sky130_fd_sc_hd__edfxtp_1", CLK=2, D=16, DE=6, Q=17)
+    module["ports"]["en"] = {"direction": "input", "bits": [6]}
+    return chip
+
+
 def _bus_out() -> dict[str, Any]:
     """_ring with a two-bit output y = {r1 & d1, r2 ^ r0}, and no per-bit netnames
     (as Yosys writes a plain bus port)."""
@@ -208,6 +218,25 @@ def test_every_bit_of_an_output_bus_is_compared(
     pattern gives both their values, and both match on the cells."""
     exported = _replay(tmp_path, _bus_out(), "[scan]\nchains = 1\n")
     assert all({"y[0]", "y[1]"} <= set(p["capture_pi_values"]) for p in exported)
+
+
+@pytest.mark.integration
+def test_an_enable_flops_hold_gates_are_sky130_cells_too(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """Scan stitching folds an enable flop's DE into gates ahead of its scan flop's
+    D. The scanned netlist the techmap writes makes them sky130 cells as well, so
+    the chip builds from the PDK's cell models and its patterns unload on them."""
+    exported = _replay(tmp_path, _with_enable(), "[scan]\nchains = 1\n")
+    assert exported
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(tmp_path)
+        cfg = load_config(tmp_path / "chip.ofs", TOP)
+        manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+        verilog = Path(manifest["sky130_verilog"]).read_text(encoding="utf-8")
+    instances = re.findall(r"^[ \t]*(\S+)[ \t]+\S+[ \t]*\($", verilog, re.M)
+    cells = set(instances) - {"module"}
+    assert cells and all(cell.startswith("sky130_fd_sc_hd__") for cell in cells)
 
 
 COMPRESSION = "[compression]\nenabled = true\nchannels = 8\n"

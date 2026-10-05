@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from faultflow.scan.stitch import (
+    YOSYS_CAPTURE_AND_CELL,
+    YOSYS_CAPTURE_INV_CELL,
+    YOSYS_CAPTURE_OR_CELL,
     YOSYS_SCAN_CELL_TYPE,
     YOSYS_SCAN_RESET_CELL_TYPE,
     YOSYS_SCAN_SET_CELL_TYPE,
@@ -16,6 +19,11 @@ class ScanTechmapConfig:
     # Scan cells that keep a single async control (async-reset / async-set FFs).
     reset_cell: str = "sky130_fd_sc_hd__sdfrtp_1"
     set_cell: str = "sky130_fd_sc_hd__sdfstp_1"
+    # The gates scan stitching folds an enable flop's enable into, ahead of its scan
+    # cell's D (stitch._add_enable_hold_mux).
+    and_cell: str = "sky130_fd_sc_hd__and2_1"
+    or_cell: str = "sky130_fd_sc_hd__or2_1"
+    inv_cell: str = "sky130_fd_sc_hd__inv_1"
     reset_pin: str = "RESET_B"
     set_pin: str = "SET_B"
     clock_pin: str = "CLK"
@@ -61,8 +69,44 @@ def _render_module(
     )
 
 
+def _render_gate(
+    celltype: str, library_cell: str, inputs: tuple[str, ...], output_pin: str
+) -> str:
+    """A techmap module turning one of the gates scan stitching adds (inputs A[, B],
+    output Y) into `library_cell`, whose output pin is `output_pin`."""
+    escaped = celltype.replace("\\", "\\\\")
+    module_name = celltype.lstrip("\\$") + "_sky130_map"
+    ports = "".join(f"    input {pin},\n" for pin in inputs)
+    connections = "".join(f"        .{pin}({pin}),\n" for pin in inputs)
+    return (
+        f'(* techmap_celltype = "{escaped}" *)\n'
+        f"module {module_name} (\n"
+        f"{ports}"
+        "    output Y\n"
+        ");\n"
+        "\n"
+        f"    {library_cell} _TECHMAP_REPLACE_ (\n"
+        f"{connections}"
+        f"        .{output_pin}(Y)\n"
+        "    );\n"
+        "\n"
+        "endmodule\n"
+    )
+
+
 def render_scan_techmap(config: ScanTechmapConfig | None = None) -> str:
+    """The Yosys techmap from FaultFlow's scan netlist to sky130 cells: its scan
+    cells, and the gates an enable flop's enable is folded into."""
     cfg = config or ScanTechmapConfig()
+    gates = (
+        (YOSYS_CAPTURE_AND_CELL, cfg.and_cell, ("A", "B"), "X"),
+        (YOSYS_CAPTURE_OR_CELL, cfg.or_cell, ("A", "B"), "X"),
+        (YOSYS_CAPTURE_INV_CELL, cfg.inv_cell, ("A",), "Y"),
+    )
+    gate_maps = "".join(
+        "\n" + _render_gate(celltype, cell, inputs, output_pin)
+        for celltype, cell, inputs, output_pin in gates
+    )
     return (
         _render_module(
             YOSYS_SCAN_CELL_TYPE,
@@ -88,6 +132,7 @@ def render_scan_techmap(config: ScanTechmapConfig | None = None) -> str:
             extra_port=cfg.set_pin,
             extra_pin=cfg.set_pin,
         )
+        + gate_maps
     )
 
 
