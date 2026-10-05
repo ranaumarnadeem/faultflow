@@ -140,6 +140,37 @@ def test_extests_fault_sites_in_the_graybox_are_the_blocks(
     assert not any(":r0:" in str(row["site_key"]) for row in rows)
 
 
+def test_a_socs_graybox_stubs_the_cells_tagged_with_each_block(
+    tmp_path: Path,
+) -> None:
+    """On a SoC's record (faultflow.project.soc_wrapper), a block's core is the
+    cells the composition tagged with its name, stubbed as <instance>__core -- not
+    the cells whose names merely start like the instance's. With no cell tagged,
+    the graybox is refused rather than keeping every core."""
+    scanned, manifest = _scanned(tmp_path)
+    netlist = json.loads(scanned.read_text(encoding="utf-8"))
+    wrapper = manifest["wrapper"]
+    blocks = [{"block": "A", "instance": "u"}]
+    soc = {**manifest, "wrapper": {**wrapper, "blocks": blocks}}
+    with pytest.raises(WrapError, match="name no block"):
+        extest_graybox(netlist, soc, CELL_MAP)
+    cells = netlist["modules"][TOP]["cells"]
+    for cell in cells.values():
+        cell.setdefault("attributes", {})["faultflow_block"] = "A"
+    # Another block's cell, its instance's name starting like this one's.
+    cells["u__x__g9"] = _cell("and2_1", A=3, B=4, X=99)
+    cells["u__x__g9"]["attributes"]["faultflow_block"] = "B"
+    box = extest_graybox(netlist, soc, CELL_MAP)
+    soc_cells = box.netlist["modules"][TOP]["cells"]
+    assert box.cores == ("u__core",)
+    assert "u__x__g9" in soc_cells
+    del cells["u__x__g9"]
+    block = extest_graybox(netlist, manifest, CELL_MAP)
+    block_cells = block.netlist["modules"][TOP]["cells"]
+    assert set(soc_cells) - {"u__core", "u__x__g9"} == set(block_cells) - {CORE}
+    assert soc_cells["u__core"]["connections"] == block_cells[CORE]["connections"]
+
+
 def test_graybox_patterns_take_the_chips_chain_numbers() -> None:
     pattern = {
         "load_seqs": {"0": [True, False], "1": [False, True]},

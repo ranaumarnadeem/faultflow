@@ -4,10 +4,12 @@
 A fault site belongs to the boundary when it is on a boundary cell: a branch into
 one of its cells, or a stem one of them drives -- or an input cell's port bit,
 which nothing in the block drives. A site on a mode net belongs to the mode pins.
-Every other site is the core's. Each part counts as the summary counts: what the
-test detects of what it grades, what it leaves to the other mode
-(``wbr_decoupled``), and what only the environment (``blackbox_unresolved``) or
-free holds (``hold_unresolved``) could test.
+On a SoC (faultflow.project.soc_wrapper), a site on its glue -- on a cell of none
+of its blocks, or a SoC input's own -- is the glue's. Every other site is the
+core's. Each part counts as the summary counts: what the test detects of what it
+grades, what it leaves to the other mode (``wbr_decoupled``), and what only the
+environment (``blackbox_unresolved``) or free holds (``hold_unresolved``) could
+test.
 """
 
 from __future__ import annotations
@@ -15,10 +17,13 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Mapping
 
-from faultflow.control_trace import Netlist
+from faultflow.control_trace import Netlist, port_bits
 from faultflow.wrap.cell import INPUT, ROLES
+from faultflow.wrap.record import mode_nets
+from faultflow.wrap.sides import glue_cells
 
 PARTS = ("core", "boundary", "mode")
+SOC_PARTS = (*PARTS, "glue")
 
 
 def _site(key: str) -> tuple[int, str | None]:
@@ -47,23 +52,31 @@ def wrapper_coverage(
     `mode` of the block `module` (its scanned netlist) and its `wrapper` (the scan
     manifest's)."""
     cells = {str(cell[role]) for cell in wrapper["cells"] for role in ROLES}
-    mode_nets = {int(wrapper["intest"]["net"]), int(wrapper["extest"]["net"])}
-    port_bits = {
+    held = set(mode_nets(wrapper))
+    wrapped_bits = {
         int(cell["sys_net"])
         for cell in wrapper["cells"]
         if cell["side"] == INPUT and isinstance(cell["sys_net"], int)
     }
     drivers = Netlist(module, cell_map).drivers
+    soc = "blocks" in wrapper
+    glue = glue_cells(module) if soc else frozenset()
+    pins = {net for _, net in port_bits(module, "input")} if soc else set()
 
     def part(key: str) -> str:
         net, consumer = _site(key)
-        if net in mode_nets:
+        if net in held:
             return "mode"
         if consumer is not None:
+            if consumer in glue:
+                return "glue"
             return "boundary" if consumer in cells else "core"
         driver = drivers.get(net)
-        on_cell = driver is not None and driver[0] in cells
-        return "boundary" if on_cell or net in port_bits else "core"
+        if driver is not None and driver[0] in glue:
+            return "glue"
+        if driver is not None and driver[0] in cells or net in wrapped_bits:
+            return "boundary"
+        return "glue" if net in pins else "core"
 
     counts = {
         name: {
@@ -73,7 +86,7 @@ def wrapper_coverage(
             "blackbox_unresolved": 0,
             "hold_unresolved": 0,
         }
-        for name in PARTS
+        for name in (SOC_PARTS if soc else PARTS)
     }
     for row in conn.execute(
         """
@@ -116,8 +129,7 @@ def wrapper_lines(entry: Mapping[str, Any]) -> list[str]:
         f"wrapper ({entry['mode']}, {entry['cells']} boundary cells): detected / "
         "denominator, left to the other mode, blackbox_unresolved, hold_unresolved",
     ]
-    for name in PARTS:
-        part = entry["parts"][name]
+    for name, part in entry["parts"].items():
         percent = part["coverage_percent"]
         shown = f"{percent:7.3f}%" if percent is not None else "      -"
         lines.append(

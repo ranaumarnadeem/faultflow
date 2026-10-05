@@ -442,6 +442,8 @@ def compose_soc(
     *,
     graybox: bool = False,
     block_names: dict[str, str] | None = None,
+    tag_blocks: bool = False,
+    remaps: dict[str, dict[int, int | str]] | None = None,
 ) -> dict[str, Any]:
     """Splice each block's real cells/netnames into the glue's instance site.
 
@@ -462,6 +464,13 @@ def compose_soc(
     ``block_names``: instance -> the block's canonical name. WBC cells are tagged
     ``faultflow_block`` with this name so aggregation's cross-scope fault keys line
     up with the block INTEST scope's name; defaults to the instance name.
+
+    ``tag_blocks``: tag EVERY spliced cell ``faultflow_block`` (that name) and
+    ``faultflow_cell`` (its name in the block), so a fault on it traces back to its
+    block. Off by default: the attributes would follow the cells into Verilog.
+
+    ``remaps``: when given, filled with instance -> (block net id -> the composed
+    netlist's net id, or the constant the block bit is tied to).
     """
     glue_module = _find_top(glue_json, soc_top)
     cells = glue_module.get("cells")
@@ -536,9 +545,12 @@ def compose_soc(
             remap,
             graybox=graybox,
             block_tag=names.get(inst, inst),
+            tag_all=tag_blocks,
         )
         _splice_netnames(result_module, module_data, inst, remap)
         del result_module["cells"][inst]
+        if remaps is not None:
+            remaps[inst] = dict(remap)
 
     # ---- Phase D: substitute every merged/constant-resolved glue net ----
     substitution = _glue_substitution_map(resolved, classes)
@@ -602,6 +614,7 @@ def _splice_cells(
     *,
     graybox: bool = False,
     block_tag: str | None = None,
+    tag_all: bool = False,
 ) -> None:
     block_cells = block_module.get("cells", {})
     if not isinstance(block_cells, dict):
@@ -625,6 +638,9 @@ def _splice_cells(
         if is_wbc:
             new_cell["attributes"]["faultflow_block"] = tag
             new_cell["attributes"]["faultflow_wbc"] = cell_name
+        if tag_all:
+            new_cell["attributes"]["faultflow_block"] = tag
+            new_cell["attributes"]["faultflow_cell"] = cell_name
         dest_cells[f"{inst}__{cell_name}"] = new_cell
 
 
@@ -663,14 +679,17 @@ def assemble_soc(
     workdir: Path,
     graybox: bool = False,
     block_names: dict[str, str] | None = None,
+    tag_blocks: bool = False,
+    remaps: dict[str, dict[int, int | str]] | None = None,
 ) -> Path:
     """Synthesize the SoC glue (blocks as blackboxes) and splice in each block's
     frozen JSON, producing one flat, single-top Yosys-JSON netlist at `output_json`.
 
-    ``graybox``/``block_names`` are forwarded to `compose_soc` unchanged -- see its
-    docstring. Use ``graybox=True`` for a scan-model EXTEST DUT (WBC ring only, dead
-    core dropped) and ``block_names`` to tag WBC cells with each block's canonical
-    name (matching the block INTEST scope) rather than its glue instance name.
+    ``graybox``/``block_names``/``tag_blocks``/``remaps`` are forwarded to
+    `compose_soc` unchanged -- see its docstring. Use ``graybox=True`` for a
+    scan-model EXTEST DUT (WBC ring only, dead core dropped) and ``block_names`` to
+    tag WBC cells with each block's canonical name (matching the block INTEST
+    scope) rather than its glue instance name.
     """
     yosys = shutil.which("yosys")
     if yosys is None:
@@ -747,6 +766,8 @@ def assemble_soc(
         block_module=block_module,
         graybox=graybox,
         block_names=block_names,
+        tag_blocks=tag_blocks,
+        remaps=remaps,
     )
 
     output_json.parent.mkdir(parents=True, exist_ok=True)

@@ -96,11 +96,23 @@ def wrapper_record(
 
 def mode_holds(manifest: Mapping[str, Any], mode: str) -> dict[str, int]:
     """The mode pins a scan test in ``mode`` holds, and their values: none
-    without a wrapper."""
+    without a wrapper. A SoC's record (faultflow.project.soc_wrapper) names the SoC
+    inputs that set its blocks' mode pins, per mode."""
     wrapper = manifest.get("wrapper")
     if not isinstance(wrapper, dict):
         return {}
     if mode not in MODES:
         raise WrapError(f"no wrapper mode {mode!r}")
+    if "holds" in wrapper:
+        return {str(port): int(value) for port, value in wrapper["holds"][mode].items()}
     intest, extest = MODES[mode]
     return {wrapper["intest"]["port"]: intest, wrapper["extest"]["port"]: extest}
+
+
+def mode_nets(wrapper: Mapping[str, Any]) -> dict[int, int]:
+    """Each net the mode pins set, and the value INTEST holds it at: a block's two
+    mode nets, or every net on a SoC's paths from its inputs to its blocks' mode
+    pins."""
+    if "mode_nets" in wrapper:
+        return {int(net): int(value) for net, value in wrapper["mode_nets"].items()}
+    return {int(wrapper["intest"]["net"]): 1, int(wrapper["extest"]["net"]): 0}

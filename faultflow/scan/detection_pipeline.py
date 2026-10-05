@@ -1890,6 +1890,10 @@ def run_progressive_scan_atpg(
     # environment past the held mode pins has no test here (x_mask).
     decoupled_faults: frozenset[tuple[str, str]] = frozenset()
     if scan_ctx.wrapper is not None and scan_ctx.wrapper_scope is not None:
+        _, graded_module = _top_module(
+            json.loads(scan_ctx.generic_json.read_text(encoding="utf-8")),
+            str(scan_ctx.manifest.get("top", cfg.top)),
+        )
         decoupled_faults = decoupled(
             [
                 dict(row)
@@ -1899,6 +1903,7 @@ def run_progressive_scan_atpg(
             ],
             scan_ctx.wrapper,
             scan_ctx.wrapper_scope,
+            module=graded_module,
         )
     release = frozenset() if transition else scan_ctx.x_mask.release_faults
     with connect(effective_db_path) as conn:

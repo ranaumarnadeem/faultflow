@@ -18,6 +18,24 @@ TOP = "chip"
 DFXTP = "sky130_fd_sc_hd__dfxtp_1"
 
 
+def manifest_validator() -> Any:
+    """A validator for scan manifests (schemas/scan_manifest.schema.json), with the
+    wrapper records' schemas it refers to; skips the test without jsonschema."""
+    import pytest
+
+    jsonschema = pytest.importorskip("jsonschema")
+    referencing = pytest.importorskip("referencing")  # jsonschema 4.18 on
+    schemas = [
+        json.loads((ROOT / "schemas" / f"{name}.schema.json").read_text("utf-8"))
+        for name in ("scan_manifest", "wrapper", "soc_wrapper")
+    ]
+    registry = referencing.Registry().with_resources(
+        (schema["$id"], referencing.Resource.from_contents(schema))
+        for schema in schemas
+    )
+    return jsonschema.Draft202012Validator(schemas[0], registry=registry)
+
+
 def _cell(kind: str, **conns: int) -> dict[str, Any]:
     outputs = ("Q", "X")
     return {

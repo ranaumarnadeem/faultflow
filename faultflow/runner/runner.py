@@ -81,8 +81,8 @@ from faultflow.scan.yosys import json_to_verilog
 from faultflow.verify import IverilogVerifier, VerificationError
 from faultflow.wrap.block import WrapOptions, WrapResult, format_decisions, wrap_block
 from faultflow.wrap.environment import ENVIRONMENT, intest_harness, with_environment
-from faultflow.wrap.graybox import CORE, chip_patterns, extest_graybox, with_core
-from faultflow.wrap.sides import EXTEST, FAULT_TYPES, owner
+from faultflow.wrap.graybox import chip_patterns, extest_graybox, with_core
+from faultflow.wrap.sides import EXTEST, FAULT_TYPES, owner, sides_of
 from faultflow.wrap.errors import WrapError
 from faultflow.wrap.record import mode_holds, wrapper_record
 
@@ -1291,11 +1291,12 @@ class Runner:
 
     def _extest_graybox(
         self, manifest: Mapping[str, Any], generic_json: Path
-    ) -> tuple[Path, dict[str, Any], dict[int, int]]:
-        """The block's EXTEST graybox (wrap.graybox) as <top>_extest.json in the
-        workspace, its scan manifest -- the wrapper chains alone -- and each of
-        its chains' number on the chip. Every fault EXTEST owns must sit on one of
-        the scanned netlist's fault sites, as the whole block grades it."""
+    ) -> tuple[Path, dict[str, Any], dict[int, int], tuple[str, ...]]:
+        """The block's -- or SoC's -- EXTEST graybox (wrap.graybox) as
+        <top>_extest.json in the workspace, its scan manifest (the wrapper chains
+        alone), each of its chains' number on the chip, and the blackboxes standing
+        for cores. Every fault EXTEST owns must sit on one of the scanned netlist's
+        fault sites, as the whole chip grades it."""
         top = str(manifest["top"])
         cell_map_path = resolve_scan_cell_map(self.cfg)
         try:
@@ -1315,12 +1316,17 @@ class Runner:
             raise RunnerError("C++ extension _faultflow_core is required")
         unsupported = self.cfg.simulation.unsupported_cells
         wrapper = manifest["wrapper"]
+        rows = [
+            dict(row)
+            for row in core.list_site_keys(
+                str(path), str(cell_map_path), unsupported, list(box.cores)
+            )
+        ]
+        sides = sides_of(wrapper, rows, box.netlist["modules"][top])
         owned = {
             str(row["site_key"])
-            for row in core.list_site_keys(
-                str(path), str(cell_map_path), unsupported, [CORE]
-            )
-            if any(owner(row, t, wrapper) == EXTEST for t in FAULT_TYPES)
+            for row in rows
+            if any(owner(row, t, wrapper, _sides=sides) == EXTEST for t in FAULT_TYPES)
         }
         scanned = {
             str(row["site_key"])
@@ -1341,7 +1347,7 @@ class Runner:
             "generic_json": str(path),
             "generic_json_hash": hash_file(path),
         }
-        return path, run_manifest, box.chains
+        return path, run_manifest, box.chains, box.cores
 
     def _holds(self, manifest: Mapping[str, Any]) -> tuple[tuple[str, int], ...]:
         """[scan] hold, and an IEEE 1500 wrapper's mode pins at the campaign's test
@@ -2751,14 +2757,16 @@ class Runner:
         functional_output_order: list[str],
         nonscan: NonscanSetup | None = None,
         cfg: FaultflowConfig | None = None,
+        blocking: tuple[str, ...] = (),
     ) -> XMask:
         """Mask, in the scan ATPG view on disk, every observation point an
         unknown value reaches (scan.x_mask) -- a blackbox output's, or a
         non-scan flop's no held input keeps in reset -- for this campaign's
         launch mode. Refuses a design where such a value reaches the scan path
-        itself. ``cfg``: the run's config, the INTEST environment among its
-        blackboxes (wrap.environment.with_environment); what the held mode pins
-        keep out of the environment is no unknown."""
+        itself. ``cfg``: the run's config, a wrapper mode's INTEST environment or
+        EXTEST cores among its blackboxes (wrap.environment, wrap.graybox);
+        ``blocking``: those, whose outputs the held mode pins keep out are no
+        unknowns."""
         cfg = cfg if cfg is not None else self.cfg
         launch_mode = launch_mode_key(
             cfg.fault_model.model == "transition", cfg.fault_model.launch
@@ -2782,9 +2790,7 @@ class Runner:
             nonscan_q_nets=(
                 [flop.q for flop in nonscan.flops] if nonscan is not None else ()
             ),
-            blocking_instances=tuple(
-                i for i in cfg.blackbox_instances if i in (ENVIRONMENT, CORE)
-            ),
+            blocking_instances=blocking,
         )
 
     def _nonscan_setup(
@@ -2862,10 +2868,17 @@ class Runner:
         scope: str | None = None
         extra_holds: dict[str, int] = {}
         chip_chains: dict[int, int] = {}
+        blocking: tuple[str, ...] = ()
         if wrapper is not None and str(self.cfg.test_mode) == "intest":
+            if "blocks" in wrapper:
+                raise RunnerError(
+                    "a SoC's blocks run INTEST each on its own (ff.py project); "
+                    "the SoC runs EXTEST and its functional scan test"
+                )
             scope = "intest"
             generic_json = self._intest_harness(manifest, generic_json)
             cfg = with_environment(self.cfg)
+            blocking = (ENVIRONMENT,)
         elif wrapper is not None and str(self.cfg.test_mode) == "extest":
             if (
                 self.cfg.fault_model.model == "transition"
@@ -2878,10 +2891,10 @@ class Runner:
                     "twice"
                 )
             scope = "extest"
-            generic_json, run_manifest, chip_chains = self._extest_graybox(
+            generic_json, run_manifest, chip_chains, blocking = self._extest_graybox(
                 manifest, generic_json
             )
-            cfg = with_core(self.cfg)
+            cfg = with_core(self.cfg, blocking)
             # The core's resets, as the block's own scan test holds them: the
             # core stays quiet, though nothing of it is observed.
             extra_holds = {
@@ -2958,6 +2971,7 @@ class Runner:
             functional_output_order,
             nonscan=nonscan,
             cfg=cfg,
+            blocking=blocking,
         )
         scan_pipeline_ctx = build_scan_pipeline_context(
             cfg,

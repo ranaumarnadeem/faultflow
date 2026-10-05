@@ -417,6 +417,46 @@ def test_compose_soc_splices_block_cells_with_remapped_nets() -> None:
     _assert_single_driver(module)
 
 
+def test_compose_soc_tags_every_cell_and_returns_each_blocks_remap() -> None:
+    """tag_blocks: every spliced cell names its block and its own name there (only
+    then: compression and compaction compose without them). remaps: each block
+    net's composed net -- a boundary bit its glue net, an internal bit a fresh one."""
+    glue = _glue_json({"clk": [2], "a": [3], "b": [9], "y": [8]})
+    block_a = _block_a_json(net_clk=2, net_a=3, net_b=4, net_y=5)
+    remaps: dict[str, dict[int, int | str]] = {}
+    result = compose_soc(
+        glue_json=glue,
+        soc_top="soc",
+        blocks={"u_a": block_a},
+        block_module={"u_a": "block_a"},
+        block_names={"u_a": "blkA"},
+        tag_blocks=True,
+        remaps=remaps,
+    )
+    cells = result["modules"]["soc"]["cells"]
+    for name in ("c0", "c1"):
+        attributes = cells[f"u_a__{name}"]["attributes"]
+        assert (attributes["faultflow_block"], attributes["faultflow_cell"]) == (
+            "blkA",
+            name,
+        )
+    assert "faultflow_block" not in cells["g0"]["attributes"]
+    remap = remaps["u_a"]
+    assert (remap[2], remap[3], remap[4], remap[5]) == (2, 3, 9, 8)
+    internal = cells["u_a__c0"]["connections"]["X"][0]
+    assert remap[6] == internal and internal not in (2, 3, 8, 9, 13)
+    untagged = compose_soc(
+        glue_json=glue,
+        soc_top="soc",
+        blocks={"u_a": block_a},
+        block_module={"u_a": "block_a"},
+    )
+    assert (
+        "faultflow_cell"
+        not in untagged["modules"]["soc"]["cells"]["u_a__c0"]["attributes"]
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 3. compose_soc tags WBC cells for aggregation                               #
 # --------------------------------------------------------------------------- #

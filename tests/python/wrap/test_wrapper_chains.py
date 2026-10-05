@@ -15,6 +15,7 @@ from faultflow.scan import ScanError, plan_scan_json, stitch_scan_json
 from faultflow.wrap.block import wrap_block
 from faultflow.wrap.errors import WrapError
 from faultflow.wrap.record import VERSION, mode_holds, wrapper_record
+from wrap_flow import manifest_validator
 
 ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP_PATH = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
@@ -182,26 +183,12 @@ def test_the_manifest_records_the_wrapper_and_the_holds_of_each_mode(
     assert wrapper_record(_block()["modules"][TOP], []) is None
 
 
-def _manifest_validator() -> Any:
-    jsonschema = pytest.importorskip("jsonschema")
-    referencing = pytest.importorskip("referencing")  # jsonschema 4.18 on
-    schemas = [
-        json.loads((ROOT / "schemas" / name).read_text(encoding="utf-8"))
-        for name in ("scan_manifest.schema.json", "wrapper.schema.json")
-    ]
-    registry = referencing.Registry().with_resources(
-        (schema["$id"], referencing.Resource.from_contents(schema))
-        for schema in schemas
-    )
-    return jsonschema.Draft202012Validator(schemas[0], registry=registry)
-
-
 def test_the_scan_manifest_schema_takes_a_plain_and_a_wrapped_manifest(
     tmp_path: Path,
 ) -> None:
     from faultflow.scan.reports import manifest_from_result
 
-    validator = _manifest_validator()
+    validator = manifest_validator()
     plain_source = tmp_path / "plain.json"
     plain_source.write_text(json.dumps(_block()), encoding="utf-8")
     plain = stitch_scan_json(plain_source, CELL_MAP_PATH, TOP, tmp_path / "p.json")
@@ -282,4 +269,4 @@ def test_a_hold_against_the_mode_is_refused(
     assert len(manifests) == 1
     written = json.loads(manifests[0].read_text(encoding="utf-8"))
     assert written["wrapper"]["clock"]["port"] == "clk"
-    _manifest_validator().validate(written)
+    manifest_validator().validate(written)

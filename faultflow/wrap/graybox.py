@@ -35,22 +35,28 @@ CORE = "__core__"
 CORE_TYPE = "$faultflow_core"
 
 
-def with_core(cfg: FaultflowConfig) -> FaultflowConfig:
-    """``cfg`` for a run on the graybox: the core its one blackbox, its outputs
-    unknown. Any [blackbox] instance is a cell of the core."""
+def with_core(
+    cfg: FaultflowConfig, cores: tuple[str, ...] = (CORE,)
+) -> FaultflowConfig:
+    """``cfg`` for a run on a graybox: its `cores` its only blackboxes, their
+    outputs unknown. Any [blackbox] instance is a cell of a core."""
     return dataclasses.replace(
-        cfg, blackbox_instances=(CORE,), blackbox_output_values=((CORE, "x"),)
+        cfg,
+        blackbox_instances=cores,
+        blackbox_output_values=tuple((core, "x") for core in cores),
     )
 
 
 @dataclass(frozen=True)
 class Graybox:
     """The graybox's netlist (Yosys JSON), its scan manifest (no generic_json yet:
-    the caller writes it), and graybox chain -> chip chain."""
+    the caller writes it), graybox chain -> chip chain, and the blackboxes standing
+    for cores."""
 
     netlist: dict[str, Any]
     manifest: dict[str, Any]
     chains: dict[int, int]
+    cores: tuple[str, ...] = (CORE,)
 
 
 def _nets(bits: Any) -> list[int]:
@@ -59,13 +65,41 @@ def _nets(bits: Any) -> list[int]:
     )
 
 
+def _cores(cells: Mapping[str, Any], wrapper: Mapping[str, Any]) -> dict[str, set[str]]:
+    """Each blackbox standing for a core, and the cells it replaces: a block's
+    every cell but its wrapper's; a SoC's (faultflow.project.soc_wrapper) every cell
+    of each block -- those the composition tagged with the block's name
+    (``faultflow_block``) -- but its wrapper's, ``<instance>__core``, its glue
+    kept."""
+    kept = {str(cell[role]) for cell in wrapper["cells"] for role in ROLES}
+    if "blocks" not in wrapper:
+        return {CORE: set(cells) - kept}
+    block_of = {
+        name: cell.get("attributes", {}).get("faultflow_block")
+        for name, cell in cells.items()
+    }
+    if not any(block_of.values()):
+        raise WrapError(
+            "the SoC's cells name no block (faultflow_block): compose it with "
+            "its blocks tagged"
+        )
+    return {
+        f"{block['instance']}__core": {
+            name
+            for name, tag in block_of.items()
+            if tag == block["block"] and name not in kept
+        }
+        for block in wrapper["blocks"]
+    }
+
+
 def extest_graybox(
     netlist: Mapping[str, Any],
     manifest: Mapping[str, Any],
     cell_map: Mapping[str, Any],
 ) -> Graybox:
-    """The EXTEST graybox of the scanned, wrapped block `netlist`, whose scan
-    `manifest` records its wrapper."""
+    """The EXTEST graybox of the scanned, wrapped block `netlist` -- or composed
+    SoC -- whose scan `manifest` records its wrapper(s)."""
     top = str(manifest["top"])
     wrapper = manifest.get("wrapper")
     if not isinstance(wrapper, dict):
@@ -73,12 +107,14 @@ def extest_graybox(
     data = copy.deepcopy(dict(netlist))
     module = data["modules"][top]
     cells: dict[str, Any] = module.get("cells", {})
-    if CORE in cells:
-        raise WrapError(f"the netlist already has a cell named {CORE}")
-    kept = {str(cell[role]) for cell in wrapper["cells"] for role in ROLES}
-    missing = sorted(kept - set(cells))
+    wrapper_cells = {str(cell[role]) for cell in wrapper["cells"] for role in ROLES}
+    missing = sorted(wrapper_cells - set(cells))
     if missing:
         raise WrapError(f"the wrapper's cells aren't in the netlist: {missing}")
+    cores = _cores(cells, wrapper)
+    taken = sorted(set(cores) & set(cells))
+    if taken:
+        raise WrapError(f"the netlist already has a cell named {', '.join(taken)}")
     trace = Netlist(module, cell_map)
 
     def split(names: set[str]) -> tuple[set[int], set[int]]:
@@ -91,9 +127,9 @@ def extest_graybox(
                 (driven if output else read).update(_nets(bits))
         return read, driven
 
-    core = set(cells) - kept
+    replaced = set().union(*cores.values())
+    kept = set(cells) - replaced
     kept_read, kept_driven = split(kept)
-    core_read, core_driven = split(core)
     ports = module.get("ports", {})
     port_in = {
         b for p in ports.values() if p["direction"] == "input" for b in p["bits"]
@@ -101,28 +137,40 @@ def extest_graybox(
     port_out = {
         b for p in ports.values() if p["direction"] == "output" for b in p["bits"]
     }
-    outputs = sorted(core_driven & (kept_read | port_out))
-    inputs = sorted(core_read & (kept_driven | port_in))
-    module["cells"] = {name: cells[name] for name in cells if name in kept}
-    pins = {f"o{k}": [net] for k, net in enumerate(outputs)}
-    pins.update({f"i{k}": [net] for k, net in enumerate(inputs)})
-    module["cells"][CORE] = {
-        "hide_name": 0,
-        "type": CORE_TYPE,
-        "parameters": {},
-        "attributes": {"faultflow_internal": "1"},
-        "port_directions": {
-            pin: "output" if pin.startswith("o") else "input" for pin in pins
-        },
-        "connections": pins,
-    }
-    used = kept_read | kept_driven | set(outputs) | set(inputs) | port_in | port_out
+    sides = {name: split(members) for name, members in cores.items()}
+    new_cells = {name: cells[name] for name in cells if name in kept}
+    used = kept_read | kept_driven | port_in | port_out
+    for name, (core_read, core_driven) in sides.items():
+        # What another core, a kept cell or a port reads of it, and what it reads
+        # from them.
+        elsewhere_read = kept_read | port_out
+        elsewhere_driven = kept_driven | port_in
+        for other, (other_read, other_driven) in sides.items():
+            if other != name:
+                elsewhere_read |= other_read
+                elsewhere_driven |= other_driven
+        outputs = sorted(core_driven & elsewhere_read)
+        inputs = sorted(core_read & elsewhere_driven)
+        pins = {f"o{k}": [net] for k, net in enumerate(outputs)}
+        pins.update({f"i{k}": [net] for k, net in enumerate(inputs)})
+        new_cells[name] = {
+            "hide_name": 0,
+            "type": CORE_TYPE,
+            "parameters": {},
+            "attributes": {"faultflow_internal": "1"},
+            "port_directions": {
+                pin: "output" if pin.startswith("o") else "input" for pin in pins
+            },
+            "connections": pins,
+        }
+        used |= set(outputs) | set(inputs)
+    module["cells"] = new_cells
     module["netnames"] = {
         name: entry
         for name, entry in module.get("netnames", {}).items()
         if set(_nets(entry.get("bits"))) <= used
     }
-    return Graybox(data, *_wrapper_manifest(manifest))
+    return Graybox(data, *_wrapper_manifest(manifest), tuple(sorted(cores)))
 
 
 def chip_patterns(

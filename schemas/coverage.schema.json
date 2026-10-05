@@ -291,7 +291,7 @@
       }
     },
     "wrapper": {
-      "description": "A wrapped block's test in a wrapper mode (faultflow.wrap.report), by part: its core, its boundary cells, its mode pins. decoupled: left to the other mode (wbr_decoupled)",
+      "description": "A wrapped block's -- or a SoC's -- test in a wrapper mode (faultflow.wrap.report), by part: its core, its boundary cells, its mode pins, and a SoC's glue. decoupled: left to the other mode (wbr_decoupled)",
       "type": "object",
       "required": ["mode", "cells", "parts"],
       "additionalProperties": false,
@@ -305,7 +305,8 @@
           "properties": {
             "core": { "$ref": "#/$defs/wrapper_part" },
             "boundary": { "$ref": "#/$defs/wrapper_part" },
-            "mode": { "$ref": "#/$defs/wrapper_part" }
+            "mode": { "$ref": "#/$defs/wrapper_part" },
+            "glue": { "$ref": "#/$defs/wrapper_part" }
           }
         }
       }
