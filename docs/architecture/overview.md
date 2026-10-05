@@ -142,12 +142,13 @@ flowchart TD
     end
 ```
 
-For a chip built from several wrapped blocks, `faultflow/project/` (`orchestrator.py`,
-`aggregate.py`, `assemble.py`) drives per-block INTEST plus one assembly EXTEST and
-aggregates the results into a single chip-level coverage number — the `project` CLI
-command and `flowscripts/hereichy_atpg.tcl` are the two ways to run it. Block-level
-scan patterns can also be retargeted onto an SoC-level scan path (`faultflow/retarget/`)
-without re-running ATPG. See [Flow recipes](../user_guide/examples.md) for worked
+For a chip built from several wrapped blocks, `faultflow/project/` composes the SoC
+from the blocks' frozen scan netlists (`assemble.py`), runs each block's INTEST and
+the SoC's EXTEST (`soc_flow.py`), and adds them into one chip coverage number with
+each fault counted once (`identity.py`, `soc_aggregate.py`) — the `project` CLI
+command runs it. Each
+block's INTEST patterns can also be retargeted onto the SoC's chains
+(`faultflow/retarget/`, `project retarget`) without re-running ATPG. See [Flow recipes](../user_guide/examples.md) for worked
 examples of both.
 
 ## The fault model
@@ -232,4 +233,4 @@ changes.
 | `src/core/bindings/python_bindings.cpp` | The exact Python ↔ C++ surface |
 | `faultflow/runner/runner.py` | Yosys invocation and orchestration |
 | `faultflow/wrap/ports.py` | IEEE 1500 WBR injection |
-| `faultflow/project/orchestrator.py` | Hierarchical block-to-SoC aggregation |
+| `faultflow/project/soc_flow.py` | Hierarchical block-to-SoC test and aggregation |

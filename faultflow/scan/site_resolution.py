@@ -296,12 +296,15 @@ def apply_scan_execution_map(
     jtag_sites: set[str] | frozenset[str] = frozenset(),
     jtag_faults: frozenset[tuple[str, str]] = frozenset(),
     reset_sites: set[str] | frozenset[str] = frozenset(),
+    decoupled_faults: frozenset[tuple[str, str]] = frozenset(),
 ) -> None:
     """Write the view site of every fault ATPG grades and the exclusion of every
     fault it doesn't. ``reset_sites`` (both faults of each site: a settled non-scan
     flop's, scan/nonscan.py) are reset faults; ``jtag_sites`` (both faults of each
-    site) and ``jtag_faults`` ((site key, "sa0"/"sa1") pairs) are left to JTAG. Each
-    tags only an uncollapsed fault nothing else excludes, so it is counted once."""
+    site) and ``jtag_faults`` ((site key, "sa0"/"sa1") pairs) are left to JTAG;
+    ``decoupled_faults`` (pairs too) to the other IEEE 1500 wrapper test mode
+    (faultflow.wrap.sides). Each tags only an uncollapsed fault nothing else
+    excludes, so it is counted once."""
     conn.execute(
         "UPDATE faults SET atpg_compiled_net_index = NULL WHERE campaign_id = ?",
         (campaign_id,),
@@ -351,6 +354,16 @@ def apply_scan_execution_map(
         jtag_update + " AND lower(fault_type) = ?",
         [(campaign_id, key, fault_type) for key, fault_type in sorted(jtag_faults)],
     )
+    conn.executemany(
+        """
+        UPDATE faults
+        SET exclusion = 'wbr_decoupled', excluded = 'wbr_decoupled',
+            status = 'excluded', atpg_compiled_net_index = NULL
+        WHERE campaign_id = ? AND fault_site_key = ? AND lower(fault_type) = ?
+          AND exclusion = 'none' AND collapsed_into IS NULL
+        """,
+        [(campaign_id, key, ftype) for key, ftype in sorted(decoupled_faults)],
+    )
     missing = conn.execute(
         """
         SELECT fault_site_key
@@ -370,3 +383,24 @@ def apply_scan_execution_map(
             f"canonical site {missing['fault_site_key']}"
         )
     conn.commit()
+
+
+def mark_blackbox_unresolved(
+    conn: sqlite3.Connection, campaign_id: int, faults: frozenset[tuple[str, str]]
+) -> int:
+    """Mark each (site key, "sa0"/"sa1") of ``faults`` blackbox_unresolved before
+    any test is graded: no test may credit it, since its effect lets an unknown
+    value in. Only a fault ATPG would grade -- uncollapsed, excluded by nothing,
+    not detected. How many it marked."""
+    before = conn.total_changes
+    conn.executemany(
+        """
+        UPDATE faults SET blackbox_unresolved = 1
+        WHERE campaign_id = ? AND fault_site_key = ? AND lower(fault_type) = ?
+          AND exclusion = 'none' AND collapsed_into IS NULL
+          AND status != 'detected'
+        """,
+        [(campaign_id, key, ftype) for key, ftype in sorted(faults)],
+    )
+    conn.commit()
+    return conn.total_changes - before

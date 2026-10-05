@@ -11,6 +11,9 @@ output/<top>/
 ├── coverage.rpt           # human-readable coverage report
 ├── rule_check.rpt         # DFT rule-check report (rule_check command)
 ├── report.rpt             # unified report (shell `report` command)
+├── <top>_wrapped.v        # wrap deliverable: the design in its IEEE 1500 wrapper, sky130 cells
+├── <top>_wrapped.json     # the same, JSON
+├── wrap.rpt               # which port bits the wrapper wraps, and why
 ├── <top>_scan.v           # scan deliverable (after scan + techmap)
 ├── <top>_scan.json        # scanned generic JSON
 ├── <top>_compressed.v     # scan-compress deliverable: the decompressor around the design
@@ -21,7 +24,7 @@ output/<top>/
 └── .faultflow/            # internal workspace (removed by --clean)
     ├── faultflow.sqlite    # campaign database (combinational + scan)
     ├── logs/               # Yosys / nl2bench / quaigh logs
-    ├── manifests/
+    ├── manifests/          # scan_manifest.json
     ├── intermediate/       # <top>.json, <top>_gate.v, coverage_report.json
     ├── verification/       # iverilog verification reports
     └── generated_scripts/  # rendered yosys_synth.tcl
@@ -29,6 +32,19 @@ output/<top>/
 
 In OpenTestability oracle mode (`run`), an `oracle_response.json` is written to the
 output root.
+
+## `scan_manifest.json`
+
+What `ff.py scan` inserted, validated against
+[`schemas/scan_manifest.schema.json`](https://github.com/ranaumarnadeem/faultflow/blob/main/schemas/scan_manifest.schema.json):
+the scanned netlist and its sky130 Verilog, the scan ports, every chain (its `kind`,
+`core` or `wrapper`, its scan ports and its cells in shift order), every scan cell's
+nets, and the flip-flops left out of scan with the reason. A design scanned with
+`[wrap] enabled` also gets a `wrapper` entry
+([`schemas/wrapper.schema.json`](https://github.com/ranaumarnadeem/faultflow/blob/main/schemas/wrapper.schema.json)):
+its mode pins and clock, and per boundary cell its port bit, side, mux, gate and flop
+instances, the nets on its system and core sides, and its flop's chain and position.
+Later steps add their own entries (`latest_check`, `compression`, `compaction`).
 
 ## `coverage.rpt`
 
@@ -55,6 +71,7 @@ Its top-level structure is:
 | `autombist_categories` | Only with `[autombist] manifest`: `detected`, `denominator`, `blackbox_unresolved`, `hold_unresolved` and `coverage_percent` per autoMBIST instance category, `glue` holding what no instance owns; they add up to the `summary` totals. After `ff.py jtag`, also `combined_detected`, `combined_denominator` and `combined_coverage_percent` (scan and JTAG credit together). `coverage.rpt` shows the same as a table. See [External tools](../external_tools.md) |
 | `jtag` | Only after `ff.py jtag`: the latest JTAG network-integrity grade of this campaign's faults -- the program (`program_digest`, `tck_periods`, `tests`), `graded`, `detected`, `detected_by_test` (each fault credited to the first test that detects it), `detected_only_by_jtag`, `reset_path_ungraded` (faults that could keep a flop out of reset, which a two-valued grade can't judge), `scan_redundant_conflicts` (scan-redundant faults JTAG detects; expected empty) and the `holds` used. The `summary` block is unchanged |
 | `combined` | Only after `ff.py jtag`: scan and JTAG credit together -- `detected` by either, `redundant` only if scan proved it and JTAG didn't detect it, and the two coverage figures over them. The Policy-3 totals hold with these numbers too |
+| `wrapper` | Only for `intest` and `extest` on the wrapper `ff.py wrap` puts on: the `mode`, the number of boundary `cells`, and per part -- `core` (in EXTEST, the core blackbox's boundary nets alone), `boundary` (the boundary cells' faults, an input cell's port bit among them) and `mode` (the mode pins') -- `detected`, `denominator`, `decoupled` (left to the other mode, `excluded_wbr_decoupled`), `blackbox_unresolved`, `hold_unresolved` and `coverage_percent`. The parts add up to the `summary` totals. `coverage.rpt` shows the same as a table |
 
 ### The `summary` block
 
@@ -119,7 +136,9 @@ pulse between the load and the capture, or `los`, one more shift with scan enabl
 and each chain's `launch_scan_in` bit at its scan input. `capture_pi_values` holds the
 primary inputs' values and the primary outputs' expected values at the capture
 (but an output a blackbox's unknown value reaches); a bus port's bits are named
-`port[i]`. `write-patterns` writes the export as STIL, the cycles a tester applies
+`port[i]`. An EXTEST pattern of the wrapper `ff.py wrap` puts on loads and unloads
+the wrapper chains alone: it carries `shift_length`, their longest, the shifts its
+load and its unload take; the core's chains shift as many bits, uncompared. `write-patterns` writes the export as STIL, the cycles a tester applies
 (see [Running without the shell](running_without_shell.md#write-patterns)). External
 vectors supplied
 with `sim --ext` use the same plain-text format as `patterns.test` and require a

@@ -157,6 +157,7 @@ There is no silent-skip option.
 |---|---|---|
 | `chains` | `1` | Number of scan chains. A chain never spans two clock domains, so a multi-clock design needs one per domain at least; flip-flops split as evenly as the count allows, and where that would straddle a domain boundary, each domain gets whole chains in proportion to its flip-flop count |
 | `max_chain_length` | (none) | Maximum flip-flops per chain; empty means unbounded. With `chains = 1`, the chain count becomes what keeps every chain within it, counted per clock domain |
+| `wrapper_chains` | (none) | Chains for the flops of an IEEE 1500 wrapper (`[wrap] enabled`). They get chains of their own after the core's, balanced, in the wrapper's ring order (input bits, then output bits, as the netlist lists the ports), with scan ports `wbr_si`/`wbr_so` (`wbr_si_0`, `wbr_so_0`, ... with several) and the one scan enable. Empty means as many as keep each no longer than the longest core chain; for a block without flops of its own, `max_chain_length`, else one chain |
 | `scan_in` | `scan_in` | Scan input port base name |
 | `scan_out` | `scan_out` | Scan output port base name |
 | `scan_enable` | `scan_en` | Scan enable port name |
@@ -202,9 +203,18 @@ one-shot from the CLI with `add-clock`).
 
 ## `[wrap]`
 
+The IEEE 1500 wrapper `ff.py wrap` puts on the design's ports (see
+[Running without the shell](running_without_shell.md)).
+
 | Key | Allowed values | Default | Meaning |
 |---|---|---|---|
-| `wbr_model` | `buffer`, `scan` | `scan` | Wrapper boundary register model used by the shell's `wrap` command: `buffer` is transparent, `scan` is a native shiftable WBR |
+| `enabled` | `true`, `false` | `false` | `ff.py scan` wraps the design first, then scans it: the wrapper's flops go on wrapper chains (`[scan] wrapper_chains`) and the scan manifest records the wrapper. A scan test holds the mode pins as its mode says: both at 0 for `sim --scan` (functional), INTEST at 1 and EXTEST at 0 for `intest`, the reverse for `extest`; a `[scan] hold` on a mode pin that disagrees is an error |
+| `clock` | a port name | the design's one clock | The port the wrapper's flops run on. A design with several clocks must name one; a block without flops gets it as a new input |
+| `intest_pin` | a port name | `wbr_intest` | The INTEST mode pin the wrapper adds |
+| `extest_pin` | a port name | `wbr_extest` | The EXTEST mode pin the wrapper adds |
+| `exclude` | comma list of globs on `port` or `port[bit]` | empty | Port bits left unwrapped; `*` and `?` are wildcards, brackets match themselves (`b[1]`, `b[*]`) |
+| `control` | `pins` | `pins` | How the mode is set: the two mode pins |
+| `wbr_model` | `buffer`, `scan` | `scan` | The abstract wrapper cells the shell's `wrap -model` puts on instead: `buffer` is transparent, `scan` is a native shiftable WBR |
 
 ## `[autombist]`
 

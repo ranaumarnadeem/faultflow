@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://faultflow.local/schemas/scan_manifest.schema.json",
   "title": "faultflow scan manifest",
+  "description": "What ff.py scan inserted (faultflow.scan.reports.manifest_from_result): the scanned netlist, its chains and scan cells, the flops left out and why, an IEEE 1500 wrapper when it has one, and the last scan-check. Later steps add their own entries (compression, compaction).",
   "type": "object",
   "required": [
     "version",
@@ -9,18 +10,23 @@
     "source_json",
     "generic_json",
     "generic_json_hash",
+    "techmap_verilog",
+    "sky130_verilog",
     "chain_count",
     "cell_count",
-    "clock_net",
+    "clock_nets",
     "scan_inputs",
     "scan_outputs",
     "scan_enable",
+    "max_chain_length",
+    "min_chain_length",
     "chains",
+    "wrapper_chains",
     "cells",
     "ineligible_ffs"
   ],
   "properties": {
-    "version": {"const": 1},
+    "version": {"const": 2},
     "top": {"type": "string", "minLength": 1},
     "source_json": {"type": "string"},
     "generic_json": {"type": "string"},
@@ -28,35 +34,21 @@
     "techmap_verilog": {"type": "string"},
     "sky130_verilog": {"type": ["string", "null"]},
     "chain_order_policy": {"type": "string"},
-    "chain_count": {"type": "integer", "minimum": 1},
-    "cell_count": {"type": "integer", "minimum": 1},
-    "clock_net": {"type": "integer"},
+    "chain_count": {"type": "integer", "minimum": 0},
+    "cell_count": {"type": "integer", "minimum": 0},
+    "clock_nets": {"type": "array", "items": {"type": "integer"}},
     "scan_inputs": {"type": "array", "items": {"type": "string"}},
     "scan_outputs": {"type": "array", "items": {"type": "string"}},
     "scan_enable": {"type": "string"},
     "min_chain_length": {"type": "integer", "minimum": 0},
     "max_chain_length": {"type": "integer", "minimum": 0},
-    "chains": {
+    "chains": {"type": "array", "items": {"$ref": "#/$defs/chain"}},
+    "wrapper_chains": {
+      "description": "The abstract $wbc_* wrapper's chain (wrap -model scan); empty otherwise.",
       "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["index", "scan_in", "scan_out", "length", "cells"],
-        "properties": {
-          "index": {"type": "integer", "minimum": 0},
-          "scan_in": {"type": "string"},
-          "scan_out": {"type": "string"},
-          "scan_in_net": {"type": "integer"},
-          "scan_out_net": {"type": "integer"},
-          "length": {"type": "integer", "minimum": 1},
-          "cells": {"type": "array", "items": {"type": "string"}},
-          "cell_records": {"type": "array"}
-        }
-      }
+      "items": {"$ref": "#/$defs/chain"}
     },
-    "cells": {
-      "type": "array",
-      "items": {"$ref": "#/$defs/scan_cell"}
-    },
+    "cells": {"type": "array", "items": {"$ref": "#/$defs/scan_cell"}},
     "ineligible_ffs": {
       "type": "array",
       "items": {
@@ -76,16 +68,43 @@
               "no_output_pin",
               "unknown_cell_type",
               "existing_scan_cell",
+              "wbr_scan_cell",
               "unsupported_ff_shape",
-              "multiple_clock_nets"
+              "multiple_clock_nets",
+              "nonscan_policy"
             ]
           }
         }
       }
     },
+    "wrapper": {
+      "description": "A wrapped block's wrapper record, or a composed SoC's, over its blocks'.",
+      "oneOf": [
+        {"$ref": "https://faultflow.local/schemas/wrapper.schema.json"},
+        {"$ref": "https://faultflow.local/schemas/soc_wrapper.schema.json"}
+      ]
+    },
     "latest_check": {"type": ["object", "null"]}
   },
   "$defs": {
+    "chain": {
+      "type": "object",
+      "required": ["index", "scan_in", "scan_out", "length", "cells"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "kind": {
+          "description": "core, or wrapper: an IEEE 1500 wrapper's boundary cells, in ring order.",
+          "enum": ["core", "wrapper"]
+        },
+        "scan_in": {"type": "string"},
+        "scan_out": {"type": "string"},
+        "scan_in_net": {"type": "integer"},
+        "scan_out_net": {"type": "integer"},
+        "length": {"type": "integer", "minimum": 1},
+        "cells": {"type": "array", "items": {"type": "string"}},
+        "cell_records": {"type": "array", "items": {"$ref": "#/$defs/scan_cell"}}
+      }
+    },
     "scan_cell": {
       "type": "object",
       "required": [

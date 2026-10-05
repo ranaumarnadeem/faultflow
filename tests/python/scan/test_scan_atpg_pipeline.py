@@ -151,7 +151,9 @@ def test_sim_scan_passes_scan_db_to_progressive_atpg(
         Runner, "_fingerprint", lambda self, netlist: _stub_fingerprint(netlist)
     )
     monkeypatch.setattr(
-        Runner, "_ensure_campaign", lambda self, conn, fp, scan=False: 1
+        Runner,
+        "_ensure_campaign",
+        lambda self, conn, fp, scan=False, campaign_type=None: 1,
     )
     monkeypatch.setattr(
         "faultflow.runner.runner.write_reports",

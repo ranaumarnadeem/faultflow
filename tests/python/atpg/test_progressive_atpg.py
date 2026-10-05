@@ -1442,7 +1442,9 @@ unsupported_cells = fail
         },
     )
     monkeypatch.setattr(
-        Runner, "_ensure_campaign", lambda self, conn, fp, scan=False: 1
+        Runner,
+        "_ensure_campaign",
+        lambda self, conn, fp, scan=False, campaign_type=None: 1,
     )
     monkeypatch.setattr(
         Runner,

@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://faultflow.local/schemas/soc_wrapper.schema.json",
+  "title": "faultflow SoC wrapper record (a composed SoC's scan manifest \"wrapper\")",
+  "description": "Every block's IEEE 1500 wrapper in a SoC composed from wrapped blocks (faultflow.project.soc_wrapper): each block's mode pins and the SoC inputs that set them, per mode the SoC inputs it holds, per net on a mode pin's path the value INTEST holds it at, and every boundary cell under its name and nets in the SoC, with its block.",
+  "type": "object",
+  "required": ["version", "control", "blocks", "mode_nets", "holds", "cells"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {"const": "faultflow_soc_wrapper_v1"},
+    "control": {"enum": ["pins"]},
+    "blocks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/block"}
+    },
+    "mode_nets": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[0-9]+$"},
+      "additionalProperties": {"enum": [0, 1]}
+    },
+    "holds": {
+      "type": "object",
+      "required": ["functional", "intest", "extest"],
+      "additionalProperties": false,
+      "properties": {
+        "functional": {"$ref": "#/$defs/held"},
+        "intest": {"$ref": "#/$defs/held"},
+        "extest": {"$ref": "#/$defs/held"}
+      }
+    },
+    "cells": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/cell"}
+    }
+  },
+  "$defs": {
+    "pin": {
+      "description": "A block's mode pin: the SoC input that sets it, and its net in the SoC.",
+      "type": "object",
+      "required": ["port", "net"],
+      "additionalProperties": false,
+      "properties": {
+        "port": {"type": "string", "minLength": 1},
+        "net": {"type": "integer"}
+      }
+    },
+    "block": {
+      "type": "object",
+      "required": ["block", "instance", "intest", "extest"],
+      "additionalProperties": false,
+      "properties": {
+        "block": {"type": "string", "minLength": 1},
+        "instance": {"type": "string", "minLength": 1},
+        "intest": {"$ref": "#/$defs/pin"},
+        "extest": {"$ref": "#/$defs/pin"}
+      }
+    },
+    "held": {
+      "type": "object",
+      "additionalProperties": {"enum": [0, 1]}
+    },
+    "cell": {
+      "type": "object",
+      "required": [
+        "block",
+        "label",
+        "side",
+        "index",
+        "mux",
+        "gate",
+        "ff",
+        "port",
+        "bit",
+        "sys_net",
+        "core_net",
+        "chain",
+        "position"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "block": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "side": {"enum": ["input", "output"]},
+        "index": {"type": "integer", "minimum": 0},
+        "mux": {"type": "string", "minLength": 1},
+        "gate": {"type": "string", "minLength": 1},
+        "ff": {"type": "string", "minLength": 1},
+        "port": {"type": "string", "minLength": 1},
+        "bit": {"type": "integer", "minimum": 0},
+        "sys_net": {"$ref": "https://faultflow.local/schemas/wrapper.schema.json#/$defs/net"},
+        "core_net": {"$ref": "https://faultflow.local/schemas/wrapper.schema.json#/$defs/net"},
+        "chain": {"type": "integer", "minimum": 0},
+        "position": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

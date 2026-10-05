@@ -137,21 +137,26 @@ COMMAND_HELP = {
     ),
     "wrap": CommandHelp(
         "Test Mode",
-        "wrap [-model scan|buffer] [-clock PORT] [-se PORT] [-si PORT] [-so PORT] "
+        "wrap [-clock PORT] [-exclude GLOBS] [-intest PIN] [-extest PIN] [-o PATH]\n"
+        "wrap -model scan|buffer [-clock PORT] [-se PORT] [-si PORT] [-so PORT] "
         "[-o PATH]",
-        "Inject IEEE 1500 WBR cells on the boundary ports",
-        "Adds wrapper boundary register (WBR) cells to every non-clock port of the "
-        "current synthesized netlist. 'scan' model (default) emits native shiftable "
-        "$wbc_*_scan_faultflow cells stitched into a dedicated wrapper chain with "
-        "ports wbr_si/wbr_so/wbr_se; 'buffer' model emits transparent "
-        "$wbc_*_faultflow cells (no extra scan ports). -clock names the port to "
-        "leave unwrapped (shared clock; default: clk). The wrapped netlist is "
-        "saved alongside the source and becomes the new active design; scan "
-        "insertion state is cleared. After wrapping, use set_testmode intest or "
-        "extest before add_scan / run_atpg.",
+        "Put an IEEE 1500 wrapper on the boundary ports",
+        "Puts a boundary cell -- a mux, a gate and a flop, all sky130 cells -- on "
+        "every data input and output bit of the current synthesized netlist, and "
+        "adds the two mode pins (-intest, -extest; default wbr_intest and "
+        "wbr_extest). Clocks and asynchronous clears and presets stay unwrapped, "
+        "and so do the ports -exclude names (globs on a port or port[bit], comma "
+        "or space separated). The flops run on -clock (default: the design's one "
+        "clock). With -model, the abstract wrapper cells instead: 'scan' native "
+        "shiftable $wbc_*_scan_faultflow cells on a wrapper chain "
+        "(wbr_si/wbr_so/wbr_se), 'buffer' transparent $wbc_*_faultflow cells; "
+        "-clock then names the port left unwrapped (default: clk). The wrapped "
+        "netlist is saved alongside the source and becomes the new active design; "
+        "scan insertion state is cleared.",
         "A synthesized Yosys JSON netlist.",
-        "wrap -model scan -clock clk\n"
-        "wrap -model scan -clock clk -se wbr_se -o /tmp/core_wrapped.json",
+        "wrap\n"
+        "wrap -clock clk -exclude test_* -o /tmp/core_wrapped.json\n"
+        "wrap -model scan -clock clk",
     ),
     "set_testmode": CommandHelp(
         "Test Mode",
@@ -173,18 +178,6 @@ COMMAND_HELP = {
         "Returns the active test mode (functional, intest, or extest).",
         "",
         "report_testmode",
-    ),
-    "retarget": CommandHelp(
-        "Test Mode",
-        "retarget -patterns PATH -soc_access PATH -block NAME -o PATH",
-        "Retarget a block's INTEST patterns onto a SoC scan path",
-        "Reads a block's exported INTEST scan patterns (from run_atpg "
-        "-export-patterns), places each pattern at its segment offsets on the "
-        "SoC chains described by the SoC-access manifest, and writes the "
-        "retargeted patterns to -o. No re-ATPG happens at the assembly level.",
-        "Exported block patterns and an SoC-access manifest.",
-        "retarget -patterns blkA_patterns.json -soc_access soc_access.json "
-        "-block blkA -o blkA_retargeted.json",
     ),
     "autombist_generate": CommandHelp(
         "Project",
@@ -312,8 +305,8 @@ COMMAND_HELP = {
         "ATPG (needs a fresh scan check). -tf broadside|los switches to "
         "transition-fault ATPG (los is scan-only). -serial_ref runs isolated "
         "serial-reference diagnostics without updating production coverage. "
-        "-export-patterns PATH writes scan pattern JSON, consumed by the "
-        "retarget command.",
+        "-export-patterns PATH writes scan pattern JSON, consumed by "
+        "write_patterns.",
         "A synthesized design; scan ATPG additionally requires a fresh scan check.",
         "run_atpg -sa -scan -max 20 -target 95",
     ),

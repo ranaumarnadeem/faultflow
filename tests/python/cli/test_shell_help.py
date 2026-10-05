@@ -27,11 +27,11 @@ def test_every_registered_command_has_help_and_vice_versa(tmp_path: Path) -> Non
     assert documented - registered == set(), "help entry/entries for unknown command(s)"
 
 
-def test_help_retarget_is_documented(tmp_path: Path) -> None:
-    text = str(_bridge(tmp_path).call("help", "retarget"))
+def test_help_write_patterns_is_documented(tmp_path: Path) -> None:
+    text = str(_bridge(tmp_path).call("help", "write_patterns"))
 
-    assert text.startswith("retarget")
-    assert "-patterns PATH -soc_access PATH -block NAME -o PATH" in text
+    assert text.startswith("write_patterns")
+    assert "-patterns <file.json> -o <file.stil> [-no_overlap]" in text
     assert "Requires:" in text
     assert "Example:" in text
 

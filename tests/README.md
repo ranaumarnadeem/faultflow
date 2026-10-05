@@ -22,7 +22,7 @@ tests/
 ├── python/               Python layer tests (pytest)
 │   ├── conftest.py       Shared fixtures: require_cpp_core, pytest markers
 │   ├── campaign_fixtures.py  Campaign setup helpers (imported by test files)
-│   ├── soc2_fixtures.py      SoC 2-block hierarchical test fixture data
+│   ├── soc_v2_fixtures.py    A 2-block wrapped SoC project (faultflow_project_v2)
 │   ├── db_v3_helpers.py      Database schema helpers
 │   ├── preflight_fixtures.py Reconvergent netlist + a fake OpenTestability preflight
 │   ├── scan_replay.py        Replays exported scan patterns on the sky130 cell models
@@ -157,13 +157,14 @@ IEEE 1500 wrapper boundary cell tests:
 - Wrapper port observation and control
 
 #### `project/`
-Hierarchical project aggregation and SoC retarget tests:
-- Block-as-top INTEST simulation
-- Assembly-level EXTEST fault simulation
-- Owning-role and handoff rules
-- Block-to-block boundary synchronization
-- Coverage aggregation across blocks
-- SoC retargeting from nominal to real blocks
+Hierarchical SoC project (`faultflow_project_v2`) and SoC retarget tests:
+- SoC composition from frozen block netlists (`assemble`), chain tracing, the SoC
+  wrapper record
+- Each block's INTEST and the SoC's EXTEST, run by the project flow
+- Fault identities across the composition, and the aggregation guards (no fault
+  counted twice, every handed-off fault owned or accounted for)
+- The chip number against a flat run of the same SoC
+- SoC retargeting
 
 #### Root-level tests
 Configuration, flow service, and orchestration tests:
@@ -284,7 +285,8 @@ wsl -e bash -c "cd /mnt/c/Users/Potato/Desktop/faultflow && source venv/bin/acti
 - Fixture and helper modules (no `test_` prefix):
   - `conftest.py` — pytest configuration, shared fixtures, marker definitions
   - `campaign_fixtures.py` — campaign and flow setup helpers
-  - `soc2_fixtures.py` — SoC 2-block hierarchical test data
+  - `soc_v2_fixtures.py` — a `faultflow_project_v2` SoC: two blocks Yosys
+    synthesizes, each wrapped (IEEE 1500) and scanned on its own, and their glue
   - `db_v3_helpers.py` — database schema and initialization helpers
   - `preflight_fixtures.py` — a reconvergent netlist and a fake OpenTestability
     `_preflight` that answers with real OT's records for it

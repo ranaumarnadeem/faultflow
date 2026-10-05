@@ -26,7 +26,7 @@ These apply to `init`, `sim`, `intest`, `extest`, `status`, `scan`, `scan-status
 | `--top NAME` | yes | — | Top module name |
 | `-c`, `--config PATH` | no | `config.ofs` | Path to the `.ofs` config file |
 
-`project`, `retarget`, `add-clock`, `shell`, and `run` each take a different shape
+`project`, `add-clock`, `shell`, and `run` each take a different shape
 of options — see their own sections below.
 
 ## `init`
@@ -58,11 +58,49 @@ command.
 | `--serial-ref` | Run isolated serial reference diagnostics; does not update production coverage. Cannot be combined with `--ext` |
 | `-t PCT` | Target coverage percent at which to stop ATPG (default: `[report] threshold`); must be in `(0, 100]` |
 | `--model {stuck-at,transition}` | Override `[fault_model] model` for this run. `transition` with `collapsing = true` is rejected |
-| `--export-patterns PATH` | Export scan ATPG patterns as JSON to `PATH` (requires `--scan`); input for `retarget --patterns` and `write-patterns --patterns` |
+| `--export-patterns PATH` | Export scan ATPG patterns as JSON to `PATH` (requires `--scan`); input for `write-patterns --patterns` |
 
 The `--ext` sidecar (`.bench`) is a BENCH-format netlist of the same circuit; faultflow
 reads it only to recover the primary-input ordering that the `.test` vector columns map
 onto.
+
+## `wrap`
+
+```bash
+python3 ff.py wrap --top <top> -c config.ofs [--dry-run]
+```
+
+Put an IEEE 1500 wrapper on the design's ports, as `[wrap]` says. Every data input
+and every output bit gets a boundary cell of three sky130 cells: a mux choosing the
+bit's functional value or the cell's flop, an and2b gate driving the bit's safe value
+(0) when the cell's side is decoupled, and a flop capturing the mux's output (scan
+insertion makes it a scan cell). Two mode pins choose the mode:
+
+| `intest` | `extest` | Mode | Input cells | Output cells |
+|---|---|---|---|---|
+| 0 | 0 | functional | pass the port bit to the core | pass the core's value to the port |
+| 1 | 0 | INTEST | drive the core from their flops, holding them | drive their ports at 0, capture the core |
+| 0 | 1 | EXTEST | drive the core at 0, capture their ports | drive their ports from their flops, holding them |
+
+Clocks and asynchronous clears and presets stay unwrapped. So do the ports or bits
+`[wrap] exclude` names. An input that reaches a clock, clear or preset only through
+other logic is refused, and so is an inout port: name it in `exclude`. The design
+must not be scanned yet.
+
+It writes `<top>_wrapped.json` and `<top>_wrapped.v` under `output/<top>/`, and the
+table of port bits (wrapped or not, and why) as `wrap.rpt`.
+
+| Option | Meaning |
+|---|---|
+| `--dry-run` | Only print which port bits get a boundary cell, and why |
+
+To scan a wrapped design, set `[wrap] enabled = true`: `ff.py scan` then wraps the
+netlist first and scans the result. The wrapper's flops go on chains of their own after
+the core's (`[scan] wrapper_chains`), and the scan manifest's `wrapper` entry records
+each boundary cell, its nets and its place on those chains. A scan test of the wrapped
+design holds both mode pins at 0, so it tests the core and the wrapper in functional
+mode; its patterns replay on the sky130 cells and export as STIL like any other. INTEST
+and EXTEST of this wrapper are `intest` and `extest`.
 
 ## `intest`
 
@@ -70,8 +108,31 @@ onto.
 python3 ff.py intest --top <top> -c config.ofs [options]
 ```
 
-IEEE 1500 INTEST: scan-integrated wrapper coverage of the core. Equivalent to
+IEEE 1500 INTEST: a scan test of the core through the wrapper. Equivalent to
 `sim --scan` with the test mode forced to `intest`.
+
+On the wrapper `ff.py wrap` puts on (`[wrap] enabled`), it is a scan test of the
+wrapped block with the INTEST mode pin held at 1 and the EXTEST one at 0: each input
+cell drives the core from its flop and holds that value, each output cell drives its
+port at 0 and captures the core. The block sits in its SoC, so whatever drives its
+wrapped inputs is unknown, and nothing observes its wrapped outputs. FaultFlow models
+that surroundings as a blackbox whose outputs are unknown, X:
+- A pattern sets no wrapped input and compares no wrapped output, and every credit
+  holds whatever the surroundings drive. The input cells' held muxes keep their
+  value out of the core, so it costs nothing.
+- A stuck-at that would let it in -- the INTEST mode pin, or an input cell's mux
+  select, stuck at 0 -- is `blackbox_unresolved` from the start. So is any fault
+  only the surroundings could test.
+- The system side of the wrapper is EXTEST's to test: each input cell's port bit,
+  each output cell's mux input from its flop, its gate's input from the mux and its
+  port bit, and the stuck-ats on a mode pin at the value EXTEST holds it from
+  (INTEST at 1, EXTEST at 0). INTEST leaves them to it, `excluded_wbr_decoupled`.
+
+With transition faults, launch-on-capture launches nothing at an input cell, which
+holds through launch and capture: a transition starting there needs the
+surroundings (`blackbox_unresolved`). Launch-on-shift launches it with the last
+shift. The coverage report's `wrapper` entry breaks the result down by part: the
+core, the boundary cells and the mode pins.
 
 | Option | Meaning |
 |---|---|
@@ -79,6 +140,7 @@ IEEE 1500 INTEST: scan-integrated wrapper coverage of the core. Equivalent to
 | `--clean` | Remove the `.faultflow/` internal workspace before the run; deliverables are kept. Needed when switching between `intest`/`extest` — test mode is part of the campaign fingerprint |
 | `--max ROUNDS` | Maximum progressive ATPG rounds (default: `[atpg] max_rounds`) |
 | `-t PCT` | Target coverage percent (default: `[report] threshold`) |
+| `--export-patterns PATH` | Export the scan patterns as JSON, for `write-patterns`. On the wrapper `ff.py wrap` puts on they replay on its sky130 cells with the wrapped inputs at X |
 
 ## `extest`
 
@@ -86,50 +148,139 @@ IEEE 1500 INTEST: scan-integrated wrapper coverage of the core. Equivalent to
 python3 ff.py extest --top <top> -c config.ofs [options]
 ```
 
-IEEE 1500 EXTEST: wrapper-boundary / interconnect coverage, with the core held
-safe (combinational ATPG on the fused boundary view). Takes the same options as
-`intest`.
+IEEE 1500 EXTEST: the wrapper's own test, at the block's ports. Takes the same
+options as `intest`.
+
+On the wrapper `ff.py wrap` puts on (`[wrap] enabled`), it is a scan test of the
+block's graybox, with the INTEST mode pin held at 0 and the EXTEST one at 1: each
+output cell drives its port from its flop and holds it, each input cell captures its
+port and keeps the core at 0. The graybox is the block's boundary cells; everything
+else, the core, is one blackbox whose outputs are unknown -- the held output cells'
+muxes keep them out, so the core costs nothing and none of its faults is graded:
+- The test shifts the wrapper chains alone. Each exported pattern says how long
+  (`shift_length`); the core's chains shift along, uncompared.
+- A stuck-at that would let the core out -- the EXTEST mode pin, or an output
+  cell's mux select, stuck at 0 -- is `blackbox_unresolved` from the start.
+- What INTEST owns (see `intest`) is left to it, `excluded_wbr_decoupled`.
+- The core's asynchronous resets are held inactive, as the block's own scan test
+  holds them.
+- It is a campaign of its own, beside INTEST's: switching between the two needs no
+  `--clean`.
+- At speed it launches on shift (`[fault_model] launch = los`): on capture it
+  launches nothing at the boundary, where the output cells hold and the input cells
+  capture the same port values twice, so `launch = loc` is refused.
+
+Otherwise -- the abstract wrapper of the shell's `wrap -model` -- it is
+combinational ATPG on the fused boundary view, with the core held safe, and exports
+no patterns.
 
 ## `project`
 
 ```bash
-python3 ff.py project -p project.json [--clean] [--max ROUNDS] [-t PCT]
+python3 ff.py project -p project.json [--clean] [--max ROUNDS] [-t PCT] [--export-patterns PATH]
 ```
 
-Hierarchical project flow: runs per-block INTEST plus an assembly EXTEST and
-aggregates one chip-level coverage number, driven by a project manifest JSON. This
-command takes **`-p`/`--project` instead of `--top`** — the manifest names the
-blocks and assembly itself.
+The hierarchical test of an SoC: each block's INTEST and the SoC's EXTEST, added
+into one chip coverage number in which every fault counts once. This command takes
+**`-p`/`--project` instead of `--top`** — the manifest names the blocks and the SoC.
 
 | Option | Required | Meaning |
 |---|---|---|
-| `-p`, `--project PATH` | yes | Project manifest JSON |
+| `-p`, `--project PATH` | yes | Project manifest JSON (`faultflow_project_v2`) |
 | `--clean` | no | Clean each scope's workspace before running |
 | `--max ROUNDS` | no | Maximum progressive ATPG rounds per scope |
 | `-t PCT` | no | Target coverage percent per scope |
+| `--export-patterns PATH` | no | Write the SoC's EXTEST patterns, as the composed SoC takes them (as STIL: `project write-patterns`) |
 
-## `retarget`
+Each block is wrapped and scanned on its own first: `[wrap] enabled = true`, then
+`ff.py scan` and `ff.py scan-check`. The project composes the SoC from those frozen
+scan netlists and the glue's RTL, never re-synthesizing across a block's boundary.
+The manifest (paths resolve against its directory):
+
+```json
+{ "schema": "faultflow_project_v2", "name": "soc2", "base_config": "config.ofs",
+  "blocks": [ {"name": "blkA", "top": "alu_acc", "soc_instance": "u_a",
+               "generic_json": "output/alu_acc/alu_acc_scan.json",
+               "scan_manifest": "output/alu_acc/.faultflow/manifests/scan_manifest.json"} ],
+  "soc": {"top": "soc_top", "rtl": "soc_glue.v", "hold": {"test_en": 1}} }
+```
+
+- `base_config` (default `config.ofs`): the cell map and Liberty the glue is
+  synthesized with, and the settings every scope runs with.
+- Each block: its `name`, its `top` module, `soc_instance` (its instance in the
+  glue), and what `ff.py scan` wrote for it (`generic_json`, `scan_manifest`).
+- `soc`: the glue's `top` and `rtl`; `hold` (optional), SoC inputs the SoC's tests
+  hold, beside `[scan] hold`.
+
+What the glue must do:
+- bring every block's chains to SoC pins, directly or through other blocks' chains;
+  each SoC chain is all wrapper flops or all core flops;
+- drive each block's mode pins (`wbr_intest`, `wbr_extest`) from SoC inputs,
+  through buffers or inverters at most;
+- share one scan enable, an SoC input;
+- be combinational.
+
+Blocks with scan compression or compaction are refused.
+
+The run:
+1. **Compose.** The glue is synthesized with each block as a blackbox, and each
+   block's cells are spliced in. The SoC's chains are traced on its cells; per mode,
+   the SoC inputs that set the blocks' mode pins are found; the SoC is scan-checked.
+2. **INTEST.** Each block's INTEST runs in its own workspace,
+   `output/<project>/<block>/`.
+3. **EXTEST.** The SoC's EXTEST runs in `output/<project>/soc/`, on the wrapper
+   chains alone: each block's core is a stub, and the glue and the boundary cells
+   are graded.
+4. **Aggregate.** A fault of the SoC stands for the block faults on its net (a wire
+   between two blocks' ports is both blocks' port stems) or is the glue's own. Each
+   scope owns the faults its own test grades and leaves the rest to the other mode
+   (`wbr_decoupled`). Three guards hold, or the run stops:
+   - the scopes are distinct;
+   - no fault is owned twice;
+   - every fault a scope leaves to another is owned there, or accounted for:
+     excluded by design, collapsed, proven redundant, or tied to a constant by the
+     glue.
+
+It writes `output/<project>/soc_coverage.json` (`faultflow_soc_coverage_v2`) and
+`soc_coverage.rpt`: the chip number, and per scope the faults it owns (and
+detects), leaves to the other mode, and excludes, and its total.
+
+A `faultflow_project_v1` manifest (the abstract wrapper's, with an `interconnect`)
+is refused, with what to write instead.
+
+### `project retarget`
 
 ```bash
-python3 ff.py retarget --patterns PATH --soc-access PATH --block NAME --out PATH
+python3 ff.py project retarget -p project.json --block NAME --out PATH
 ```
 
-Retarget a block's exported scan patterns (from `sim --scan --export-patterns`)
-onto a SoC scan path described by a SoC-access manifest. Writes a
-`faultflow_retargeted_v1` pattern file. No re-ATPG happens at the assembly level.
+A block's INTEST patterns, from the project's run, as the SoC takes them. They are
+written to `--out` as exported scan patterns, so `project write-patterns` writes
+their STIL. No ATPG runs at the top.
 
-| Option | Required | Meaning |
-|---|---|---|
-| `--patterns PATH` | yes | Block scan pattern JSON |
-| `--soc-access PATH` | yes | SoC access manifest JSON (`faultflow_soc_access_v1`) |
-| `--block NAME` | yes | Source block name |
-| `--out PATH` | yes | Output retargeted pattern file |
+- Each block chain is one piece of a SoC chain, as the run traced them. Each
+  pattern's load and expected unload go to those positions; every other position
+  is fill, loaded 0 and not compared.
+- The block inputs a pattern sets come from the SoC inputs that drive them,
+  through buffers and inverters. A pattern is refused if it sets one the glue
+  ties the other way, or drives from logic.
+- Every block is in INTEST: the SoC inputs that set the mode pins are held as the
+  run's wrapper record says. Each block's input cells hold, and its output cells
+  drive their safe 0, so nothing on the SoC's other inputs reaches this block's
+  flops.
+- Launching on shift, each block chain's head takes the bit before it on its SoC
+  chain. That fill bit is set to the pattern's launch bit; when the block chain
+  heads its SoC chain, the SoC chain's launch bit is set instead.
 
-```{note}
-The Tcl shell's equivalent command, also named `retarget`, uses single-dash
-Tcl-style flags (`-patterns`, `-soc_access`) instead of the CLI's
-`--patterns`/`--soc-access` — same operation, different flag syntax.
+### `project write-patterns`
+
+```bash
+python3 ff.py project write-patterns -p project.json --patterns PATH --out PATH [--no-overlap]
 ```
+
+The SoC's scan patterns -- its EXTEST's (`--export-patterns`) or a block's
+retargeted onto it -- as STIL: the cycles a tester applies to the composed SoC, as
+[`write-patterns`](#write-patterns) writes a chip's.
 
 ## `write-patterns`
 
@@ -203,7 +354,9 @@ Print the current coverage status from the campaign database.
 python3 ff.py scan --top <top> -c config.ofs [options]
 ```
 
-Insert and stitch generic scan chains.
+Insert and stitch generic scan chains. With `[wrap] enabled`, it puts the IEEE 1500
+wrapper on first (see `wrap`), and the wrapper's flops get wrapper chains on
+`wbr_si`/`wbr_so`.
 
 | Option | Meaning |
 |---|---|
@@ -398,6 +551,7 @@ side.
 | Operation | Tcl shell | Batch CLI |
 |---|---|---|
 | Load / synthesize | `read_netlist`, `synth` | implicit from `[design]` |
+| IEEE 1500 wrapper | `wrap` | `wrap` (`[wrap]`) |
 | Combinational ATPG | `run_atpg` | `sim` |
 | Insert scan | `add_scan` | `scan` |
 | Check scan | `check_scan` | `scan-check` |
@@ -408,8 +562,8 @@ side.
 | Status | `status` | `status` |
 | INTEST | `set_testmode intest` + scan flow + `run_atpg -scan` | `intest` |
 | EXTEST | `add_blackbox` ... + `set_testmode extest` + `run_atpg` | `extest` |
-| Hierarchical SoC | `flowscripts/hereichy_atpg.tcl` | `project` |
-| Retarget to SoC | `retarget -patterns ... -soc_access ...` | `retarget --patterns ... --soc-access ...` |
+| Hierarchical SoC (`faultflow_project_v2`) | *(shell has no equivalent)* | `project` |
+| Retarget a block's INTEST patterns onto its SoC | *(shell has no equivalent)* | `project retarget -p ... --block ... --out ...` |
 | Write patterns as STIL | `write_patterns -patterns ... -o ...` | `write-patterns --patterns ... -o ...` |
 | Declare a clock | `add_clock` (live session) | `add-clock` (edits `config.ofs`) |
 | DFT rule check | *(shell has no equivalent)* | `rule_check` |

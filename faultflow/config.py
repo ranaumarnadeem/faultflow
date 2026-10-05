@@ -322,6 +322,9 @@ class ScanConfig:
     # (scan.shift_controls): scan-check fails ("fail"), or passes with a warning
     # ("warn": the user has checked those resets).
     shift_controls: str = "fail"
+    # The IEEE 1500 wrapper's chains (faultflow.wrap): None, as many as keep each
+    # no longer than the longest core chain.
+    wrapper_chains: int | None = None
 
 
 @dataclass(frozen=True)
@@ -400,6 +403,23 @@ class JtagConfig:
 
 
 @dataclass(frozen=True)
+class WrapConfig:
+    """``[wrap]``: the IEEE 1500 wrapper ``ff.py wrap`` puts on the design's ports
+    (``faultflow.wrap``); ``enabled``: ``ff.py scan`` puts it on before inserting
+    scan. ``clock``: the port the wrapper's flops run on ("": the
+    design's one clock; a block without flops gets it as a new input). The two mode
+    pins it adds; ``exclude``, port or "port[bit]" globs it leaves unwrapped; and
+    ``control``, how the mode is set: "pins", the two mode pins."""
+
+    enabled: bool = False
+    clock: str = ""
+    intest_pin: str = "wbr_intest"
+    extest_pin: str = "wbr_extest"
+    exclude: tuple[str, ...] = ()
+    control: str = "pins"
+
+
+@dataclass(frozen=True)
 class TestpointConfig:
     opentest: Path = Path("opentest")
     metric: str = "scoap"
@@ -442,6 +462,7 @@ class FaultflowConfig:
     # adds the wrapper boundary register as a real scan chain — control/observe
     # points and fault sites differ, so it is part of the fingerprint.
     wbr_model: str = "scan"
+    wrap: WrapConfig = WrapConfig()
     # [autombist] manifest: the autoMBIST instance manifest the netlist was
     # built from (ff.py autombist-generate). The coverage report then breaks
     # coverage down by instance category. Report-only: not fingerprinted.
@@ -627,6 +648,30 @@ def _parse_scan(parser: ConfigParser) -> ScanConfig:
         nonscan_cells=nonscan_cells,
         hold=_parse_holds(parser, "scan"),
         shift_controls=shift_controls,
+        wrapper_chains=_optional_int(parser, "scan", "wrapper_chains"),
+    )
+
+
+def _parse_wrap(parser: ConfigParser) -> WrapConfig:
+    control = parser.get("wrap", "control", fallback="pins").strip().lower()
+    if control != "pins":
+        raise ConfigError(f"[wrap] control must be pins, got '{control}'")
+    intest = parser.get("wrap", "intest_pin", fallback="wbr_intest").strip()
+    extest = parser.get("wrap", "extest_pin", fallback="wbr_extest").strip()
+    if not intest or not extest or intest == extest:
+        raise ConfigError("[wrap] intest_pin and extest_pin must be two names")
+    exclude = tuple(
+        glob.strip()
+        for glob in parser.get("wrap", "exclude", fallback="").split(",")
+        if glob.strip()
+    )
+    return WrapConfig(
+        enabled=_bool(parser, "wrap", "enabled", False),
+        clock=parser.get("wrap", "clock", fallback="").strip(),
+        intest_pin=intest,
+        extest_pin=extest,
+        exclude=exclude,
+        control=control,
     )
 
 
@@ -962,6 +1007,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         ),
         test_mode=test_mode,
         wbr_model=wbr_model,
+        wrap=_parse_wrap(parser),
         autombist_manifest=_autombist_manifest(parser),
         jtag=_parse_jtag(parser),
         output_root=_optional_path(parser, "design", "output_root") or Path("output"),

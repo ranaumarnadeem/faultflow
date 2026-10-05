@@ -13,6 +13,7 @@ Two models, selected by ``wbr_model``:
 
 from __future__ import annotations
 
-from faultflow.wrap.ports import WrapError, wrap_ports
+from faultflow.wrap.errors import WrapError
+from faultflow.wrap.ports import wrap_ports
 
 __all__ = ["wrap_ports", "WrapError"]

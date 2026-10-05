@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://faultflow.local/schemas/wrapper.schema.json",
+  "title": "faultflow IEEE 1500 wrapper record (the scan manifest's \"wrapper\")",
+  "description": "The wrapper ff.py wrap put on a block (faultflow.wrap.record): how its mode is set, its mode pins and clock, and each boundary cell -- its port bit, its mux, gate and flop instances, its system-side and core-side nets, and its flop's place on the wrapper chains.",
+  "type": "object",
+  "required": ["version", "control", "intest", "extest", "clock", "cells"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {"const": "faultflow_wrapper_v1"},
+    "control": {"enum": ["pins"]},
+    "intest": {"$ref": "#/$defs/port"},
+    "extest": {"$ref": "#/$defs/port"},
+    "clock": {"$ref": "#/$defs/port"},
+    "cells": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/cell"}
+    }
+  },
+  "$defs": {
+    "port": {
+      "type": "object",
+      "required": ["port", "net"],
+      "additionalProperties": false,
+      "properties": {
+        "port": {"type": "string", "minLength": 1},
+        "net": {"type": "integer"}
+      }
+    },
+    "net": {
+      "description": "A net id, or the constant an output cell reads on a port bit the core ties.",
+      "oneOf": [{"type": "integer"}, {"enum": ["0", "1"]}]
+    },
+    "cell": {
+      "type": "object",
+      "required": [
+        "label",
+        "side",
+        "index",
+        "mux",
+        "gate",
+        "ff",
+        "port",
+        "bit",
+        "sys_net",
+        "core_net",
+        "chain",
+        "position"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "label": {"type": "string", "minLength": 1},
+        "side": {"enum": ["input", "output"]},
+        "index": {"type": "integer", "minimum": 0},
+        "mux": {"type": "string", "minLength": 1},
+        "gate": {"type": "string", "minLength": 1},
+        "ff": {"type": "string", "minLength": 1},
+        "port": {"type": "string", "minLength": 1},
+        "bit": {"type": "integer", "minimum": 0},
+        "sys_net": {"$ref": "#/$defs/net"},
+        "core_net": {"$ref": "#/$defs/net"},
+        "chain": {"type": "integer", "minimum": 0},
+        "position": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

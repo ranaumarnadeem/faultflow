@@ -176,75 +176,6 @@ def _block_a_json(
     }
 
 
-def _block_a_with_wbc(
-    net_clk: int = 2, net_a: int = 3, net_b: int = 4, net_y: int = 5
-) -> dict[str, Any]:
-    """block_a JSON with one extra `$wbc_in_scan_faultflow` cell wired like
-    `faultflow/wrap/ports.py`'s `_scan_cell` (CLK/FROM_SYS/CTI/SE/TO_CORE/CTO,
-    each a single-bit connection)."""
-    data = _block_a_json(net_clk, net_a, net_b, net_y)
-    module = data["modules"]["block_a"]
-    max_bit = max(
-        b
-        for cell in module["cells"].values()
-        for bits in cell["connections"].values()
-        for b in bits
-        if isinstance(b, int)
-    )
-    max_bit = max(max_bit, net_clk, net_a, net_b, net_y)
-    cti = max_bit + 1
-    se = max_bit + 2
-    to_core = max_bit + 3
-    cto = max_bit + 4
-    module["cells"]["__wi_a"] = {
-        "hide_name": 0,
-        "type": "$wbc_in_scan_faultflow",
-        "parameters": {},
-        "attributes": {
-            "faultflow_wbr": "input",
-            "faultflow_wbr_chain": "0",
-            "wbr_bit": "0",
-        },
-        "port_directions": {
-            "CLK": "input",
-            "FROM_SYS": "input",
-            "CTI": "input",
-            "SE": "input",
-            "TO_CORE": "output",
-            "CTO": "output",
-        },
-        "connections": {
-            "CLK": [net_clk],
-            "FROM_SYS": [net_a],
-            "CTI": [cti],
-            "SE": [se],
-            "TO_CORE": [to_core],
-            "CTO": [cto],
-        },
-    }
-    module["netnames"]["__wi_a_cti"] = {
-        "hide_name": 0,
-        "bits": [cti],
-        "attributes": {},
-    }
-    module["netnames"]["__wi_a_se"] = {
-        "hide_name": 0,
-        "bits": [se],
-        "attributes": {},
-    }
-    module["netnames"]["__wi_a_to_core"] = {
-        "hide_name": 0,
-        "bits": [to_core],
-        "attributes": {},
-    }
-    module["netnames"]["__wi_a_cto"] = {
-        "hide_name": 0,
-        "bits": [cto],
-        "attributes": {},
-    }
-    return data
-
-
 def _all_int_bits(module: dict[str, Any]) -> set[int]:
     out: set[int] = set()
     for port in module.get("ports", {}).values():
@@ -417,47 +348,44 @@ def test_compose_soc_splices_block_cells_with_remapped_nets() -> None:
     _assert_single_driver(module)
 
 
-# --------------------------------------------------------------------------- #
-# 3. compose_soc tags WBC cells for aggregation                               #
-# --------------------------------------------------------------------------- #
-
-
-def test_compose_soc_tags_wbc_cells_for_aggregation(tmp_path: Path) -> None:
+def test_compose_soc_tags_every_cell_and_returns_each_blocks_remap() -> None:
+    """tag_blocks: every spliced cell names its block and its own name there (only
+    then: compression and compaction compose without them). remaps: each block
+    net's composed net -- a boundary bit its glue net, an internal bit a fresh one."""
     glue = _glue_json({"clk": [2], "a": [3], "b": [9], "y": [8]})
-    block_a = _block_a_with_wbc(net_clk=2, net_a=3, net_b=4, net_y=5)
-
+    block_a = _block_a_json(net_clk=2, net_a=3, net_b=4, net_y=5)
+    remaps: dict[str, dict[int, int | str]] = {}
     result = compose_soc(
         glue_json=glue,
         soc_top="soc",
         blocks={"u_a": block_a},
         block_module={"u_a": "block_a"},
+        block_names={"u_a": "blkA"},
+        tag_blocks=True,
+        remaps=remaps,
     )
-
-    module = result["modules"]["soc"]
-    cells = module["cells"]
-    spliced_name = "u_a____wi_a"
-    assert spliced_name in cells
-    attrs = cells[spliced_name]["attributes"]
-    assert attrs["faultflow_block"] == "u_a"
-    assert isinstance(attrs["faultflow_block"], str)
-    assert attrs["faultflow_wbc"] == "__wi_a"
-    assert isinstance(attrs["faultflow_wbc"], str)
-
-    netlist_path = tmp_path / "soc_composed.json"
-    netlist_path.write_text(json.dumps(result), encoding="utf-8")
-
-    from faultflow.project.aggregate import _wbc_pin_index
-
-    index = _wbc_pin_index(netlist_path, "soc")
-    # The remapped TO_CORE net of the spliced WBC-in cell must be indexed with
-    # boundary_block == "u_a" and side == "in".
-    to_core_net = cells[spliced_name]["connections"]["TO_CORE"][0]
-    assert to_core_net in index
-    boundary_block, boundary_wbc, pin, side = index[to_core_net]
-    assert boundary_block == "u_a"
-    assert boundary_wbc == "__wi_a"
-    assert pin == "TO_CORE"
-    assert side == "in"
+    cells = result["modules"]["soc"]["cells"]
+    for name in ("c0", "c1"):
+        attributes = cells[f"u_a__{name}"]["attributes"]
+        assert (attributes["faultflow_block"], attributes["faultflow_cell"]) == (
+            "blkA",
+            name,
+        )
+    assert "faultflow_block" not in cells["g0"]["attributes"]
+    remap = remaps["u_a"]
+    assert (remap[2], remap[3], remap[4], remap[5]) == (2, 3, 9, 8)
+    internal = cells["u_a__c0"]["connections"]["X"][0]
+    assert remap[6] == internal and internal not in (2, 3, 8, 9, 13)
+    untagged = compose_soc(
+        glue_json=glue,
+        soc_top="soc",
+        blocks={"u_a": block_a},
+        block_module={"u_a": "block_a"},
+    )
+    assert (
+        "faultflow_cell"
+        not in untagged["modules"]["soc"]["cells"]["u_a__c0"]["attributes"]
+    )
 
 
 def test_compose_soc_tolerates_a_genuinely_unconnected_block_port_key_absent() -> None:
@@ -1523,118 +1451,3 @@ def test_assemble_soc_end_to_end(tmp_path: Path, require_cpp_core: None) -> None
         ["y"],
     )
     assert len(outputs) == len(vectors)
-
-
-# --------------------------------------------------------------------------- #
-# 6. assemble_soc graybox option (scan-model EXTEST DUT)                      #
-# --------------------------------------------------------------------------- #
-
-
-def test_assemble_soc_graybox_keeps_only_wbc_cells_and_tags_block_names(
-    tmp_path: Path, require_cpp_core: None
-) -> None:
-    """`assemble_soc(..., graybox=True, block_names=...)` must thread both options
-    through to `compose_soc` -- the EXTEST DUT keeps only each block's WBC ring
-    (dropping core + internal scan cells) and tags WBC cells with the CALLER's
-    canonical block name (not the glue instance name), so aggregation's canonical
-    keys line up with the block INTEST scope's own name."""
-    if shutil.which("yosys") is None:
-        pytest.skip("yosys is not available")
-
-    from faultflow.shell.session import ProjectSession
-    from faultflow.shell.tcl_bridge import TclBridge
-    from faultflow.wrap.ports import wrap_ports
-
-    def _build_scan_wrapped_block(name: str, op: str) -> Path:
-        rtl = tmp_path / f"{name}.v"
-        rtl.write_text(
-            f"module {name}(input clk, input a, input b, output y);\n"
-            f"  reg r;\n"
-            f"  always @(posedge clk) r <= a {op} b;\n"
-            f"  assign y = ~r;\n"
-            f"endmodule\n",
-            encoding="utf-8",
-        )
-        session = ProjectSession(output_root=tmp_path / "out" / name)
-        bridge = TclBridge(session)
-        bridge.call("read_netlist", str(rtl), "-top", name)
-        bridge.call("use_lib_cells", "sky130")
-        bridge.call("add_clock", "clk")
-        bridge.call("synth")
-        bridge.call("add_scan", "-chains", "1")
-
-        cfg = session.materialize_config()
-        scan_json = cfg.intermediate_dir / f"{name}_scan.json"
-        scanned = json.loads(scan_json.read_text(encoding="utf-8"))
-        wrapped = wrap_ports(scanned, name, wbr_model="scan")
-
-        out_path = tmp_path / f"{name}_wrapped.json"
-        out_path.write_text(json.dumps(wrapped), encoding="utf-8")
-        return out_path
-
-    block_a_path = _build_scan_wrapped_block("gblock_a", "&")
-    block_b_path = _build_scan_wrapped_block("gblock_b", "|")
-
-    soc_rtl = tmp_path / "gsoc.v"
-    soc_rtl.write_text(
-        "module gsoc(input clk, input a, input b, output y,\n"
-        "            input soc_wbr_se, input soc_wbr_si, output soc_wbr_so);\n"
-        "  wire w;\n"
-        "  wire a_scan_out, b_scan_out, wbr_mid;\n"
-        "  gblock_a u_a(\n"
-        "    .clk(clk), .a(a), .b(b), .y(w),\n"
-        "    .scan_en(1'b0), .scan_in(1'b0), .scan_out(a_scan_out),\n"
-        "    .CLK(clk), .wbr_se(soc_wbr_se), .wbr_si(soc_wbr_si), .wbr_so(wbr_mid)\n"
-        "  );\n"
-        "  gblock_b u_b(\n"
-        "    .clk(clk), .a(w), .b(b), .y(y),\n"
-        "    .scan_en(1'b0), .scan_in(1'b0), .scan_out(b_scan_out),\n"
-        "    .CLK(clk), .wbr_se(soc_wbr_se), .wbr_si(wbr_mid), .wbr_so(soc_wbr_so)\n"
-        "  );\n"
-        "endmodule\n",
-        encoding="utf-8",
-    )
-
-    liberty = ROOT / "cells" / "sky130" / "sky130_fd_sc_hd.lib"
-    if not liberty.exists():
-        candidates = list((ROOT / "cells" / "sky130").glob("*.lib"))
-        assert candidates, "no sky130 liberty file found for assemble_soc"
-        liberty = candidates[0]
-
-    output_json = tmp_path / "gsoc_graybox.json"
-    workdir = tmp_path / "gassemble_work"
-
-    result_path = assemble_soc(
-        soc_rtl=soc_rtl,
-        soc_top="gsoc",
-        liberty=liberty,
-        blocks={"u_a": block_a_path, "u_b": block_b_path},
-        block_module={"u_a": "gblock_a", "u_b": "gblock_b"},
-        output_json=output_json,
-        workdir=workdir,
-        graybox=True,
-        block_names={"u_a": "blkA", "u_b": "blkB"},
-    )
-    composed = json.loads(result_path.read_text(encoding="utf-8"))
-    module = composed["modules"]["gsoc"]
-
-    from faultflow.project.assemble import _WBC_CELL_TYPES
-
-    spliced = {
-        name: cell
-        for name, cell in module["cells"].items()
-        if name.startswith("u_a__") or name.startswith("u_b__")
-    }
-    assert spliced, "expected spliced-in block cells"
-    # Graybox: every spliced cell is a WBC cell -- no core/internal-scan cells.
-    for name, cell in spliced.items():
-        assert cell["type"] in _WBC_CELL_TYPES, f"{name}: non-WBC cell in graybox"
-
-    # block_names threaded through: tagged with the CALLER's canonical name, not
-    # the glue instance name ("u_a"/"u_b").
-    for name, cell in spliced.items():
-        block_tag = cell["attributes"]["faultflow_block"]
-        if name.startswith("u_a__"):
-            assert block_tag == "blkA"
-        else:
-            assert block_tag == "blkB"

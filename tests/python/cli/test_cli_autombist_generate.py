@@ -51,8 +51,7 @@ def test_autombist_generate_cli_writes_a_usable_ofs(
     out_dir = tmp_path / "out"
     # The stub above ignores --config entirely (it just copies the fixture),
     # but _handle_autombist_generate checks the config file exists before
-    # doing anything -- same guard pattern as _handle_retarget's --patterns
-    # check -- so a real (if unread) file is still required here.
+    # doing anything, so a real (if unread) file is still required here.
     config_path = tmp_path / "unused.yml"
     config_path.write_text("memory_name: unused\n", encoding="utf-8")
     rc = main(

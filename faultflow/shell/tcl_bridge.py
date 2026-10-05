@@ -47,7 +47,6 @@ class TclBridge:
             "add_tp": self._add_tp,
             "reject_tp": self._reject_tp,
             "wrap": self._wrap,
-            "retarget": self._retarget,
             "autombist_generate": self._autombist_generate,
             "list_memories": self._list_memories,
             "mbist_insert": self._mbist_insert,
@@ -561,94 +560,54 @@ proc {name} {{args}} {{
         return self.session.reject_tp()
 
     def _wrap(self, args: list[str]) -> Any:
+        """wrap [-clock PORT] [-exclude GLOBS] [-intest PIN] [-extest PIN] [-o PATH]:
+        the IEEE 1500 wrapper. With -model scan|buffer [-se/-si/-so PORT], the
+        abstract $wbc_* cells instead."""
+        from pathlib import Path as _Path
+
+        names = {
+            "-model": "wbr_model",
+            "-clock": "clock",
+            "-se": "scan_enable",
+            "-si": "scan_in",
+            "-so": "scan_out",
+            "-intest": "intest_pin",
+            "-extest": "extest_pin",
+        }
         kwargs: dict[str, object] = {}
         idx = 0
         while idx < len(args):
             flag = args[idx]
-            if flag == "-model":
-                if idx + 1 >= len(args):
-                    raise ShellError(
-                        "wrap: -model requires scan|buffer", "CONFIG", "INVALID_OPTION"
-                    )
-                kwargs["wbr_model"] = args[idx + 1]
-                idx += 2
-            elif flag == "-clock":
-                if idx + 1 >= len(args):
-                    raise ShellError(
-                        "wrap: -clock requires a port name", "CONFIG", "INVALID_OPTION"
-                    )
-                kwargs["clock"] = args[idx + 1]
-                idx += 2
-            elif flag == "-se":
-                if idx + 1 >= len(args):
-                    raise ShellError(
-                        "wrap: -se requires a port name", "CONFIG", "INVALID_OPTION"
-                    )
-                kwargs["scan_enable"] = args[idx + 1]
-                idx += 2
-            elif flag == "-si":
-                if idx + 1 >= len(args):
-                    raise ShellError(
-                        "wrap: -si requires a port name", "CONFIG", "INVALID_OPTION"
-                    )
-                kwargs["scan_in"] = args[idx + 1]
-                idx += 2
-            elif flag == "-so":
-                if idx + 1 >= len(args):
-                    raise ShellError(
-                        "wrap: -so requires a port name", "CONFIG", "INVALID_OPTION"
-                    )
-                kwargs["scan_out"] = args[idx + 1]
-                idx += 2
-            elif flag == "-o":
-                if idx + 1 >= len(args):
-                    raise ShellError(
-                        "wrap: -o requires a path", "CONFIG", "INVALID_OPTION"
-                    )
-                from pathlib import Path as _Path
-
-                kwargs["output"] = _Path(args[idx + 1])
-                idx += 2
-            else:
+            if flag not in names and flag not in ("-o", "-exclude"):
                 raise ShellError(
                     f"wrap: unknown option {flag!r}", "CONFIG", "INVALID_OPTION"
                 )
-        return self.session.wrap(**kwargs)  # type: ignore[arg-type]
-
-    def _retarget(self, args: list[str]) -> Any:
-        from pathlib import Path as _Path
-
-        kwargs: dict[str, object] = {}
-        flag_to_key = {
-            "-patterns": "patterns",
-            "-soc_access": "soc_access",
-            "-block": "block",
-            "-o": "out",
-        }
-        idx = 0
-        while idx < len(args):
-            flag = args[idx]
-            if flag in flag_to_key:
-                if idx + 1 >= len(args):
-                    raise ShellError(
-                        f"retarget: {flag} requires a value", "CONFIG", "MISSING_ARG"
-                    )
-                value = args[idx + 1]
-                key = flag_to_key[flag]
-                kwargs[key] = value if key == "block" else _Path(value)
-                idx += 2
+            if idx + 1 >= len(args):
+                raise ShellError(
+                    f"wrap: {flag} needs a value", "CONFIG", "INVALID_OPTION"
+                )
+            value = args[idx + 1]
+            if flag == "-o":
+                kwargs["output"] = _Path(value)
+            elif flag == "-exclude":
+                kwargs["exclude"] = tuple(value.replace(",", " ").split())
             else:
-                raise ShellError(
-                    f"retarget: unknown option {flag!r}", "CONFIG", "INVALID_OPTION"
-                )
-        for required in ("patterns", "soc_access", "block", "out"):
-            if required not in kwargs:
-                raise ShellError(
-                    f"retarget: -{required.replace('_', '_')} is required",
-                    "CONFIG",
-                    "MISSING_ARG",
-                )
-        return self.session.retarget(**kwargs)  # type: ignore[arg-type]
+                kwargs[names[flag]] = value
+            idx += 2
+        model_only = {"scan_enable", "scan_in", "scan_out"} & set(kwargs)
+        if "wbr_model" not in kwargs and model_only:
+            raise ShellError(
+                "wrap: -se, -si and -so go with -model", "CONFIG", "INVALID_OPTION"
+            )
+        if "wbr_model" in kwargs and {"exclude", "intest_pin", "extest_pin"} & set(
+            kwargs
+        ):
+            raise ShellError(
+                "wrap: -exclude, -intest and -extest go without -model",
+                "CONFIG",
+                "INVALID_OPTION",
+            )
+        return self.session.wrap(**kwargs)  # type: ignore[arg-type]
 
     def _autombist_generate(self, args: list[str]) -> Any:
         import shlex

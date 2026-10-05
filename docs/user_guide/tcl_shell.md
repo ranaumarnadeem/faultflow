@@ -79,10 +79,10 @@ shown by `help`. Run `help <command>` for the live version of this reference, or
 
 | Command | Summary |
 |---|---|
-| `wrap [-model scan\|buffer] [-clock PORT] [-se PORT] [-si PORT] [-so PORT] [-o PATH]` | Inject IEEE 1500 WBR cells on every non-clock boundary port. `scan` (default) emits native shiftable cells stitched into a dedicated wrapper chain (`wbr_si`/`wbr_so`/`wbr_se`); `buffer` emits transparent cells with no extra scan ports. `-clock` names the port left unwrapped (default `clk`). The wrapped netlist becomes the active design; scan insertion state is cleared. |
+| `wrap [-clock PORT] [-exclude GLOBS] [-intest PIN] [-extest PIN] [-o PATH]` | Put the IEEE 1500 wrapper on the boundary ports, as `ff.py wrap` does: a boundary cell of three sky130 cells on every data input and output bit, and the two mode pins (default `wbr_intest`, `wbr_extest`). Clocks, asynchronous clears and presets, and the bits `-exclude` names stay unwrapped. The flops run on `-clock` (default: the design's one clock). The wrapped netlist becomes the active design; scan insertion state is cleared. |
+| `wrap -model scan\|buffer [-clock PORT] [-se PORT] [-si PORT] [-so PORT] [-o PATH]` | The abstract wrapper cells instead: `scan` native shiftable cells stitched into a dedicated wrapper chain (`wbr_si`/`wbr_so`/`wbr_se`), `buffer` transparent cells. `-clock` names the port left unwrapped (default `clk`). |
 | `set_testmode functional\|intest\|extest` | Select the wrapper test mode. `intest` tests the core internals; `extest` tests the interconnect around the core. `intest`/`extest` are distinct campaigns and invalidate a resume vs. `functional`. |
 | `report_testmode` | Show the current wrapper test mode |
-| `retarget -patterns PATH -soc_access PATH -block NAME -o PATH` | Read a block's exported INTEST scan patterns (from `run_atpg -export-patterns`), place each at its segment offsets on the SoC chains described by the SoC-access manifest, and write the retargeted patterns to `-o`. No re-ATPG at the assembly level. |
 
 ### Test point
 
@@ -104,7 +104,7 @@ See [Test-point insertion](testpoints.md) for the full workflow.
 
 | Command | Summary |
 |---|---|
-| `run_atpg [-sa] [-scan] [-tf broadside\|los] [-serial_ref] [-max ROUNDS] [-target PERCENT] [-export-patterns PATH]` | Run native SAT ATPG. Combinational stuck-at by default; `-sa` is an accepted no-op (stuck-at is already the default). `-scan` runs scan-protocol ATPG (needs a fresh `add_scan` + `check_scan`). `-tf broadside` or `-tf los` switches to transition-fault ATPG (`los` is scan-only). `-serial_ref` runs isolated serial-reference diagnostics without updating production coverage. `-export-patterns PATH` writes scan pattern JSON (input to `retarget`). |
+| `run_atpg [-sa] [-scan] [-tf broadside\|los] [-serial_ref] [-max ROUNDS] [-target PERCENT] [-export-patterns PATH]` | Run native SAT ATPG. Combinational stuck-at by default; `-sa` is an accepted no-op (stuck-at is already the default). `-scan` runs scan-protocol ATPG (needs a fresh `add_scan` + `check_scan`). `-tf broadside` or `-tf los` switches to transition-fault ATPG (`los` is scan-only). `-serial_ref` runs isolated serial-reference diagnostics without updating production coverage. `-export-patterns PATH` writes scan pattern JSON (input to `write_patterns`). |
 | `run_jtag [-program PATH] [-verify] [-force] [-threads N] [-export PATH]` | Grade the scan campaign's faults with a JTAG network-integrity program played through the TAP (needs `run_atpg -scan` first); the batch CLI's `jtag`. The credit is reported beside the scan coverage. |
 | `status [-scan]` | Show coverage, classification, terminal reason, and timing. `-scan` reads the scan campaign. |
 | `report` | Regenerate the unified report (`report.rpt`) |
