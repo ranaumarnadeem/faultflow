@@ -25,10 +25,9 @@ module the C++ core can parse/normalize/compile/simulate unchanged — verified
 driver-clean by the ``check -assert`` guard in
 ``faultflow/integrations/autombist.py::synthesize_from_manifest``.
 
-WBC (IEEE-1500 wrapper boundary) cells copied from a block are re-tagged with
-``attributes["faultflow_block"]`` / ``attributes["faultflow_wbc"]`` (plain Python
-strings) so ``faultflow.project.aggregate._wbc_pin_index`` can recognize a
-spliced-in block's wrapper cells as boundary faults owned by that block.
+With ``tag_blocks``, every cell copied from a block is tagged with
+``attributes["faultflow_block"]`` / ``attributes["faultflow_cell"]`` (plain Python
+strings): the block it came from and its name there.
 """
 
 from __future__ import annotations
@@ -39,17 +38,6 @@ import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-
-from faultflow.scan.wbr_view import (
-    _WBR_IN_TYPES,
-    _WBR_OUT_TYPES,
-    _WBR_SCAN_IN_TYPES,
-    _WBR_SCAN_OUT_TYPES,
-)
-
-_WBC_CELL_TYPES = (
-    _WBR_IN_TYPES | _WBR_OUT_TYPES | _WBR_SCAN_IN_TYPES | _WBR_SCAN_OUT_TYPES
-)
 
 _TOP_ATTRS = ("1", "00000000000000000000000000000001", 1, True)
 
@@ -440,7 +428,6 @@ def compose_soc(
     blocks: dict[str, dict[str, Any]],
     block_module: dict[str, str],
     *,
-    graybox: bool = False,
     block_names: dict[str, str] | None = None,
     tag_blocks: bool = False,
     remaps: dict[str, dict[int, int | str]] | None = None,
@@ -456,14 +443,8 @@ def compose_soc(
     correct value everywhere, instead of a flat per-instance dict silently
     keeping only the last position written.
 
-    ``graybox``: splice ONLY each block's WBC (IEEE-1500 wrapper) cells, dropping
-    its core logic + internal scan FFs. This is the EXTEST view -- the wrapper
-    boundary + interconnect is the DUT, the core is held dead -- and it keeps the
-    fault set (and the scan manifest) free of dead-core noise / internal chains.
-
-    ``block_names``: instance -> the block's canonical name. WBC cells are tagged
-    ``faultflow_block`` with this name so aggregation's cross-scope fault keys line
-    up with the block INTEST scope's name; defaults to the instance name.
+    ``block_names``: instance -> the block's canonical name, the
+    ``faultflow_block`` tag ``tag_blocks`` puts on; defaults to the instance name.
 
     ``tag_blocks``: tag EVERY spliced cell ``faultflow_block`` (that name) and
     ``faultflow_cell`` (its name in the block), so a fault on it traces back to its
@@ -543,7 +524,6 @@ def compose_soc(
             module_data,
             inst,
             remap,
-            graybox=graybox,
             block_tag=names.get(inst, inst),
             tag_all=tag_blocks,
         )
@@ -612,7 +592,6 @@ def _splice_cells(
     inst: str,
     remap: dict[int, Any],
     *,
-    graybox: bool = False,
     block_tag: str | None = None,
     tag_all: bool = False,
 ) -> None:
@@ -624,20 +603,11 @@ def _splice_cells(
     for cell_name, cell in block_cells.items():
         if not isinstance(cell, dict):
             continue
-        cell_type = str(cell.get("type", ""))
-        is_wbc = cell_type in _WBC_CELL_TYPES
-        # Graybox EXTEST view: keep only the wrapper boundary cells (the DUT); the
-        # dead core's logic + internal scan FFs are dropped.
-        if graybox and not is_wbc:
-            continue
         new_cell = _deep_copy_cell(cell)
         new_cell["connections"] = {
             pin: _remap_bits(bits, remap)
             for pin, bits in new_cell["connections"].items()
         }
-        if is_wbc:
-            new_cell["attributes"]["faultflow_block"] = tag
-            new_cell["attributes"]["faultflow_wbc"] = cell_name
         if tag_all:
             new_cell["attributes"]["faultflow_block"] = tag
             new_cell["attributes"]["faultflow_cell"] = cell_name
@@ -677,7 +647,6 @@ def assemble_soc(
     output_json: Path,
     *,
     workdir: Path,
-    graybox: bool = False,
     block_names: dict[str, str] | None = None,
     tag_blocks: bool = False,
     remaps: dict[str, dict[int, int | str]] | None = None,
@@ -685,11 +654,8 @@ def assemble_soc(
     """Synthesize the SoC glue (blocks as blackboxes) and splice in each block's
     frozen JSON, producing one flat, single-top Yosys-JSON netlist at `output_json`.
 
-    ``graybox``/``block_names``/``tag_blocks``/``remaps`` are forwarded to
-    `compose_soc` unchanged -- see its docstring. Use ``graybox=True`` for a
-    scan-model EXTEST DUT (WBC ring only, dead core dropped) and ``block_names`` to
-    tag WBC cells with each block's canonical name (matching the block INTEST
-    scope) rather than its glue instance name.
+    ``block_names``/``tag_blocks``/``remaps`` are forwarded to `compose_soc`
+    unchanged -- see its docstring.
     """
     yosys = shutil.which("yosys")
     if yosys is None:
@@ -764,7 +730,6 @@ def assemble_soc(
         soc_top=soc_top,
         blocks=blocks_data,
         block_module=block_module,
-        graybox=graybox,
         block_names=block_names,
         tag_blocks=tag_blocks,
         remaps=remaps,

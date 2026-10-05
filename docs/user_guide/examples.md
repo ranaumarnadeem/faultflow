@@ -119,20 +119,18 @@ faultflow[my_soc_top:sky130]> status
 your block instance names, assembly netlist path, and clock port. The CLI
 equivalent is `python3 ff.py extest --top my_soc_top -c config.ofs`.
 
-## Hierarchical SoC: per-block INTEST + assembly EXTEST
+## Hierarchical SoC: per-block INTEST + SoC EXTEST
 
-For a chip with multiple wrapped blocks, `flowscripts/hereichy_atpg.tcl` drives
-the full flow: scan-insert and INTEST each block in turn, then run one assembly
-EXTEST, following a project manifest (`project_*.json`, schema
-`faultflow_project_v1`) that names each block and the assembly. The CLI
-equivalent is a single command once that manifest exists:
+For a chip built from several blocks, wrap and scan each block on its own
+(`[wrap] enabled = true`, then `ff.py scan` and `ff.py scan-check`), then name the
+blocks and the SoC's glue in a project manifest (schema `faultflow_project_v2`, see
+[`project`](running_without_shell.md#project)). One command composes the SoC, runs
+each block's INTEST and the SoC's EXTEST, and adds them into one chip coverage
+number, each fault counted once:
 
 ```bash
-python3 ff.py project -p project.json -t 95
+python3 ff.py project -p project.json -t 95 --export-patterns soc_extest.json
 ```
-
-`project` aggregates the per-block INTEST results and the assembly EXTEST result
-into one chip-level coverage number.
 
 ## More designs under `examples/`
 

@@ -177,20 +177,76 @@ no patterns.
 ## `project`
 
 ```bash
-python3 ff.py project -p project.json [--clean] [--max ROUNDS] [-t PCT]
+python3 ff.py project -p project.json [--clean] [--max ROUNDS] [-t PCT] [--export-patterns PATH]
 ```
 
-Hierarchical project flow: runs per-block INTEST plus an assembly EXTEST and
-aggregates one chip-level coverage number, driven by a project manifest JSON. This
-command takes **`-p`/`--project` instead of `--top`** — the manifest names the
-blocks and assembly itself.
+The hierarchical test of an SoC: each block's INTEST and the SoC's EXTEST, added
+into one chip coverage number in which every fault counts once. This command takes
+**`-p`/`--project` instead of `--top`** — the manifest names the blocks and the SoC.
 
 | Option | Required | Meaning |
 |---|---|---|
-| `-p`, `--project PATH` | yes | Project manifest JSON |
+| `-p`, `--project PATH` | yes | Project manifest JSON (`faultflow_project_v2`) |
 | `--clean` | no | Clean each scope's workspace before running |
 | `--max ROUNDS` | no | Maximum progressive ATPG rounds per scope |
 | `-t PCT` | no | Target coverage percent per scope |
+| `--export-patterns PATH` | no | Write the SoC's EXTEST patterns, as the composed SoC takes them |
+
+Each block is wrapped and scanned on its own first: `[wrap] enabled = true`, then
+`ff.py scan` and `ff.py scan-check`. The project composes the SoC from those frozen
+scan netlists and the glue's RTL, never re-synthesizing across a block's boundary.
+The manifest (paths resolve against its directory):
+
+```json
+{ "schema": "faultflow_project_v2", "name": "soc2", "base_config": "config.ofs",
+  "blocks": [ {"name": "blkA", "top": "alu_acc", "soc_instance": "u_a",
+               "generic_json": "output/alu_acc/alu_acc_scan.json",
+               "scan_manifest": "output/alu_acc/.faultflow/manifests/scan_manifest.json"} ],
+  "soc": {"top": "soc_top", "rtl": "soc_glue.v", "hold": {"test_en": 1}} }
+```
+
+- `base_config` (default `config.ofs`): the cell map and Liberty the glue is
+  synthesized with, and the settings every scope runs with.
+- Each block: its `name`, its `top` module, `soc_instance` (its instance in the
+  glue), and what `ff.py scan` wrote for it (`generic_json`, `scan_manifest`).
+- `soc`: the glue's `top` and `rtl`; `hold` (optional), SoC inputs the SoC's tests
+  hold, beside `[scan] hold`.
+
+What the glue must do:
+- bring every block's chains to SoC pins, directly or through other blocks' chains;
+  each SoC chain is all wrapper flops or all core flops;
+- drive each block's mode pins (`wbr_intest`, `wbr_extest`) from SoC inputs,
+  through buffers or inverters at most;
+- share one scan enable, an SoC input;
+- be combinational.
+
+Blocks with scan compression or compaction are refused.
+
+The run:
+1. **Compose.** The glue is synthesized with each block as a blackbox, and each
+   block's cells are spliced in. The SoC's chains are traced on its cells; per mode,
+   the SoC inputs that set the blocks' mode pins are found; the SoC is scan-checked.
+2. **INTEST.** Each block's INTEST runs in its own workspace,
+   `output/<project>/<block>/`.
+3. **EXTEST.** The SoC's EXTEST runs in `output/<project>/soc/`, on the wrapper
+   chains alone: each block's core is a stub, and the glue and the boundary cells
+   are graded.
+4. **Aggregate.** A fault of the SoC stands for the block faults on its net (a wire
+   between two blocks' ports is both blocks' port stems) or is the glue's own. Each
+   scope owns the faults its own test grades and leaves the rest to the other mode
+   (`wbr_decoupled`). Three guards hold, or the run stops:
+   - the scopes are distinct;
+   - no fault is owned twice;
+   - every fault a scope leaves to another is owned there, or accounted for:
+     excluded by design, collapsed, proven redundant, or tied to a constant by the
+     glue.
+
+It writes `output/<project>/soc_coverage.json` (`faultflow_soc_coverage_v2`) and
+`soc_coverage.rpt`: the chip number, and per scope the faults it owns (and
+detects), leaves to the other mode, and excludes, and its total.
+
+A `faultflow_project_v1` manifest (the abstract wrapper's, with an `interconnect`)
+is refused, with what to write instead.
 
 ## `retarget`
 
@@ -495,7 +551,7 @@ side.
 | Status | `status` | `status` |
 | INTEST | `set_testmode intest` + scan flow + `run_atpg -scan` | `intest` |
 | EXTEST | `add_blackbox` ... + `set_testmode extest` + `run_atpg` | `extest` |
-| Hierarchical SoC | `flowscripts/hereichy_atpg.tcl` | `project` |
+| Hierarchical SoC (`faultflow_project_v2`) | *(shell has no equivalent)* | `project` |
 | Retarget to SoC | `retarget -patterns ... -soc_access ...` | `retarget --patterns ... --soc-access ...` |
 | Write patterns as STIL | `write_patterns -patterns ... -o ...` | `write-patterns --patterns ... -o ...` |
 | Declare a clock | `add_clock` (live session) | `add-clock` (edits `config.ofs`) |

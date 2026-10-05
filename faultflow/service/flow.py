@@ -340,24 +340,31 @@ class FlowService:
         max_rounds: int | None = None,
         target_coverage: float | None = None,
         clean: bool = False,
+        export_patterns: Path | None = None,
     ) -> OperationResult:
-        """Run per-block INTEST + assembly EXTEST, then aggregate the chip number."""
-        from faultflow.project.aggregate import aggregate_project
-        from faultflow.project.manifest import load_project
-        from faultflow.project.orchestrator import run_project as orchestrate
+        """Build the SoC of a faultflow_project_v2 project, run each block's INTEST
+        and the SoC's EXTEST (its patterns exported to `export_patterns` when
+        given), then aggregate the chip number."""
+        from faultflow.config import load_config
+        from faultflow.project.manifest import load_soc_project
+        from faultflow.project.soc_flow import run_soc_project, soc_chip_coverage
         from faultflow.reporter.soc import write_soc_report
 
-        project = load_project(project_path)
+        project = load_soc_project(project_path)
         log.info("project start  name=%s blocks=%d", project.name, len(project.blocks))
-        scopes = orchestrate(
+        out_dir = (project.root / "output" / project.name).resolve()
+        scopes = run_soc_project(
             project,
+            load_config(project.base_config, project.soc.top),
             run_atpg=self.run_atpg,
+            check_scan=self.check_scan,
+            out=out_dir,
             max_rounds=max_rounds,
             target_coverage=target_coverage,
             clean=clean,
+            soc_patterns=export_patterns,
         )
-        chip = aggregate_project(project.name, scopes)
-        out_dir = (project.root / "output" / project.name).resolve()
+        chip = soc_chip_coverage(project, scopes)
         json_path, txt_path = write_soc_report(chip, out_dir)
         log.info(
             "project done  name=%s chip_coverage=%s",

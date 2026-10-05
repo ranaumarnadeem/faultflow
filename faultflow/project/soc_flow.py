@@ -78,7 +78,6 @@ def build_soc(project: SocProject, base: FaultflowConfig, out: Path) -> SocBuild
     modules: dict[str, str] = {}
     names: dict[str, str] = {}
     for block in project.blocks:
-        assert block.soc_instance is not None  # load_soc_project requires it
         manifest = _load(block.scan_manifest)
         if not isinstance(manifest.get("wrapper"), dict):
             raise ProjectError(
@@ -217,7 +216,6 @@ def run_soc_project(
     }
     blocks: dict[str, FaultflowConfig] = {}
     for block in project.blocks:
-        assert block.soc_instance is not None
         cfg = dataclasses.replace(
             base,
             top=block.top,

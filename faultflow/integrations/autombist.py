@@ -344,7 +344,7 @@ def load_autombist_manifest(path: str | Path) -> AutombistManifest:
 
     Every `sources` path resolves against the manifest FILE's own directory
     (`manifest_path.resolve().parent`), mirroring
-    `faultflow.project.manifest.ProjectManifest.root`'s exact convention --
+    `faultflow.project.manifest.load_soc_project`'s exact convention --
     deliberately never against the JSON's own `module_outdir` string, which is
     single-machine debris (an absolute path baked in wherever autoMBIST was
     originally run) and would make a manifest non-portable if trusted.

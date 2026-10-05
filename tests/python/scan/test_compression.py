@@ -139,7 +139,7 @@ def test_ring_generator_wrapper_verilog_passes_through_non_scan_in_ports() -> No
 
 
 @pytest.mark.unit
-def test_ring_generator_wrapper_verilog_declares_channel_bus_and_instantiates_core() -> (
+def test_ring_generator_wrapper_verilog_declares_channel_bus_and_instantiates_core() -> (  # noqa: E501
     None
 ):
     core_json = _tiny_two_chain_core_json()
@@ -254,9 +254,8 @@ def test_ring_generator_wrapper_verilog_rejects_missing_scan_enable_or_clock_por
 
 
 def _scan_ff_cell(clk: int, d: int, sdi: int, se: int, q: int) -> dict:
-    """A synthetic $scanff_faultflow cell, same shape stitch.py itself writes
-    (and the same convention tests/python/soc2_fixtures.py uses) -- Yosys
-    never sees this cell type (it's grafted in post-synthesis by compose_soc,
+    """A synthetic $scanff_faultflow cell, same shape stitch.py itself writes --
+    Yosys never sees this cell type (it's grafted in post-synthesis by compose_soc,
     never re-synthesized), so it doesn't need to be a real Liberty cell."""
     return {
         "hide_name": 0,
@@ -276,8 +275,8 @@ def _scan_ff_cell(clk: int, d: int, sdi: int, se: int, q: int) -> dict:
 
 def _real_two_chain_core_fixture() -> dict:
     """A real (not just a ports-dict stub), splice-able core netlist: 2
-    independent 1-FF scan chains via synthetic $scanff_faultflow cells, same
-    net-id-map documentation style as soc2_fixtures.py.
+    independent 1-FF scan chains via synthetic $scanff_faultflow cells; its
+    net ids:
 
     2=CLK 3=D 4=scan_en 5=Q(=scan_out_0, same net -- a 1-FF chain's serial
     output IS its own Q) 6=scan_in_0 10=scan_in_1 11=scan_out_1

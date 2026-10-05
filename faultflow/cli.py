@@ -163,12 +163,20 @@ def _parser() -> argparse.ArgumentParser:
     project = sub.add_parser(
         "project",
         help=(
-            "Hierarchical project: run per-block INTEST + assembly EXTEST and "
+            "Hierarchical project (faultflow_project_v2): compose the SoC from its "
+            "wrapped blocks, run each block's INTEST and the SoC's EXTEST, and "
             "aggregate one chip coverage number"
         ),
     )
     project.add_argument(
         "-p", "--project", type=Path, required=True, help="Project manifest JSON"
+    )
+    project.add_argument(
+        "--export-patterns",
+        dest="export_patterns",
+        type=Path,
+        metavar="PATH",
+        help="Export the SoC's EXTEST scan patterns as JSON (for write-patterns)",
     )
     project.add_argument("--clean", action="store_true", help="Clean scope workspaces")
     project.add_argument(
@@ -533,6 +541,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_rounds=args.max,
                     target_coverage=args.target_coverage,
                     clean=args.clean,
+                    export_patterns=args.export_patterns,
                 )
                 .message
             )
