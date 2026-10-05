@@ -94,6 +94,14 @@ table of port bits (wrapped or not, and why) as `wrap.rpt`.
 |---|---|
 | `--dry-run` | Only print which port bits get a boundary cell, and why |
 
+To scan a wrapped design, set `[wrap] enabled = true`: `ff.py scan` then wraps the
+netlist first and scans the result. The wrapper's flops go on chains of their own after
+the core's (`[scan] wrapper_chains`), and the scan manifest's `wrapper` entry records
+each boundary cell, its nets and its place on those chains. A scan test of the wrapped
+design holds both mode pins at 0, so it tests the core and the wrapper in functional
+mode; its patterns replay on the sky130 cells and export as STIL like any other. INTEST
+and EXTEST of this wrapper come next: for now `intest` and `extest` refuse it.
+
 ## `intest`
 
 ```bash
@@ -233,7 +241,9 @@ Print the current coverage status from the campaign database.
 python3 ff.py scan --top <top> -c config.ofs [options]
 ```
 
-Insert and stitch generic scan chains.
+Insert and stitch generic scan chains. With `[wrap] enabled`, it puts the IEEE 1500
+wrapper on first (see `wrap`), and the wrapper's flops get wrapper chains on
+`wbr_si`/`wbr_so`.
 
 | Option | Meaning |
 |---|---|

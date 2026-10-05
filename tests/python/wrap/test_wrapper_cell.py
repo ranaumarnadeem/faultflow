@@ -94,18 +94,33 @@ def _iverilog(modules: dict[str, Any], work: Path) -> list[list[str]]:
         ["yosys", "-q", "-p", f"read_json {netlist}; write_verilog -noattr {verilog}"],
         check=True,
     )
+    steps = [_steps(row) for row in ROWS]
+    return _simulate(verilog, list(modules), INPUTS, steps, work)
+
+
+def _simulate(
+    verilog: Path,
+    modules: list[str],
+    inputs: list[str],
+    sequences: list[list[dict[str, bool]]],
+    work: Path,
+) -> list[list[str]]:
+    """Each of ``modules`` in ``verilog``, driven through every sequence in turn on
+    ``inputs``, in iverilog on the sky130 models: per sampled step, each module's
+    out and q."""
+    work.mkdir(parents=True, exist_ok=True)
     lines = ["`timescale 1ns/1ps", "module tb;"]
-    lines.append("  reg " + ", ".join(INPUTS) + ";")
+    lines.append("  reg " + ", ".join(inputs) + ";")
     for k, name in enumerate(modules):
         lines.append(f"  wire out{k}, q{k};")
-        pins = ", ".join(f".{p}({p})" for p in INPUTS)
+        pins = ", ".join(f".{p}({p})" for p in inputs)
         lines.append(f"  {name} m{k} ({pins}, .out(out{k}), .q(q{k}));")
     shown = ", ".join(f"out{k}, q{k}" for k in range(len(modules)))
     lines.append("  initial begin")
-    for row in ROWS:
-        for number, step in enumerate(_steps(row)):
+    for sequence in sequences:
+        for number, step in enumerate(sequence):
             lines.append(
-                "    " + " ".join(f"{p} = {int(step[p])};" for p in INPUTS) + " #5;"
+                "    " + " ".join(f"{p} = {int(step[p])};" for p in inputs) + " #5;"
             )
             if number in SAMPLED:
                 lines.append(f'    $display("{"%b" * 2 * len(modules)}", {shown});')
@@ -242,3 +257,72 @@ def test_faultflow_detects_a_fault_in_the_cell_exactly_when_the_cells_do(
     }
     assert found[False] == on_cells
     assert on_cells, "the rows detect some of the cell's faults"
+
+
+SCANNED_INPUTS = [*INPUTS, "scan_en", "wbr_si"]
+# A scanned row: a row's four values, then scan enable and the scan input.
+SCANNED_ROWS = list(itertools.product((0, 1), repeat=6))
+
+
+def _scanned_steps(row: tuple[int, ...]) -> list[dict[str, bool]]:
+    se, sdi = bool(row[4]), bool(row[5])
+    steps = _steps(row[:4])
+    for number, step in enumerate(steps):
+        step["scan_en"] = se and number >= 2
+        step["wbr_si"] = sdi and number >= 2
+    return steps
+
+
+@pytest.mark.parametrize("side", SIDES)
+def test_scanned_and_techmapped_the_cell_still_does_what_its_spec_says(
+    side: str, tmp_path: Path, tools: None, require_cpp_core: None
+) -> None:
+    """Scan insertion makes the cell's flop a scan cell on a wrapper chain of its own
+    (wbr_si to wbr_so, on scan_en): every row of the spec, scan enable and scan
+    input included, holds in FaultFlow's simulator on the scanned netlist and in
+    iverilog on the sky130 cells the techmap makes of it."""
+    import _faultflow_core as core  # type: ignore[import-not-found]
+
+    from faultflow.scan import run_scan_techmap, stitch_scan_json, write_scan_techmap
+
+    source = tmp_path / "cell.json"
+    source.write_text(json.dumps(_one_cell(side)), encoding="utf-8")
+    scanned = tmp_path / "cell_scan.json"
+    result = stitch_scan_json(source, CELL_MAP, "wcell", scanned)
+    assert [(c.kind, c.scan_in, c.scan_out, c.length) for c in result.chains] == [
+        ("wrapper", "wbr_si", "wbr_so", 1)
+    ]
+    verilog = run_scan_techmap(
+        scanned,
+        write_scan_techmap(tmp_path / "map.v"),
+        tmp_path / "cell_scan.v",
+        "wcell",
+        tmp_path / "yosys.log",
+        tmp_path / "yosys.ys",
+    )
+    assert "sky130_fd_sc_hd__sdfxtp_1" in verilog.read_text(encoding="utf-8")
+    sequences = [_scanned_steps(row) for row in SCANNED_ROWS]
+    before = core.fault_free_sequence_outputs(
+        str(scanned),
+        str(CELL_MAP),
+        [sequence[:3] for sequence in sequences],
+        SCANNED_INPUTS,
+        OUTPUTS,
+    )
+    after = core.fault_free_sequence_outputs(
+        str(scanned), str(CELL_MAP), sequences, SCANNED_INPUTS, ["q"]
+    )
+    cells = _simulate(
+        verilog, ["wcell"], SCANNED_INPUTS, sequences, tmp_path / "iverilog"
+    )
+    assert len(cells) == 2 * len(SCANNED_ROWS)
+    for k, row in enumerate(SCANNED_ROWS):
+        out, next_q = spec(side, *row)
+        q = row[3]
+        assert (before[k]["out"], before[k]["q"], after[k]["q"]) == (
+            bool(out),
+            bool(q),
+            bool(next_q),
+        ), row
+        assert cells[2 * k] == [f"{out}{q}"], row
+        assert cells[2 * k + 1][0][1] == str(next_q), row

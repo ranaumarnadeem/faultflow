@@ -322,6 +322,9 @@ class ScanConfig:
     # (scan.shift_controls): scan-check fails ("fail"), or passes with a warning
     # ("warn": the user has checked those resets).
     shift_controls: str = "fail"
+    # The IEEE 1500 wrapper's chains (faultflow.wrap): None, as many as keep each
+    # no longer than the longest core chain.
+    wrapper_chains: int | None = None
 
 
 @dataclass(frozen=True)
@@ -402,11 +405,13 @@ class JtagConfig:
 @dataclass(frozen=True)
 class WrapConfig:
     """``[wrap]``: the IEEE 1500 wrapper ``ff.py wrap`` puts on the design's ports
-    (``faultflow.wrap``). ``clock``: the port the wrapper's flops run on ("": the
+    (``faultflow.wrap``); ``enabled``: ``ff.py scan`` puts it on before inserting
+    scan. ``clock``: the port the wrapper's flops run on ("": the
     design's one clock; a block without flops gets it as a new input). The two mode
     pins it adds; ``exclude``, port or "port[bit]" globs it leaves unwrapped; and
     ``control``, how the mode is set: "pins", the two mode pins."""
 
+    enabled: bool = False
     clock: str = ""
     intest_pin: str = "wbr_intest"
     extest_pin: str = "wbr_extest"
@@ -643,6 +648,7 @@ def _parse_scan(parser: ConfigParser) -> ScanConfig:
         nonscan_cells=nonscan_cells,
         hold=_parse_holds(parser, "scan"),
         shift_controls=shift_controls,
+        wrapper_chains=_optional_int(parser, "scan", "wrapper_chains"),
     )
 
 
@@ -660,6 +666,7 @@ def _parse_wrap(parser: ConfigParser) -> WrapConfig:
         if glob.strip()
     )
     return WrapConfig(
+        enabled=_bool(parser, "wrap", "enabled", False),
         clock=parser.get("wrap", "clock", fallback="").strip(),
         intest_pin=intest,
         extest_pin=extest,

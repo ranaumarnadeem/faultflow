@@ -8,10 +8,11 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 from faultflow.atpg import (
     PatternError,
@@ -78,8 +79,9 @@ from faultflow.scan.shift_controls import (
 from faultflow.scan.x_mask import XMask, launch_mode_key, mask_scan_view
 from faultflow.scan.yosys import json_to_verilog
 from faultflow.verify import IverilogVerifier, VerificationError
-from faultflow.wrap.block import WrapOptions, format_decisions, wrap_block
+from faultflow.wrap.block import WrapOptions, WrapResult, format_decisions, wrap_block
 from faultflow.wrap.errors import WrapError
+from faultflow.wrap.record import mode_holds, wrapper_record
 
 log = logging.getLogger(__name__)
 
@@ -627,6 +629,7 @@ class Runner:
     ) -> str:
         self.cfg.ensure_workspace()
         netlist = self._find_netlist()
+        wrapped = self._wrap_netlist(netlist) if self.cfg.wrap.enabled else None
         chains = self.cfg.scan.chains if scan_chains is None else scan_chains
         max_len = (
             self.cfg.scan.max_chain_length
@@ -639,21 +642,29 @@ class Runner:
         do_techmap = self.cfg.scan.run_techmap if run_techmap is None else run_techmap
 
         if dry_run:
-            try:
-                plan = plan_scan_json(
-                    netlist_json=netlist,
-                    cell_map_json=self.cfg.cell_lib,
-                    top=self.cfg.top,
-                    scan_chains=chains,
-                    max_chain_length=max_len,
-                    scan_in_base=si_base,
-                    scan_out_base=so_base,
-                    scan_enable=se_name,
-                    nonscan_cells=self.cfg.scan.nonscan_cells,
-                )
-            except ScanError as exc:
-                raise RunnerError(str(exc)) from exc
+            # The wrapped netlist only in a scratch file: a dry run writes nothing.
+            with tempfile.TemporaryDirectory() as scratch:
+                if wrapped is not None:
+                    netlist = Path(scratch) / f"{self.cfg.top}_wrapped.json"
+                    netlist.write_text(json.dumps(wrapped.netlist), encoding="utf-8")
+                try:
+                    plan = plan_scan_json(
+                        netlist_json=netlist,
+                        cell_map_json=self.cfg.cell_lib,
+                        top=self.cfg.top,
+                        scan_chains=chains,
+                        max_chain_length=max_len,
+                        scan_in_base=si_base,
+                        scan_out_base=so_base,
+                        scan_enable=se_name,
+                        nonscan_cells=self.cfg.scan.nonscan_cells,
+                        wrapper_chains=self.cfg.scan.wrapper_chains,
+                    )
+                except ScanError as exc:
+                    raise RunnerError(str(exc)) from exc
             return format_dry_run(plan)
+        if wrapped is not None:
+            netlist = self._write_wrapped(wrapped)[0]
 
         generic_json = generic_json_path or self.cfg.scan_json_path
         techmap_v = self.cfg.generated_scripts_dir / "faultflow_scanff_map.v"
@@ -672,6 +683,7 @@ class Runner:
                 scan_out_base=so_base,
                 scan_enable=se_name,
                 nonscan_cells=self.cfg.scan.nonscan_cells,
+                wrapper_chains=self.cfg.scan.wrapper_chains,
             )
             log.info(
                 "scan   inserted  %d chains  %d scan cells  %.1fs",
@@ -702,6 +714,19 @@ class Runner:
             raise RunnerError(str(exc)) from exc
 
         manifest = manifest_from_result(result, netlist, techmap_v, techmapped)
+        _, stitched = _json_top_module(generic_json, result.top)
+        chains_found = manifest.get("chains")
+        chain_rows = (
+            [c for c in chains_found if isinstance(c, dict)]
+            if isinstance(chains_found, list)
+            else []
+        )
+        try:
+            wrapper = wrapper_record(stitched, chain_rows)
+        except WrapError as exc:
+            raise RunnerError(str(exc)) from exc
+        if wrapper is not None:
+            manifest["wrapper"] = wrapper
         write_scan_artifacts(
             self.cfg.manifests_dir,
             scan_report_path or self.cfg.scan_report_path,
@@ -1165,7 +1190,21 @@ class Runner:
         also the wrapped netlist, as JSON and as Verilog, and the table as a
         report."""
         self.cfg.ensure_workspace()
-        netlist = self._find_netlist()
+        result = self._wrap_netlist(self._find_netlist())
+        if dry_run:
+            return format_decisions(result)
+        wrapped_json, verilog, report = self._write_wrapped(result)
+        inputs = sum(cell.side == "input" for cell in result.cells)
+        return (
+            f"wrap complete top={self.cfg.top} cells={len(result.cells)} "
+            f"inputs={inputs} outputs={len(result.cells) - inputs} "
+            f"clock={result.clock} intest={self.cfg.wrap.intest_pin} "
+            f"extest={self.cfg.wrap.extest_pin} "
+            f"json={wrapped_json} verilog={verilog} report={report}"
+        )
+
+    def _wrap_netlist(self, netlist: Path) -> WrapResult:
+        """``netlist`` with [wrap]'s IEEE 1500 wrapper on its ports."""
         options = WrapOptions(
             clock=self.cfg.wrap.clock,
             intest_pin=self.cfg.wrap.intest_pin,
@@ -1173,7 +1212,7 @@ class Runner:
             exclude=self.cfg.wrap.exclude,
         )
         try:
-            result = wrap_block(
+            return wrap_block(
                 json.loads(netlist.read_text(encoding="utf-8")),
                 self.cfg.top,
                 _load_json_object(self.cfg.cell_lib),
@@ -1181,9 +1220,10 @@ class Runner:
             )
         except WrapError as exc:
             raise RunnerError(str(exc)) from exc
-        table = format_decisions(result)
-        if dry_run:
-            return table
+
+    def _write_wrapped(self, result: WrapResult) -> tuple[Path, Path, Path]:
+        """The wrapped netlist as <top>_wrapped.json and <top>_wrapped.v, and its
+        table of port bits as wrap.rpt."""
         top = self.cfg.top
         wrapped_json = self.cfg.output_dir / f"{top}_wrapped.json"
         wrapped_json.write_text(json.dumps(result.netlist, indent=2), encoding="utf-8")
@@ -1197,14 +1237,26 @@ class Runner:
         except ScanError as exc:
             raise RunnerError(str(exc)) from exc
         report = self.cfg.output_dir / "wrap.rpt"
-        report.write_text(table + "\n", encoding="utf-8")
-        inputs = sum(cell.side == "input" for cell in result.cells)
-        return (
-            f"wrap complete top={top} cells={len(result.cells)} inputs={inputs} "
-            f"outputs={len(result.cells) - inputs} clock={result.clock} "
-            f"intest={options.intest_pin} extest={options.extest_pin} "
-            f"json={wrapped_json} verilog={verilog} report={report}"
-        )
+        report.write_text(format_decisions(result) + "\n", encoding="utf-8")
+        return wrapped_json, verilog, report
+
+    def _holds(self, manifest: Mapping[str, Any]) -> tuple[tuple[str, int], ...]:
+        """[scan] hold, and an IEEE 1500 wrapper's mode pins at the campaign's test
+        mode (faultflow.wrap.record.mode_holds)."""
+        try:
+            modes = mode_holds(manifest, str(self.cfg.test_mode))
+        except WrapError as exc:
+            raise RunnerError(str(exc)) from exc
+        user = dict(self.cfg.scan.hold)
+        for port, value in modes.items():
+            if port in user and user[port] != value:
+                raise RunnerError(
+                    f"[scan] hold {port}:{user[port]} contradicts the "
+                    f"{self.cfg.test_mode} mode, which holds the wrapper's mode pin "
+                    f"{port} at {value}"
+                )
+        extra = tuple((p, v) for p, v in modes.items() if p not in user)
+        return tuple(self.cfg.scan.hold) + extra
 
     def _composed_verilog(
         self, manifest: dict[str, Any], composed_json: Path, top: str, name: str
@@ -1783,7 +1835,7 @@ class Runner:
             module,
             manifest,
             _load_json_object(resolve_scan_cell_map(self.cfg)),
-            holds=dict(self.cfg.scan.hold),
+            holds=dict(self._holds(manifest)),
             nonscan=self._nonscan_setup(manifest, generic_json),
         )
 
@@ -2260,6 +2312,11 @@ class Runner:
                 f"scan manifest not found: {manifest_path}; run scan first"
             )
         manifest = load_manifest(manifest_path)
+        if "wrapper" in manifest and str(self.cfg.test_mode) != "functional":
+            raise RunnerError(
+                f"{self.cfg.test_mode} on the IEEE 1500 wrapper ff.py wrap puts on "
+                "isn't supported yet; its functional scan test is (sim --scan)"
+            )
         generic_json = Path(str(manifest["generic_json"]))
         if not generic_json.exists():
             raise RunnerError(f"generic scanned JSON not found: {generic_json}")
@@ -2619,7 +2676,8 @@ class Runner:
     ) -> NonscanSetup | None:
         """[scan] nonscan_cells and [scan] hold, checked against the scanned
         netlist (scan.nonscan), or None without either."""
-        if not self.cfg.scan.nonscan_cells and not self.cfg.scan.hold:
+        holds = self._holds(manifest)
+        if not self.cfg.scan.nonscan_cells and not holds:
             return None
         from faultflow.scan.detection_pipeline import _scan_reset_pi_holds
 
@@ -2631,7 +2689,7 @@ class Runner:
                 manifest,
                 cell_map,
                 globs=self.cfg.scan.nonscan_cells,
-                holds=self.cfg.scan.hold,
+                holds=holds,
                 scan_reset_holds=_scan_reset_pi_holds(
                     generic_json, self.cfg.top, cell_map
                 ),

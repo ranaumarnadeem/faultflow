@@ -239,6 +239,46 @@ def test_an_enable_flops_hold_gates_are_sky130_cells_too(
     assert cells and all(cell.startswith("sky130_fd_sc_hd__") for cell in cells)
 
 
+@pytest.mark.integration
+def test_a_wrapped_blocks_functional_patterns_unload_on_real_cells(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """With [wrap] enabled, ff.py scan puts the IEEE 1500 wrapper on first: a
+    boundary cell on d0, d1 and y, their flops on a chain of their own after the
+    core's. The functional scan test holds both mode pins at 0, and its patterns
+    unload on the cells -- the wrapper's sky130 cells among them."""
+    exported = _replay(
+        tmp_path, _ring(), "[wrap]\nenabled = true\n\n[scan]\nchains = 1\n"
+    )
+    assert exported
+    for pattern in exported:
+        assert pattern["capture_pi_values"]["wbr_intest"] is False
+        assert pattern["capture_pi_values"]["wbr_extest"] is False
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(tmp_path)
+        cfg = load_config(tmp_path / "chip.ofs", TOP)
+        manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+        verilog = Path(manifest["sky130_verilog"]).read_text(encoding="utf-8")
+    assert [(c["kind"], c["length"]) for c in manifest["chains"]] == [
+        ("core", 3),
+        ("wrapper", 3),
+    ]
+    wrapper = manifest["wrapper"]
+    assert (wrapper["intest"]["port"], wrapper["extest"]["port"]) == (
+        "wbr_intest",
+        "wbr_extest",
+    )
+    assert [(c["label"], c["side"], c["position"]) for c in wrapper["cells"]] == [
+        ("d0", "input", 0),
+        ("d1", "input", 1),
+        ("y", "output", 2),
+    ]
+    instances = re.findall(r"^[ \t]*(\S+)[ \t]+\S+[ \t]*\($", verilog, re.M)
+    cells = set(instances) - {"module"}
+    assert "sky130_fd_sc_hd__and2b_1" in cells
+    assert all(cell.startswith("sky130_fd_sc_hd__") for cell in cells)
+
+
 COMPRESSION = "[compression]\nenabled = true\nchannels = 8\n"
 COMPACTION = "[compaction]\nenabled = true\nchannels = 2\n"
 

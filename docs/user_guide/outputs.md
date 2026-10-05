@@ -11,6 +11,9 @@ output/<top>/
 ├── coverage.rpt           # human-readable coverage report
 ├── rule_check.rpt         # DFT rule-check report (rule_check command)
 ├── report.rpt             # unified report (shell `report` command)
+├── <top>_wrapped.v        # wrap deliverable: the design in its IEEE 1500 wrapper, sky130 cells
+├── <top>_wrapped.json     # the same, JSON
+├── wrap.rpt               # which port bits the wrapper wraps, and why
 ├── <top>_scan.v           # scan deliverable (after scan + techmap)
 ├── <top>_scan.json        # scanned generic JSON
 ├── <top>_compressed.v     # scan-compress deliverable: the decompressor around the design
@@ -21,7 +24,7 @@ output/<top>/
 └── .faultflow/            # internal workspace (removed by --clean)
     ├── faultflow.sqlite    # campaign database (combinational + scan)
     ├── logs/               # Yosys / nl2bench / quaigh logs
-    ├── manifests/
+    ├── manifests/          # scan_manifest.json
     ├── intermediate/       # <top>.json, <top>_gate.v, coverage_report.json
     ├── verification/       # iverilog verification reports
     └── generated_scripts/  # rendered yosys_synth.tcl
@@ -29,6 +32,19 @@ output/<top>/
 
 In OpenTestability oracle mode (`run`), an `oracle_response.json` is written to the
 output root.
+
+## `scan_manifest.json`
+
+What `ff.py scan` inserted, validated against
+[`schemas/scan_manifest.schema.json`](https://github.com/ranaumarnadeem/faultflow/blob/main/schemas/scan_manifest.schema.json):
+the scanned netlist and its sky130 Verilog, the scan ports, every chain (its `kind`,
+`core` or `wrapper`, its scan ports and its cells in shift order), every scan cell's
+nets, and the flip-flops left out of scan with the reason. A design scanned with
+`[wrap] enabled` also gets a `wrapper` entry
+([`schemas/wrapper.schema.json`](https://github.com/ranaumarnadeem/faultflow/blob/main/schemas/wrapper.schema.json)):
+its mode pins and clock, and per boundary cell its port bit, side, mux, gate and flop
+instances, the nets on its system and core sides, and its flop's chain and position.
+Later steps add their own entries (`latest_check`, `compression`, `compaction`).
 
 ## `coverage.rpt`
 
