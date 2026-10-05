@@ -156,8 +156,9 @@ class ScanPattern:
     load_care: tuple[tuple[int, int], ...] | None = None
     # Per chain, parallel to expected_unload: False where the expected bit is
     # don't-care -- a flop that captured a blackbox output's unknown value
-    # (faultflow.scan.x_mask) -- True where it is compared. Same convention as
-    # retarget.transform.SocScanPattern.unload_mask. None compares every bit.
+    # (faultflow.scan.x_mask), or a SoC position no block pattern retargeted
+    # there sets (faultflow.retarget) -- True where it is compared. None compares
+    # every bit.
     unload_mask: dict[int, list[bool]] | None = None
     # Scan-clock pulses before the load, scan enable off and the holds applied,
     # given before every pattern's load: they settle the non-scan flops the scan

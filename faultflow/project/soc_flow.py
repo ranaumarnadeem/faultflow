@@ -25,12 +25,18 @@ from faultflow.config import FaultflowConfig
 from faultflow.control_trace import Netlist
 from faultflow.project.assemble import assemble_soc
 from faultflow.project.chip import chip_manifest
-from faultflow.project.manifest import ProjectError, SocProject
+from faultflow.project.manifest import BlockSpec, ProjectError, SocProject
 from faultflow.project.soc_wrapper import soc_wrapper
+from faultflow.retarget import retarget_patterns
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.reports import hash_file
 from faultflow.scan.techmap import write_scan_techmap
 from faultflow.scan.yosys import run_scan_techmap
+from faultflow.wrap.record import mode_holds
+
+# Where each block's INTEST patterns are exported, in its scope's output directory:
+# what retargeting onto the SoC reads.
+INTEST_PATTERNS = "intest_patterns.json"
 
 
 @dataclass(frozen=True)
@@ -51,12 +57,14 @@ def _load(path: Path) -> dict[str, Any]:
     return data
 
 
-def build_soc(project: SocProject, base: FaultflowConfig, out: Path) -> SocBuild:
-    """Compose `project`'s SoC under `out`, and stage its scope's scan workspace:
-    the scan manifest (chains, wrappers) and the sky130 Verilog. The SoC's tests
-    hold the inputs ``soc.hold`` names, beside the base config's ``[scan] hold``."""
-    if base.liberty is None:
-        raise ProjectError("the SoC glue needs [design] liberty to synthesize")
+def project_output(project: SocProject) -> Path:
+    """Where ``ff.py project`` puts `project`'s scopes and its report."""
+    return (project.root / "output" / project.name).resolve()
+
+
+def soc_scope(project: SocProject, base: FaultflowConfig, out: Path) -> FaultflowConfig:
+    """The SoC's scope under `out`: its tests hold the inputs ``soc.hold`` names,
+    beside the base config's ``[scan] hold``."""
     hold = dict(base.scan.hold)
     for port, value in project.soc.hold:
         if hold.setdefault(port, value) != value:
@@ -71,7 +79,23 @@ def build_soc(project: SocProject, base: FaultflowConfig, out: Path) -> SocBuild
         test_mode="functional",
         scan=dataclasses.replace(base.scan, hold=tuple(hold.items())),
     )
-    cfg = dataclasses.replace(cfg, netlist=cfg.scan_json_path)
+    return dataclasses.replace(cfg, netlist=cfg.scan_json_path)
+
+
+def block_scope(base: FaultflowConfig, out: Path, block: BlockSpec) -> FaultflowConfig:
+    """`block`'s INTEST scope under `out`."""
+    cfg = dataclasses.replace(
+        base, top=block.top, output_root=out / block.name, test_mode="intest"
+    )
+    return dataclasses.replace(cfg, netlist=cfg.scan_json_path)
+
+
+def build_soc(project: SocProject, base: FaultflowConfig, out: Path) -> SocBuild:
+    """Compose `project`'s SoC under `out`, and stage its scope's scan workspace:
+    the scan manifest (chains, wrappers) and the sky130 Verilog."""
+    if base.liberty is None:
+        raise ProjectError("the SoC glue needs [design] liberty to synthesize")
+    cfg = soc_scope(project, base, out)
     cfg.ensure_workspace()
     blocks: dict[str, tuple[str, dict[str, Any]]] = {}
     paths: dict[str, Path] = {}
@@ -204,7 +228,8 @@ def run_soc_project(
     soc_patterns: Path | None = None,
 ) -> SocScopes:
     """Build the SoC, scan-check it, then run each block's INTEST, each in its own
-    workspace under `out`, and the SoC's EXTEST, its patterns exported to
+    workspace under `out`, its patterns exported there (INTEST_PATTERNS) for
+    :func:`retarget_block`, and the SoC's EXTEST, its patterns exported to
     `soc_patterns` when given. `run_atpg` and `check_scan` are the FlowService's."""
     build = build_soc(project, base, out)
     check_scan(build.cfg)
@@ -216,15 +241,9 @@ def run_soc_project(
     }
     blocks: dict[str, FaultflowConfig] = {}
     for block in project.blocks:
-        cfg = dataclasses.replace(
-            base,
-            top=block.top,
-            output_root=out / block.name,
-            test_mode="intest",
-        )
-        cfg = dataclasses.replace(cfg, netlist=cfg.scan_json_path)
+        cfg = block_scope(base, out, block)
         _stage_block(cfg, block.generic_json, block.scan_manifest)
-        run_atpg(cfg, **options)
+        run_atpg(cfg, **options, export_patterns=cfg.output_dir / INTEST_PATTERNS)
         blocks[block.soc_instance] = cfg
     soc = dataclasses.replace(build.cfg, test_mode="extest")
     if soc_patterns is not None:
@@ -233,38 +252,26 @@ def run_soc_project(
     return SocScopes(blocks, soc, build)
 
 
-def soc_chip_coverage(project: SocProject, scopes: SocScopes) -> Any:
-    """The chip number over the project's scopes (faultflow.project.soc_aggregate),
-    each SoC fault site traced to the block faults it stands for
-    (faultflow.project.identity)."""
-    from faultflow.project.identity import (
-        BlockSites,
-        merged_inputs,
-        soc_identities,
-        stem_key,
-    )
-    from faultflow.project.soc_aggregate import Scope, aggregate_soc
+def _core() -> Any:
     from faultflow.runner.runner import _load_core
 
     core = _load_core()
     if core is None:
         raise ProjectError("the C++ extension _faultflow_core is required")
-    soc = scopes.soc
-    cell_map = str(resolve_scan_cell_map(soc))
-    unsupported = soc.simulation.unsupported_cells
-    graybox = soc.intermediate_dir / f"{project.soc.top}_extest.json"
-    graybox_module = _load(graybox)["modules"][project.soc.top]
-    stubs = sorted(
-        name
-        for name, cell in graybox_module["cells"].items()
-        if cell.get("type") == "$faultflow_core"
-    )
-    soc_rows = list(core.list_site_keys(str(graybox), cell_map, unsupported, stubs))
-    sites: dict[str, BlockSites] = {}
-    tied: list[tuple[str, str]] = []
-    scope_list: list[Scope] = []
+    return core
+
+
+def block_sites(scopes: SocScopes) -> dict[str, Any]:
+    """Per block instance, its fault sites as faultflow.project.identity traces
+    them into the SoC (BlockSites): its scanned netlist's, its input nets, and its
+    net remap."""
+    from faultflow.project.identity import BlockSites
+
+    core = _core()
+    cell_map = str(resolve_scan_cell_map(scopes.soc))
+    unsupported = scopes.soc.simulation.unsupported_cells
+    sites: dict[str, Any] = {}
     for instance, cfg in scopes.blocks.items():
-        name = scopes.build.blocks[instance][0]
         module = _load(cfg.scan_json_path)["modules"][cfg.top]
         rows = tuple(
             dict(row)
@@ -279,20 +286,47 @@ def soc_chip_coverage(project: SocProject, scopes: SocScopes) -> Any:
             for bit in port["bits"]
             if isinstance(bit, int)
         )
-        remap = scopes.build.remaps[instance]
-        sites[instance] = BlockSites(name, rows, inputs, remap)
-        constants = {b for b, net in remap.items() if not isinstance(net, int)}
+        name = scopes.build.blocks[instance][0]
+        sites[instance] = BlockSites(name, rows, inputs, scopes.build.remaps[instance])
+    return sites
+
+
+def soc_chip_coverage(project: SocProject, scopes: SocScopes) -> Any:
+    """The chip number over the project's scopes (faultflow.project.soc_aggregate),
+    each SoC fault site traced to the block faults it stands for
+    (faultflow.project.identity)."""
+    from faultflow.project.identity import merged_inputs, soc_identities, stem_key
+    from faultflow.project.soc_aggregate import Scope, aggregate_soc
+
+    core = _core()
+    soc = scopes.soc
+    cell_map = str(resolve_scan_cell_map(soc))
+    unsupported = soc.simulation.unsupported_cells
+    graybox = soc.intermediate_dir / f"{project.soc.top}_extest.json"
+    graybox_module = _load(graybox)["modules"][project.soc.top]
+    stubs = sorted(
+        name
+        for name, cell in graybox_module["cells"].items()
+        if cell.get("type") == "$faultflow_core"
+    )
+    soc_rows = list(core.list_site_keys(str(graybox), cell_map, unsupported, stubs))
+    sites = block_sites(scopes)
+    tied: list[tuple[str, str]] = []
+    scope_list: list[Scope] = []
+    for instance, cfg in scopes.blocks.items():
+        site = sites[instance]
+        constants = {b for b, net in site.remap.items() if not isinstance(net, int)}
         tied += [
-            (name, str(row["site_key"]))
-            for row in rows
+            (site.name, str(row["site_key"]))
+            for row in site.rows
             if int(row["yosys_net_id"]) in constants
         ]
-        tied += [(name, stem_key(b)) for b in constants]
+        tied += [(site.name, stem_key(b)) for b in constants]
 
-        def own(key: str, name: str = name) -> list[tuple[str, str]]:
+        def own(key: str, name: str = site.name) -> list[tuple[str, str]]:
             return [(name, key)]
 
-        scope_list.append(Scope(name, cfg.db_path, "scan", own))
+        scope_list.append(Scope(site.name, cfg.db_path, "scan", own))
     identities = soc_identities(soc_rows, sites, stubs=stubs)
     scope_list.append(
         Scope(
@@ -306,3 +340,41 @@ def soc_chip_coverage(project: SocProject, scopes: SocScopes) -> Any:
     # glue ties to a constant: no fault of the chip.
     accounted = [*tied, *merged_inputs(sites, identities)]
     return aggregate_soc(project.name, scope_list, tied=accounted)
+
+
+def retarget_block(
+    project: SocProject, base: FaultflowConfig, out: Path, name: str, dest: Path
+) -> int:
+    """Block `name`'s INTEST patterns, which the project's run under `out`
+    exported, as the SoC takes them (faultflow.retarget), written to `dest`: how
+    many."""
+    block = next((b for b in project.blocks if b.name == name), None)
+    if block is None:
+        names = ", ".join(b.name for b in project.blocks)
+        raise ProjectError(f"project {project.name} has no block {name!r} ({names})")
+    cfg = block_scope(base, out, block)
+    soc = soc_scope(project, base, out)
+    patterns = cfg.output_dir / INTEST_PATTERNS
+    for path in (patterns, soc.scan_manifest_path):
+        if not path.exists():
+            raise ProjectError(f"run the project first: no {path}")
+    soc_manifest = _load(soc.scan_manifest_path)
+    holds = dict(soc.scan.hold)
+    for port, value in mode_holds(soc_manifest, "intest").items():
+        if holds.setdefault(port, value) != value:
+            raise ProjectError(
+                f"[scan] hold holds {port} at {holds[port]}, INTEST at {value}"
+            )
+    retargeted = retarget_patterns(
+        json.loads(patterns.read_text(encoding="utf-8")),
+        instance=block.soc_instance,
+        block_manifest=_load(cfg.scan_manifest_path),
+        block_module=_load(cfg.scan_json_path)["modules"][block.top],
+        soc_manifest=soc_manifest,
+        soc_module=_load(soc.scan_json_path)["modules"][project.soc.top],
+        cell_map=_load(resolve_scan_cell_map(soc)),
+        holds=holds,
+    )
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(retargeted, indent=2) + "\n", encoding="utf-8")
+    return len(retargeted)

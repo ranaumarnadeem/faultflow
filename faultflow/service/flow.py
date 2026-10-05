@@ -347,12 +347,16 @@ class FlowService:
         given), then aggregate the chip number."""
         from faultflow.config import load_config
         from faultflow.project.manifest import load_soc_project
-        from faultflow.project.soc_flow import run_soc_project, soc_chip_coverage
+        from faultflow.project.soc_flow import (
+            project_output,
+            run_soc_project,
+            soc_chip_coverage,
+        )
         from faultflow.reporter.soc import write_soc_report
 
         project = load_soc_project(project_path)
         log.info("project start  name=%s blocks=%d", project.name, len(project.blocks))
-        out_dir = (project.root / "output" / project.name).resolve()
+        out_dir = project_output(project)
         scopes = run_soc_project(
             project,
             load_config(project.base_config, project.soc.top),
@@ -391,6 +395,49 @@ class FlowService:
             ),
             artifacts={"soc_report": txt_path, "soc_json": json_path},
         )
+
+    def retarget_project(
+        self, project_path: Path, block: str, out: Path
+    ) -> OperationResult:
+        """Block `block`'s INTEST patterns, from the project's run, as the SoC
+        takes them: written to `out` as exported scan patterns."""
+        from faultflow.config import load_config
+        from faultflow.project.manifest import load_soc_project
+        from faultflow.project.soc_flow import project_output, retarget_block
+
+        project = load_soc_project(project_path)
+        count = retarget_block(
+            project,
+            load_config(project.base_config, project.soc.top),
+            project_output(project),
+            block,
+            out,
+        )
+        return OperationResult(
+            "retarget_project",
+            project.name,
+            f"retargeted {count} INTEST pattern(s) of block {block} onto "
+            f"{project.soc.top} -> {out}",
+            artifacts={"patterns": out},
+        )
+
+    def write_project_patterns(
+        self, project_path: Path, patterns: Path, output: Path, *, overlap: bool = True
+    ) -> OperationResult:
+        """The SoC's scan patterns (its EXTEST's, or a block's retargeted onto it)
+        as STIL, the cycles a tester applies to the composed SoC
+        (write_patterns)."""
+        from faultflow.config import load_config
+        from faultflow.project.manifest import load_soc_project
+        from faultflow.project.soc_flow import project_output, soc_scope
+
+        project = load_soc_project(project_path)
+        cfg = soc_scope(
+            project,
+            load_config(project.base_config, project.soc.top),
+            project_output(project),
+        )
+        return self.write_patterns(cfg, patterns, output, overlap=overlap)
 
     def write_report(self, cfg: FaultflowConfig) -> ReportResult:
         log.info("report  writing  top=%s ...", cfg.top)

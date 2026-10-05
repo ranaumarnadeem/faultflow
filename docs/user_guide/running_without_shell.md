@@ -26,7 +26,7 @@ These apply to `init`, `sim`, `intest`, `extest`, `status`, `scan`, `scan-status
 | `--top NAME` | yes | — | Top module name |
 | `-c`, `--config PATH` | no | `config.ofs` | Path to the `.ofs` config file |
 
-`project`, `retarget`, `add-clock`, `shell`, and `run` each take a different shape
+`project`, `add-clock`, `shell`, and `run` each take a different shape
 of options — see their own sections below.
 
 ## `init`
@@ -58,7 +58,7 @@ command.
 | `--serial-ref` | Run isolated serial reference diagnostics; does not update production coverage. Cannot be combined with `--ext` |
 | `-t PCT` | Target coverage percent at which to stop ATPG (default: `[report] threshold`); must be in `(0, 100]` |
 | `--model {stuck-at,transition}` | Override `[fault_model] model` for this run. `transition` with `collapsing = true` is rejected |
-| `--export-patterns PATH` | Export scan ATPG patterns as JSON to `PATH` (requires `--scan`); input for `retarget --patterns` and `write-patterns --patterns` |
+| `--export-patterns PATH` | Export scan ATPG patterns as JSON to `PATH` (requires `--scan`); input for `write-patterns --patterns` |
 
 The `--ext` sidecar (`.bench`) is a BENCH-format netlist of the same circuit; faultflow
 reads it only to recover the primary-input ordering that the `.test` vector columns map
@@ -140,7 +140,7 @@ core, the boundary cells and the mode pins.
 | `--clean` | Remove the `.faultflow/` internal workspace before the run; deliverables are kept. Needed when switching between `intest`/`extest` — test mode is part of the campaign fingerprint |
 | `--max ROUNDS` | Maximum progressive ATPG rounds (default: `[atpg] max_rounds`) |
 | `-t PCT` | Target coverage percent (default: `[report] threshold`) |
-| `--export-patterns PATH` | Export the scan patterns as JSON, for `write-patterns` and `retarget --patterns`. On the wrapper `ff.py wrap` puts on they replay on its sky130 cells with the wrapped inputs at X |
+| `--export-patterns PATH` | Export the scan patterns as JSON, for `write-patterns`. On the wrapper `ff.py wrap` puts on they replay on its sky130 cells with the wrapped inputs at X |
 
 ## `extest`
 
@@ -190,7 +190,7 @@ into one chip coverage number in which every fault counts once. This command tak
 | `--clean` | no | Clean each scope's workspace before running |
 | `--max ROUNDS` | no | Maximum progressive ATPG rounds per scope |
 | `-t PCT` | no | Target coverage percent per scope |
-| `--export-patterns PATH` | no | Write the SoC's EXTEST patterns, as the composed SoC takes them |
+| `--export-patterns PATH` | no | Write the SoC's EXTEST patterns, as the composed SoC takes them (as STIL: `project write-patterns`) |
 
 Each block is wrapped and scanned on its own first: `[wrap] enabled = true`, then
 `ff.py scan` and `ff.py scan-check`. The project composes the SoC from those frozen
@@ -248,28 +248,39 @@ detects), leaves to the other mode, and excludes, and its total.
 A `faultflow_project_v1` manifest (the abstract wrapper's, with an `interconnect`)
 is refused, with what to write instead.
 
-## `retarget`
+### `project retarget`
 
 ```bash
-python3 ff.py retarget --patterns PATH --soc-access PATH --block NAME --out PATH
+python3 ff.py project retarget -p project.json --block NAME --out PATH
 ```
 
-Retarget a block's exported scan patterns (from `sim --scan --export-patterns`)
-onto a SoC scan path described by a SoC-access manifest. Writes a
-`faultflow_retargeted_v1` pattern file. No re-ATPG happens at the assembly level.
+A block's INTEST patterns, from the project's run, as the SoC takes them. They are
+written to `--out` as exported scan patterns, so `project write-patterns` writes
+their STIL. No ATPG runs at the top.
 
-| Option | Required | Meaning |
-|---|---|---|
-| `--patterns PATH` | yes | Block scan pattern JSON |
-| `--soc-access PATH` | yes | SoC access manifest JSON (`faultflow_soc_access_v1`) |
-| `--block NAME` | yes | Source block name |
-| `--out PATH` | yes | Output retargeted pattern file |
+- Each block chain is one piece of a SoC chain, as the run traced them. Each
+  pattern's load and expected unload go to those positions; every other position
+  is fill, loaded 0 and not compared.
+- The block inputs a pattern sets come from the SoC inputs that drive them,
+  through buffers and inverters. A pattern is refused if it sets one the glue
+  ties the other way, or drives from logic.
+- Every block is in INTEST: the SoC inputs that set the mode pins are held as the
+  run's wrapper record says. Each block's input cells hold, and its output cells
+  drive their safe 0, so nothing on the SoC's other inputs reaches this block's
+  flops.
+- Launching on shift, each block chain's head takes the bit before it on its SoC
+  chain. That fill bit is set to the pattern's launch bit; when the block chain
+  heads its SoC chain, the SoC chain's launch bit is set instead.
 
-```{note}
-The Tcl shell's equivalent command, also named `retarget`, uses single-dash
-Tcl-style flags (`-patterns`, `-soc_access`) instead of the CLI's
-`--patterns`/`--soc-access` — same operation, different flag syntax.
+### `project write-patterns`
+
+```bash
+python3 ff.py project write-patterns -p project.json --patterns PATH --out PATH [--no-overlap]
 ```
+
+The SoC's scan patterns -- its EXTEST's (`--export-patterns`) or a block's
+retargeted onto it -- as STIL: the cycles a tester applies to the composed SoC, as
+[`write-patterns`](#write-patterns) writes a chip's.
 
 ## `write-patterns`
 
@@ -552,7 +563,7 @@ side.
 | INTEST | `set_testmode intest` + scan flow + `run_atpg -scan` | `intest` |
 | EXTEST | `add_blackbox` ... + `set_testmode extest` + `run_atpg` | `extest` |
 | Hierarchical SoC (`faultflow_project_v2`) | *(shell has no equivalent)* | `project` |
-| Retarget to SoC | `retarget -patterns ... -soc_access ...` | `retarget --patterns ... --soc-access ...` |
+| Retarget a block's INTEST patterns onto its SoC | *(shell has no equivalent)* | `project retarget -p ... --block ... --out ...` |
 | Write patterns as STIL | `write_patterns -patterns ... -o ...` | `write-patterns --patterns ... -o ...` |
 | Declare a clock | `add_clock` (live session) | `add-clock` (edits `config.ofs`) |
 | DFT rule check | *(shell has no equivalent)* | `rule_check` |

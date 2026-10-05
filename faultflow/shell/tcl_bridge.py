@@ -47,7 +47,6 @@ class TclBridge:
             "add_tp": self._add_tp,
             "reject_tp": self._reject_tp,
             "wrap": self._wrap,
-            "retarget": self._retarget,
             "autombist_generate": self._autombist_generate,
             "list_memories": self._list_memories,
             "mbist_insert": self._mbist_insert,
@@ -609,41 +608,6 @@ proc {name} {{args}} {{
                 "INVALID_OPTION",
             )
         return self.session.wrap(**kwargs)  # type: ignore[arg-type]
-
-    def _retarget(self, args: list[str]) -> Any:
-        from pathlib import Path as _Path
-
-        kwargs: dict[str, object] = {}
-        flag_to_key = {
-            "-patterns": "patterns",
-            "-soc_access": "soc_access",
-            "-block": "block",
-            "-o": "out",
-        }
-        idx = 0
-        while idx < len(args):
-            flag = args[idx]
-            if flag in flag_to_key:
-                if idx + 1 >= len(args):
-                    raise ShellError(
-                        f"retarget: {flag} requires a value", "CONFIG", "MISSING_ARG"
-                    )
-                value = args[idx + 1]
-                key = flag_to_key[flag]
-                kwargs[key] = value if key == "block" else _Path(value)
-                idx += 2
-            else:
-                raise ShellError(
-                    f"retarget: unknown option {flag!r}", "CONFIG", "INVALID_OPTION"
-                )
-        for required in ("patterns", "soc_access", "block", "out"):
-            if required not in kwargs:
-                raise ShellError(
-                    f"retarget: -{required.replace('_', '_')} is required",
-                    "CONFIG",
-                    "MISSING_ARG",
-                )
-        return self.session.retarget(**kwargs)  # type: ignore[arg-type]
 
     def _autombist_generate(self, args: list[str]) -> Any:
         import shlex

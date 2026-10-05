@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from faultflow.config import (
     ConfigError,
@@ -95,7 +96,7 @@ def _parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help=(
             "Export scan ATPG patterns as JSON to PATH (requires --scan); "
-            "input for `retarget --patterns`"
+            "input for `write-patterns`"
         ),
     )
 
@@ -136,7 +137,7 @@ def _parser() -> argparse.ArgumentParser:
             metavar="PATH",
             help=(
                 "Export the scan patterns as JSON to PATH; input for "
-                "`write-patterns` and `retarget --patterns`"
+                "`write-patterns`"
             ),
         )
 
@@ -165,18 +166,48 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "Hierarchical project (faultflow_project_v2): compose the SoC from its "
             "wrapped blocks, run each block's INTEST and the SoC's EXTEST, and "
-            "aggregate one chip coverage number"
+            "aggregate one chip coverage number; retarget a block's INTEST "
+            "patterns onto the SoC; write the SoC's patterns as STIL"
         ),
     )
     project.add_argument(
+        "action",
+        nargs="?",
+        choices=("run", "retarget", "write-patterns"),
+        default="run",
+        help="run (the default): the project's tests; retarget: a block's INTEST "
+        "patterns onto the SoC, from the run; write-patterns: the SoC's patterns "
+        "as STIL",
+    )
+    project.add_argument(
         "-p", "--project", type=Path, required=True, help="Project manifest JSON"
+    )
+    project.add_argument("--block", help="retarget: the block whose patterns")
+    project.add_argument(
+        "--patterns",
+        type=Path,
+        metavar="PATH",
+        help="write-patterns: the SoC's patterns (--export-patterns or retarget)",
+    )
+    project.add_argument(
+        "--out",
+        type=Path,
+        metavar="PATH",
+        help="retarget: the SoC patterns' JSON; write-patterns: the STIL file",
+    )
+    project.add_argument(
+        "--no-overlap",
+        action="store_true",
+        help="write-patterns: each pattern alone, its unload not overlapping the "
+        "next load",
     )
     project.add_argument(
         "--export-patterns",
         dest="export_patterns",
         type=Path,
         metavar="PATH",
-        help="Export the SoC's EXTEST scan patterns as JSON (for write-patterns)",
+        help="Export the SoC's EXTEST scan patterns as JSON (for project "
+        "write-patterns)",
     )
     project.add_argument("--clean", action="store_true", help="Clean scope workspaces")
     project.add_argument(
@@ -191,28 +222,6 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         metavar="PCT",
         help="Target coverage percent per scope",
-    )
-
-    retarget_p = sub.add_parser(
-        "retarget",
-        help="Retarget a block's exported scan patterns onto a SoC scan path",
-    )
-    retarget_p.add_argument(
-        "--patterns",
-        type=Path,
-        required=True,
-        help="Block scan pattern JSON (from run_atpg -export-patterns)",
-    )
-    retarget_p.add_argument(
-        "--soc-access",
-        dest="soc_access",
-        type=Path,
-        required=True,
-        help="SoC access manifest JSON (faultflow_soc_access_v1)",
-    )
-    retarget_p.add_argument("--block", required=True, help="Source block name")
-    retarget_p.add_argument(
-        "--out", type=Path, required=True, help="Output retargeted pattern file"
     )
 
     autombist_p = sub.add_parser(
@@ -527,7 +536,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "run":
             return _handle_run(args, parser)
+        if args.command == "project" and args.action != "run":
+            return _handle_project_action(args, parser)
         if args.command == "project":
+            if any(
+                value is not None for value in (args.block, args.patterns, args.out)
+            ):
+                parser.error(
+                    "--block, --patterns and --out are project retarget's and "
+                    "write-patterns'"
+                )
             if args.max is not None and args.max < 1:
                 parser.error("--max must be >= 1")
             if args.target_coverage is not None and not (
@@ -546,8 +564,6 @@ def main(argv: list[str] | None = None) -> int:
                 .message
             )
             return 0
-        if args.command == "retarget":
-            return _handle_retarget(args)
         if args.command == "autombist-generate":
             return _handle_autombist_generate(args)
         if args.command == "list-memories":
@@ -715,38 +731,20 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _handle_retarget(args: object) -> int:
-    import json
-
-    from faultflow.retarget.emit import pattern_to_dict, write_retargeted
-    from faultflow.retarget.soc_access import load_soc_access
-    from faultflow.retarget.transform import retarget_block_pattern
-    from faultflow.scan.pattern_export import scan_pattern_from_dict
-
-    patterns_path = Path(getattr(args, "patterns"))
-    block = str(getattr(args, "block"))
-    # Guard the patterns file the same way --soc-access is guarded, so a missing or
-    # malformed file gives a clean CLI error (caught in main -> exit 2) instead of a
-    # raw FileNotFoundError / JSONDecodeError traceback.
-    if not patterns_path.exists():
-        raise ConfigError(f"patterns file not found: {patterns_path}")
-    try:
-        raw = json.loads(patterns_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ConfigError(f"patterns file is not valid JSON: {patterns_path}: {exc}")
-    block_patterns = [scan_pattern_from_dict(d) for d in raw]
-    access = load_soc_access(Path(getattr(args, "soc_access")))
-    retargeted = [retarget_block_pattern(p, access, block) for p in block_patterns]
-    payload = {
-        "schema": "faultflow_retargeted_v1",
-        "assembly_top": access.assembly_top,
-        "source_block": block,
-        "patterns": [
-            pattern_to_dict(p, assembly_top=access.assembly_top) for p in retargeted
-        ],
-    }
-    written = write_retargeted(Path(getattr(args, "out")), payload)
-    print(f"retargeted {len(retargeted)} pattern(s) from {block!r} -> {written}")
+def _handle_project_action(args: Any, parser: argparse.ArgumentParser) -> int:
+    """ff.py project retarget / write-patterns: from the project's run."""
+    service = FlowService(runner_factory=Runner)
+    if args.action == "retarget":
+        if args.block is None or args.out is None:
+            parser.error("project retarget needs --block and --out")
+        result = service.retarget_project(args.project, args.block, args.out)
+    else:
+        if args.patterns is None or args.out is None:
+            parser.error("project write-patterns needs --patterns and --out")
+        result = service.write_project_patterns(
+            args.project, args.patterns, args.out, overlap=not args.no_overlap
+        )
+    print(result.message)
     return 0
 
 

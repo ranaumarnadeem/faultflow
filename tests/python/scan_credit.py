@@ -443,3 +443,89 @@ def compressed_credit_not_reproduced(
         ],
         "golden": golden_mismatches,
     }
+
+
+def soc_credit_not_reproduced(
+    block_cfg: Any,
+    soc_cfg: Any,
+    patterns_path: Path,
+    soc_sites: Mapping[str, Collection[str]],
+    environment: Collection[str],
+) -> list[tuple[str, str]]:
+    """For a block's INTEST patterns retargeted onto its SoC (`patterns_path`,
+    faultflow.retarget): the (block site key, fault type) of each fault the
+    block's INTEST campaign credits that they don't detect on the composed SoC,
+    in the full protocol, with the SoC inputs they leave unset (`environment`) all
+    at 0 and all at 1 -- at any of its SoC sites (`soc_sites`: block site key ->
+    the SoC's site keys that stand for it). A credit with no SoC site is listed."""
+    core = _load_core()
+    assert core is not None
+    manifest = json.loads(soc_cfg.scan_manifest_path.read_text(encoding="utf-8"))
+    generic = Path(str(manifest["generic_json"]))
+    top = str(manifest["top"])
+    cell_map = str(resolve_scan_cell_map(soc_cfg))
+    unsupported = soc_cfg.simulation.unsupported_cells
+    conn = sqlite3.connect(block_cfg.db_path)
+    (campaign,) = conn.execute(
+        "SELECT MAX(id) FROM campaigns WHERE campaign_type = 'scan'"
+    ).fetchone()
+    credited = [
+        (str(key), str(fault_type))
+        for key, fault_type in conn.execute(
+            "SELECT fault_site_key, fault_type FROM faults "
+            "WHERE campaign_id = ? AND status = 'detected'",
+            (campaign,),
+        ).fetchall()
+    ]
+    conn.close()
+    assert credited, "the block's campaign credits nothing"
+    index = build_site_key_index(core, generic, cell_map, unsupported, [])
+    specs: list[tuple[Any, Any]] = []
+    owners: list[int] = []
+    for number, (key, fault_type) in enumerate(credited):
+        for site in sorted(soc_sites.get(key, ())):
+            specs.append((index[site], fault_type_to_sa_code(fault_type)))
+            owners.append(number)
+    clock_ports = [
+        _port_name_for_net(generic, top, net, "input")
+        for net in manifest_clock_net_ids(manifest)
+    ]
+    patterns = [
+        scan_pattern_from_dict(raw)
+        for raw in json.loads(patterns_path.read_text(encoding="utf-8"))
+    ]
+    reproduced: list[set[int]] = []
+    for level in (False, True):
+        given = dict.fromkeys(environment, level)
+        found: set[int] = set()
+        for pattern in patterns:
+            assert not set(given) & set(pattern.capture_pi_values), "it's set"
+            result = core.simulate_scan_protocol_faults(
+                str(generic),
+                cell_map,
+                clock_ports,
+                scan_enable_port=str(manifest["scan_enable"]),
+                scan_input_ports=[str(p) for p in manifest["scan_inputs"]],
+                scan_output_ports=[str(p) for p in manifest["scan_outputs"]],
+                functional_output_ports=[],
+                max_chain_length=int(manifest["max_chain_length"]),
+                load_seqs=pattern.load_seqs,
+                capture_pi_values={**pattern.capture_pi_values, **given},
+                faults=specs,
+                unsupported_policy=unsupported,
+                loc_two_capture=pattern.launch == "loc",
+                los_two_capture=pattern.launch == "los",
+                los_launch_scan_in=pattern.launch_scan_in,
+                unload_mask=pattern.unload_mask or {},
+                preamble_cycles=pattern.preamble_cycles,
+                shift_pi_values=pattern.shift_pi_values,
+            )
+            found |= {
+                owners[int(dict(lane)["fault_index"])]
+                for batch in result["batches"]
+                for lane in batch["lanes"]
+                if dict(lane)["outcome"] == "pass"
+            }
+        reproduced.append(found)
+    both = reproduced[0] & reproduced[1]
+    return [credited[i] for i in range(len(credited)) if i not in both]

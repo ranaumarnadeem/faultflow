@@ -146,9 +146,9 @@ For a chip built from several wrapped blocks, `faultflow/project/` composes the 
 from the blocks' frozen scan netlists (`assemble.py`), runs each block's INTEST and
 the SoC's EXTEST (`soc_flow.py`), and adds them into one chip coverage number with
 each fault counted once (`identity.py`, `soc_aggregate.py`) — the `project` CLI
-command runs it. Block-level
-scan patterns can also be retargeted onto an SoC-level scan path (`faultflow/retarget/`)
-without re-running ATPG. See [Flow recipes](../user_guide/examples.md) for worked
+command runs it. Each
+block's INTEST patterns can also be retargeted onto the SoC's chains
+(`faultflow/retarget/`, `project retarget`) without re-running ATPG. See [Flow recipes](../user_guide/examples.md) for worked
 examples of both.
 
 ## The fault model

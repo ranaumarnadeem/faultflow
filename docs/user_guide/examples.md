@@ -132,6 +132,14 @@ number, each fault counted once:
 python3 ff.py project -p project.json -t 95 --export-patterns soc_extest.json
 ```
 
+Then each block's INTEST patterns, as the SoC takes them, with no ATPG at the top,
+and their STIL:
+
+```bash
+python3 ff.py project retarget -p project.json --block blkA --out blkA_on_soc.json
+python3 ff.py project write-patterns -p project.json --patterns blkA_on_soc.json --out blkA_on_soc.stil
+```
+
 ## More designs under `examples/`
 
 Beyond `cla4` and `serial_adder`, the repository ships additional RTL to grade

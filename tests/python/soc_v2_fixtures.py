@@ -101,16 +101,19 @@ def scanned_block(work: Path, rtl: str, top: str) -> tuple[Path, Path]:
 
 
 def write_soc_v2(
-    root: Path, name: str = "soc2", hold: dict[str, int] | None = None
+    root: Path,
+    name: str = "soc2",
+    hold: dict[str, int] | None = None,
+    base: str = "",
 ) -> Path:
     """The two blocks built under `root`, the glue and the base config written
-    there, and the project manifest naming them (the SoC inputs `hold` names held
-    in the SoC's tests): its path."""
+    there (`base`: its sections beyond [design]), and the project manifest naming
+    them (the SoC inputs `hold` names held in the SoC's tests): its path."""
     a_json, a_manifest = scanned_block(root / "blkA", ALU_RTL, "alu_acc")
     b_json, b_manifest = scanned_block(root / "blkB", CTR_RTL, "ctr_fsm")
     glue = root / "soc_glue.v"
     glue.write_text(GLUE_RTL, encoding="utf-8")
-    base_ofs(root / "config.ofs", glue)
+    base_ofs(root / "config.ofs", glue, base)
     project: dict[str, Any] = {
         "schema": "faultflow_project_v2",
         "name": name,

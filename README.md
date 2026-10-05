@@ -103,8 +103,8 @@ modes, hierarchical SoC aggregation, and scan-pattern retargeting:
 ```bash
 python3 ff.py intest   --top <top> -c config.ofs     # IEEE-1500 INTEST (core)
 python3 ff.py extest   --top <top> -c config.ofs     # IEEE-1500 EXTEST (interconnect)
-python3 ff.py project  -p project.json                # per-block INTEST + assembly EXTEST -> one chip number
-python3 ff.py retarget --patterns p.json --soc-access a.json --block blkA --out out.json
+python3 ff.py project  -p project.json                # per-block INTEST + SoC EXTEST -> one chip number
+python3 ff.py project retarget -p project.json --block blkA --out blkA_on_soc.json
 python3 ff.py add-clock clk -c config.ofs             # declare a clock domain in config.ofs
 ```
 
