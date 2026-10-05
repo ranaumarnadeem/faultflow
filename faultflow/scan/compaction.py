@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from faultflow.project.assemble import assemble_soc
-from faultflow.scan.compression import Decompressor, decompressor_verilog
+from faultflow.scan.compression import ContinuousDecompressor, Decompressor
 
 
 def _port_decl(name: str, direction: str, width: int) -> str:
@@ -86,7 +86,7 @@ def compactor_wrapper_verilog(
     wrapper_module: str,
     channel_port: str = "tdo",
     instance_name: str = "core_inst",
-    decompressor: Decompressor | None = None,
+    decompressor: Decompressor | ContinuousDecompressor | None = None,
 ) -> str:
     """Emit compactor wrapper RTL: instantiate ``core_module`` by name (a
     real instantiation -- blackboxing happens later, in assemble.py's
@@ -148,7 +148,7 @@ def compactor_wrapper_verilog(
                 f"{channel_port!r}; name one of them something else"
             )
         in_channels = [decompressor.channel_port]
-        in_lines = [*decompressor_verilog(decompressor), ""]
+        in_lines = [*decompressor.verilog(), ""]
 
     port_decls: list[str] = []
     port_list: list[str] = passthrough_names + in_channels + [channel_port]
@@ -159,9 +159,7 @@ def compactor_wrapper_verilog(
         port_decls.append(_port_decl(name, direction, width))
     if decompressor is not None:
         port_decls.append(
-            _port_decl(
-                decompressor.channel_port, "input", decompressor.polynomial.width
-            )
+            _port_decl(decompressor.channel_port, "input", decompressor.channel_width)
         )
     port_decls.append(_port_decl(channel_port, "output", len(fanout)))
 
@@ -215,7 +213,7 @@ def insert_compaction(
     *,
     workdir: Path,
     channel_port: str = "tdo",
-    decompressor: Decompressor | None = None,
+    decompressor: Decompressor | ContinuousDecompressor | None = None,
 ) -> tuple[Path, CompactionMap]:
     """Insert a static XOR-tree space compactor around a frozen, already
     scan-stitched core netlist, producing one flat composed netlist at
