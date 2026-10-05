@@ -14,13 +14,9 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from faultflow.config import ConfigError
+from faultflow.wrap.errors import WrapError
 
 _TOP_ATTRS = ("1", "00000000000000000000000000000001", 1)
-
-
-class WrapError(ConfigError):
-    """A netlist that cannot be wrapped (missing top, bad ports, etc.)."""
 
 
 def _resolve_top(modules: dict[str, Any], top: str | None) -> str:
