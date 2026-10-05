@@ -29,18 +29,30 @@ mask, and the UNSAT branch classifies such a fault blackbox_unresolved. A
 non-scan flop no held input keeps in reset (scan/nonscan.py) is unknown the
 same way; the hold twin (atpg_view.make_nonscan_free) frees it, and a fault only
 it hides is hold_unresolved.
+
+A wrapped block's INTEST environment (faultflow.wrap.environment) is unknown too,
+but the held mode pins keep it out: each input cell's mux, its select held,
+passes its flop and not the port bit. Masking structurally would mask the whole
+core. So an unknown value whose every reader is a gate the held inputs make
+indifferent to it is blocked (blocked_sources) and leaves the masking reach. Only
+a stuck-at on what holds such a gate -- the select's net back to the held input
+-- lets it through, so those faults (XMask.release_faults) are
+blackbox_unresolved before any test is graded; a transition fault can't, since
+a held net never transitions.
 """
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from faultflow.config import FaultflowConfig
+from faultflow.control_trace import Forced, Netlist, one_net, release_faults
 from faultflow.scan.atpg_view import (
     BLACKBOX_INSTANCE_ATTR,
     BLACKBOX_TIE_PREFIX,
@@ -48,6 +60,8 @@ from faultflow.scan.atpg_view import (
     NONSCAN_X_PREFIX,
     PPI_PREFIX,
     PPO_PREFIX,
+    TIE0_CELL,
+    TIE1_CELL,
     UNOBSERVED_NETS_ATTR,
 )
 from faultflow.scan.cell_map import resolve_scan_cell_map
@@ -72,13 +86,18 @@ class XMask:
     `outputs` the functional outputs, spelled as the scan context's
     functional_output_order spells them. `launch_ppo_ports`, for
     launch-on-capture only, are the scan flops that capture an unknown value
-    at the launch edge: whether their Q makes a transition is unknown too."""
+    at the launch edge: whether their Q makes a transition is unknown too.
+    `blocked` are the unknown values the held inputs keep out (blocked_sources),
+    and `release_faults` the (site key, "sa0"/"sa1") stuck-ats that would let one
+    in."""
 
     launch_mode: str | None = None
     nets: frozenset[int] = frozenset()
     ppo_ports: frozenset[str] = frozenset()
     outputs: frozenset[str] = frozenset()
     launch_ppo_ports: frozenset[str] = frozenset()
+    blocked: frozenset[int] = frozenset()
+    release_faults: frozenset[tuple[str, str]] = frozenset()
 
 
 def launch_mode_key(transition: bool, launch_mode: str) -> str | None:
@@ -105,6 +124,94 @@ def x_source_nets(module: dict[str, Any], x_instances: Collection[str]) -> list[
             continue
         nets.update(b for b in cell["connections"]["Y"] if isinstance(b, int))
     return sorted(nets)
+
+
+# The widest gate a reader may be: every value of its other free inputs is tried.
+_MAX_READER_INPUTS = 6
+
+
+def blocked_sources(
+    core: Any,
+    module: dict[str, Any],
+    cell_map: Mapping[str, Any],
+    sources: Collection[int],
+    unknown: Collection[int],
+) -> tuple[frozenset[int], frozenset[tuple[str, str]]]:
+    """The `sources` (nets of the view) every reader of which keeps out: a gate
+    whose other inputs, where the view holds them -- traced back through its ties
+    to the held inputs, constants and tied non-scan flops (control_trace.Netlist.
+    forced) -- leave its output the same for both values of the source, whatever
+    its free inputs are (the C++ core's eval_gate). And the stuck-ats on those
+    holding paths that would let one in (control_trace.release_faults). `unknown`
+    are every unknown value's nets, whose ties are no constants."""
+    unknown_nets = set(unknown)
+    trace_module = dict(module)
+    trace_module["cells"] = {
+        name: cell
+        for name, cell in module.get("cells", {}).items()
+        if not (
+            str(cell.get("type", "")).lstrip("\\") in (TIE0_CELL, TIE1_CELL)
+            and set(cell.get("connections", {}).get("Y", [])) & unknown_nets
+        )
+    }
+    netlist = Netlist(trace_module, cell_map)
+    readers: dict[int, list[tuple[str, str]]] = {}
+    for instance, cell in netlist.cells.items():
+        entry = netlist.entry(instance)
+        for pin, bits in cell.get("connections", {}).items():
+            if netlist.direction(instance, pin, entry) == "output":
+                continue
+            for bit in bits:
+                if isinstance(bit, int):
+                    readers.setdefault(bit, []).append((instance, pin))
+
+    def keeps_out(instance: str, pin: str) -> set[tuple[str, str]] | None:
+        """The stuck-ats that would let the source past `instance`'s `pin`, or None
+        if it gets past as it is."""
+        entry = netlist.entry(instance) or {}
+        inputs = [str(p) for p in entry.get("inputs", [])]
+        gate = str(entry.get("gate_type", ""))
+        if entry.get("node_type") != "GATE" or pin not in inputs:
+            return None
+        if len(inputs) > _MAX_READER_INPUTS:
+            return None
+        connections = netlist.cells[instance].get("connections", {})
+        source = one_net(connections.get(pin))
+        held: dict[str, Forced] = {}
+        for other in inputs:
+            if other == pin:
+                continue
+            if one_net(connections.get(other)) == source:
+                return None  # the source on two inputs at once
+            found = netlist.forced(instance, other, {})
+            if found is not None:
+                held[other] = found
+        free = [p for p in inputs if p != pin and p not in held]
+        for values in itertools.product((False, True), repeat=len(free)):
+            others = {p: bool(forced.value) for p, forced in held.items()}
+            others.update(zip(free, values))
+            low = [False if p == pin else others[p] for p in inputs]
+            high = [True if p == pin else others[p] for p in inputs]
+            if bool(core.eval_gate(gate, low)) != bool(core.eval_gate(gate, high)):
+                return None
+        release: set[tuple[str, str]] = set()
+        for forced in held.values():
+            release |= release_faults(forced)
+        return release
+
+    blocked: set[int] = set()
+    release: set[tuple[str, str]] = set()
+    for source in sources:
+        found: set[tuple[str, str]] = set()
+        for instance, pin in readers.get(source, []):
+            kept = keeps_out(instance, pin)
+            if kept is None:
+                break
+            found |= kept
+        else:
+            blocked.add(source)
+            release |= found
+    return frozenset(blocked), frozenset(release)
 
 
 def _net_of_name(module: dict[str, Any], name: str) -> int | None:
@@ -138,14 +245,28 @@ def compute_x_mask(
     x_instances: Collection[str],
     launch_mode: str | None,
     functional_output_order: Collection[str],
+    blocking_instances: Collection[str] = (),
 ) -> XMask:
     """The view's observation points the outputs of `x_instances` reach, for a
     campaign in `launch_mode` (launch_mode_key). The cone is walked by the C++
-    core on the compiled view, the same graph SAT and the simulators use."""
+    core on the compiled view, the same graph SAT and the simulators use. Of the
+    outputs of `blocking_instances`, those the held inputs keep out reach nothing
+    (blocked_sources)."""
     _, module = _top_module(json.loads(view_path.read_text(encoding="utf-8")), top)
     sources = x_source_nets(module, x_instances)
+    blocked: frozenset[int] = frozenset()
+    release: frozenset[tuple[str, str]] = frozenset()
+    if blocking_instances and sources:
+        blocked, release = blocked_sources(
+            core,
+            module,
+            json.loads(Path(cell_map).read_text(encoding="utf-8")),
+            x_source_nets(module, blocking_instances),
+            sources,
+        )
+        sources = [net for net in sources if net not in blocked]
     if not sources:
-        return XMask(launch_mode=launch_mode)
+        return XMask(launch_mode=launch_mode, blocked=blocked, release_faults=release)
 
     def reached(nets: list[int]) -> set[int]:
         found = core.combinational_reach(str(view_path), cell_map, nets, unsupported)
@@ -180,6 +301,8 @@ def compute_x_mask(
         frozenset(flops(masked)),
         frozenset(outputs),
         frozenset(launch_flops),
+        blocked,
+        release,
     )
 
 
@@ -213,13 +336,15 @@ def mask_scan_view(
     launch_mode: str | None,
     nonscan_x_nets: Collection[int] = (),
     nonscan_q_nets: Collection[int] = (),
+    blocking_instances: Collection[str] = (),
 ) -> XMask:
     """Mask every observation point an unknown value reaches -- a blackbox
     output's, or a non-scan flop's (`nonscan_x_nets`, its output nets) -- for a
     campaign in `launch_mode` (launch_mode_key), in `view` and in the file
     `view_path` that holds it. Refuses a design where such a value reaches the
     scan path of the scanned netlist `generic_json`; `nonscan_q_nets` are the
-    non-scan flops, whose own pins are off it."""
+    non-scan flops, whose own pins are off it. What the held inputs keep out of
+    `blocking_instances`' outputs is no unknown (compute_x_mask)."""
     x_instances = cfg.blackbox_x_instances
     if not x_instances and not nonscan_x_nets:
         return XMask(launch_mode=launch_mode)
@@ -245,6 +370,7 @@ def mask_scan_view(
         x_instances=x_instances,
         launch_mode=launch_mode,
         functional_output_order=functional_output_order,
+        blocking_instances=blocking_instances,
     )
     apply_x_mask(view, cfg.top, mask)
     view_path.write_text(
