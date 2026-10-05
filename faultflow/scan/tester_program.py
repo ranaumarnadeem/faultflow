@@ -188,7 +188,8 @@ def cycles(
     unload compares depends on what shifts in or on the inputs the load holds.
     Every flop a preamble settles stays settled under the holds, so the longest
     preamble is given once, first, and each capture's pulse, scan enable off, arms
-    the decompressor's reseed for the next load. A last unload ends the patterns."""
+    the decompressor's reseed for the next load. A last unload ends the patterns;
+    every pattern must shift as long (shift_length)."""
     inputs = [name for name in chip.inputs if name not in chip.clocks]
     outputs = set(chip.outputs)
     own = [
@@ -197,6 +198,12 @@ def cycles(
     ]
     if not overlap:
         return [cycle for pattern_cycles in own for cycle in pattern_cycles]
+    lengths = {_shift_length(chip, pattern, i) for i, pattern in enumerate(patterns)}
+    if len(lengths) > 1:
+        raise ScanError(
+            "overlapped, each load unloads the pattern before: the patterns must "
+            f"shift as long, not {sorted(lengths)} cycles"
+        )
     program: list[Cycle] = []
     if own:
         preamble = max(sum(c.phase == "preamble" for c in o) for o in own)
@@ -249,7 +256,8 @@ def _pattern_cycles(
     own: list[Cycle] = []
     for _ in range(int(pattern.get("preamble_cycles", 0))):
         own.append(Cycle(index, "preamble", dict(shift), {}))
-    for t in range(chip.max_chain_length):
+    shifts = _shift_length(chip, pattern, index)
+    for t in range(shifts):
         own.append(
             Cycle(index, "load", _shifting(chip, shift, pattern["load_seqs"], t), {})
         )
@@ -263,11 +271,31 @@ def _pattern_cycles(
         raise ScanError(f"pattern {index}: unknown launch {launch!r}")
     strobed = {n: int(v) for n, v in given.items() if n in outputs}
     own.append(Cycle(index, "capture", dict(capture), dict(strobed)))
-    for t in range(chip.max_chain_length):
+    for t in range(shifts):
         shifting = _shifting(chip, shift, {}, t)
         unload = _unloaded(chip, pattern, t)
         own.append(Cycle(index, "unload", shifting, unload, unloading=index))
     return own
+
+
+def _shift_length(chip: Chip, pattern: Mapping[str, Any], index: int) -> int:
+    """How many shifts pattern `index`'s load and unload take: its shift_length,
+    when it loads only some chains, else the chip's longest chain."""
+    raw = pattern.get("shift_length")
+    if raw is None:
+        return chip.max_chain_length
+    shifts = int(raw)
+    if chip.seed_bits:
+        raise ScanError(
+            f"pattern {index} shifts only some chains (shift_length), which a "
+            "compressed chip's decompressor can't"
+        )
+    if not 0 < shifts <= chip.max_chain_length:
+        raise ScanError(
+            f"pattern {index}: shift_length {shifts} isn't between 1 and the "
+            f"chip's longest chain, {chip.max_chain_length}"
+        )
+    return shifts
 
 
 def _seeded(chip: Chip, pattern: Mapping[str, Any], index: int) -> dict[str, int]:

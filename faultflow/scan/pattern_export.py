@@ -69,6 +69,11 @@ def scan_pattern_to_dict(pattern: ScanPattern) -> dict[str, Any]:
             else {}
         ),
         **({"seed": pattern.seed} if pattern.seed is not None else {}),
+        **(
+            {"shift_length": pattern.shift_length}
+            if pattern.shift_length is not None
+            else {}
+        ),
     }
 
 
@@ -103,4 +108,7 @@ def scan_pattern_from_dict(data: dict[str, Any]) -> ScanPattern:
             for chain, bit in data.get("launch_scan_in", {}).items()
         },
         seed=int(data["seed"]) if data.get("seed") is not None else None,
+        shift_length=(
+            int(data["shift_length"]) if data.get("shift_length") is not None else None
+        ),
     )

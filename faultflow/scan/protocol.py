@@ -179,6 +179,11 @@ class ScanPattern:
     # a tester holds on the compression channels, bit k on channel bit k
     # (detection_pipeline._decompressed). None without compression.
     seed: int | None = None
+    # How many shifts its load and its unload take, when it loads only some chains
+    # (an IEEE 1500 wrapper's EXTEST: its wrapper chains): their longest. The
+    # other chains shift as many bits, and nothing of theirs is compared. None:
+    # the chip's longest chain.
+    shift_length: int | None = None
 
 
 def _chain_lengths(manifest: dict[str, Any]) -> dict[int, int]:
