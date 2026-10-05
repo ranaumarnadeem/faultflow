@@ -65,6 +65,7 @@ from faultflow.scan.site_resolution import (
     build_scan_execution_map,
     build_site_key_index,
     fault_type_to_sa_code,
+    mark_blackbox_unresolved,
 )
 from faultflow.scan.compaction import CompactionMap, build_compactor_fanout
 from faultflow.scan.compression import CompressionMap, build_broadcast_fanout
@@ -86,6 +87,7 @@ from faultflow.scan.x_mask import (
     x_source_nets,
 )
 from faultflow.testpoint.preflight import PreflightData, run_preflight
+from faultflow.wrap.sides import decoupled
 
 log = logging.getLogger(__name__)
 
@@ -160,6 +162,11 @@ class ScanPipelineContext:
     # empty without non-scan cells.
     nonscan: NonscanSetup | None = None
     input_holds: dict[str, bool] = field(default_factory=dict)
+    # The IEEE 1500 wrapper ff.py wrap put on (the scan manifest's "wrapper") and
+    # the mode this campaign tests it in, "intest": the faults the other mode owns
+    # (faultflow.wrap.sides) are left to it, wbr_decoupled. None without one.
+    wrapper: dict[str, Any] | None = None
+    wrapper_scope: str | None = None
 
 
 @dataclass
@@ -203,6 +210,8 @@ def build_scan_pipeline_context(
     wbr_decoupled_bits: frozenset[int] | None = None,
     x_mask: XMask | None = None,
     nonscan: NonscanSetup | None = None,
+    wrapper: dict[str, Any] | None = None,
+    wrapper_scope: str | None = None,
 ) -> ScanPipelineContext:
     q_stems = {
         str(entry["boundary"]["q_stem_site_key"])
@@ -299,6 +308,8 @@ def build_scan_pipeline_context(
             if nonscan is not None
             else {}
         ),
+        wrapper=wrapper,
+        wrapper_scope=wrapper_scope,
     )
 
 
@@ -1874,6 +1885,22 @@ def run_progressive_scan_atpg(
             len(reset_keys),
             scan_ctx.nonscan.preamble,
         )
+    # A wrapped block in a wrapper test mode: the other mode's faults are left to
+    # it (faultflow.wrap.sides); and with stuck-ats, what could let the unknown
+    # environment past the held mode pins has no test here (x_mask).
+    decoupled_faults: frozenset[tuple[str, str]] = frozenset()
+    if scan_ctx.wrapper is not None and scan_ctx.wrapper_scope is not None:
+        decoupled_faults = decoupled(
+            [
+                dict(row)
+                for row in core.list_site_keys(
+                    str(scan_ctx.generic_json), generic_cell_map, unsupported, bb
+                )
+            ],
+            scan_ctx.wrapper,
+            scan_ctx.wrapper_scope,
+        )
+    release = frozenset() if transition else scan_ctx.x_mask.release_faults
     with connect(effective_db_path) as conn:
         init_schema(conn)
         apply_scan_execution_map(
@@ -1888,6 +1915,15 @@ def run_progressive_scan_atpg(
                 else frozenset()
             ),
             reset_sites=reset_keys,
+            decoupled_faults=decoupled_faults,
+        )
+        released = mark_blackbox_unresolved(conn, campaign_id, release)
+    if scan_ctx.wrapper_scope is not None:
+        log.info(
+            "wrapper: the faults %s owns left to it (excluded_wbr_decoupled); %d "
+            "that would let the environment in (blackbox_unresolved)",
+            "EXTEST" if scan_ctx.wrapper_scope == "intest" else "INTEST",
+            released,
         )
     core.invalidate_stale_redundant(effective_db_path, campaign_id, redundancy_model)
     # With blackboxes opaque and non-scan cells tied in the view, UNSAT alone

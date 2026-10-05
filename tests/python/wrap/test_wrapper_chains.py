@@ -254,12 +254,13 @@ def test_a_dry_run_scan_of_a_wrapped_block_writes_nothing(
     assert not [name for name in written if "wrap" in name], written
 
 
-def test_a_hold_against_the_mode_and_intest_extest_are_refused(
+def test_a_hold_against_the_mode_and_extest_are_refused(
     tmp_path: Path, require_cpp_core: None
 ) -> None:
     """The functional scan test holds both mode pins at 0, so a [scan] hold of one at
-    1 is refused (scan-check already); INTEST and EXTEST of the real wrapper come
-    later. The manifest ff.py scan wrote is the schema's."""
+    1 is refused (scan-check already); INTEST holds EXTEST at 0, so a hold of it at 1
+    is refused there. EXTEST of the real wrapper comes later. The manifest ff.py
+    scan wrote is the schema's."""
     from faultflow.cli import main
 
     ofs, base = _ofs(tmp_path)
@@ -271,6 +272,9 @@ def test_a_hold_against_the_mode_and_intest_extest_are_refused(
         main(["scan-check", *common])
     ofs.write_text(base, encoding="utf-8")
     assert main(["scan-check", *common]) == 0
+    with pytest.raises(SystemExit):
+        main(["extest", *common])
+    ofs.write_text(base + "[scan]\nhold = wbr_extest:1\n", encoding="utf-8")
     with pytest.raises(SystemExit):
         main(["intest", *common])
     manifests = list((tmp_path / "out").rglob("scan_manifest.json"))

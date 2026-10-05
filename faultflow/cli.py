@@ -129,6 +129,16 @@ def _parser() -> argparse.ArgumentParser:
             metavar="PCT",
             help="Target coverage percent to stop ATPG (default: [report] threshold)",
         )
+        p.add_argument(
+            "--export-patterns",
+            dest="export_patterns",
+            type=Path,
+            metavar="PATH",
+            help=(
+                "Export the scan patterns as JSON to PATH; input for "
+                "`write-patterns` and `retarget --patterns`"
+            ),
+        )
 
     intest = sub.add_parser(
         "intest",
@@ -612,16 +622,16 @@ def main(argv: list[str] | None = None) -> int:
             ):
                 parser.error("-t must be in (0, 100]")
             mode_cfg = dataclasses.replace(cfg, test_mode=args.command)
-            print(
-                service.run_atpg(
-                    mode_cfg,
-                    purge=args.purge,
-                    clean=args.clean,
-                    max_rounds=args.max,
-                    target_coverage=args.target_coverage,
-                    scan=True,
-                ).message
-            )
+            mode_kwargs: dict[str, object] = {
+                "purge": args.purge,
+                "clean": args.clean,
+                "max_rounds": args.max,
+                "target_coverage": args.target_coverage,
+                "scan": True,
+            }
+            if args.export_patterns is not None:
+                mode_kwargs["export_patterns"] = args.export_patterns
+            print(service.run_atpg(mode_cfg, **mode_kwargs).message)
         elif args.command == "status":
             print(service.status(cfg, scan=args.scan).message)
         elif args.command == "scan":

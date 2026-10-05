@@ -208,7 +208,7 @@ The IEEE 1500 wrapper `ff.py wrap` puts on the design's ports (see
 
 | Key | Allowed values | Default | Meaning |
 |---|---|---|---|
-| `enabled` | `true`, `false` | `false` | `ff.py scan` wraps the design first, then scans it: the wrapper's flops go on wrapper chains (`[scan] wrapper_chains`) and the scan manifest records the wrapper. Scan tests hold both mode pins at 0, functional mode; a `[scan] hold` on a mode pin that disagrees is an error |
+| `enabled` | `true`, `false` | `false` | `ff.py scan` wraps the design first, then scans it: the wrapper's flops go on wrapper chains (`[scan] wrapper_chains`) and the scan manifest records the wrapper. A scan test holds the mode pins as its mode says: both at 0 for `sim --scan` (functional), INTEST at 1 and EXTEST at 0 for `intest`; a `[scan] hold` on a mode pin that disagrees is an error |
 | `clock` | a port name | the design's one clock | The port the wrapper's flops run on. A design with several clocks must name one; a block without flops gets it as a new input |
 | `intest_pin` | a port name | `wbr_intest` | The INTEST mode pin the wrapper adds |
 | `extest_pin` | a port name | `wbr_extest` | The EXTEST mode pin the wrapper adds |

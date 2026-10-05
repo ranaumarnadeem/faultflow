@@ -100,7 +100,7 @@ the core's (`[scan] wrapper_chains`), and the scan manifest's `wrapper` entry re
 each boundary cell, its nets and its place on those chains. A scan test of the wrapped
 design holds both mode pins at 0, so it tests the core and the wrapper in functional
 mode; its patterns replay on the sky130 cells and export as STIL like any other. INTEST
-and EXTEST of this wrapper come next: for now `intest` and `extest` refuse it.
+of this wrapper is `intest`; its EXTEST comes next, and until then `extest` refuses it.
 
 ## `intest`
 
@@ -108,8 +108,31 @@ and EXTEST of this wrapper come next: for now `intest` and `extest` refuse it.
 python3 ff.py intest --top <top> -c config.ofs [options]
 ```
 
-IEEE 1500 INTEST: scan-integrated wrapper coverage of the core. Equivalent to
+IEEE 1500 INTEST: a scan test of the core through the wrapper. Equivalent to
 `sim --scan` with the test mode forced to `intest`.
+
+On the wrapper `ff.py wrap` puts on (`[wrap] enabled`), it is a scan test of the
+wrapped block with the INTEST mode pin held at 1 and the EXTEST one at 0: each input
+cell drives the core from its flop and holds that value, each output cell drives its
+port at 0 and captures the core. The block sits in its SoC, so whatever drives its
+wrapped inputs is unknown, and nothing observes its wrapped outputs. FaultFlow models
+that surroundings as a blackbox whose outputs are unknown, X:
+- A pattern sets no wrapped input and compares no wrapped output, and every credit
+  holds whatever the surroundings drive. The input cells' held muxes keep their
+  value out of the core, so it costs nothing.
+- A stuck-at that would let it in -- the INTEST mode pin, or an input cell's mux
+  select, stuck at 0 -- is `blackbox_unresolved` from the start. So is any fault
+  only the surroundings could test.
+- The system side of the wrapper is EXTEST's to test: each input cell's port bit,
+  each output cell's mux input from its flop, its gate's input from the mux and its
+  port bit, and the stuck-ats on a mode pin at the value EXTEST holds it from
+  (INTEST at 1, EXTEST at 0). INTEST leaves them to it, `excluded_wbr_decoupled`.
+
+With transition faults, launch-on-capture launches nothing at an input cell, which
+holds through launch and capture: a transition starting there needs the
+surroundings (`blackbox_unresolved`). Launch-on-shift launches it with the last
+shift. The coverage report's `wrapper` entry breaks the result down by part: the
+core, the boundary cells and the mode pins.
 
 | Option | Meaning |
 |---|---|
@@ -117,6 +140,7 @@ IEEE 1500 INTEST: scan-integrated wrapper coverage of the core. Equivalent to
 | `--clean` | Remove the `.faultflow/` internal workspace before the run; deliverables are kept. Needed when switching between `intest`/`extest` — test mode is part of the campaign fingerprint |
 | `--max ROUNDS` | Maximum progressive ATPG rounds (default: `[atpg] max_rounds`) |
 | `-t PCT` | Target coverage percent (default: `[report] threshold`) |
+| `--export-patterns PATH` | Export the scan patterns as JSON, for `write-patterns` and `retarget --patterns`. On the wrapper `ff.py wrap` puts on they replay on its sky130 cells with the wrapped inputs at X |
 
 ## `extest`
 
@@ -126,7 +150,8 @@ python3 ff.py extest --top <top> -c config.ofs [options]
 
 IEEE 1500 EXTEST: wrapper-boundary / interconnect coverage, with the core held
 safe (combinational ATPG on the fused boundary view). Takes the same options as
-`intest`.
+`intest`, but exports no patterns yet; on the wrapper `ff.py wrap` puts on it isn't
+supported yet.
 
 ## `project`
 

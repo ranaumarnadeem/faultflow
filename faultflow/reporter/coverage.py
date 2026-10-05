@@ -652,6 +652,18 @@ def write_reports(
     )
     if categories is not None:
         report["autombist_categories"] = categories
+    wrapper = scan_context.get("wrapper") if scan_context is not None else None
+    if wrapper is not None:
+        from faultflow.wrap.report import wrapper_coverage
+
+        report["wrapper"] = wrapper_coverage(
+            conn,
+            campaign_id,
+            module=wrapper["module"],
+            cell_map=wrapper["cell_map"],
+            wrapper=wrapper["record"],
+            mode=str(wrapper["mode"]),
+        )
     _validate_report(report)
     run = cast(dict[str, Any], report["run"])
     json_path = cfg.coverage_json_path
@@ -735,6 +747,11 @@ def write_reports(
                 categories, jtag_blocks is not None, bool(cfg.scan.nonscan_cells)
             )
         )
+        txt.append("")
+    if "wrapper" in report:
+        from faultflow.wrap.report import wrapper_lines
+
+        txt.extend(wrapper_lines(cast(dict[str, Any], report["wrapper"])))
         txt.append("")
     txt.append("undetected faults:")
     for fault in cast(list[dict[str, Any]], report["undetected_faults"]):

@@ -10,8 +10,11 @@ also on the compressed chip itself, the decompressor loading the chains
 
 from __future__ import annotations
 
+import itertools
 import json
 import sqlite3
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -28,6 +31,18 @@ from faultflow.scan.site_resolution import build_site_key_index, fault_type_to_s
 from faultflow.scan.x_mask import _net_of_name, recorded_x_mask
 
 
+@dataclass(frozen=True)
+class _Grader:
+    """The faults the latest scan campaign credits, its exported patterns, and
+    `detect(i, inputs)`: the indices of the credited faults pattern i detects in
+    the full protocol, `inputs` the values of inputs it leaves unset (0
+    otherwise)."""
+
+    credited: list[tuple[str, str]]
+    patterns: list[Any]
+    detect: Callable[[int, Mapping[str, bool]], set[int]]
+
+
 def credit_not_reproduced(
     cfg: Any,
     patterns_path: Path,
@@ -41,6 +56,40 @@ def credit_not_reproduced(
     pulses); launch-on-shift patterns don't carry their launch shift and
     can't be replayed from the file. Each pattern is replayed after its own
     preamble, or `preamble` clock pulses when given."""
+    grader = _grader(cfg, patterns_path, loc=loc, preamble=preamble)
+    reproduced: set[int] = set()
+    for number in range(len(grader.patterns)):
+        reproduced |= grader.detect(number, {})
+    return [
+        grader.credited[i] for i in range(len(grader.credited)) if i not in reproduced
+    ]
+
+
+def environment_dependent(
+    cfg: Any, patterns_path: Path, environment: Collection[str], *, loc: bool = False
+) -> list[tuple[str, str]]:
+    """For a wrapped block's INTEST, whose `environment` inputs (bit names) its
+    patterns leave unknown: the credited faults no exported pattern detects for
+    every value of the environment -- each pattern tried with all of them. Empty
+    when no credit depends on what drives the block."""
+    names = sorted(environment)
+    assert len(names) <= 10, "every value of the environment is tried"
+    grader = _grader(cfg, patterns_path, loc=loc, preamble=None)
+    robust: set[int] = set()
+    for number in range(len(grader.patterns)):
+        always: set[int] | None = None
+        for values in itertools.product((False, True), repeat=len(names)):
+            found = grader.detect(number, dict(zip(names, values)))
+            always = found if always is None else always & found
+            if not always:
+                break
+        robust |= always or set()
+    return [grader.credited[i] for i in range(len(grader.credited)) if i not in robust]
+
+
+def _grader(
+    cfg: Any, patterns_path: Path, *, loc: bool, preamble: int | None
+) -> _Grader:
     core = _load_core()
     assert core is not None
     top = cfg.top
@@ -78,9 +127,14 @@ def credit_not_reproduced(
         _port_name_for_net(generic, top, net, "input")
         for net in manifest_clock_net_ids(manifest)
     ]
-    reproduced: set[int] = set()
-    for raw in json.loads(patterns_path.read_text(encoding="utf-8")):
-        pattern = scan_pattern_from_dict(raw)
+    patterns = [
+        scan_pattern_from_dict(raw)
+        for raw in json.loads(patterns_path.read_text(encoding="utf-8"))
+    ]
+
+    def detect(number: int, given: Mapping[str, bool]) -> set[int]:
+        pattern = patterns[number]
+        assert not set(given) & set(pattern.capture_pi_values), "the pattern sets it"
         result = core.simulate_scan_protocol_faults(
             str(generic),
             cell_map,
@@ -91,7 +145,7 @@ def credit_not_reproduced(
             functional_output_ports=outputs,
             max_chain_length=int(manifest["max_chain_length"]),
             load_seqs=pattern.load_seqs,
-            capture_pi_values=pattern.capture_pi_values,
+            capture_pi_values={**pattern.capture_pi_values, **given},
             faults=specs,
             unsupported_policy=unsupported,
             loc_two_capture=loc,
@@ -100,11 +154,14 @@ def credit_not_reproduced(
             preamble_cycles=(pattern.preamble_cycles if preamble is None else preamble),
             shift_pi_values=pattern.shift_pi_values,
         )
-        for batch in result["batches"]:
-            for lane in batch["lanes"]:
-                if dict(lane)["outcome"] == "pass":
-                    reproduced.add(int(dict(lane)["fault_index"]))
-    return [tuple(credited[i]) for i in range(len(credited)) if i not in reproduced]
+        return {
+            int(dict(lane)["fault_index"])
+            for batch in result["batches"]
+            for lane in batch["lanes"]
+            if dict(lane)["outcome"] == "pass"
+        }
+
+    return _Grader([(str(k), str(t)) for k, t in credited], patterns, detect)
 
 
 # insert_compression's instance of the core in the composed netlist: compose_soc

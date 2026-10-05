@@ -80,6 +80,7 @@ from faultflow.scan.x_mask import XMask, launch_mode_key, mask_scan_view
 from faultflow.scan.yosys import json_to_verilog
 from faultflow.verify import IverilogVerifier, VerificationError
 from faultflow.wrap.block import WrapOptions, WrapResult, format_decisions, wrap_block
+from faultflow.wrap.environment import ENVIRONMENT, intest_harness, with_environment
 from faultflow.wrap.errors import WrapError
 from faultflow.wrap.record import mode_holds, wrapper_record
 
@@ -1240,6 +1241,42 @@ class Runner:
         report.write_text(format_decisions(result) + "\n", encoding="utf-8")
         return wrapped_json, verilog, report
 
+    def _intest_harness(self, manifest: Mapping[str, Any], generic_json: Path) -> Path:
+        """The scanned netlist with its environment around it
+        (wrap.environment.intest_harness), as <top>_intest.json in the workspace.
+        It must have exactly the scanned netlist's fault sites: every fault is
+        graded or excluded, none dropped."""
+        top = str(manifest["top"])
+        try:
+            harness = intest_harness(
+                _load_json_object(generic_json), top, manifest["wrapper"]
+            )
+        except WrapError as exc:
+            raise RunnerError(str(exc)) from exc
+        path = self.cfg.intermediate_dir / f"{top}_intest.json"
+        path.write_text(
+            json.dumps(harness, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        core = _load_core()
+        if core is None:
+            raise RunnerError("C++ extension _faultflow_core is required")
+        cell_map = str(resolve_scan_cell_map(self.cfg))
+        unsupported = self.cfg.simulation.unsupported_cells
+
+        def site_keys(netlist: Path, blackboxes: list[str]) -> list[str]:
+            rows = core.list_site_keys(str(netlist), cell_map, unsupported, blackboxes)
+            return sorted(str(row["site_key"]) for row in rows)
+
+        blackboxes = list(self.cfg.blackbox_instances)
+        if site_keys(path, [*blackboxes, ENVIRONMENT]) != site_keys(
+            generic_json, blackboxes
+        ):
+            raise RunnerError(
+                f"the INTEST harness {path} doesn't have the scanned netlist's "
+                "fault sites"
+            )
+        return path
+
     def _holds(self, manifest: Mapping[str, Any]) -> tuple[tuple[str, int], ...]:
         """[scan] hold, and an IEEE 1500 wrapper's mode pins at the campaign's test
         mode (faultflow.wrap.record.mode_holds)."""
@@ -2312,10 +2349,10 @@ class Runner:
                 f"scan manifest not found: {manifest_path}; run scan first"
             )
         manifest = load_manifest(manifest_path)
-        if "wrapper" in manifest and str(self.cfg.test_mode) != "functional":
+        if "wrapper" in manifest and str(self.cfg.test_mode) == "extest":
             raise RunnerError(
-                f"{self.cfg.test_mode} on the IEEE 1500 wrapper ff.py wrap puts on "
-                "isn't supported yet; its functional scan test is (sim --scan)"
+                "extest on the IEEE 1500 wrapper ff.py wrap puts on isn't supported "
+                "yet; its functional (sim --scan) and INTEST (intest) scan tests are"
             )
         generic_json = Path(str(manifest["generic_json"]))
         if not generic_json.exists():
@@ -2392,6 +2429,8 @@ class Runner:
             # core, so its fused view is combinational -- it runs through plain
             # native ATPG, not the scan protocol pipeline (see _sim_extest).
             if str(self.cfg.test_mode) == "extest":
+                if export_patterns is not None:
+                    raise RunnerError("extest exports no scan patterns yet")
                 return self._sim_extest(
                     purge=purge,
                     clean=clean,
@@ -2641,24 +2680,28 @@ class Runner:
         generic_json: Path,
         functional_output_order: list[str],
         nonscan: NonscanSetup | None = None,
+        cfg: FaultflowConfig | None = None,
     ) -> XMask:
         """Mask, in the scan ATPG view on disk, every observation point an
         unknown value reaches (scan.x_mask) -- a blackbox output's, or a
         non-scan flop's no held input keeps in reset -- for this campaign's
         launch mode. Refuses a design where such a value reaches the scan path
-        itself."""
+        itself. ``cfg``: the run's config, the INTEST environment among its
+        blackboxes (wrap.environment.with_environment); what the held mode pins
+        keep out of the environment is no unknown."""
+        cfg = cfg if cfg is not None else self.cfg
         launch_mode = launch_mode_key(
-            self.cfg.fault_model.model == "transition", self.cfg.fault_model.launch
+            cfg.fault_model.model == "transition", cfg.fault_model.launch
         )
         x_flops = nonscan.x_sources if nonscan is not None else ()
-        if not self.cfg.blackbox_x_instances and not x_flops:
+        if not cfg.blackbox_x_instances and not x_flops:
             return XMask(launch_mode=launch_mode)
         core = _load_core()
         if core is None:
             raise RunnerError("C++ extension _faultflow_core is required")
         return mask_scan_view(
             core,
-            self.cfg,
+            cfg,
             view,
             view_path,
             manifest,
@@ -2668,6 +2711,9 @@ class Runner:
             nonscan_x_nets=x_flops,
             nonscan_q_nets=(
                 [flop.q for flop in nonscan.flops] if nonscan is not None else ()
+            ),
+            blocking_instances=tuple(
+                i for i in cfg.blackbox_instances if i == ENVIRONMENT
             ),
         )
 
@@ -2719,6 +2765,19 @@ class Runner:
 
         manifest = self._preflight_sim_scan()
         generic_json = Path(str(manifest["generic_json"]))
+        # INTEST of the wrapper ff.py wrap puts on: the scan test runs on a
+        # harness of the scanned netlist, the block's surroundings one more
+        # blackbox whose outputs are unknown (wrap.environment), and the mode
+        # pins held (_holds). Everything but the report runs with `cfg`, that
+        # blackbox among cfg.blackbox_instances.
+        cfg = self.cfg
+        found = manifest.get("wrapper")
+        wrapper: dict[str, Any] | None = found if isinstance(found, dict) else None
+        scope: str | None = None
+        if wrapper is not None and str(self.cfg.test_mode) == "intest":
+            scope = "intest"
+            generic_json = self._intest_harness(manifest, generic_json)
+            cfg = with_environment(self.cfg)
         # Blackbox instances are modeled opaque in the reduced view (outputs
         # tied to 0, inputs unobserved) so SAT and the reduced simulators see
         # exactly what the scan protocol does, and every observation point an
@@ -2731,7 +2790,7 @@ class Runner:
         view, pseudo_port_map = build_scan_atpg_view(
             _load_json_object(generic_json),
             manifest,
-            blackbox_instances=self.cfg.blackbox_instances,
+            blackbox_instances=cfg.blackbox_instances,
             nonscan=nonscan,
         )
 
@@ -2743,7 +2802,7 @@ class Runner:
         # EXTEST is routed to _sim_extest before reaching here (see sim()); this
         # path handles FUNCTIONAL and INTEST scan campaigns only.
         test_mode = str(self.cfg.test_mode)
-        if test_mode == "intest":
+        if test_mode == "intest" and scope is None:
             from faultflow.scan.wbr_view import (
                 build_wbr_generic_name_map,
                 fuse_wbr_into_view,
@@ -2784,9 +2843,10 @@ class Runner:
             generic_json,
             functional_output_order,
             nonscan=nonscan,
+            cfg=cfg,
         )
         scan_pipeline_ctx = build_scan_pipeline_context(
-            self.cfg,
+            cfg,
             manifest,
             generic_json,
             pseudo_port_map,
@@ -2796,6 +2856,8 @@ class Runner:
             wbr_decoupled_bits=wbr_decoupled,
             x_mask=x_mask,
             nonscan=nonscan,
+            wrapper=wrapper if scope is not None else None,
+            wrapper_scope=scope,
         )
 
         from faultflow.scan.atpg_view import ATPG_VIEW_SCHEMA_VER
@@ -2813,7 +2875,7 @@ class Runner:
         model_id = redundancy_model_id(fp)
         vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
             run_progressive_native_atpg(
-                self.cfg,
+                cfg,
                 netlist,
                 model_id,
                 campaign_id=campaign_id,
@@ -2871,10 +2933,19 @@ class Runner:
         total_seconds = time.perf_counter() - total_start
         self._write_run_timings(run_id, atpg_seconds, fault_sim_seconds, total_seconds)
 
-        scan_context = {
+        scan_context: dict[str, Any] = {
             "pseudo_port_map": pseudo_port_map,
             "manifest_hash": str(manifest.get("generic_json_hash", "")),
         }
+        if scope is not None:
+            # The report's coverage by part: core, boundary cells, mode pins.
+            scanned = Path(str(manifest["generic_json"]))
+            scan_context["wrapper"] = {
+                "mode": scope,
+                "record": wrapper,
+                "module": _json_top_module(scanned, str(manifest["top"]))[1],
+                "cell_map": _load_json_object(resolve_scan_cell_map(self.cfg)),
+            }
         with self._db(scan=True) as conn:
             json_path, txt_path, report = write_reports(
                 conn,
