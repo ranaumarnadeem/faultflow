@@ -155,7 +155,7 @@ TEST_CASE("seeded stuck-at: a fault no seed can test is UNSAT, free it is SAT",
                                vector) == SatSolveResult::SAT);
 }
 
-TEST_CASE("seeded stuck-at: the incremental and mode-aware solvers honour the seed",
+TEST_CASE("seeded stuck-at: the incremental solver honours the seed",
           "[atpg][seeded]") {
   const ParsedGraph pg = test::load_parsed("tiny_scan_view_seeded.json");
   const CompiledSimGraph cg = test::load_compiled("tiny_scan_view_seeded.json");
@@ -168,13 +168,6 @@ TEST_CASE("seeded stuck-at: the incremental and mode-aware solvers honour the se
   REQUIRE(solve_stuck_at_fault_incremental(cg, pis, fault,
                                            unlimited_solve_options(),
                                            vector) == SatSolveResult::SAT);
-  // EXTEST on a view without wrapper cells observes every output, as
-  // FUNCTIONAL does -- but through the mode-aware miter.
-  const ModeConfig extest = build_mode_config(cg, TestMode::EXTEST);
-  REQUIRE(solve_stuck_at_fault(cg, pis, fault, seeded_options(pg, cg), vector,
-                               extest) == SatSolveResult::UNSAT);
-  REQUIRE(solve_stuck_at_fault(cg, pis, fault, unlimited_solve_options(), vector,
-                               extest) == SatSolveResult::SAT);
 }
 
 TEST_CASE("seeded stuck-at: every verdict matches brute force over the seed space",

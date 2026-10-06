@@ -118,7 +118,7 @@ RunOutcome run_with_threads(const std::string& name, int count, int sim_threads)
   RunOutcome out;
   out.detections = simulate_incremental(
       test::fixture_path("tiny_inv.json"), test::cell_map_path(), s.path.string(),
-      s.campaign_id, s.run_id, vectors, {"A"}, s.fault_ids, 10, "fail", {}, "",
+      s.campaign_id, s.run_id, vectors, {"A"}, s.fault_ids, 10, "fail", {},
       sim_threads);
   out.batch_fault_calls = simulation_instrumentation().batch_fault_calls;
   SQLite::Database db(s.path.string(), SQLite::OPEN_READONLY);
@@ -218,7 +218,7 @@ TEST_CASE(
   const auto run = [&](int threads) {
     return simulate_tentative_from_preloaded(
         test::fixture_path("tiny_inv.json"), test::cell_map_path(), preloaded,
-        vec, {"A"}, "fail", {}, "", threads);
+        vec, {"A"}, "fail", {}, threads);
   };
 
   const std::vector<int64_t> serial = run(1);

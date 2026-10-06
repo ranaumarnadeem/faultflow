@@ -205,21 +205,12 @@ const ParsedModule& ParsedGraph::top_module() const {
 
 namespace {
 
-// Two kinds of pseudo-PI are not backed by a real module port or netname, so
-// the SAT-ATPG side invents a synthetic name for them:
-//   "__bbpi_<yosys_net_id>"    a blackboxed cell's output net (ordered_pis(),
-//                              fault_solver.cpp) -- a controllable point
-//                              regardless of test mode.
-//   "__wbrstim_<yosys_net_id>" a wrapper-cell net that is a free, externally
-//                              driven stimulus point in the current test mode
-//                              (mc.wbr_action == SKIP_STIMULUS; e.g. EXTEST's
-//                              WBR_OUT.TO_SYS -- solve_stuck_at_fault's
-//                              mode-aware overload, fault_solver.cpp).
-// Recognize both conventions here so a solved vector's pseudo-PI entries
-// resolve back to a real net id instead of raising "unknown net or port
-// name" the moment a candidate vector (or its replay) touches one.
+// A blackboxed cell's output net is a pseudo-PI not backed by a real module
+// port or netname, so the SAT-ATPG side names it "__bbpi_<yosys_net_id>"
+// (ordered_pis(), fault_solver.cpp). Recognize that here so a solved vector's
+// pseudo-PI entries resolve back to a real net id instead of raising "unknown
+// net or port name" the moment a candidate vector (or its replay) touches one.
 constexpr char kBlackboxPiPrefix[] = "__bbpi_";
-constexpr char kWbrStimulusPrefix[] = "__wbrstim_";
 
 // Parses a trailing "<base>[<i>]" positional suffix (e.g. "A[1]" -> {"A",
 // 1}). Requires a non-empty base and a non-empty all-digit index; anything
@@ -270,13 +261,6 @@ int ParsedGraph::net_id_by_name(const std::string& name) const {
   if (name.rfind(kBlackboxPiPrefix, 0) == 0) {
     try {
       return std::stoi(name.substr(sizeof(kBlackboxPiPrefix) - 1));
-    } catch (const std::exception&) {
-      // Fall through to the generic error below for a malformed suffix.
-    }
-  }
-  if (name.rfind(kWbrStimulusPrefix, 0) == 0) {
-    try {
-      return std::stoi(name.substr(sizeof(kWbrStimulusPrefix) - 1));
     } catch (const std::exception&) {
       // Fall through to the generic error below for a malformed suffix.
     }

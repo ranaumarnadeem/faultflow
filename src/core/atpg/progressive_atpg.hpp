@@ -79,8 +79,8 @@ SolveFaultResult solve_fault_for_db(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {},
-    const std::string& test_mode = "", bool cone_restrict = true,
-    bool incremental = false, int64_t net_index_override = -1,
+    bool cone_restrict = true, bool incremental = false,
+    int64_t net_index_override = -1,
     int seed_width = 0, const SeedRows& seeded_inputs = {});
 
 bool verify_fault_vector(
@@ -88,8 +88,7 @@ bool verify_fault_vector(
     const std::string& db_path, int64_t fault_id,
     const std::map<std::string, bool>& vector,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances = {},
-    const std::string& test_mode = "");
+    const std::vector<std::string>& blackbox_instances = {});
 
 // `sim_threads` parallelizes fault grading: <= 0 means auto (hardware
 // concurrency), 1 is serial, N uses N threads. The result is bit-identical for
@@ -102,7 +101,7 @@ std::vector<ProgressiveDetection> simulate_incremental(
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {},
-    const std::string& test_mode = "", int sim_threads = 1);
+    int sim_threads = 1);
 
 std::vector<int64_t> simulate_tentative_detections(
     const std::string& json_path, const std::string& cell_map_path,
@@ -110,8 +109,7 @@ std::vector<int64_t> simulate_tentative_detections(
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances = {},
-    const std::string& test_mode = "");
+    const std::vector<std::string>& blackbox_instances = {});
 
 // ---- Transition model (combinational broadside two-pattern) ----------------
 // Separate entry points so the stuck-at path stays byte-identical. Enumeration
@@ -164,7 +162,7 @@ std::vector<int64_t> simulate_tentative_from_preloaded(
     const std::vector<std::string>& input_order,
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {},
-    const std::string& test_mode = "", int sim_threads = 1);
+    int sim_threads = 1);
 
 std::vector<int64_t> simulate_transition_tentative_from_preloaded(
     const std::string& json_path, const std::string& cell_map_path,

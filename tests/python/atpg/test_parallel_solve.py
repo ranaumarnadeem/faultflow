@@ -34,7 +34,6 @@ _BASE_ARGS = dict(
     los_couple_ports=[],
     los_head_ports=[],
     bb_instances=[],
-    test_mode="",
     incremental=False,
 )
 
@@ -55,7 +54,6 @@ def _args_tuple(solve_kind: str, **overrides) -> tuple:
         d["los_couple_ports"],
         d["los_head_ports"],
         d["bb_instances"],
-        d["test_mode"],
         d["incremental"],
     )
 
@@ -117,21 +115,18 @@ class TestWorkerRouting:
         core.solve_fault_atpg.assert_not_called()
         core.solve_scan_transition_fault_atpg.assert_not_called()
 
-    def test_native_stuck_at_passes_bb_and_test_mode(self):
+    def test_native_stuck_at_passes_bb_instances(self):
         core = _fake_core(result="UNSAT")
         with patch.dict("sys.modules", {"_faultflow_core": core}):
             fault_id, result, solved = solve_fault_worker(
-                _args_tuple(
-                    "native_stuck_at",
-                    bb_instances=["blackbox_inst"],
-                    test_mode="intest",
-                )
+                _args_tuple("native_stuck_at", bb_instances=["blackbox_inst"])
             )
         assert result == "UNSAT"
         pos_args = core.solve_fault_atpg.call_args[0]
-        # native_stuck_at passes bb_instances (list) and test_mode at positions 8,9
-        assert ["blackbox_inst"] in pos_args
-        assert "intest" in pos_args
+        # native_stuck_at passes bb_instances (list) at position 8, then
+        # cone_restrict and incremental
+        assert pos_args[8] == ["blackbox_inst"]
+        assert pos_args[9:] == (True, False)
 
     def test_native_transition_calls_solve_transition_fault_atpg(self):
         """Regression: run_progressive_transition_atpg's SAT loop never had a

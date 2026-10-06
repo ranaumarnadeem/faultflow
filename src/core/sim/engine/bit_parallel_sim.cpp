@@ -134,118 +134,6 @@ void BitParallelSim::evaluate_combinational(SimState& state,
   }
 }
 
-void BitParallelSim::evaluate_combinational_mode(SimState& state,
-                                                 const CompiledSimGraph& cg,
-                                                 const FaultBatch& batch,
-                                                 const ModeConfig& mc) const {
-  auto& nv = state.current_values();
-  std::vector<uint64_t> ins(6);  // reused per node (see evaluate_combinational)
-
-  auto& fp = state.fault_present;  // gate per-node injection (see evaluate_combinational)
-  for (int i = 0; i < batch.size; ++i) {
-    fp[batch.faults[i].net_index] = 1;
-  }
-
-  const auto eval_level = [&](int start, int end) {
-    for (int i = start; i < end; ++i) {
-      const SimNode& sn = cg.nodes[i];
-      if (sn.type == GateType::INPUT || sn.type == GateType::DFF) {
-        continue;
-      }
-      if (sn.type == GateType::CONST0) {
-        nv[sn.out] = 0ULL;
-        if (fp[sn.out]) inject_faults(nv, batch, sn.out);
-        continue;
-      }
-      if (sn.type == GateType::CONST1) {
-        nv[sn.out] = ~0ULL;
-        if (fp[sn.out]) inject_faults(nv, batch, sn.out);
-        continue;
-      }
-      if (sn.type == GateType::WBR_IN || sn.type == GateType::WBR_OUT) {
-        const uint8_t act = mc.wbr_action[sn.out];
-        if (act == static_cast<uint8_t>(WbrAction::SKIP_STIMULUS)) {
-          // control point: keep the broadcast stimulus value.
-        } else if (act == static_cast<uint8_t>(WbrAction::FORCE_ZERO)) {
-          nv[sn.out] = 0ULL;
-        } else if (act == static_cast<uint8_t>(WbrAction::DRIVE_FROM_FF)) {
-          nv[sn.out] = gather_input(nv, sn.in1);  // scan WBR: drive from FF q
-        } else {
-          nv[sn.out] = gather_input(nv, sn.in0);  // PASS: FUNCTIONAL buffer (CFI)
-        }
-        if (fp[sn.out]) inject_faults(nv, batch, sn.out);
-        continue;
-      }
-      ins[0] = gather_input(nv, sn.in0);
-      ins[1] = gather_input(nv, sn.in1);
-      ins[2] = gather_input(nv, sn.in2);
-      ins[3] = gather_input(nv, sn.in3);
-      ins[4] = gather_input(nv, sn.in4);
-      ins[5] = gather_input(nv, sn.in5);
-      nv[sn.out] = eval_gate(sn.type, ins);
-      if (fp[sn.out]) inject_faults(nv, batch, sn.out);
-    }
-  };
-
-  if (cg.level_starts.size() >= 2) {
-    for (size_t lvl = 0; lvl + 1 < cg.level_starts.size(); ++lvl) {
-      eval_level(cg.level_starts[lvl], cg.level_starts[lvl + 1]);
-    }
-  } else {
-    eval_level(0, static_cast<int>(cg.nodes.size()));
-  }
-
-  for (int i = 0; i < batch.size; ++i) {
-    fp[batch.faults[i].net_index] = 0;
-  }
-}
-
-bool BitParallelSim::simulate_single_fault(const CompiledSimGraph& cg,
-                                           const TestVector& vec,
-                                           const CompactFault& fault,
-                                           const ModeConfig& mc) const {
-  if (fault.exclusion != FaultExclusion::NONE) {
-    return false;
-  }
-  FaultBatch batch;
-  CompactFault f = fault;
-  f.bit = 1;
-  f.sa_mask = 1ULL << 1;
-  batch.faults[0] = f;
-  batch.size = 1;
-  batch.mask = f.sa_mask;
-
-  SimState state;
-  state.test_mode = mc.mode;
-  state.init(cg.net_count, 1, static_cast<int>(cg.ff_configs.size()));
-  auto& nv = state.current_values();
-
-  // Broadcast PIs and the mode's control points to all 64 lanes (golden lane 0
-  // + 63 faulty lanes all see the same stimulus).
-  for (int pi_idx : cg.pi_nets) {
-    const int yid = cg.compiled_to_yosys[pi_idx];
-    const bool val = vec.inputs.count(yid) ? vec.inputs.at(yid) : false;
-    nv[pi_idx] = val ? ~0ULL : 0ULL;
-  }
-  for (uint32_t s : mc.stimulus_nets) {
-    const int yid = cg.compiled_to_yosys[s];
-    const bool val = vec.inputs.count(yid) ? vec.inputs.at(yid) : false;
-    nv[s] = val ? ~0ULL : 0ULL;
-  }
-  inject_faults(nv, batch, f.net_index);
-
-  evaluate_combinational_mode(state, cg, batch, mc);
-
-  uint64_t detected = 0ULL;
-  const auto& fv = state.current_values();
-  for (uint32_t obs : mc.observable_nets) {
-    const uint64_t word = fv[obs];
-    const uint64_t golden = (word & 1ULL) ? ~0ULL : 0ULL;
-    detected |= word ^ golden;
-  }
-  return (detected & batch.mask) != 0;
-}
-
 void BitParallelSim::seed_ff_outputs(SimState& state, const CompiledSimGraph& cg,
                                      const FaultBatch& batch) const {
   auto& nv = state.current_values();
@@ -344,65 +232,9 @@ bool BitParallelSim::simulate_single_fault(const CompiledSimGraph& cg,
 
 uint64_t BitParallelSim::simulate_batch(const CompiledSimGraph& cg,
                                         const TestVector& vec,
-                                        const FaultBatch& batch,
-                                        const ModeConfig& mc) const {
-  SimState state;
-  state.test_mode = mc.mode;
-  state.init(cg.net_count, 1, static_cast<int>(cg.ff_configs.size()));
-  for (const auto& [idx, value] : vec.initial_ff_state) {
-    if (idx < state.initial_ff_state.size()) {
-      state.initial_ff_state[idx] = value ? ~0ULL : 0ULL;
-    }
-  }
-  state.reset_ff_states();
-
-  uint64_t detected = 0ULL;
-  std::vector<TestCycle> cyc_scratch;
-  for (const TestCycle& cycle : cycles_for(vec, cyc_scratch)) {
-    FaultBatch inactive_batch;
-    const FaultBatch& active_batch = cycle.fault_active ? batch : inactive_batch;
-    // Broadcast real PIs (indexed in cg.pi_nets).
-    auto& nv = state.current_values();
-    for (int pi_idx : cg.pi_nets) {
-      const int yid = cg.compiled_to_yosys[pi_idx];
-      const bool val = cycle.inputs.count(yid) ? cycle.inputs.at(yid) : false;
-      nv[pi_idx] = val ? ~0ULL : 0ULL;
-    }
-    // Broadcast mode-specific stimulus (control points not in pi_nets).
-    for (uint32_t s : mc.stimulus_nets) {
-      const int yid = cg.compiled_to_yosys[s];
-      const bool val = cycle.inputs.count(yid) ? cycle.inputs.at(yid) : false;
-      nv[s] = val ? ~0ULL : 0ULL;
-    }
-    for (int i = 0; i < active_batch.size; ++i) {
-      inject_faults(nv, active_batch, active_batch.faults[i].net_index);
-    }
-    seed_ff_outputs(state, cg, active_batch);
-    evaluate_combinational_mode(state, cg, active_batch, mc);
-    update_ff_states(state, cg);
-    seed_ff_outputs(state, cg, active_batch);
-    evaluate_combinational_mode(state, cg, active_batch, mc);
-    for (int i = 0; i < cycle.settle_cycles; ++i) {
-      seed_ff_outputs(state, cg, active_batch);
-      evaluate_combinational_mode(state, cg, active_batch, mc);
-    }
-    if (cycle.sample_outputs) {
-      for (uint32_t obs : mc.observable_nets) {
-        const uint64_t word = nv[obs];
-        const uint64_t golden = (word & 1ULL) ? ~0ULL : 0ULL;
-        detected |= word ^ golden;
-      }
-    }
-    state.prev_values = nv;
-  }
-  return detected & batch.mask;
-}
-
-uint64_t BitParallelSim::simulate_batch(const CompiledSimGraph& cg,
-                                        const TestVector& vec,
                                         const FaultBatch& batch) const {
-  // Inline grade: mirror simulate_batch_samples exactly (same use_mode dispatch,
-  // same broadcast/inject/seed/eval order) but fold detection over cg.observable
+  // Inline grade: mirror simulate_batch_samples exactly (same
+  // broadcast/inject/seed/eval order) but fold detection over cg.observable
   // as each sample cycle completes, instead of copying the full ~net_count net
   // vector into a samples buffer per cycle only to read the observable subset.
   // Bit-identical to the prior simulate_batch_samples path; saves the per-cycle
@@ -416,18 +248,8 @@ uint64_t BitParallelSim::simulate_batch(const CompiledSimGraph& cg,
   }
   state.reset_ff_states();
 
-  // Mode-faithful scan-protocol replay for native shiftable WBR cells (see
-  // simulate_batch_samples); FUNCTIONAL keeps the plain hot path.
-  const bool use_mode =
-      vec.test_mode != TestMode::FUNCTIONAL && !cg.wrapper_cells.empty();
-  const ModeConfig mode_cfg =
-      use_mode ? build_mode_config(cg, vec.test_mode) : ModeConfig{};
   const auto eval = [&](const FaultBatch& b) {
-    if (use_mode) {
-      evaluate_combinational_mode(state, cg, b, mode_cfg);
-    } else {
-      evaluate_combinational(state, cg, b);
-    }
+    evaluate_combinational(state, cg, b);
   };
 
   uint64_t detected = 0ULL;
@@ -476,17 +298,8 @@ uint64_t BitParallelSim::simulate_batch_observed(
   }
   state.reset_ff_states();
 
-  // Same use_mode dispatch as simulate_batch.
-  const bool use_mode =
-      vec.test_mode != TestMode::FUNCTIONAL && !cg.wrapper_cells.empty();
-  const ModeConfig mode_cfg =
-      use_mode ? build_mode_config(cg, vec.test_mode) : ModeConfig{};
   const auto eval = [&](const FaultBatch& b) {
-    if (use_mode) {
-      evaluate_combinational_mode(state, cg, b, mode_cfg);
-    } else {
-      evaluate_combinational(state, cg, b);
-    }
+    evaluate_combinational(state, cg, b);
   };
 
   uint64_t detected = 0ULL;
@@ -555,19 +368,8 @@ std::vector<std::vector<uint64_t>> BitParallelSim::simulate_batch_samples(
   }
   state.reset_ff_states();
 
-  // Mode-faithful scan-protocol replay for native shiftable WBR cells: the
-  // boundary mode-mux drives from the loaded FF state q in INTEST/EXTEST. Built
-  // once (mode is fixed for the run); FUNCTIONAL keeps the plain hot path.
-  const bool use_mode = vec.test_mode != TestMode::FUNCTIONAL &&
-                        !cg.wrapper_cells.empty();
-  const ModeConfig mode_cfg =
-      use_mode ? build_mode_config(cg, vec.test_mode) : ModeConfig{};
   const auto eval = [&](const FaultBatch& b) {
-    if (use_mode) {
-      evaluate_combinational_mode(state, cg, b, mode_cfg);
-    } else {
-      evaluate_combinational(state, cg, b);
-    }
+    evaluate_combinational(state, cg, b);
   };
 
   std::vector<std::vector<uint64_t>> samples;

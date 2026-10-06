@@ -14,9 +14,9 @@ tests/
 │   ├── atpg/             SAT ATPG tests (miter, CNF, compaction, transition)
 │   ├── db/               SQLite campaign store tests
 │   ├── fault/            Fault enumeration, collapsing, batch manager
-│   ├── ir/               ParsedGraph, NormalizedGraph, CompiledSimGraph, WBR cells
+│   ├── ir/               ParsedGraph, NormalizedGraph, CompiledSimGraph
 │   ├── scan/             Scan chain, multi-clock stagger, scan sequences
-│   ├── sim/              Bit-parallel engine, golden ref, gate eval, WBR modes
+│   ├── sim/              Bit-parallel engine, golden ref, gate eval
 │   └── benchmarks/       C++ performance benchmarks (c17)
 │
 ├── python/               Python layer tests (pytest)
@@ -75,7 +75,6 @@ Graph IR tests:
 - ParsedGraph: Yosys JSON parsing and net ID preservation
 - NormalizedGraph: cell map lookup, aliasing, levelization, clock/reset tagging
 - CompiledSimGraph: compilation to flat arrays, YosysNetID↔CompiledNetIndex mapping
-- WBR cells: wrapper boundary register insertion and lowering
 
 #### `scan/`
 Sequential and scan chain tests:
@@ -92,7 +91,6 @@ Simulation engine tests:
 - Fault injection at net level (SA0/SA1 masking)
 - Fault-free vs. faulty universe tracking
 - Multi-output cell lowering (ADDF, FF+QN, fanout branches)
-- WBR shift and normal-mode operation
 
 #### `benchmarks/`
 Performance benchmarks (Google Benchmark):

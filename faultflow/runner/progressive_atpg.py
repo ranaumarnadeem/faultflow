@@ -330,7 +330,6 @@ def _accept_and_simulate(
     vector_index: int,
     unsupported: str,
     blackbox_instances: list[str],
-    test_mode: str = "",
     sim_threads: int = 1,
     on_vector_accepted: Callable[[dict[str, bool], int | None], None] | None,
 ) -> set[int]:
@@ -358,7 +357,6 @@ def _accept_and_simulate(
         vector_index,
         unsupported,
         blackbox_instances,
-        test_mode,
         sim_threads,
     )
     core.update_run_vector_count(db_path, run_id, vector_index)
@@ -568,7 +566,6 @@ def run_progressive_native_atpg(
     unsupported = cfg.simulation.unsupported_cells
 
     bb_instances = list(cfg.blackbox_instances)
-    test_mode = cfg.test_mode
     sim_threads = resolve_sim_threads(cfg.simulation.sim_threads)
     if sim_threads > 1:
         log.info("parallel fault grading across %d threads", sim_threads)
@@ -784,7 +781,6 @@ def run_progressive_native_atpg(
                         vector_index=vector_index,
                         unsupported=unsupported,
                         blackbox_instances=bb_instances,
-                        test_mode=test_mode,
                         sim_threads=sim_threads,
                         on_vector_accepted=on_vector_accepted,
                     )
@@ -933,7 +929,6 @@ def run_progressive_native_atpg(
                             [],  # los_couple_ports: native path is stuck-at only
                             [],  # los_head_ports
                             list(bb_instances),
-                            test_mode,
                             cfg.atpg.incremental_sat,
                         )
                         for fid in _dispatch_ids
@@ -1000,7 +995,6 @@ def run_progressive_native_atpg(
                         tier_timeout,
                         unsupported,
                         bb_instances,
-                        test_mode,
                         cfg.atpg.cone_restrict,
                         cfg.atpg.incremental_sat,
                     )
@@ -1028,7 +1022,6 @@ def run_progressive_native_atpg(
                     candidate,
                     unsupported,
                     bb_instances,
-                    test_mode,
                 )
                 fault_sim_seconds += time.perf_counter() - sim_started
                 if verified:
@@ -1051,7 +1044,6 @@ def run_progressive_native_atpg(
                         vector_index=vector_index,
                         unsupported=unsupported,
                         blackbox_instances=bb_instances,
-                        test_mode=test_mode,
                         sim_threads=sim_threads,
                         on_vector_accepted=on_vector_accepted,
                     )
@@ -1464,7 +1456,6 @@ def run_progressive_transition_atpg(
                             [],  # los_couple_ports: unused by native_transition
                             [],  # los_head_ports: unused by native_transition
                             list(bb_instances),
-                            False,  # test_mode: unused by native_transition
                             False,  # incremental: unused by native_transition
                         )
                         for fid in _wave_ids

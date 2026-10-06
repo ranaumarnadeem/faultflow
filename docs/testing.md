@@ -36,9 +36,9 @@ database.
 
 | Directory | Covers |
 |---|---|
-| `ir/` | ParsedGraph, NormalizedGraph, CompiledSimGraph, WBR cell lowering |
+| `ir/` | ParsedGraph, NormalizedGraph, CompiledSimGraph |
 | `fault/` | Enumeration, collapsing, batch manager, fault-effect polymorphism |
-| `sim/` | Gate evaluation (30+ gate types), golden reference, bit-parallel engine, fault injection, sequential FF, WBR modes |
+| `sim/` | Gate evaluation (30+ gate types), golden reference, bit-parallel engine, fault injection, sequential FF |
 | `atpg/` | Miter construction, CNF truth tables, compaction, cone ordering/equivalence, incremental-SAT, SAT timeout, transition + scan-transition + scan-LOS |
 | `scan/` | Scan chain extraction, multi-clock stagger, scan sequences |
 | `db/` | SQLite campaign store — schema, fingerprinting, resume validation |

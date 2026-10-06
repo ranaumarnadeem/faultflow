@@ -37,11 +37,6 @@ struct ScanPatternRequest {
   // window (LOC launch/LOS launch-shift/capture pulses). All clocks are still
   // pulsed during load and unload. Empty = pulse all (regression-safe default).
   std::vector<std::string> active_clock_ports;
-  // IEEE 1500 wrapper mode. With native shiftable WBR cells, INTEST/EXTEST makes
-  // the boundary mode-mux drive the core/interconnect from the loaded FF state q;
-  // FUNCTIONAL (default) keeps wrapper cells transparent. Carried onto the built
-  // TestVector so the sequential sims pick the mode-aware evaluator.
-  TestMode test_mode = TestMode::FUNCTIONAL;
   // Clock pulses before the load -- scan_enable off, every other input at its
   // shift value (shift_pi_values) or capture value -- so the non-scan flops a
   // scan clock settles (a reset synchronizer with the chip reset held inactive)

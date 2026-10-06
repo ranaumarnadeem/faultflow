@@ -146,8 +146,7 @@ py::dict simulate_to_db(
     const std::vector<std::string>& input_order, const std::string& vector_source,
     bool include_clock_faults, bool include_reset_faults, bool collapsing,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode = "") {
+    const std::vector<std::string>& blackbox_instances) {
   const CachedGraph& graph = load_cached_graph(
       json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const ParsedGraph& parsed = graph.parsed;
@@ -161,10 +160,6 @@ py::dict simulate_to_db(
   if (collapsing) {
     faults = collapse_primitive_faults(ng, cg, std::move(faults));
   }
-
-  const TestMode mode = parse_test_mode(test_mode);
-  const bool use_mode = (mode != TestMode::FUNCTIONAL) && !cg.wrapper_cells.empty();
-  const ModeConfig mc = use_mode ? build_mode_config(cg, mode) : ModeConfig{};
 
   const std::vector<TestVector> vectors = convert_vectors(parsed, raw_vectors);
   BitParallelSim sim;
@@ -192,9 +187,7 @@ py::dict simulate_to_db(
         batch.faults[i - begin] = lane;
         batch.mask |= lane.sa_mask;
       }
-      const uint64_t detected_mask = use_mode
-          ? sim.simulate_batch(cg, vectors[vi], batch, mc)
-          : sim.simulate_batch(cg, vectors[vi], batch);
+      const uint64_t detected_mask = sim.simulate_batch(cg, vectors[vi], batch);
       for (size_t i = begin; i < end; ++i) {
         const CompactFault& lane = batch.faults[i - begin];
         CompactFault& fault = faults[active[i]];
@@ -323,14 +316,14 @@ py::dict solve_fault_atpg(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode = "", bool cone_restrict = true,
-    bool incremental = false, int64_t net_index_override = -1,
-    int seed_width = 0, const atpg::SeedRows& seeded_inputs = {}) {
+    bool cone_restrict = true, bool incremental = false,
+    int64_t net_index_override = -1, int seed_width = 0,
+    const atpg::SeedRows& seeded_inputs = {}) {
   const atpg::SolveFaultResult result = atpg::solve_fault_for_db(
       json_path, cell_map_path, db_path, fault_id, blocked_patterns,
       conflict_limit, sat_timeout_seconds, unsupported_policy,
-      blackbox_instances, test_mode, cone_restrict, incremental,
-      net_index_override, seed_width, seeded_inputs);
+      blackbox_instances, cone_restrict, incremental, net_index_override,
+      seed_width, seeded_inputs);
   py::dict out;
   out["result"] = result.result;
   out["vector"] = result.vector;
@@ -342,11 +335,10 @@ bool verify_fault_candidate(
     const std::string& db_path, int64_t fault_id,
     const std::map<std::string, bool>& vector,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode = "") {
+    const std::vector<std::string>& blackbox_instances) {
   return atpg::verify_fault_vector(json_path, cell_map_path, db_path, fault_id,
                                    vector, unsupported_policy,
-                                   blackbox_instances, test_mode);
+                                   blackbox_instances);
 }
 
 py::list simulate_incremental_py(
@@ -357,7 +349,7 @@ py::list simulate_incremental_py(
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode = "", int sim_threads = 1) {
+    int sim_threads = 1) {
   // Release the GIL only around the pure-C++ grading (which fans out across
   // sim_threads native threads, none of which touch Python); reacquire it before
   // building the Python result list below.
@@ -367,7 +359,7 @@ py::list simulate_incremental_py(
     detections = atpg::simulate_incremental(
         json_path, cell_map_path, db_path, campaign_id, run_id, new_vectors,
         input_order, fault_ids, vector_start_index, unsupported_policy,
-        blackbox_instances, test_mode, sim_threads);
+        blackbox_instances, sim_threads);
   }
   py::list out;
   for (const auto& det : detections) {
@@ -386,11 +378,10 @@ py::list simulate_tentative_py(
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode = "") {
+    const std::vector<std::string>& blackbox_instances) {
   const std::vector<int64_t> detected = atpg::simulate_tentative_detections(
       json_path, cell_map_path, db_path, vector, input_order, fault_ids,
-      unsupported_policy, blackbox_instances, test_mode);
+      unsupported_policy, blackbox_instances);
   py::list out;
   for (int64_t fault_id : detected) {
     out.append(fault_id);
@@ -516,8 +507,7 @@ py::list simulate_tentative_preloaded_py(
     const std::map<std::string, bool>& vector,
     const std::vector<std::string>& input_order,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode, int sim_threads = 1) {
+    const std::vector<std::string>& blackbox_instances, int sim_threads = 1) {
   std::vector<std::tuple<int64_t, uint32_t, uint8_t>> records;
   records.reserve(static_cast<size_t>(py::len(preloaded)));
   for (auto item : preloaded) {
@@ -532,7 +522,7 @@ py::list simulate_tentative_preloaded_py(
     py::gil_scoped_release release;
     detected = atpg::simulate_tentative_from_preloaded(
         json_path, cell_map_path, records, vector, input_order,
-        unsupported_policy, blackbox_instances, test_mode, sim_threads);
+        unsupported_policy, blackbox_instances, sim_threads);
   }
   py::list out;
   for (int64_t id : detected) out.append(id);
@@ -757,7 +747,6 @@ py::dict simulate_scan_pattern_py(
     bool los_two_capture,
     const std::map<int, bool>& los_launch_scan_in,
     const std::vector<std::string>& active_clock_ports,
-    const std::string& test_mode = "",
     const std::vector<std::string>& blackbox_instances = {},
     int preamble_cycles = 0,
     const std::map<std::string, bool>& shift_pi_values = {}) {
@@ -775,7 +764,6 @@ py::dict simulate_scan_pattern_py(
   request.los_two_capture = los_two_capture;
   request.los_launch_scan_in = los_launch_scan_in;
   request.active_clock_ports = active_clock_ports;
-  request.test_mode = parse_test_mode(test_mode);
   request.preamble_cycles = preamble_cycles;
   request.shift_pi_values = shift_pi_values;
   const scan::ScanPatternResult result = scan::simulate_scan_pattern(
@@ -804,8 +792,7 @@ py::dict simulate_scan_protocol_faults_py(
     const std::vector<std::pair<uint32_t, uint8_t>>& faults,
     const std::string& unsupported_policy, bool loc_two_capture,
     bool los_two_capture, const std::map<int, bool>& los_launch_scan_in,
-    const std::vector<std::string>& active_clock_ports,
-    const std::string& test_mode = "", int sim_threads = 1,
+    const std::vector<std::string>& active_clock_ports, int sim_threads = 1,
     bool capture_diffs = false,
     const std::vector<std::string>& blackbox_instances = {},
     const std::map<int, std::vector<bool>>& unload_mask = {},
@@ -827,7 +814,6 @@ py::dict simulate_scan_protocol_faults_py(
   request.pattern.los_two_capture = los_two_capture;
   request.pattern.los_launch_scan_in = los_launch_scan_in;
   request.pattern.active_clock_ports = active_clock_ports;
-  request.pattern.test_mode = parse_test_mode(test_mode);
   request.pattern.preamble_cycles = preamble_cycles;
   request.pattern.shift_pi_values = shift_pi_values;
   request.faults.reserve(faults.size());
@@ -1159,8 +1145,7 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("include_clock_faults") = false,
         py::arg("include_reset_faults") = false, py::arg("collapsing") = false,
         py::arg("unsupported_policy") = "fail",
-        py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("test_mode") = "");
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def(
       "eval_gate",
       [](const std::string& gate_type, const std::vector<bool>& inputs) {
@@ -1192,7 +1177,7 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("sat_timeout_seconds") = 10,
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("test_mode") = "", py::arg("cone_restrict") = true,
+        py::arg("cone_restrict") = true,
         py::arg("incremental") = false, py::arg("net_index_override") = -1,
         py::arg("seed_width") = 0,
         py::arg("seeded_inputs") = faultflow::atpg::SeedRows{});
@@ -1200,27 +1185,25 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("vector"),
         py::arg("unsupported_policy") = "fail",
-        py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("test_mode") = "");
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("simulate_incremental", &faultflow::simulate_incremental_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("campaign_id"), py::arg("run_id"), py::arg("new_vectors"),
         py::arg("input_order"), py::arg("fault_ids"),
         py::arg("vector_start_index"), py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("test_mode") = "", py::arg("sim_threads") = 1);
+        py::arg("sim_threads") = 1);
   m.def("simulate_tentative", &faultflow::simulate_tentative_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("vector"), py::arg("input_order"), py::arg("fault_ids"),
         py::arg("unsupported_policy") = "fail",
-        py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("test_mode") = "");
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("simulate_tentative_preloaded", &faultflow::simulate_tentative_preloaded_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("preloaded"),
         py::arg("vector"), py::arg("input_order"),
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("test_mode") = "", py::arg("sim_threads") = 1);
+        py::arg("sim_threads") = 1);
   m.def("simulate_transition_tentative_preloaded",
         &faultflow::simulate_transition_tentative_preloaded_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("preloaded"),
@@ -1342,7 +1325,6 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
         py::arg("los_launch_scan_in") = std::map<int, bool>{},
         py::arg("active_clock_ports") = std::vector<std::string>{},
-        py::arg("test_mode") = "",
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("preamble_cycles") = 0,
         py::arg("shift_pi_values") = std::map<std::string, bool>{});
@@ -1359,8 +1341,7 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
         py::arg("los_launch_scan_in") = std::map<int, bool>{},
         py::arg("active_clock_ports") = std::vector<std::string>{},
-        py::arg("test_mode") = "", py::arg("sim_threads") = 1,
-        py::arg("capture_diffs") = false,
+        py::arg("sim_threads") = 1, py::arg("capture_diffs") = false,
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("unload_mask") = std::map<int, std::vector<bool>>{},
         py::arg("preamble_cycles") = 0,
