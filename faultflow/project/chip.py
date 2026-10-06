@@ -227,7 +227,6 @@ def chip_manifest(
         "max_chain_length": max(lengths),
         "min_chain_length": min(lengths),
         "chains": chain_rows,
-        "wrapper_chains": [],
         "cells": records,
         "ineligible_ffs": [],
         "latest_check": None,

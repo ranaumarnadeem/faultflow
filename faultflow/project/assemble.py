@@ -2,7 +2,7 @@
 each block's own frozen, already-synthesized / scanned / wrapped generic JSON.
 
 Each block is synthesized, scan-stitched, and IEEE-1500-wrapped standalone via
-the locked Yosys script (see faultflow/scan/stitch.py, faultflow/wrap/ports.py) —
+the locked Yosys script (see faultflow/scan/stitch.py, faultflow/wrap/block.py) —
 that JSON is the block's FROZEN, tested artifact and must never be re-synthesized
 in the SoC context (abc/opt would freely restructure/merge gates across the block
 boundary once flattened together with the rest of the chip).

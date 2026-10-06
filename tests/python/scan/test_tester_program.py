@@ -224,12 +224,7 @@ def test_a_pattern_loading_one_chain_shifts_its_length(tmp_path: Path) -> None:
         cycles(chip, [{**pattern, "shift_length": 3}])
 
 
-def test_wrapper_cells_and_a_chip_compacted_before_compression_are_refused(
-    tmp_path: Path,
-) -> None:
-    wrapped = _manifest(tmp_path, {"u_wbc": {"type": "$wbc_in_scan_faultflow"}})
-    with pytest.raises(ScanError, match="IEEE 1500 wrapper cells"):
-        chip_of(wrapped)
+def test_a_chip_compacted_before_compression_is_refused(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
     manifest["compression"] = {"enabled": True}
     manifest["compaction"] = {"enabled": True, "with_decompressor": False}

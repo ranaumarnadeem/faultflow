@@ -82,9 +82,7 @@ def _refuse_scanned_or_wrapped(module: Mapping[str, Any]) -> None:
                 f"the netlist is already scanned ({instance} is a scan cell): wrap "
                 "the design before scan insertion"
             )
-        if kind.lstrip("\\").startswith("$wbc_") or CELL_ATTR in cell.get(
-            "attributes", {}
-        ):
+        if CELL_ATTR in cell.get("attributes", {}):
             raise WrapError(f"the netlist is already wrapped ({instance})")
 
 

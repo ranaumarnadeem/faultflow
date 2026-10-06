@@ -142,19 +142,18 @@ SAT ATPG algorithm tests:
 #### `scan/`
 Scan chain insertion and protocol tests:
 - Scan chain discovery and ordering
-- INTEST wrapper boundary fusion
-- EXTEST wrapper with tri-state control
 - Scan sequence generation (shift, capture, parallel load)
 - Scan ATPG and coverage integration
 - Multi-clock domain test isolation
 
 #### `wrap/`
-IEEE 1500 wrapper boundary cell tests:
-- Boundary register cells (IN, OUT, INOUT)
-- Wrapper operation modes (INTEST, EXTEST, normal)
-- Parallel and serial data paths
-- Tri-state enable/disable control
-- Wrapper port observation and control
+IEEE 1500 wrapper tests:
+- The boundary cell of three sky130 cells, against its spec and the cell models
+- Which ports are wrapped (`ff.py wrap`), and the wrapper chains scan insertion adds
+- INTEST and EXTEST: patterns replayed on the cells with the surroundings at X,
+  every credit reproduced by the full scan protocol
+- Who owns each fault, the INTEST environment, the EXTEST graybox
+- The Tcl flowscripts (`core_atpg.tcl`, `extest.tcl`)
 
 #### `project/`
 Hierarchical SoC project (`faultflow_project_v2`) and SoC retarget tests:

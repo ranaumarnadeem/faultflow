@@ -64,7 +64,7 @@ def test_schema_accepts_opaque_blackbox_boundary() -> None:
     [
         ("scan", ("u_sram",), "opaque"),
         ("comb", ("u_sram",), "pseudo_port"),
-        ("scan_extest", ("u_sram",), "pseudo_port"),
+        ("scan_extest", ("u_sram",), "opaque"),
         ("scan", (), "none"),
         ("comb", (), "none"),
     ],
@@ -72,9 +72,9 @@ def test_schema_accepts_opaque_blackbox_boundary() -> None:
 def test_policy_reports_the_blackbox_model_the_campaign_used(
     campaign_type: str, instances: tuple[str, ...], expected: str
 ) -> None:
-    """A scan campaign's reduced view models a blackbox opaque (outputs tied to
-    0, inputs unobserved); combinational and EXTEST ATPG model it as a pseudo
-    port. The report must say which one the numbers came from."""
+    """A scan campaign's reduced view -- EXTEST's too -- models a blackbox
+    opaque (outputs tied to 0, inputs unobserved); combinational ATPG models it
+    as a pseudo port. The report must say which one the numbers came from."""
     from faultflow.reporter.coverage import _policy as report_policy
 
     policy = report_policy({"campaign_type": campaign_type}, instances)

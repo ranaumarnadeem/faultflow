@@ -113,8 +113,8 @@ def _parser() -> argparse.ArgumentParser:
             help=(
                 "Remove output/<top>/.faultflow/ internal workspace before run; "
                 "deliverables at output/<top>/ are kept. Needed when switching "
-                "between intest/extest (test mode is part of the campaign "
-                "fingerprint)"
+                "between functional and intest (test mode is part of the campaign "
+                "fingerprint; extest is a campaign of its own)"
             ),
         )
         p.add_argument(
@@ -154,9 +154,8 @@ def _parser() -> argparse.ArgumentParser:
         "extest",
         help=(
             "IEEE 1500 EXTEST: the wrapper's boundary cells at the block's ports, "
-            "the core held off (a scan test of the graybox of the wrapper ff.py "
-            "wrap puts on; combinational ATPG on the fused boundary view of the "
-            "abstract one)"
+            "the core a blackbox (a scan test of the block's graybox, the wrapper "
+            "chains alone)"
         ),
     )
     add_wrapper_mode_opts(extest)

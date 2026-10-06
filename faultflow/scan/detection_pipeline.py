@@ -104,12 +104,6 @@ class ScanPipelineContext:
     # Used to determine Q-stem detection from the capture-frame D-input value,
     # bypassing the full scan protocol simulation for stuck-at faults.
     q_stem_to_ppo: dict[str, str] = field(default_factory=dict)
-    # INTEST/EXTEST boundary name-mapping (empty for FUNCTIONAL).
-    # Maps fused pseudo-port names back to their generic-netlist counterparts
-    # so the golden gate can drive/observe the real (un-fused) netlist.
-    wbr_stimulus_name_by_port: dict[str, str] = field(default_factory=dict)
-    wbr_observe_name_by_port: dict[str, str] = field(default_factory=dict)
-    wbr_decoupled_bits: frozenset[int] = frozenset()
     # Async set/reset primary inputs held at their INACTIVE level for the whole
     # scan test (standard scan DFT). Maps PI name -> inactive value. Keeps the
     # reduced view (which ignores the FF's async control) consistent with the full
@@ -205,9 +199,6 @@ def build_scan_pipeline_context(
     generic_json: Path,
     pseudo_port_map: dict[str, dict[str, Any]],
     functional_output_order: list[str],
-    wbr_stimulus_name_by_port: dict[str, str] | None = None,
-    wbr_observe_name_by_port: dict[str, str] | None = None,
-    wbr_decoupled_bits: frozenset[int] | None = None,
     x_mask: XMask | None = None,
     nonscan: NonscanSetup | None = None,
     wrapper: dict[str, Any] | None = None,
@@ -289,11 +280,6 @@ def build_scan_pipeline_context(
         functional_output_order=functional_output_order,
         q_stem_site_keys=frozenset(q_stems),
         q_stem_to_ppo=q_stem_to_ppo,
-        wbr_stimulus_name_by_port=wbr_stimulus_name_by_port or {},
-        wbr_observe_name_by_port=wbr_observe_name_by_port or {},
-        wbr_decoupled_bits=(
-            wbr_decoupled_bits if wbr_decoupled_bits is not None else frozenset()
-        ),
         reset_pi_holds=reset_pi_holds,
         compression_map=compression_map,
         compression_care_bit_rows=compression_care_bit_rows,
@@ -464,38 +450,21 @@ def _protocol_fault_sim_kwargs(
     scan_outputs = ctx.manifest.get("scan_outputs", [])
     if not isinstance(scan_inputs, list) or not isinstance(scan_outputs, list):
         raise RunnerError("manifest scan_inputs/scan_outputs must be lists")
-    # INTEST/EXTEST: remap fused boundary port names to generic netlist names.
-    # capture_pi_values carries both __wbi_ stimulus and __wbo_ observe keys, so
-    # the rename must cover both maps (see _process_scan_candidate).
-    stim_map = ctx.wbr_stimulus_name_by_port
-    obs_map = ctx.wbr_observe_name_by_port
-    rename = {**stim_map, **obs_map}
-    gate_pi_values = (
-        {rename.get(k, k): v for k, v in pattern.capture_pi_values.items()}
-        if rename
-        else pattern.capture_pi_values
-    )
-    # No credit where a blackbox output's unknown value lands: its functional
-    # outputs aren't compared, nor its unload bits (pattern.unload_mask).
-    observed_outputs = _observed_outputs(ctx)
-    gate_output_ports = (
-        [obs_map.get(p, p) for p in observed_outputs] if obs_map else observed_outputs
-    )
     return {
         "clock_ports": ctx.clock_ports,
         "scan_enable_port": str(ctx.manifest["scan_enable"]),
         "scan_input_ports": [str(name) for name in scan_inputs],
         "scan_output_ports": [str(name) for name in scan_outputs],
-        "functional_output_ports": gate_output_ports,
+        # No credit where a blackbox output's unknown value lands: its functional
+        # outputs aren't compared, nor its unload bits (pattern.unload_mask).
+        "functional_output_ports": _observed_outputs(ctx),
         "max_chain_length": int(ctx.manifest.get("max_chain_length", 0)),
         "load_seqs": pattern.load_seqs,
-        "capture_pi_values": gate_pi_values,
+        "capture_pi_values": pattern.capture_pi_values,
         "blackbox_instances": list(ctx.cfg.blackbox_instances),
         "unload_mask": pattern.unload_mask or {},
         "preamble_cycles": pattern.preamble_cycles,
-        "shift_pi_values": {
-            rename.get(k, k): v for k, v in pattern.shift_pi_values.items()
-        },
+        "shift_pi_values": dict(pattern.shift_pi_values),
     }
 
 
@@ -720,7 +689,6 @@ def _mapped_twin(
         unsupported,
         scan_ctx.pseudo_port_map,
         scan_ctx.manifest,
-        scan_ctx.wbr_decoupled_bits,
         blackbox_instances=blackbox_instances,
     )
     if twin_map.keys() != execution_map.keys():
@@ -1308,73 +1276,41 @@ def _process_scan_candidate(
     )
     conn.commit()
 
-    # INTEST/EXTEST: remap fused boundary port names to generic netlist names
-    # so the golden gate drives/observes the unwrapped (generic) netlist correctly.
-    # `serialize_vector` packs every non-PPI/PPO key (both __wbi_ stimulus AND
-    # __wbo_ observe outputs that bled into materialized_launch) into
-    # capture_pi_values, so the rename must cover BOTH maps -- otherwise an
-    # unmapped __wbo_ key reaches the generic sim as an unknown port.
-    _stim_map = scan_ctx.wbr_stimulus_name_by_port
-    _obs_map = scan_ctx.wbr_observe_name_by_port
-    _rename = {**_stim_map, **_obs_map}
-    if _rename:
-        gate_scan_pattern = replace(
+    # The golden gate: the pattern on the generic netlist, the full scan protocol,
+    # must give what the reduced view expects.
+    try:
+        reduced_protocol_matches(
+            scan_ctx.cfg,
+            scan_ctx.manifest,
+            scan_ctx.generic_json,
             scan_pattern,
-            capture_pi_values={
-                _rename.get(k, k): v for k, v in scan_pattern.capture_pi_values.items()
-            },
+            reduced_vector=reduced_expectation,
+            functional_output_order=_observed_outputs(scan_ctx),
+            loc_two_capture=is_loc,
+            los_two_capture=is_los,
+            los_launch_scan_in=head_bits,
+            active_clock_ports=active_clock_ports,
         )
-    else:
-        gate_scan_pattern = scan_pattern
-    observed_outputs = _observed_outputs(scan_ctx)
-    gate_output_order = (
-        [_obs_map.get(p, p) for p in observed_outputs] if _obs_map else observed_outputs
-    )
-    gate_reduced = (
-        {_obs_map.get(k, k): v for k, v in reduced_expectation.items()}
-        if _obs_map
-        else reduced_expectation
-    )
-    if not _obs_map:
-        # FUNCTIONAL / EXTEST: golden-gate check against the generic netlist.
-        # INTEST: skipped — $wbc_{in,out}_scan_faultflow cells are not in the
-        # C++ cell map; the generic sim blackboxes them (zeroing all core inputs
-        # via TO_CORE and boundary outputs via TO_SYS), so every comparison
-        # fails by construction.  Pattern validity is guaranteed by the SAT
-        # solver + fault-sim pipeline on the fused ATPG view (no WBR cells).
-        try:
-            reduced_protocol_matches(
-                scan_ctx.cfg,
-                scan_ctx.manifest,
-                scan_ctx.generic_json,
-                gate_scan_pattern,
-                reduced_vector=gate_reduced,
-                functional_output_order=gate_output_order,
-                loc_two_capture=is_loc,
-                los_two_capture=is_los,
-                los_launch_scan_in=head_bits,
-                active_clock_ports=active_clock_ports,
-            )
-        except Exception as exc:
-            conn.execute(
-                """
-                UPDATE atpg_candidates
-                SET status = 'aborted'
-                WHERE campaign_id = ? AND run_id = ? AND candidate_id = ?
-                """,
-                (campaign_id, run_id, candidate_id),
-            )
-            conn.execute(
-                """
-                UPDATE runs
-                SET status = 'aborted', completed_at = CURRENT_TIMESTAMP,
-                    candidates_aborted = candidates_aborted + 1
-                WHERE id = ? AND campaign_id = ?
-                """,
-                (run_id, campaign_id),
-            )
-            conn.commit()
-            raise RunnerError(f"golden_sequence_failed: {exc}") from exc
+    except Exception as exc:
+        conn.execute(
+            """
+            UPDATE atpg_candidates
+            SET status = 'aborted'
+            WHERE campaign_id = ? AND run_id = ? AND candidate_id = ?
+            """,
+            (campaign_id, run_id, candidate_id),
+        )
+        conn.execute(
+            """
+            UPDATE runs
+            SET status = 'aborted', completed_at = CURRENT_TIMESTAMP,
+                candidates_aborted = candidates_aborted + 1
+            WHERE id = ? AND campaign_id = ?
+            """,
+            (run_id, campaign_id),
+        )
+        conn.commit()
+        raise RunnerError(f"golden_sequence_failed: {exc}") from exc
     reduced_view_rejections: list[CandidateRejection] = []
 
     if source == "sat" and sat_target_fault_id is not None:
@@ -1706,31 +1642,6 @@ def _process_scan_candidate(
     return True, False, scan_pattern
 
 
-def _guard_transition_on_scan_wbr(
-    wbr_model: str, manifest: dict[str, Any], transition: bool
-) -> None:
-    """Reject transition (LOC/LOS) ATPG only on a design that ACTUALLY carries
-    scan WBR cells.
-
-    The 1-FF scan WBC delivers boundary stimulus for exactly one capture cycle; a
-    second capture clobbers q, so a scan-WBR-wrapped block cannot run transition
-    ATPG until the 2-FF WBC upgrade lands. But the earlier guard fired on the
-    ``wbr_model`` config alone -- which defaults to "scan" -- so it wrongly rejected
-    transition ATPG on a plain, UNWRAPPED scan design that has no WBR cells at all.
-    A design is scan-WBR-wrapped iff its manifest has a non-empty ``wrapper_chains``
-    (empty for a plain scan design and for the buffer model).
-    """
-    design_has_scan_wbr = bool(manifest.get("wrapper_chains"))
-    if transition and wbr_model == "scan" and design_has_scan_wbr:
-        raise ScanError(
-            "wbr_model='scan' does not support transition (LOC/LOS) ATPG: "
-            "the 1-FF WBC delivers stimulus for exactly one capture cycle; "
-            "a second capture clobbers q and corrupts boundary stimulus. "
-            "Use wbr_model='buffer' for transition faults, or upgrade to a "
-            "2-FF WBC first."
-        )
-
-
 def run_progressive_scan_atpg(
     cfg: FaultflowConfig,
     netlist: Path,
@@ -1752,10 +1663,6 @@ def run_progressive_scan_atpg(
     # Accepted block-level scan patterns, collected for export when
     # scan_pattern_out is set (used by SoC retargeting). One per accepted vector.
     accepted_patterns: list[ScanPattern] = []
-
-    # S4.8 — the 1-FF WBC is correct ONLY under single-capture INTEST. Fail loudly
-    # rather than silently mis-deliver on a scan-WBR-wrapped block.
-    _guard_transition_on_scan_wbr(cfg.wbr_model, scan_ctx.manifest, transition)
 
     los = transition and launch_mode == "los"
     los_couple_ports: list[tuple[str, str]] = []
@@ -1829,7 +1736,6 @@ def run_progressive_scan_atpg(
         unsupported,
         scan_ctx.pseudo_port_map,
         scan_ctx.manifest,
-        scan_ctx.wbr_decoupled_bits,
         blackbox_instances=bb,
     )
     # For transition faults in multi-domain designs, tag cross-domain fault sites.

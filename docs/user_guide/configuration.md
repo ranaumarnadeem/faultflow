@@ -199,7 +199,7 @@ one-shot from the CLI with `add-clock`).
 
 | Key | Allowed values | Default | Meaning |
 |---|---|---|---|
-| `mode` | `functional`, `intest`, `extest` | `functional` | IEEE 1500 wrapper test mode |
+| `mode` | `functional`, `intest`, `extest` | `functional` | IEEE 1500 wrapper test mode of a scan test (`sim --scan`); `intest` and `extest` need the wrapper (`[wrap] enabled`) |
 
 ## `[wrap]`
 
@@ -214,7 +214,9 @@ The IEEE 1500 wrapper `ff.py wrap` puts on the design's ports (see
 | `extest_pin` | a port name | `wbr_extest` | The EXTEST mode pin the wrapper adds |
 | `exclude` | comma list of globs on `port` or `port[bit]` | empty | Port bits left unwrapped; `*` and `?` are wildcards, brackets match themselves (`b[1]`, `b[*]`) |
 | `control` | `pins` | `pins` | How the mode is set: the two mode pins |
-| `wbr_model` | `buffer`, `scan` | `scan` | The abstract wrapper cells the shell's `wrap -model` puts on instead: `buffer` is transparent, `scan` is a native shiftable WBR |
+
+`wbr_model` went with the abstract `$wbc_*` wrapper; a config that sets it is
+refused.
 
 ## `[autombist]`
 

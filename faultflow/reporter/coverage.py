@@ -74,12 +74,14 @@ def _blackbox_boundary(fp: dict[str, Any], blackbox_instances: tuple[str, ...]) 
     and its outputs are whatever blackbox_output_values says -- unknown by
     default, so no observation point they reach gets credit (scan.x_mask).
     The scan protocol can neither set a memory's outputs, know them, nor
-    observe its inputs. Combinational and EXTEST campaigns model it as a test
+    observe its inputs -- an IEEE 1500 wrapper's EXTEST (scan_extest) no more
+    than any other scan test. A combinational campaign models it as a test
     interface (inputs observable, outputs controllable), parallel to scan
     pseudo-PI/PO."""
     if not blackbox_instances:
         return "none"
-    return "opaque" if fp.get("campaign_type") == "scan" else "pseudo_port"
+    scan = fp.get("campaign_type") in ("scan", "scan_extest")
+    return "opaque" if scan else "pseudo_port"
 
 
 def _policy(

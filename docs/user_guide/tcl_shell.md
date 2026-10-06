@@ -80,8 +80,7 @@ shown by `help`. Run `help <command>` for the live version of this reference, or
 | Command | Summary |
 |---|---|
 | `wrap [-clock PORT] [-exclude GLOBS] [-intest PIN] [-extest PIN] [-o PATH]` | Put the IEEE 1500 wrapper on the boundary ports, as `ff.py wrap` does: a boundary cell of three sky130 cells on every data input and output bit, and the two mode pins (default `wbr_intest`, `wbr_extest`). Clocks, asynchronous clears and presets, and the bits `-exclude` names stay unwrapped. The flops run on `-clock` (default: the design's one clock). The wrapped netlist becomes the active design; scan insertion state is cleared. |
-| `wrap -model scan\|buffer [-clock PORT] [-se PORT] [-si PORT] [-so PORT] [-o PATH]` | The abstract wrapper cells instead: `scan` native shiftable cells stitched into a dedicated wrapper chain (`wbr_si`/`wbr_so`/`wbr_se`), `buffer` transparent cells. `-clock` names the port left unwrapped (default `clk`). |
-| `set_testmode functional\|intest\|extest` | Select the wrapper test mode. `intest` tests the core internals; `extest` tests the interconnect around the core. `intest`/`extest` are distinct campaigns and invalidate a resume vs. `functional`. |
+| `set_testmode functional\|intest\|extest` | Select the mode a scan test (`run_atpg -scan`) holds the wrapper's mode pins in. `intest` tests the core, its surroundings unknown; `extest` tests the boundary cells and the ports around the core, the core a blackbox and the wrapper chains alone shifting. EXTEST is a campaign of its own; switching between `functional` and `intest` needs a clean workspace. INTEST and EXTEST need the wrapper (`wrap`, then `add_scan`). |
 | `report_testmode` | Show the current wrapper test mode |
 
 ### Test point
@@ -145,7 +144,6 @@ See [Test-point insertion](testpoints.md) for the full workflow.
 | `report.threshold` | Target coverage percent |
 | `simulation.sim_threads` | Fault-grading worker threads (non-negative integer; `0` = auto) |
 | `simulation.unsupported_cells` | `fail` or `blackbox` |
-| `wrap.wbr_model` | `buffer` or `scan` |
 
 ### Session
 
@@ -200,11 +198,14 @@ bottom of the file, or `source` it and call the `proc` directly:
 | Script | Flow |
 |---|---|
 | `flat_atpg.tcl` | Flat-netlist stuck-at ATPG — no scan or wrapper. Leaf blocks, or characterizing a design before adding scan. |
-| `scan.tcl` | Scan insertion and scan-protocol stuck-at ATPG. |
-| `core_atpg.tcl` | Core-level ATPG on a wrapped design. |
-| `intest.tcl` | IEEE 1500 INTEST — scan-integrated core coverage. |
-| `extest.tcl` | IEEE 1500 EXTEST — wrapper-boundary / interconnect coverage. |
-| `hereichy_atpg.tcl` | Hierarchical block-to-SoC flow: per-block INTEST plus assembly EXTEST. |
+| `scan.tcl` | Scan insertion (with `wrap 1`, the IEEE 1500 wrapper first) and its checks. |
+| `core_atpg.tcl` | One block wrapped, scanned and INTEST-graded in a single flow. |
+| `intest.tcl` | IEEE 1500 INTEST of a wrapped, scanned block, from its saved session. |
+| `extest.tcl` | IEEE 1500 EXTEST of a wrapped, scanned block, from its saved session. |
+
+The SoC around several wrapped blocks is `ff.py project` (see
+[Running without the shell](running_without_shell.md#project)); it has no shell
+equivalent.
 
 See [Flow recipes](examples.md) for a walkthrough of the two most common flows.
 

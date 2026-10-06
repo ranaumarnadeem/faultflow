@@ -443,7 +443,6 @@ def _add_blackbox_memory(module: dict[str, Any]) -> str:
 def _tiny_dff_scan_workspace(
     tmp_path: Path,
     *,
-    wbr_model: str = "scan",
     with_memory: bool = False,
     launch_mode: str | None = None,
 ) -> tuple[Any, Path, Path, ScanPipelineContext, dict[str, object]]:
@@ -500,8 +499,6 @@ unsupported_cells = fail
 mode = comb
 random_vectors = 0
 max_rounds = 3
-[wrap]
-wbr_model = {wbr_model}
 """.strip() + "\n" + blackbox_section,
         encoding="utf-8",
     )
@@ -627,11 +624,7 @@ def test_scan_exhausts_max_rounds_when_protocol_sim_never_passes(
     import faultflow.runner.runner as runner_mod
 
     monkeypatch.chdir(tmp_path)
-    # wbr_model="buffer": transition (LOC) ATPG is rejected for wbr_model="scan"
-    # (the 1-FF WBC delivers stimulus for a single capture only).
-    cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(
-        tmp_path, wbr_model="buffer"
-    )
+    cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(tmp_path)
     core = runner_mod._load_core()
     assert core is not None
 

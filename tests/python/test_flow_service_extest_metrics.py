@@ -1,13 +1,12 @@
 """`FlowService.run_atpg` must report metrics under the campaign the run actually
 wrote, not just "scan" vs "comb".
 
-Scan-model EXTEST (`cfg.test_mode == "extest"` + `scan=True`) routes to `_sim_extest`
-(see `runner.py`), which records its campaign as `CAMPAIGN_TYPE_SCAN_EXTEST`
-("scan_extest") specifically so it never collides with the block's own INTEST/scan
-campaign in the same DB. But `run_atpg` picked metrics via a blunt
-`"scan" if scan else "comb"`, so a scan-model EXTEST run always looked up the WRONG
-campaign type and reported `campaign_state: "not_run"` even though the run succeeded
-and a real "scan_extest" campaign exists.
+EXTEST (`cfg.test_mode == "extest"` + `scan=True`) records its campaign as
+`CAMPAIGN_TYPE_SCAN_EXTEST` ("scan_extest") (see `runner.py`) specifically so it never
+collides with the block's own INTEST/scan campaign in the same DB. But `run_atpg`
+picked metrics via a blunt `"scan" if scan else "comb"`, so an EXTEST run always
+looked up the WRONG campaign type and reported `campaign_state: "not_run"` even
+though the run succeeded and a real "scan_extest" campaign exists.
 """
 
 from __future__ import annotations
@@ -109,3 +108,26 @@ def test_run_atpg_still_reports_plain_scan_metrics_for_intest(tmp_path: Path) ->
 
     assert result.metrics["campaign_state"] == "available"
     assert result.metrics["campaign_type"] == "scan"
+
+
+def test_status_in_extest_reports_the_extest_campaign(tmp_path: Path) -> None:
+    """status -scan in EXTEST looks up EXTEST's campaign -- the runner's message
+    and the service's metrics alike -- not the block's scan campaign."""
+    from faultflow.db import campaign_type_of
+    from faultflow.runner import Runner
+
+    assert campaign_type_of(True, "extest") == "scan_extest"
+    assert campaign_type_of(True, "intest") == "scan"
+    assert campaign_type_of(False, "extest") == "comb"
+    cfg = replace(
+        load_config(Path("config.ofs.example"), "c17"),
+        top="soc_top",
+        test_mode="extest",
+        output_root=tmp_path,
+    )
+    _seed_scan_extest_campaign(cfg.db_path, "soc_top")
+
+    result = FlowService(runner_factory=Runner).status(cfg, scan=True)
+
+    assert result.metrics["campaign_type"] == "scan_extest"
+    assert result.metrics["campaign_state"] == "available"

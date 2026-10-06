@@ -89,19 +89,6 @@ def manifest_from_result(
             }
             for chain in result.chains
         ],
-        "wrapper_chains": [
-            {
-                "index": chain.index,
-                "scan_in": chain.scan_in,
-                "scan_out": chain.scan_out,
-                "scan_in_net": chain.scan_in_net,
-                "scan_out_net": chain.scan_out_net,
-                "length": chain.length,
-                "cells": [cell.instance for cell in chain.cells],
-                "cell_records": [_cell_row(cell) for cell in chain.cells],
-            }
-            for chain in result.wrapper_chains
-        ],
         "cells": [_cell_row(cell) for cell in result.cells],
         "ineligible_ffs": [
             {
@@ -112,49 +99,6 @@ def manifest_from_result(
             for ff in result.ineligible_ffs
         ],
         "latest_check": check_result,
-    }
-
-
-def dry_run_manifest(plan: ScanPlan) -> dict[str, object]:
-    return {
-        "version": 1,
-        "top": plan.top,
-        "chain_order_policy": "sorted by instance name, not netlist order",
-        "chain_count": plan.chain_count,
-        "cell_count": plan.cell_count,
-        "clock_nets": plan.clock_nets,
-        "scan_inputs": plan.scan_inputs,
-        "scan_outputs": plan.scan_outputs,
-        "scan_enable": plan.scan_enable,
-        "chains": [
-            {
-                "index": chain.index,
-                "kind": chain.kind,
-                "scan_in": chain.scan_in,
-                "scan_out": chain.scan_out,
-                "length": chain.length,
-                "cells": [cell.instance for cell in chain.cells],
-            }
-            for chain in plan.chains
-        ],
-        "wrapper_chains": [
-            {
-                "index": chain.index,
-                "scan_in": chain.scan_in,
-                "scan_out": chain.scan_out,
-                "length": chain.length,
-                "cells": [cell.instance for cell in chain.cells],
-            }
-            for chain in plan.wrapper_chains
-        ],
-        "ineligible_ffs": [
-            {
-                "instance": ff.instance,
-                "cell_type": ff.cell_type,
-                "reason": ff.reason,
-            }
-            for ff in plan.ineligible_ffs
-        ],
     }
 
 

@@ -45,8 +45,8 @@ The following capabilities are **implemented and working today**:
 | Fault handling | Checkpoint enumeration; equivalence-only collapsing (never dominance, so coverage is provably unchanged); reverse-order and dynamic test-set compaction |
 | Sequential | Posedge and negedge D flip-flops; asynchronous set/reset (clear/preset with polarity) |
 | Scan | Generic scan-chain insertion and stitching; scan checking; scan SAT ATPG; Sky130 scan-cell techmap |
-| Test modes | IEEE 1500 wrapper (functional / intest / extest); native shiftable wrapper boundary register (WBR) |
-| Hierarchy | Per-block INTEST plus assembly EXTEST aggregated into one chip coverage number; scan-pattern retargeting onto an SoC scan path |
+| Test modes | IEEE 1500 wrapper of sky130 cells (functional / intest / extest), its flops on scan chains of their own |
+| Hierarchy | Per-block INTEST plus SoC EXTEST added into one chip coverage number, each fault counted once; block INTEST patterns retargeted onto the SoC |
 | Multi-clock | Domain-aware test protocol; per-domain at-speed; cross-domain paths masked |
 | Design rules | `rule_check` — a DFT structural rule check whose rule set continues to grow |
 | PDKs | Sky130 HD (default) and OSU035, via JSON cell maps |

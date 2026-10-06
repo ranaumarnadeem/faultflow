@@ -90,18 +90,6 @@ def chip_of(manifest: Mapping[str, Any]) -> Chip:
     """The chip a scan manifest describes, as a tester connects to it."""
     generic = json.loads(Path(str(manifest["generic_json"])).read_text("utf-8"))
     core = generic["modules"][str(manifest["top"])]
-    wrapper = sorted(
-        {
-            str(cell.get("type", "")).lstrip("\\")
-            for cell in core.get("cells", {}).values()
-            if str(cell.get("type", "")).lstrip("\\").startswith("$wbc_")
-        }
-    )
-    if wrapper:
-        raise ScanError(
-            f"the chip's IEEE 1500 wrapper cells ({', '.join(wrapper)}) have no "
-            "cell-level implementation, so no tester can apply its patterns"
-        )
     clock_nets = set(manifest["clock_nets"])
     clocks = tuple(
         name

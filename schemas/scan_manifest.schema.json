@@ -21,7 +21,6 @@
     "max_chain_length",
     "min_chain_length",
     "chains",
-    "wrapper_chains",
     "cells",
     "ineligible_ffs"
   ],
@@ -43,11 +42,6 @@
     "min_chain_length": {"type": "integer", "minimum": 0},
     "max_chain_length": {"type": "integer", "minimum": 0},
     "chains": {"type": "array", "items": {"$ref": "#/$defs/chain"}},
-    "wrapper_chains": {
-      "description": "The abstract $wbc_* wrapper's chain (wrap -model scan); empty otherwise.",
-      "type": "array",
-      "items": {"$ref": "#/$defs/chain"}
-    },
     "cells": {"type": "array", "items": {"$ref": "#/$defs/scan_cell"}},
     "ineligible_ffs": {
       "type": "array",
@@ -68,7 +62,6 @@
               "no_output_pin",
               "unknown_cell_type",
               "existing_scan_cell",
-              "wbr_scan_cell",
               "unsupported_ff_shape",
               "multiple_clock_nets",
               "nonscan_policy"

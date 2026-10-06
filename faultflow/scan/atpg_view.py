@@ -886,10 +886,8 @@ def build_scan_atpg_view(
 
     records = _scan_cell_records(manifest)
     if not records:
-        # A wrapper-only EXTEST graybox has NO internal scan FFs to reduce to
-        # pseudo-ports; its IEEE-1500 WBR cells are handled downstream by
-        # fuse_wbr_into_view. Return the netlist otherwise unchanged (no
-        # pseudo-ports); blackboxes are still modeled opaque.
+        # No scan flop to reduce to pseudo-ports: the netlist otherwise
+        # unchanged; blackboxes are still modeled opaque.
         _model_blackboxes_opaque(module, blackbox_instances)
         if nonscan is not None:
             _model_nonscan(module, nonscan)

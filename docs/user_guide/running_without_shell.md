@@ -109,9 +109,10 @@ python3 ff.py intest --top <top> -c config.ofs [options]
 ```
 
 IEEE 1500 INTEST: a scan test of the core through the wrapper. Equivalent to
-`sim --scan` with the test mode forced to `intest`.
+`sim --scan` with the test mode forced to `intest`. It needs the wrapper `ff.py
+wrap` puts on (`[wrap] enabled`); a design without it is refused.
 
-On the wrapper `ff.py wrap` puts on (`[wrap] enabled`), it is a scan test of the
+It is a scan test of the
 wrapped block with the INTEST mode pin held at 1 and the EXTEST one at 0: each input
 cell drives the core from its flop and holds that value, each output cell drives its
 port at 0 and captures the core. The block sits in its SoC, so whatever drives its
@@ -137,7 +138,7 @@ core, the boundary cells and the mode pins.
 | Option | Meaning |
 |---|---|
 | `--purge` | Remove transient junk inside `.faultflow/` before the run |
-| `--clean` | Remove the `.faultflow/` internal workspace before the run; deliverables are kept. Needed when switching between `intest`/`extest` — test mode is part of the campaign fingerprint |
+| `--clean` | Remove the `.faultflow/` internal workspace before the run; deliverables are kept. Needed when switching between `sim --scan` and `intest` — test mode is part of the campaign fingerprint; `extest` is a campaign of its own |
 | `--max ROUNDS` | Maximum progressive ATPG rounds (default: `[atpg] max_rounds`) |
 | `-t PCT` | Target coverage percent (default: `[report] threshold`) |
 | `--export-patterns PATH` | Export the scan patterns as JSON, for `write-patterns`. On the wrapper `ff.py wrap` puts on they replay on its sky130 cells with the wrapped inputs at X |
@@ -151,8 +152,9 @@ python3 ff.py extest --top <top> -c config.ofs [options]
 IEEE 1500 EXTEST: the wrapper's own test, at the block's ports. Takes the same
 options as `intest`.
 
-On the wrapper `ff.py wrap` puts on (`[wrap] enabled`), it is a scan test of the
-block's graybox, with the INTEST mode pin held at 0 and the EXTEST one at 1: each
+It needs the wrapper `ff.py wrap` puts on (`[wrap] enabled`), as `intest` does.
+It is a scan test of the block's graybox, with the INTEST mode pin held at 0 and
+the EXTEST one at 1: each
 output cell drives its port from its flop and holds it, each input cell captures its
 port and keeps the core at 0. The graybox is the block's boundary cells; everything
 else, the core, is one blackbox whose outputs are unknown -- the held output cells'
@@ -169,10 +171,6 @@ muxes keep them out, so the core costs nothing and none of its faults is graded:
 - At speed it launches on shift (`[fault_model] launch = los`): on capture it
   launches nothing at the boundary, where the output cells hold and the input cells
   capture the same port values twice, so `launch = loc` is refused.
-
-Otherwise -- the abstract wrapper of the shell's `wrap -model` -- it is
-combinational ATPG on the fused boundary view, with the core held safe, and exports
-no patterns.
 
 ## `project`
 
@@ -298,8 +296,7 @@ same time or on the inputs a load holds, the holds keep every flop a preamble
 settles settled, and each capture's pulse arms the decompressor's reseed for the
 next load, so both give the same results; the test suite checks both on the cells.
 The chip is the scanned netlist, or with scan compression or compaction the one
-`scan-compress` or `scan-compact` wrote (with both, the compacted one). A design
-with IEEE 1500 wrapper cells is refused: they have no cell-level implementation.
+`scan-compress` or `scan-compact` wrote (with both, the compacted one).
 The Tcl shell's `write_patterns -patterns PATH -o PATH [-no_overlap]` does the same.
 
 | Option | Required | Meaning |
@@ -561,7 +558,7 @@ side.
 | JTAG network-integrity grade | `run_jtag` | `jtag` |
 | Status | `status` | `status` |
 | INTEST | `set_testmode intest` + scan flow + `run_atpg -scan` | `intest` |
-| EXTEST | `add_blackbox` ... + `set_testmode extest` + `run_atpg` | `extest` |
+| EXTEST | `set_testmode extest` + scan flow + `run_atpg -scan` | `extest` |
 | Hierarchical SoC (`faultflow_project_v2`) | *(shell has no equivalent)* | `project` |
 | Retarget a block's INTEST patterns onto its SoC | *(shell has no equivalent)* | `project retarget -p ... --block ... --out ...` |
 | Write patterns as STIL | `write_patterns -patterns ... -o ...` | `write-patterns --patterns ... -o ...` |

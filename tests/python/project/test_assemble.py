@@ -1359,12 +1359,13 @@ def test_assemble_soc_end_to_end(tmp_path: Path, require_cpp_core: None) -> None
     from faultflow.runner.runner import _load_core
     from faultflow.shell.session import ProjectSession
     from faultflow.shell.tcl_bridge import TclBridge
-    from faultflow.wrap.ports import wrap_ports
 
     core = _load_core()
     assert core is not None
 
-    def _build_wrapped_block(name: str, op: str) -> Path:
+    def _build_wrapped_block(name: str, op: str) -> tuple[Path, dict[str, Any]]:
+        """`name` synthesized, wrapped (IEEE 1500) and scanned in the shell: its
+        scan JSON and that JSON's ports."""
         rtl = tmp_path / f"{name}.v"
         rtl.write_text(
             f"module {name}(input clk, input a, input b, output y);\n"
@@ -1380,37 +1381,62 @@ def test_assemble_soc_end_to_end(tmp_path: Path, require_cpp_core: None) -> None
         bridge.call("use_lib_cells", "sky130")
         bridge.call("add_clock", "clk")
         bridge.call("synth")
+        bridge.call("wrap")
         bridge.call("add_scan", "-chains", "1")
 
         cfg = session.materialize_config()
         scan_json = cfg.intermediate_dir / f"{name}_scan.json"
         assert scan_json.exists(), f"scan-stitched JSON not found at {scan_json}"
-        scanned = json.loads(scan_json.read_text(encoding="utf-8"))
-        wrapped = wrap_ports(scanned, name, wbr_model="scan")
+        module = json.loads(scan_json.read_text(encoding="utf-8"))["modules"][name]
+        return scan_json, module["ports"]
 
-        out_path = tmp_path / f"{name}_wrapped.json"
-        out_path.write_text(json.dumps(wrapped), encoding="utf-8")
-        return out_path
+    def _instance(
+        module: str, instance: str, ports: dict[str, Any], given: dict[str, str]
+    ) -> tuple[list[str], str]:
+        """`module` as `instance`: the ports `given` names wired so, every other
+        input (scan, wrapper chains, mode pins: functional mode) tied to 0, every
+        other output on a wire of its own. Its wires, and its instantiation."""
+        wires: list[str] = []
+        pins: list[str] = []
+        for port, spec in ports.items():
+            width = len(spec["bits"])
+            if port in given:
+                pins.append(f".{port}({given[port]})")
+            elif spec["direction"] == "input":
+                pins.append(f".{port}({width}'b0)")
+            else:
+                wire = f"{instance}_{port}"
+                wires.append(f"  wire [{width - 1}:0] {wire};")
+                pins.append(f".{port}({wire})")
+        return wires, f"  {module} {instance}(" + ", ".join(pins) + ");"
 
-    block_a_path = _build_wrapped_block("block_a", "&")
-    block_b_path = _build_wrapped_block("block_b", "|")
+    block_a_path, ports_a = _build_wrapped_block("block_a", "&")
+    block_b_path, ports_b = _build_wrapped_block("block_b", "|")
+    # Three boundary cells (a, b, y) and a one-flop core chain: no wrapper chain is
+    # longer than the core's, so there are three, wbr_si_<k> to wbr_so_<k>.
+    wrapper = {f"wbr_{end}_{k}" for end in ("si", "so") for k in range(3)}
+    assert wrapper | {"wbr_intest", "wbr_extest"} <= set(ports_a)
 
+    wires_a, u_a = _instance(
+        "block_a", "u_a", ports_a, {"clk": "clk", "a": "a", "b": "b", "y": "w"}
+    )
+    wires_b, u_b = _instance(
+        "block_b", "u_b", ports_b, {"clk": "clk", "a": "w", "b": "b", "y": "y"}
+    )
     soc_rtl = tmp_path / "soc.v"
     soc_rtl.write_text(
-        "module soc(input clk, input a, input b, output y);\n"
-        "  wire w;\n"
-        "  wire a_scan_out, a_wbr_so, b_scan_out, b_wbr_so;\n"
-        "  block_a u_a(\n"
-        "    .clk(clk), .a(a), .b(b), .y(w),\n"
-        "    .scan_en(1'b0), .scan_in(1'b0), .scan_out(a_scan_out),\n"
-        "    .CLK(clk), .wbr_se(1'b0), .wbr_si(1'b0), .wbr_so(a_wbr_so)\n"
-        "  );\n"
-        "  block_b u_b(\n"
-        "    .clk(clk), .a(w), .b(b), .y(y),\n"
-        "    .scan_en(1'b0), .scan_in(1'b0), .scan_out(b_scan_out),\n"
-        "    .CLK(clk), .wbr_se(1'b0), .wbr_si(1'b0), .wbr_so(b_wbr_so)\n"
-        "  );\n"
-        "endmodule\n",
+        "\n".join(
+            [
+                "module soc(input clk, input a, input b, output y);",
+                "  wire w;",
+                *wires_a,
+                *wires_b,
+                u_a,
+                u_b,
+                "endmodule",
+                "",
+            ]
+        ),
         encoding="utf-8",
     )
 

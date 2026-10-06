@@ -517,8 +517,6 @@ def test_async_reset_transition_atpg_with_reset_faults(
     bridge.call("add_clock", "clk")
     bridge.call("set_option", "fault_model.include_reset_faults", "true")
     bridge.call("set_option", "fault_model.collapsing", "false")
-    # buffer WBC: transition (LOC/LOS) ATPG is unsupported with the 1-FF scan WBC.
-    bridge.call("set_option", "wrap.wbr_model", "buffer")
     bridge.call("synth")
     assert "cells=2" in str(bridge.call("add_scan", "-chains", "1"))
     bridge.call("check_scan")

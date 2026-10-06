@@ -251,9 +251,7 @@ def test_the_wrapper_clock_mode_pins_and_names_are_checked() -> None:
     assert _module(added.netlist)["ports"]["wrck"]["direction"] == "input"
 
 
-def test_the_shells_wrap_puts_the_ieee_1500_wrapper_on_without_a_model(
-    tmp_path: Path,
-) -> None:
+def test_the_shells_wrap_puts_the_ieee_1500_wrapper_on(tmp_path: Path) -> None:
     from faultflow.shell.errors import ShellError
     from faultflow.shell.session import ProjectSession
     from faultflow.shell.tcl_bridge import TclBridge
@@ -264,10 +262,9 @@ def test_the_shells_wrap_puts_the_ieee_1500_wrapper_on_without_a_model(
     session.read_netlist(source, TOP)
     session.use_lib_cells("sky130")
     bridge = TclBridge(session)
-    with pytest.raises(ShellError, match="-se, -si and -so go with -model"):
-        bridge.call("wrap", "-se", "wse")
-    with pytest.raises(ShellError, match="-exclude, -intest and -extest go without"):
-        bridge.call("wrap", "-model", "scan", "-intest", "t_int")
+    # The abstract $wbc_* wrapper's -model is gone.
+    with pytest.raises(ShellError, match="unknown option '-model'"):
+        bridge.call("wrap", "-model", "scan")
     result = bridge.call("wrap", "-exclude", "w,k", "-intest", "t_int")
     assert "wrapped 5 port bits (3 inputs, 2 outputs)" in result.message
     assert session.source is not None

@@ -561,16 +561,11 @@ proc {name} {{args}} {{
 
     def _wrap(self, args: list[str]) -> Any:
         """wrap [-clock PORT] [-exclude GLOBS] [-intest PIN] [-extest PIN] [-o PATH]:
-        the IEEE 1500 wrapper. With -model scan|buffer [-se/-si/-so PORT], the
-        abstract $wbc_* cells instead."""
+        the IEEE 1500 wrapper."""
         from pathlib import Path as _Path
 
         names = {
-            "-model": "wbr_model",
             "-clock": "clock",
-            "-se": "scan_enable",
-            "-si": "scan_in",
-            "-so": "scan_out",
             "-intest": "intest_pin",
             "-extest": "extest_pin",
         }
@@ -594,19 +589,6 @@ proc {name} {{args}} {{
             else:
                 kwargs[names[flag]] = value
             idx += 2
-        model_only = {"scan_enable", "scan_in", "scan_out"} & set(kwargs)
-        if "wbr_model" not in kwargs and model_only:
-            raise ShellError(
-                "wrap: -se, -si and -so go with -model", "CONFIG", "INVALID_OPTION"
-            )
-        if "wbr_model" in kwargs and {"exclude", "intest_pin", "extest_pin"} & set(
-            kwargs
-        ):
-            raise ShellError(
-                "wrap: -exclude, -intest and -extest go without -model",
-                "CONFIG",
-                "INVALID_OPTION",
-            )
         return self.session.wrap(**kwargs)  # type: ignore[arg-type]
 
     def _autombist_generate(self, args: list[str]) -> Any:

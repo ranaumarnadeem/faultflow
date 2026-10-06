@@ -1,17 +1,16 @@
 # =============================================================================
 # flowscripts/core_atpg.tcl
 #
-# Per-core ATPG: combines scan insertion and INTEST into a single flow for one
-# wrapped block.  The scan chains are stitched, the session is saved, and then
-# INTEST scan ATPG is run in the same session — no reset between phases.
+# Per-core ATPG: wraps one block in the IEEE 1500 wrapper, inserts scan, and
+# runs INTEST in a single flow.  The ports are wrapped, the scan chains are
+# stitched (the wrapper's flops on chains of their own), the session is saved,
+# and then INTEST scan ATPG is run in the same session — no reset between
+# phases.  extest.tcl can then resume the saved session for the block's EXTEST.
 #
-# This script also defines ff::run_core_atpg so that hereichy_atpg.tcl can
-# call it in a loop for each block without re-sourcing the file.
-#
-# Usage (standalone — runs scan + INTEST for a single block):
+# Usage (standalone — runs wrap + scan + INTEST for a single block):
 #   python ff.py shell -f flowscripts/core_atpg.tcl
 #
-# Usage (sourced by hereichy_atpg.tcl):
+# Usage (sourced, to import ff::run_core_atpg for a loop over blocks):
 #   set _ff_scan_sourced   1
 #   set _ff_intest_sourced 1
 #   set _ff_core_sourced   1
@@ -32,7 +31,8 @@ proc ff::log {msg} { puts "\[ff\] $msg" }
 # ---------------------------------------------------------------------------
 # ff::run_core_atpg
 #
-# Runs the full per-block flow: scan insertion → save session → INTEST ATPG.
+# Runs the full per-block flow: wrap + scan insertion → save session → INTEST
+# ATPG.
 # The two phases share the same session object (no reset between them).
 #
 # Required arguments (key value):
@@ -92,7 +92,8 @@ proc ff::run_core_atpg {args} {
         scan_out      $opt(scan_out)      \
         scan_enable   $opt(scan_enable)   \
         max_chain_len $opt(max_chain_len) \
-        clock_off     $opt(clock_off)
+        clock_off     $opt(clock_off)     \
+        wrap          1
 
     # ---- Phase 2: INTEST ATPG (same session — no resume needed) ----------
     ff::log "--- Phase 2: INTEST scan ATPG ---"

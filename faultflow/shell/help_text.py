@@ -137,9 +137,7 @@ COMMAND_HELP = {
     ),
     "wrap": CommandHelp(
         "Test Mode",
-        "wrap [-clock PORT] [-exclude GLOBS] [-intest PIN] [-extest PIN] [-o PATH]\n"
-        "wrap -model scan|buffer [-clock PORT] [-se PORT] [-si PORT] [-so PORT] "
-        "[-o PATH]",
+        "wrap [-clock PORT] [-exclude GLOBS] [-intest PIN] [-extest PIN] [-o PATH]",
         "Put an IEEE 1500 wrapper on the boundary ports",
         "Puts a boundary cell -- a mux, a gate and a flop, all sky130 cells -- on "
         "every data input and output bit of the current synthesized netlist, and "
@@ -147,28 +145,27 @@ COMMAND_HELP = {
         "wbr_extest). Clocks and asynchronous clears and presets stay unwrapped, "
         "and so do the ports -exclude names (globs on a port or port[bit], comma "
         "or space separated). The flops run on -clock (default: the design's one "
-        "clock). With -model, the abstract wrapper cells instead: 'scan' native "
-        "shiftable $wbc_*_scan_faultflow cells on a wrapper chain "
-        "(wbr_si/wbr_so/wbr_se), 'buffer' transparent $wbc_*_faultflow cells; "
-        "-clock then names the port left unwrapped (default: clk). The wrapped "
-        "netlist is saved alongside the source and becomes the new active design; "
-        "scan insertion state is cleared.",
+        "clock). The wrapped netlist is saved alongside the source and becomes "
+        "the new active design; scan insertion state is cleared. add_scan then "
+        "gives the wrapper's flops chains of their own (wbr_si/wbr_so).",
         "A synthesized Yosys JSON netlist.",
-        "wrap\n"
-        "wrap -clock clk -exclude test_* -o /tmp/core_wrapped.json\n"
-        "wrap -model scan -clock clk",
+        "wrap\n" "wrap -clock clk -exclude test_* -o /tmp/core_wrapped.json",
     ),
     "set_testmode": CommandHelp(
         "Test Mode",
         "set_testmode functional|intest|extest",
         "Select the IEEE 1500 wrapper test mode",
-        "Sets the wrapper boundary test mode for a wrapped core. FUNCTIONAL "
-        "leaves wrapper cells transparent. INTEST tests the core internals "
-        "(wrapper input cells drive core inputs, output cells observe core "
-        "outputs). EXTEST tests the interconnect around the core (the same "
-        "cells flip to drive/observe the system side). INTEST and EXTEST are "
-        "distinct runs and invalidate a resume vs FUNCTIONAL.",
-        "A design session (read_netlist not required).",
+        "Sets the mode a scan test (run_atpg -scan) holds the wrapper's mode "
+        "pins in. FUNCTIONAL leaves the wrapper transparent. INTEST tests the "
+        "core: the input cells hold and drive it from their flops, the output "
+        "cells capture it; what drives the block is unknown. EXTEST tests what "
+        "is around the core: the output cells drive the ports from their flops, "
+        "the input cells capture them, the core a blackbox; the wrapper chains "
+        "alone shift. EXTEST is a campaign of its own; switching between "
+        "FUNCTIONAL and INTEST needs a clean workspace (the test mode is part of "
+        "the campaign fingerprint).",
+        "A design session (read_netlist not required); INTEST and EXTEST need the "
+        "wrapper (wrap, then add_scan).",
         "set_testmode intest",
     ),
     "report_testmode": CommandHelp(
@@ -377,7 +374,7 @@ COMMAND_HELP = {
         " fault_model.collapsing, fault_model.include_reset_faults,"
         " fault_model.include_clock_faults, report.output, report.threshold,"
         " simulation.sim_threads, simulation.unsupported_cells,"
-        " simulation.verify, simulation.verify_use_power_pins, wrap.wbr_model."
+        " simulation.verify, simulation.verify_use_power_pins."
         " atpg.sat_timeout_schedule is a comma list like 2,10,60 that"
         " escalates a fault's SAT timeout only when it times out."
         " atpg.workers sets parallel workers (1=serial); prefer WORKERS."

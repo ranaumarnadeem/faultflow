@@ -233,10 +233,10 @@ def redundancy_model_id(fp: dict[str, Any]) -> str:
             # Blackbox changes the graph (pseudo-PI/TP boundary), so UNSAT-redundant
             # classifications from one blackbox config must not survive to another.
             str(sorted(fp.get("blackbox_instances", []))),
-            # IEEE 1500 mode + WBR model change the control/observe boundary, so a
-            # fault redundant in FUNCTIONAL/buffer may be testable in INTEST/scan.
+            # The IEEE 1500 wrapper's mode changes what the test controls and
+            # observes, so a fault redundant in FUNCTIONAL may be testable in
+            # INTEST or EXTEST.
             str(fp.get("test_mode", "functional")),
-            str(fp.get("wbr_model", "buffer")),
         ]
     )
 

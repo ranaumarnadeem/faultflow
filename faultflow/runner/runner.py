@@ -30,11 +30,11 @@ from faultflow.config import (
     benchmark_synth_test,
 )
 from faultflow.db import (
-    CAMPAIGN_TYPE_COMB,
     CAMPAIGN_TYPE_SCAN,
     CAMPAIGN_TYPE_SCAN_EXTEST,
     SchemaError,
     abort_pending_candidates,
+    campaign_type_of,
     connect,
     ensure_campaign,
     init_schema,
@@ -345,7 +345,7 @@ class Runner:
             conn.close()
 
     def _campaign_type(self, scan: bool = False) -> str:
-        return CAMPAIGN_TYPE_SCAN if scan else CAMPAIGN_TYPE_COMB
+        return campaign_type_of(scan, str(self.cfg.test_mode))
 
     def _ensure_campaign(
         self,
@@ -381,10 +381,6 @@ class Runner:
             # IEEE 1500 test mode reconfigures the observable/control point sets,
             # so INTEST and EXTEST are distinct runs from FUNCTIONAL.
             "test_mode": self.cfg.test_mode,
-            # The native shiftable WBR model adds the boundary register as a scan
-            # chain (new control/observe points + fault sites), so buffer<->scan is
-            # a distinct campaign.
-            "wbr_model": self.cfg.wbr_model,
             # Enabling/disabling compression, or resizing its channel count,
             # changes the synthesized netlist (new ring-generator/phase-shifter
             # gates = new fault sites), so it's part of the fingerprint too.
@@ -472,7 +468,6 @@ class Runner:
             "fault_model": self.cfg.fault_model.model,
             "blackbox_instances": list(self.cfg.blackbox_instances),
             "test_mode": self.cfg.test_mode,
-            "wbr_model": self.cfg.wbr_model,
         }
 
     def _stored_fingerprint(
@@ -2414,12 +2409,6 @@ class Runner:
         )
         return result.expected_outputs
 
-    def _real_wrapper(self) -> bool:
-        """Whether the scanned design has the IEEE 1500 wrapper ff.py wrap puts
-        on (the scan manifest's "wrapper")."""
-        path = self._scan_manifest_path()
-        return path.exists() and isinstance(load_manifest(path).get("wrapper"), dict)
-
     def _preflight_sim_scan(self) -> dict[str, object]:
         manifest_path = self._scan_manifest_path()
         if not manifest_path.exists():
@@ -2449,28 +2438,15 @@ class Runner:
             )
         ineligible = manifest.get("ineligible_ffs", [])
         if isinstance(ineligible, list) and ineligible:
-            # WBR scan cells are deliberately routed to the wrapper chain (fused
-            # into the view downstream by fuse_wbr_into_view), NOT the main scan
-            # chain -- they are not a full-scan blocker; nor are flops left out
-            # by [scan] nonscan_cells, which the view ties (scan.nonscan refuses
-            # one it can't). Genuinely unscannable FFs (unsupported_ff_shape,
-            # unknown_cell_type, existing_scan_cell) are.
+            # Flops left out by [scan] nonscan_cells aren't a full-scan blocker:
+            # the view ties them (scan.nonscan refuses one it can't). Genuinely
+            # unscannable FFs (unsupported_ff_shape, unknown_cell_type,
+            # existing_scan_cell) are.
             blockers = [
                 item
                 for item in ineligible
-                if isinstance(item, dict)
-                and item.get("reason") not in ("wbr_scan_cell", NONSCAN_REASON)
+                if isinstance(item, dict) and item.get("reason") != NONSCAN_REASON
             ]
-            wbr_count = sum(
-                1
-                for item in ineligible
-                if isinstance(item, dict) and item.get("reason") == "wbr_scan_cell"
-            )
-            if wbr_count:
-                log.info(
-                    "scan preflight: %d WBR cell(s) routed to wrapper chain",
-                    wbr_count,
-                )
             if blockers:
                 names = ", ".join(
                     sorted(str(item.get("instance", "?")) for item in blockers)
@@ -2497,22 +2473,15 @@ class Runner:
                 "is not meaningful in this architecture. A scan-aware vector "
                 "format would be required."
             )
+        mode = str(self.cfg.test_mode)
+        if mode != "functional" and not scan:
+            # INTEST and EXTEST hold the IEEE 1500 wrapper's mode pins in a scan
+            # test (_sim_scan); a combinational run has no wrapper mode.
+            raise RunnerError(
+                f"{mode.upper()} is a scan test of the IEEE 1500 wrapper: run it "
+                f"with --scan (ff.py {mode})"
+            )
         if scan:
-            # EXTEST tests only the wrapper boundary/interconnect with a dead
-            # core, so its fused view is combinational -- it runs through plain
-            # native ATPG, not the scan protocol pipeline (see _sim_extest). The
-            # wrapper ff.py wrap puts on is a scan test of its graybox (_sim_scan).
-            if str(self.cfg.test_mode) == "extest" and not self._real_wrapper():
-                if export_patterns is not None:
-                    raise RunnerError(
-                        "extest of the abstract $wbc_* wrapper exports no patterns"
-                    )
-                return self._sim_extest(
-                    purge=purge,
-                    clean=clean,
-                    max_rounds=max_rounds,
-                    target_coverage=target_coverage,
-                )
             return self._sim_scan(
                 purge=purge,
                 clean=clean,
@@ -2869,7 +2838,14 @@ class Runner:
         extra_holds: dict[str, int] = {}
         chip_chains: dict[int, int] = {}
         blocking: tuple[str, ...] = ()
-        if wrapper is not None and str(self.cfg.test_mode) == "intest":
+        mode = str(self.cfg.test_mode)
+        if mode != "functional" and wrapper is None:
+            raise RunnerError(
+                f"{mode.upper()} tests the IEEE 1500 wrapper ff.py wrap puts on, and "
+                "the scanned design has none: wrap it ([wrap] enabled, then ff.py "
+                "scan)"
+            )
+        if wrapper is not None and mode == "intest":
             if "blocks" in wrapper:
                 raise RunnerError(
                     "a SoC's blocks run INTEST each on its own (ff.py project); "
@@ -2879,7 +2855,7 @@ class Runner:
             generic_json = self._intest_harness(manifest, generic_json)
             cfg = with_environment(self.cfg)
             blocking = (ENVIRONMENT,)
-        elif wrapper is not None and str(self.cfg.test_mode) == "extest":
+        elif wrapper is not None and mode == "extest":
             if (
                 self.cfg.fault_model.model == "transition"
                 and self.cfg.fault_model.launch != "los"
@@ -2921,31 +2897,6 @@ class Runner:
             nonscan=nonscan,
         )
 
-        # INTEST of the abstract $wbc_* wrapper: fuse the wrapper boundary into the
-        # scan-reduced view so the wrapper boundary cells become pseudo-PI/PO
-        # alongside the scan FFs. Its EXTEST is routed to _sim_extest before
-        # reaching here (see sim()).
-        wbr_stimulus: dict[str, str] = {}
-        wbr_observe: dict[str, str] = {}
-        wbr_decoupled: frozenset[int] = frozenset()
-        test_mode = str(self.cfg.test_mode)
-        if test_mode == "intest" and scope is None:
-            from faultflow.scan.wbr_view import (
-                build_wbr_generic_name_map,
-                fuse_wbr_into_view,
-            )
-
-            generic_data = _load_json_object(generic_json)
-            view, wbr_port_map = fuse_wbr_into_view(view, self.cfg.top, test_mode)
-            wbr_stimulus, wbr_observe, _decoupled = build_wbr_generic_name_map(
-                generic_data,
-                self.cfg.top,
-                wbr_port_map,
-                test_mode,
-                manifest,
-            )
-            wbr_decoupled = frozenset(_decoupled)
-
         atpg_view_path = self.cfg.intermediate_dir / "scan_atpg_view.json"
         pseudo_map_path = self.cfg.intermediate_dir / "scan_pseudo_port_map.json"
         atpg_view_path.write_text(
@@ -2979,9 +2930,6 @@ class Runner:
             generic_json,
             pseudo_port_map,
             functional_output_order,
-            wbr_stimulus_name_by_port=wbr_stimulus,
-            wbr_observe_name_by_port=wbr_observe,
-            wbr_decoupled_bits=wbr_decoupled,
             x_mask=x_mask,
             nonscan=nonscan,
             wrapper=wrapper if scope is not None else None,
@@ -2991,7 +2939,7 @@ class Runner:
         from faultflow.scan.atpg_view import ATPG_VIEW_SCHEMA_VER
 
         # An INTEST campaign cannot resume against a FUNCTIONAL one: test_mode is
-        # part of config_hash (see _config_fingerprint_payload), and the fused
+        # part of config_hash (see _config_fingerprint_payload), and the harness's
         # atpg_view netlist_hash also differs, so the resume guard already holds.
         fp = self._fingerprint(netlist)
         fp["manifest_hash"] = str(manifest.get("generic_json_hash", ""))
@@ -3117,138 +3065,6 @@ class Runner:
         return (
             f"sim complete top={self.cfg.top} mode=scan "
             f"vectors={vectors.count}{scan_compaction_note} "
-            f"source={vectors.source} sidecar={atpg_view_path} "
-            f"coverage={report['summary']['coverage_percent']:.3f}% "
-            f"atpg_seconds={atpg_seconds:.3f} "
-            f"fault_sim_seconds={fault_sim_seconds:.3f} "
-            f"atpg_terminal={atpg_stats.terminal_reason} "
-            f"report={txt_path} json={json_path}{purge_note}{clean_note}"
-        )
-
-    def _sim_extest(
-        self,
-        *,
-        purge: bool = False,
-        clean: bool = False,
-        max_rounds: int | None = None,
-        target_coverage: float | None = None,
-    ) -> str:
-        """EXTEST coverage on a scan-wrapped core.
-
-        EXTEST holds the core dead/safe and tests only the wrapper boundary +
-        interconnect, so after fusing the scan-reduced view with
-        ``fuse_wbr_into_view(mode="extest")`` the result is a COMBINATIONAL
-        netlist: ``__wbo_ctl_*`` inputs + top PIs drive the interconnect,
-        ``__wbi_obs_*`` outputs + top POs observe it, and the core is const-0
-        safed with its scan observe points dropped. We therefore run plain
-        combinational native ATPG on the fused view -- not the scan protocol
-        pipeline, which exists only to reconcile abstracted FF Q-stems that this
-        view doesn't have. Dead-core faults are unobservable here and fall out as
-        SAT-redundant, so coverage reflects the testable interconnect.
-        """
-        if self.cfg.scan.nonscan_cells or self.cfg.scan.hold:
-            raise RunnerError(
-                "[scan] nonscan_cells and [scan] hold apply to scan ATPG "
-                "(FUNCTIONAL and INTEST), not to EXTEST"
-            )
-        from faultflow.runner.progressive_atpg import (
-            redundancy_model_id,
-            run_progressive_native_atpg,
-        )
-        from faultflow.scan.atpg_view import ATPG_VIEW_SCHEMA_VER
-        from faultflow.scan.cell_map import resolve_scan_cell_map
-        from faultflow.scan.wbr_view import (
-            WBR_SCAN_EXTEST_VIEW_SCHEMA_VER,
-            fuse_wbr_into_view,
-        )
-
-        total_start = time.perf_counter()
-        self.cfg.ensure_workspace()
-        cleaned = self._clean_workspace() if clean else 0
-        removed = self._purge_transients() if purge else 0
-
-        manifest = self._preflight_sim_scan()
-        generic_json = Path(str(manifest["generic_json"]))
-        view, _pseudo_port_map = build_scan_atpg_view(
-            _load_json_object(generic_json), manifest
-        )
-        view, _wbr_port_map = fuse_wbr_into_view(view, self.cfg.top, "extest")
-
-        atpg_view_path = self.cfg.intermediate_dir / "scan_atpg_view.json"
-        atpg_view_path.write_text(
-            json.dumps(view, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        netlist = atpg_view_path
-        scan_cell_map = resolve_scan_cell_map(self.cfg)
-
-        fp = self._fingerprint(netlist)
-        fp["manifest_hash"] = str(manifest.get("generic_json_hash", ""))
-        fp["atpg_view_schema_ver"] = (
-            f"{ATPG_VIEW_SCHEMA_VER}+{WBR_SCAN_EXTEST_VIEW_SCHEMA_VER}"
-        )
-        # EXTEST uses a separate campaign_type so it never collides with the
-        # INTEST/scan campaign in ensure_campaign's latest-campaign lookup.
-        with self._db(scan=True) as conn:
-            campaign_id = ensure_campaign(conn, CAMPAIGN_TYPE_SCAN_EXTEST, fp)
-            abort_pending_candidates(conn, campaign_id)
-
-        model_id = redundancy_model_id(fp)
-        # Fusion removed every $wbc_* cell (replaced by const-0 safe drivers +
-        # observe buffers + ctl/obs ports), so cg.wrapper_cells is empty and the
-        # C++ mode-aware gate is a no-op: combinational ATPG runs plain on the
-        # EXTEST configuration already baked into the netlist structure.
-        vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
-            run_progressive_native_atpg(
-                self.cfg,
-                netlist,
-                model_id,
-                campaign_id=campaign_id,
-                max_rounds=max_rounds,
-                target_coverage=target_coverage,
-                cell_map_path=scan_cell_map,
-            )
-        )
-
-        if self.cfg.atpg.compaction != "none":
-            from faultflow.runner.compaction import compact_run
-
-            vectors, run_id, raw_vectors = compact_run(
-                json_path=str(netlist),
-                cell_map_path=str(scan_cell_map),
-                db_path=str(self.cfg.db_path),
-                campaign_id=campaign_id,
-                run_id=run_id,
-                vectors=vectors,
-                unsupported=self.cfg.simulation.unsupported_cells,
-                blackbox_instances=self.cfg.blackbox_instances,
-            )
-        else:
-            raw_vectors = vectors.count
-
-        total_seconds = time.perf_counter() - total_start
-        self._write_run_timings(run_id, atpg_seconds, fault_sim_seconds, total_seconds)
-
-        scan_context = {
-            "pseudo_port_map": {},
-            "manifest_hash": str(manifest.get("generic_json_hash", "")),
-        }
-        with self._db(scan=True) as conn:
-            json_path, txt_path, report = write_reports(
-                conn,
-                self.cfg,
-                scan_context=scan_context,
-                campaign_id=campaign_id,
-            )
-
-        purge_note = f" purged_transients={removed}" if purge else ""
-        clean_note = f" cleaned_db_files={cleaned}" if clean else ""
-        compaction_note = (
-            f" raw_vectors={raw_vectors}" if raw_vectors != vectors.count else ""
-        )
-        return (
-            f"sim complete top={self.cfg.top} mode=extest "
-            f"vectors={vectors.count}{compaction_note} "
             f"source={vectors.source} sidecar={atpg_view_path} "
             f"coverage={report['summary']['coverage_percent']:.3f}% "
             f"atpg_seconds={atpg_seconds:.3f} "

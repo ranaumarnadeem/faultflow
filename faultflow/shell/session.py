@@ -512,8 +512,6 @@ class ProjectSession:
                     cfg,
                     simulation=replace(cfg.simulation, unsupported_cells=value),
                 )
-            elif key == "wrap.wbr_model":
-                cfg = replace(cfg, wbr_model=value)
             elif key == "atpg.compaction":
                 cfg = replace(cfg, atpg=replace(cfg.atpg, compaction=value))
             elif key == "atpg.pack_orders":
@@ -602,20 +600,14 @@ class ProjectSession:
     def wrap(
         self,
         *,
-        wbr_model: str | None = None,
         clock: str | None = None,
-        scan_enable: str = "wbr_se",
-        scan_in: str = "wbr_si",
-        scan_out: str = "wbr_so",
-        targets: list[str] | None = None,
         exclude: tuple[str, ...] = (),
         intest_pin: str = "wbr_intest",
         extest_pin: str = "wbr_extest",
         output: Path | None = None,
     ) -> OperationResult:
-        """Put a wrapper on the boundary ports of the current netlist: the IEEE 1500
-        wrapper (faultflow.wrap.block) -- three sky130 cells per port bit, two mode
-        pins -- or, with ``wbr_model``, the abstract $wbc_* cells.
+        """Put the IEEE 1500 wrapper on the boundary ports of the current netlist
+        (faultflow.wrap.block): three sky130 cells per port bit, two mode pins.
 
         Saves the wrapped JSON next to the source (or to ``output`` if given),
         then updates the session to point at the wrapped file so subsequent
@@ -630,53 +622,25 @@ class ProjectSession:
             )
         import json as _json
 
+        from faultflow.wrap.block import WrapOptions, wrap_block
         from faultflow.wrap.errors import WrapError
-        from faultflow.wrap.ports import wrap_ports
 
         src = _json.loads(self.source.read_text(encoding="utf-8"))
-        if wbr_model is None:
-            from faultflow.wrap.block import WrapOptions, wrap_block
-
-            cell_map = _json.loads(
-                self.materialize_config().cell_lib.read_text(encoding="utf-8")
-            )
-            options = WrapOptions(clock or "", intest_pin, extest_pin, exclude)
-            try:
-                result = wrap_block(src, self.top, cell_map, options)
-            except WrapError as exc:
-                raise ShellError(str(exc), "CONFIG", "WRAP_FAILED") from exc
-            inputs = sum(cell.side == "input" for cell in result.cells)
-            summary = (
-                f"wrapped {len(result.cells)} port bits ({inputs} inputs, "
-                f"{len(result.cells) - inputs} outputs) in IEEE 1500 boundary cells, "
-                f"mode pins {intest_pin}/{extest_pin}, clock {result.clock}"
-            )
-            return self._adopt_wrapped(result.netlist, output, summary)
+        cell_map = _json.loads(
+            self.materialize_config().cell_lib.read_text(encoding="utf-8")
+        )
+        options = WrapOptions(clock or "", intest_pin, extest_pin, exclude)
         try:
-            dst = wrap_ports(
-                src,
-                self.top,
-                wbr_model=wbr_model,
-                clock=clock or "clk",
-                scan_in=scan_in,
-                scan_out=scan_out,
-                scan_enable=scan_enable,
-                targets=targets,
-            )
+            result = wrap_block(src, self.top, cell_map, options)
         except WrapError as exc:
             raise ShellError(str(exc), "CONFIG", "WRAP_FAILED") from exc
-
-        modules = dst.get("modules", {})
-        mod = modules.get(self.top, {})
-        cells = mod.get("cells", {})
-        n_wbr_in = sum(
-            1 for c in cells.values() if str(c.get("type", "")).startswith("$wbc_in")
+        inputs = sum(cell.side == "input" for cell in result.cells)
+        summary = (
+            f"wrapped {len(result.cells)} port bits ({inputs} inputs, "
+            f"{len(result.cells) - inputs} outputs) in IEEE 1500 boundary cells, "
+            f"mode pins {intest_pin}/{extest_pin}, clock {result.clock}"
         )
-        n_wbr_out = sum(
-            1 for c in cells.values() if str(c.get("type", "")).startswith("$wbc_out")
-        )
-        summary = f"wrapped {n_wbr_in} wbc_in + {n_wbr_out} wbc_out ({wbr_model} model)"
-        return self._adopt_wrapped(dst, output, summary)
+        return self._adopt_wrapped(result.netlist, output, summary)
 
     def _adopt_wrapped(
         self, netlist: dict[str, Any], output: Path | None, summary: str
@@ -877,7 +841,6 @@ class ProjectSession:
             "report.threshold",
             "simulation.sim_threads",
             "simulation.unsupported_cells",
-            "wrap.wbr_model",
             # Deliberately NOT here, even though config.ofs has them:
             #   fault_model.model / fault_model.launch -- controlled by
             #     `run_atpg -tf broadside|los` instead; a second path via
@@ -982,13 +945,6 @@ class ProjectSession:
             if value not in {"none", "reverse", "dynamic"}:
                 raise ShellError(
                     "atpg.compaction must be 'none', 'reverse', or 'dynamic'",
-                    "CONFIG",
-                    "INVALID_VALUE",
-                )
-        if key == "wrap.wbr_model":
-            if value not in {"buffer", "scan"}:
-                raise ShellError(
-                    "wrap.wbr_model must be 'buffer' or 'scan'",
                     "CONFIG",
                     "INVALID_VALUE",
                 )

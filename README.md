@@ -19,9 +19,9 @@ Manufacturing test of digital chips depends on ATPG, and the established tools (
 - **Stuck-at and transition faults** — transition as combinational broadside plus scan LOC and LOS.
 - **Full-scan insertion** with structural chain validation and scan ATPG on a reduced pseudo-PI/PO view.
 - **DFT rule check** (`rule_check`) — structural scan/clock design rules.
-- **IEEE-1500 wrapper (WBR)** — INTEST (core) and EXTEST (interconnect) boundary test.
-- **Hierarchical SoC aggregation** — per-block INTEST + assembly EXTEST rolled into one chip number.
-- **Scan-pattern retargeting** — remap a block's scan patterns onto a SoC scan path.
+- **IEEE-1500 wrapper** — sky130 boundary cells; INTEST (core) and EXTEST (boundary) scan tests whose patterns a tester applies.
+- **Hierarchical SoC aggregation** — per-block INTEST + SoC EXTEST rolled into one chip number.
+- **Scan-pattern retargeting** — a block's INTEST patterns onto its SoC's chains.
 - **Multi-clock** — domain-aware protocol, per-domain at-speed, cross-domain paths masked.
 - **Fault collapsing** — equivalence-based (incl. compound AOI/OAI cells).
 - **PDKs** — Sky130 HD (default) and OSU035; Yosys front end, optional iverilog verification.

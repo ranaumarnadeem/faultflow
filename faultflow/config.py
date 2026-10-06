@@ -454,14 +454,9 @@ class FaultflowConfig:
     blackbox_output_values: tuple[tuple[str, str], ...] = ()
     testpoint: TestpointConfig = TestpointConfig()
     # IEEE 1500 wrapper test mode: "functional" | "intest" | "extest". INTEST and
-    # EXTEST reconfigure the wrapper boundary control/observe points, so they are
-    # distinct runs (part of the fingerprint).
+    # EXTEST hold the wrapper's mode pins in a scan test of the wrapped block
+    # (faultflow.wrap), so they are distinct runs (part of the fingerprint).
     test_mode: str = "functional"
-    # IEEE 1500 wrapper boundary cell model: "buffer" (transparent $wbc_*_faultflow)
-    # or "scan" (native shiftable $wbc_*_scan_faultflow, Stage 4). The scan model
-    # adds the wrapper boundary register as a real scan chain — control/observe
-    # points and fault sites differ, so it is part of the fingerprint.
-    wbr_model: str = "scan"
     wrap: WrapConfig = WrapConfig()
     # [autombist] manifest: the autoMBIST instance manifest the netlist was
     # built from (ff.py autombist-generate). The coverage report then breaks
@@ -935,9 +930,11 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     if test_mode not in {"functional", "intest", "extest"}:
         raise ConfigError("testmode.mode must be 'functional', 'intest', or 'extest'")
 
-    wbr_model = parser.get("wrap", "wbr_model", fallback="scan").strip().lower()
-    if wbr_model not in {"buffer", "scan"}:
-        raise ConfigError("wrap.wbr_model must be 'buffer' or 'scan'")
+    if parser.has_option("wrap", "wbr_model"):
+        raise ConfigError(
+            "[wrap] wbr_model went with the abstract $wbc_* wrapper: [wrap] enabled "
+            "puts the IEEE 1500 wrapper of sky130 cells on (ff.py wrap)"
+        )
 
     return FaultflowConfig(
         path=cfg_path,
@@ -1006,7 +1003,6 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             max_points=_int(parser, "testpoint", "max_points", 10),
         ),
         test_mode=test_mode,
-        wbr_model=wbr_model,
         wrap=_parse_wrap(parser),
         autombist_manifest=_autombist_manifest(parser),
         jtag=_parse_jtag(parser),
