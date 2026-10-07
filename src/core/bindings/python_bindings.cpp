@@ -325,15 +325,17 @@ py::dict solve_fault_atpg(
     const std::vector<std::string>& blackbox_instances,
     const std::string& test_mode = "", bool cone_restrict = true,
     bool incremental = false, int64_t net_index_override = -1,
-    int seed_width = 0, const atpg::SeedRows& seeded_inputs = {}) {
+    int seed_width = 0, const atpg::SeedRows& seeded_inputs = {},
+    const atpg::SeedDefs& seed_defs = {}) {
   const atpg::SolveFaultResult result = atpg::solve_fault_for_db(
       json_path, cell_map_path, db_path, fault_id, blocked_patterns,
       conflict_limit, sat_timeout_seconds, unsupported_policy,
       blackbox_instances, test_mode, cone_restrict, incremental,
-      net_index_override, seed_width, seeded_inputs);
+      net_index_override, seed_width, seeded_inputs, seed_defs);
   py::dict out;
   out["result"] = result.result;
   out["vector"] = result.vector;
+  out["seed"] = result.seed;
   return out;
 }
 
@@ -431,17 +433,19 @@ py::dict solve_scan_transition_fault_atpg(
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
     bool cone_restrict = true, int64_t net_index_override = -1,
-    int seed_width = 0, const atpg::SeedRows& seeded_inputs = {}) {
+    int seed_width = 0, const atpg::SeedRows& seeded_inputs = {},
+    const atpg::SeedDefs& seed_defs = {}) {
   const atpg::SolveTransitionResult result =
       atpg::solve_scan_transition_fault_for_db(
           json_path, cell_map_path, db_path, fault_id, blocked_patterns,
           conflict_limit, sat_timeout_seconds, unsupported_policy,
           blackbox_instances, cone_restrict, net_index_override, seed_width,
-          seeded_inputs);
+          seeded_inputs, seed_defs);
   py::dict out;
   out["result"] = result.result;
   out["launch"] = result.launch;
   out["capture"] = result.capture;
+  out["seed"] = result.seed;
   return out;
 }
 
@@ -455,17 +459,20 @@ py::dict solve_scan_los_transition_fault_atpg(
     const std::vector<std::string>& blackbox_instances,
     bool cone_restrict = true, int64_t net_index_override = -1,
     int seed_width = 0, const atpg::SeedRows& seeded_inputs = {},
-    const atpg::SeedRows& seeded_heads = {}) {
+    const atpg::SeedRows& seeded_heads = {},
+    const atpg::SeedDefs& seed_defs = {}) {
   const atpg::SolveTransitionResult result =
       atpg::solve_scan_los_transition_fault_for_db(
           json_path, cell_map_path, db_path, fault_id, couple_ports,
           head_ppi_ports, blocked_patterns, conflict_limit, sat_timeout_seconds,
           unsupported_policy, blackbox_instances, cone_restrict,
-          net_index_override, seed_width, seeded_inputs, seeded_heads);
+          net_index_override, seed_width, seeded_inputs, seeded_heads,
+          seed_defs);
   py::dict out;
   out["result"] = result.result;
   out["launch"] = result.launch;
   out["capture"] = result.capture;
+  out["seed"] = result.seed;
   return out;
 }
 
@@ -1195,7 +1202,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("test_mode") = "", py::arg("cone_restrict") = true,
         py::arg("incremental") = false, py::arg("net_index_override") = -1,
         py::arg("seed_width") = 0,
-        py::arg("seeded_inputs") = faultflow::atpg::SeedRows{});
+        py::arg("seeded_inputs") = faultflow::atpg::SeedRows{},
+        py::arg("seed_defs") = faultflow::atpg::SeedDefs{});
   m.def("verify_fault_candidate", &faultflow::verify_fault_candidate,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("vector"),
@@ -1247,7 +1255,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("cone_restrict") = true, py::arg("net_index_override") = -1,
         py::arg("seed_width") = 0,
-        py::arg("seeded_inputs") = faultflow::atpg::SeedRows{});
+        py::arg("seeded_inputs") = faultflow::atpg::SeedRows{},
+        py::arg("seed_defs") = faultflow::atpg::SeedDefs{});
   m.def("solve_scan_los_transition_fault_atpg",
         &faultflow::solve_scan_los_transition_fault_atpg, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("db_path"), py::arg("fault_id"),
@@ -1259,7 +1268,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("cone_restrict") = true, py::arg("net_index_override") = -1,
         py::arg("seed_width") = 0,
         py::arg("seeded_inputs") = faultflow::atpg::SeedRows{},
-        py::arg("seeded_heads") = faultflow::atpg::SeedRows{});
+        py::arg("seeded_heads") = faultflow::atpg::SeedRows{},
+        py::arg("seed_defs") = faultflow::atpg::SeedDefs{});
   m.def("verify_transition_candidate", &faultflow::verify_transition_candidate,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("launch"), py::arg("capture"),

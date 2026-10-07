@@ -80,9 +80,7 @@ def tap_mask_verilog_literal(poly: LfsrPolynomial) -> str:
     from ``poly.taps``. See the round-trip test in
     ``tests/python/scan/test_ring_generator.py``.
     """
-    bits = "".join(
-        "1" if i in poly.taps else "0" for i in reversed(range(poly.width))
-    )
+    bits = "".join("1" if i in poly.taps else "0" for i in reversed(range(poly.width)))
     return f"{poly.width}'b{bits}"
 
 
@@ -128,6 +126,99 @@ def _xor_reduce(values: Iterable[int]) -> int:
     for v in values:
         acc ^= v
     return acc
+
+
+# The continuous-flow decompressor: the ring generator is cleared on the first shift
+# of a load (the scan enable's rise, after a clock with it low) and takes the channel
+# word applied at every shift into its injector stages, so a pattern has
+# channels x shifts free bits instead of one seed's (Rajski/Tyszer/Zacharia's
+# continuous decompression, 1998, cited above). Shift t's scan-ins read the ring's
+# state after shift t-1's injection: shift 0's are the cleared ring's, 0.
+
+
+def injector_stages(width: int, num_channels: int) -> list[int]:
+    """The ring stage each channel bit XORs into on every shift: channel c into stage
+    c*width//num_channels, spread evenly so that a fresh channel bit reaches every
+    stage within ceil(width/num_channels) shifts."""
+    if not 1 <= num_channels <= width:
+        raise ValueError(
+            f"{num_channels} channels into a {width}-stage ring: need 1 to {width}"
+        )
+    return [(c * width) // num_channels for c in range(num_channels)]
+
+
+def default_ring_width(num_channels: int) -> int:
+    """The smallest curated ring width at least twice the channels, or the widest one:
+    a ring wider than its channels carries their bits across shifts, so a shift with
+    many care bits can use bits applied earlier."""
+    widths = sorted(PRIMITIVE_POLYNOMIALS)
+    if not 1 <= num_channels <= widths[-1]:
+        raise ValueError(f"channels must be 1 to {widths[-1]}, got {num_channels}")
+    return next((w for w in widths if w >= 2 * num_channels), widths[-1])
+
+
+def default_warmup(width: int, num_channels: int) -> int:
+    """Shifts before the first that loads a scan cell: enough for a channel bit to
+    reach every ring stage, and at least one, since the clearing shift loads 0."""
+    return max(1, -(-width // num_channels))
+
+
+def continuous_ring_states(
+    poly: LfsrPolynomial, num_channels: int, cycles: int
+) -> list[list[int]]:
+    """``states[t][k]``: ring stage k at shift t (the state its scan-ins read), as a
+    GF(2) bitmask over the channel bits -- bit t*num_channels + c is channel c of the
+    word applied at shift t. ``states[0]`` is the cleared ring."""
+    injectors = injector_stages(poly.width, num_channels)
+    state = [0] * poly.width
+    states: list[list[int]] = []
+    for t in range(cycles):
+        states.append(state)
+        state = _step(state, poly)
+        for c, stage in enumerate(injectors):
+            state[stage] ^= 1 << (t * num_channels + c)
+    return states
+
+
+def continuous_scan_in_rows(
+    poly: LfsrPolynomial,
+    phase_shifter_taps: list[list[int]],
+    num_channels: int,
+    cycles: int,
+) -> list[list[int]]:
+    """``rows[t][c]``: scan chain c's scan-in at shift t of a load, for t in
+    range(cycles), as a GF(2) bitmask over the channel bits (bit t*num_channels + k:
+    channel k of the word applied at shift t; see continuous_ring_states). A cell at
+    position p of a chain loads the scan-in of shift S-1-p, S the load's shifts;
+    launching on shift, the chain's head takes shift S's."""
+    return [
+        [_xor_reduce(state[k] for k in taps) for taps in phase_shifter_taps]
+        for state in continuous_ring_states(poly, num_channels, cycles)
+    ]
+
+
+def continuous_scan_in_bits(
+    poly: LfsrPolynomial,
+    phase_shifter_taps: list[list[int]],
+    num_channels: int,
+    channel_words: list[list[bool]],
+) -> list[list[bool]]:
+    """The scan-ins a load shifts in when the channels take ``channel_words[t]`` at
+    shift t: one row per shift, chain by chain. The numeric reference for
+    continuous_scan_in_rows."""
+    injectors = injector_stages(poly.width, num_channels)
+    state = [0] * poly.width
+    out: list[list[bool]] = []
+    for word in channel_words:
+        if len(word) != num_channels:
+            raise ValueError(f"a channel word has {len(word)} bits, not {num_channels}")
+        out.append(
+            [bool(_xor_reduce(state[k] for k in taps)) for taps in phase_shifter_taps]
+        )
+        state = _step(state, poly)
+        for c, stage in enumerate(injectors):
+            state[stage] ^= int(word[c])
+    return out
 
 
 def bitmask_to_index_list(mask: int) -> list[int]:

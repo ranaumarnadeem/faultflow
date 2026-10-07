@@ -425,3 +425,204 @@ TEST_CASE("seeded LOS: every verdict matches brute force over the seed space",
   REQUIRE(sat > 0);
   REQUIRE(unsat > 0);
 }
+
+// ---------------------------------------------------------------------------
+// Seed definitions (the continuous-flow decompressor's straight-line program):
+// variable seed_width + j is the XOR of earlier variables, and a seeded input
+// may name any variable -- one XOR per ring stage per shift instead of one
+// dense row per cell. And the seed read back from a SAT solve.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The value of variable `v` of a program over `seed` (its first `width` bits).
+bool program_value(int v, uint32_t seed, int width,
+                   const std::vector<std::vector<int>>& defs) {
+  if (v < width) {
+    return ((seed >> v) & 1U) != 0;
+  }
+  bool value = false;
+  for (int source : defs.at(static_cast<size_t>(v - width))) {
+    value ^= program_value(source, seed, width, defs);
+  }
+  return value;
+}
+
+// tiny_scan_view_seeded through a program: v2 = s0 ^ s1, v3 = v2 ^ s1 (= s0);
+// ff0 = v3, ff1 = v2, ff2 = s1 -- the loads of kSeededRows.
+const std::vector<std::vector<int>> kDefs = {{0, 1}, {2, 1}};
+const std::vector<std::pair<std::string, std::vector<int>>> kProgramRows = {
+    {"__ppi_ff0", {3}}, {"__ppi_ff1", {2}}, {"__ppi_ff2", {1}}};
+
+SatSolveOptions program_options(const ParsedGraph& pg, const CompiledSimGraph& cg) {
+  SatSolveOptions options = unlimited_solve_options();
+  options.seed_width = 2;
+  options.seed_defs = kDefs;
+  options.seeded_inputs = seeded(pg, cg, kProgramRows);
+  return options;
+}
+
+// The seed read back loads exactly `values` through `rows` (over a program).
+bool seed_loads(const std::vector<bool>& seed,
+                const std::vector<std::pair<std::string, std::vector<int>>>& rows,
+                const std::vector<std::vector<int>>& defs,
+                const std::map<std::string, bool>& values) {
+  uint32_t bits = 0;
+  for (size_t i = 0; i < seed.size(); ++i) {
+    bits |= static_cast<uint32_t>(seed[i]) << i;
+  }
+  const int width = static_cast<int>(seed.size());
+  for (const auto& [name, row] : rows) {
+    bool value = false;
+    for (int v : row) value ^= program_value(v, bits, width, defs);
+    if (value != values.at(name)) return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+TEST_CASE("seed definitions: a program gives the verdicts of the rows it defines",
+          "[atpg][seeded][seed_defs]") {
+  const ParsedGraph pg = test::load_parsed("tiny_scan_view_seeded.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_scan_view_seeded.json");
+  const NormalizedGraph ng = test::load_normalized("tiny_scan_view_seeded.json");
+  const auto pis = ordered_pis(pg, cg);
+  int sat = 0;
+  int unsat = 0;
+  for (bool incremental : {false, true}) {
+    for (const CompactFault& fault : enumerate_faults(ng, cg)) {
+      if (fault.exclusion != FaultExclusion::NONE) continue;
+      std::map<std::string, bool> flat_vector;
+      std::map<std::string, bool> vector;
+      const SatSolveOptions program = program_options(pg, cg);
+      const SatSolveResult flat =
+          incremental ? solve_stuck_at_fault_incremental(cg, pis, fault,
+                                                         seeded_options(pg, cg),
+                                                         flat_vector)
+                      : solve_stuck_at_fault(cg, pis, fault, seeded_options(pg, cg),
+                                             flat_vector);
+      const SatSolveResult result =
+          incremental
+              ? solve_stuck_at_fault_incremental(cg, pis, fault, program, vector)
+              : solve_stuck_at_fault(cg, pis, fault, program, vector);
+      REQUIRE(result == flat);
+      REQUIRE((result == SatSolveResult::SAT) ==
+              stuck_at_detectable_through_seed(pg, cg, fault));
+      if (result == SatSolveResult::SAT) {
+        ++sat;
+        REQUIRE(loads_from_some_seed(kSeededRows, vector, 2));
+      } else {
+        ++unsat;
+      }
+    }
+  }
+  REQUIRE(sat > 0);
+  REQUIRE(unsat > 0);
+  const CompactFault y_sa0 = stuck_at(cg, pg.net_id_by_name("Y"), FaultType::SA0);
+  std::map<std::string, bool> vector;
+  REQUIRE(solve_stuck_at_fault(cg, pis, y_sa0, program_options(pg, cg), vector,
+                               build_mode_config(cg, TestMode::EXTEST)) ==
+          SatSolveResult::UNSAT);
+}
+
+TEST_CASE("seed readback: a SAT solve gives the seed, and the seed loads the vector",
+          "[atpg][seeded][seed_defs]") {
+  const ParsedGraph pg = test::load_parsed("tiny_scan_view_seeded.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_scan_view_seeded.json");
+  const NormalizedGraph ng = test::load_normalized("tiny_scan_view_seeded.json");
+  const auto pis = ordered_pis(pg, cg);
+  const ModeConfig extest = build_mode_config(cg, TestMode::EXTEST);
+  int checked = 0;
+  for (int solver = 0; solver < 3; ++solver) {
+    for (bool program : {false, true}) {
+      for (const CompactFault& fault : enumerate_faults(ng, cg)) {
+        if (fault.exclusion != FaultExclusion::NONE) continue;
+        SatSolveOptions options =
+            program ? program_options(pg, cg) : seeded_options(pg, cg);
+        std::vector<bool> seed;
+        options.seed_out = &seed;
+        std::map<std::string, bool> vector;
+        const SatSolveResult result =
+            solver == 0   ? solve_stuck_at_fault(cg, pis, fault, options, vector)
+            : solver == 1 ? solve_stuck_at_fault_incremental(cg, pis, fault, options,
+                                                             vector)
+                          : solve_stuck_at_fault(cg, pis, fault, options, vector,
+                                                 extest);
+        if (result != SatSolveResult::SAT) continue;
+        REQUIRE(seed.size() == 2);
+        const bool loads = program ? seed_loads(seed, kProgramRows, kDefs, vector)
+                                   : seed_loads(seed, kSeededRows, {}, vector);
+        REQUIRE(loads);
+        ++checked;
+      }
+    }
+  }
+  REQUIRE(checked > 0);
+
+  // The two-frame solvers: the load in V1, launching on shift the heads in V2.
+  const ParsedGraph lpg = test::load_parsed("tiny_scan_view_los.json");
+  const CompiledSimGraph lcg = test::load_compiled("tiny_scan_view_los.json");
+  const NormalizedGraph lng = test::load_normalized("tiny_scan_view_los.json");
+  const auto lpis = ordered_pis(lpg, lcg);
+  const std::vector<LosCouple> couples = {
+      LosCouple{cidx(lpg, lcg, "__ppi_ff1"), cidx(lpg, lcg, "__ppi_ff0")}};
+  const std::vector<uint32_t> heads = {cidx(lpg, lcg, "__ppi_ff0"),
+                                       cidx(lpg, lcg, "__ppi_ff2")};
+  const std::vector<uint32_t> held = {cidx(lpg, lcg, "A")};
+  int two_frame = 0;
+  for (const CompactFault& fault : enumerate_transition_faults(lng, lcg)) {
+    if (fault.exclusion != FaultExclusion::NONE) continue;
+    SatSolveOptions options = unlimited_solve_options();
+    options.seed_width = 2;
+    options.seeded_inputs = seeded(lpg, lcg, kLosLoadRows);
+    options.seeded_capture_inputs = seeded(lpg, lcg, kLosHeadRows);
+    std::vector<bool> seed;
+    options.seed_out = &seed;
+    std::map<std::string, bool> v1;
+    std::map<std::string, bool> v2;
+    if (solve_scan_los_transition_fault(lcg, lpis, couples, heads, held, fault,
+                                        options, v1, v2) != SatSolveResult::SAT) {
+      continue;
+    }
+    REQUIRE(seed.size() == 2);
+    REQUIRE(seed_loads(seed, kLosLoadRows, {}, v1));
+    std::map<std::string, bool> head_values;
+    for (const auto& [name, bits] : kLosHeadRows) head_values[name] = v2.at(name);
+    REQUIRE(seed_loads(seed, kLosHeadRows, {}, head_values));
+    ++two_frame;
+  }
+  REQUIRE(two_frame > 0);
+}
+
+TEST_CASE("seed definitions: an empty one is 0; reading itself or later throws",
+          "[atpg][seeded][seed_defs]") {
+  const ParsedGraph pg = test::load_parsed("tiny_scan_view_seeded.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_scan_view_seeded.json");
+  const auto pis = ordered_pis(pg, cg);
+  // __ppo_ff1 = ff1; its stuck-at-0 needs ff1 = 1.
+  const CompactFault fault =
+      stuck_at(cg, pg.net_id_by_name("__ppo_ff1"), FaultType::SA0);
+  SatSolveOptions options = unlimited_solve_options();
+  options.seed_width = 2;
+  std::map<std::string, bool> vector;
+
+  options.seed_defs = {{}};
+  options.seeded_inputs = seeded(pg, cg, {{"__ppi_ff1", {2}}});
+  REQUIRE(solve_stuck_at_fault(cg, pis, fault, options, vector) ==
+          SatSolveResult::UNSAT);
+  options.seed_defs = {{0}};
+  REQUIRE(solve_stuck_at_fault(cg, pis, fault, options, vector) ==
+          SatSolveResult::SAT);
+
+  options.seed_defs = {{2}};
+  REQUIRE_THROWS_AS(solve_stuck_at_fault(cg, pis, fault, options, vector),
+                    std::runtime_error);
+  options.seed_defs = {{0, 3}, {0}};
+  REQUIRE_THROWS_AS(solve_stuck_at_fault(cg, pis, fault, options, vector),
+                    std::runtime_error);
+  options.seed_defs = {{0}};
+  options.seeded_inputs = seeded(pg, cg, {{"__ppi_ff1", {3}}});
+  REQUIRE_THROWS_AS(solve_stuck_at_fault(cg, pis, fault, options, vector),
+                    std::runtime_error);
+}

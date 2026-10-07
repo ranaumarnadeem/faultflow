@@ -26,6 +26,8 @@ struct ProgressiveDetection {
 struct SolveFaultResult {
   std::string result;
   std::map<std::string, bool> vector;
+  // Scan compression, SAT: the free seed bits the solve chose.
+  std::vector<bool> seed;
 };
 
 // A launch/capture pattern pair for combinational (broadside) transition ATPG.
@@ -36,6 +38,8 @@ struct SolveTransitionResult {
   std::string result;  // SAT | UNSAT | TIMEOUT | UNKNOWN
   std::map<std::string, bool> launch;
   std::map<std::string, bool> capture;
+  // Scan compression, SAT: the free seed bits the solve chose.
+  std::vector<bool> seed;
 };
 
 struct SimulationInstrumentation {
@@ -65,6 +69,9 @@ void ensure_faults_enumerated(
 // (SatSolveOptions::seeded_inputs, resolved by name; a name that is not a PI of
 // the view is refused).
 using SeedRows = std::map<std::string, std::vector<int>>;
+// The seed's straight-line program (SatSolveOptions::seed_defs): row j defines
+// seed variable seed_width + j as the XOR of earlier ones.
+using SeedDefs = std::vector<std::vector<int>>;
 
 // `net_index_override`, when >= 0, replaces the fault record's stored compiled
 // net index: it solves the same fault on another view of the same netlist,
@@ -72,7 +79,7 @@ using SeedRows = std::map<std::string, std::vector<int>>;
 // view).
 // The same parameter does the same on the scan LOC/LOS solvers below, and so do
 // `seed_width` / `seeded_inputs` (each scan cell's PPI loaded from a
-// `seed_width`-bit seed; the launch frame for LOC/LOS).
+// `seed_width`-bit seed; the launch frame for LOC/LOS) and `seed_defs`.
 SolveFaultResult solve_fault_for_db(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
@@ -81,7 +88,8 @@ SolveFaultResult solve_fault_for_db(
     const std::vector<std::string>& blackbox_instances = {},
     const std::string& test_mode = "", bool cone_restrict = true,
     bool incremental = false, int64_t net_index_override = -1,
-    int seed_width = 0, const SeedRows& seeded_inputs = {});
+    int seed_width = 0, const SeedRows& seeded_inputs = {},
+    const SeedDefs& seed_defs = {});
 
 bool verify_fault_vector(
     const std::string& json_path, const std::string& cell_map_path,
@@ -212,7 +220,8 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {},
     bool cone_restrict = true, int64_t net_index_override = -1,
-    int seed_width = 0, const SeedRows& seeded_inputs = {});
+    int seed_width = 0, const SeedRows& seeded_inputs = {},
+    const SeedDefs& seed_defs = {});
 
 // ---- Transition model (scan launch-on-shift) -------------------------------
 // LOS couples (capture PPI == launch predecessor PPI) and chain-head PPIs (free
@@ -231,6 +240,6 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
     const std::vector<std::string>& blackbox_instances = {},
     bool cone_restrict = true, int64_t net_index_override = -1,
     int seed_width = 0, const SeedRows& seeded_inputs = {},
-    const SeedRows& seeded_heads = {});
+    const SeedRows& seeded_heads = {}, const SeedDefs& seed_defs = {});
 
 }  // namespace faultflow::atpg

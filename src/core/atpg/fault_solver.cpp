@@ -149,29 +149,38 @@ inline int faulty_input_lit(const CnfVarMap& vars, const ConeMasks& masks,
 
 using NetVar = std::function<int(uint32_t)>;
 
+// The XOR of `bits` of the seed variables `seed` (`what` names the user in an
+// error): a chain of 2-input XOR definitions; 0 (no variable) for no bits.
+int add_seed_xor(CaDiCaL::Solver& solver, CnfVarMap& vars,
+                 const std::vector<int>& seed, const std::vector<int>& bits,
+                 const std::string& what) {
+  int value = 0;  // no seed bit yet: the constant 0
+  for (int bit : bits) {
+    if (bit < 0 || bit >= static_cast<int>(seed.size())) {
+      throw std::runtime_error(what + ": seed variable " + std::to_string(bit) +
+                               " is outside the " + std::to_string(seed.size()) +
+                               " it may name");
+    }
+    const int seed_var = seed[static_cast<size_t>(bit)];
+    if (value == 0) {
+      value = seed_var;
+      continue;
+    }
+    const int d = vars.next++;
+    add_xor_def(solver, value, seed_var, d);
+    value = d;
+  }
+  return value;
+}
+
 // Each seeded input's variable (`var_of` picks the frame) tied to the XOR of
-// its seed bits: a chain of 2-input XOR definitions, or 0 for no bits.
+// its seed bits, or 0 for no bits.
 void add_seeded_inputs(CaDiCaL::Solver& solver, CnfVarMap& vars,
                        const std::vector<int>& seed,
                        const std::vector<SeededInput>& inputs,
                        const NetVar& var_of) {
   for (const SeededInput& input : inputs) {
-    int value = 0;  // no seed bit yet: the constant 0
-    for (int bit : input.seed_bits) {
-      if (bit < 0 || bit >= static_cast<int>(seed.size())) {
-        throw std::runtime_error("seeded input: seed bit " + std::to_string(bit) +
-                                 " is outside the " + std::to_string(seed.size()) +
-                                 "-bit seed");
-      }
-      const int seed_var = seed[static_cast<size_t>(bit)];
-      if (value == 0) {
-        value = seed_var;
-        continue;
-      }
-      const int d = vars.next++;
-      add_xor_def(solver, value, seed_var, d);
-      value = d;
-    }
+    const int value = add_seed_xor(solver, vars, seed, input.seed_bits, "seeded input");
     const int target = var_of(input.compiled);
     if (value == 0) {
       add_unit(solver, -target);
@@ -181,30 +190,57 @@ void add_seeded_inputs(CaDiCaL::Solver& solver, CnfVarMap& vars,
   }
 }
 
-// Scan compression (options.seed_width / seeded_inputs): ONE seed for the whole
-// test, so both frames of a two-frame CNF read the same seed variables. `launch`
-// is the only frame of a stuck-at CNF; `capture` is null there.
-void add_seed_constraints(CaDiCaL::Solver& solver, CnfVarMap& vars,
-                          const SatSolveOptions& options, const NetVar& launch,
-                          const NetVar* capture) {
+// Scan compression (options.seed_width / seed_defs / seeded_inputs): ONE seed for
+// the whole test, so both frames of a two-frame CNF read the same seed
+// variables. `launch` is the only frame of a stuck-at CNF; `capture` is null
+// there. Returns the seed_width free seed variables (none without seeded
+// inputs), for read_seed.
+std::vector<int> add_seed_constraints(CaDiCaL::Solver& solver, CnfVarMap& vars,
+                                      const SatSolveOptions& options,
+                                      const NetVar& launch, const NetVar* capture) {
   if (options.seed_width < 0) {
     throw std::runtime_error("seed width must be >= 0");
   }
   if (options.seeded_inputs.empty() && options.seeded_capture_inputs.empty()) {
-    return;
+    return {};
   }
   if (capture == nullptr && !options.seeded_capture_inputs.empty()) {
     throw std::runtime_error(
         "capture-frame seeded inputs need a two-frame (transition) solve");
   }
   std::vector<int> seed;
-  seed.reserve(static_cast<size_t>(options.seed_width));
+  seed.reserve(static_cast<size_t>(options.seed_width) + options.seed_defs.size());
   for (int i = 0; i < options.seed_width; ++i) {
     seed.push_back(vars.next++);
+  }
+  const std::vector<int> free_seed = seed;
+  for (size_t j = 0; j < options.seed_defs.size(); ++j) {
+    // Defined over the variables so far only: an earlier one.
+    int value = add_seed_xor(solver, vars, seed, options.seed_defs[j],
+                             "seed definition " + std::to_string(j));
+    if (value == 0) {
+      value = vars.next++;
+      add_unit(solver, -value);
+    }
+    seed.push_back(value);
   }
   add_seeded_inputs(solver, vars, seed, options.seeded_inputs, launch);
   if (capture != nullptr) {
     add_seeded_inputs(solver, vars, seed, options.seeded_capture_inputs, *capture);
+  }
+  return free_seed;
+}
+
+// After a SAT solve: the free seed bits it chose, into options.seed_out.
+void read_seed(CaDiCaL::Solver& solver, const SatSolveOptions& options,
+               const std::vector<int>& free_seed) {
+  if (options.seed_out == nullptr) {
+    return;
+  }
+  options.seed_out->clear();
+  for (int var : free_seed) {
+    // A seed bit no clause names is free; the solver never saw it: 0.
+    options.seed_out->push_back(var <= solver.vars() && solver.val(var) > 0);
   }
 }
 
@@ -348,7 +384,7 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
                 vars.faulty_vars.at(pi.compiled));
     }
   }
-  add_seed_constraints(
+  const std::vector<int> free_seed = add_seed_constraints(
       solver, vars, options,
       [&](uint32_t net) { return vars.free_vars.at(net); }, nullptr);
 
@@ -390,6 +426,7 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
   for (const AtpgPiInfo& pi : pis) {
     out[pi.name] = solver.val(vars.free_vars.at(pi.compiled)) > 0;
   }
+  read_seed(solver, options, free_seed);
   return SatSolveResult::SAT;
 }
 
@@ -453,7 +490,7 @@ SatSolveResult solve_stuck_at_fault_incremental(
                        : -vars.faulty_vars.at(fault_net));
   // The decompressor's seed (permanent): the PIs' good vars exist before their
   // cones are encoded.
-  add_seed_constraints(
+  const std::vector<int> free_seed = add_seed_constraints(
       solver, vars, options,
       [&](uint32_t net) { return vars.free_vars.at(net); }, nullptr);
 
@@ -626,6 +663,7 @@ SatSolveResult solve_stuck_at_fault_incremental(
       for (const AtpgPiInfo& pi : pis) {
         out[pi.name] = solver.val(vars.free_vars.at(pi.compiled)) > 0;
       }
+      read_seed(solver, options, free_seed);
       return SatSolveResult::SAT;
     }
     if (result == 0) {  // limit reached: unresolved (never redundant)
@@ -741,7 +779,7 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
                 vars.faulty_vars.at(pi.compiled));
     }
   }
-  add_seed_constraints(
+  const std::vector<int> free_seed = add_seed_constraints(
       solver, vars, options,
       [&](uint32_t net) { return vars.free_vars.at(net); }, nullptr);
 
@@ -794,6 +832,7 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
     out["__wbrstim_" + std::to_string(yid)] =
         solver.val(vars.free_vars.at(net)) > 0;
   }
+  read_seed(solver, options, free_seed);
   return SatSolveResult::SAT;
 }
 
@@ -898,7 +937,7 @@ SatSolveResult solve_two_frame_transition(
   // Scan compression: the launch frame's load and (LOS) the capture frame's
   // launch-shift scan-in bits come from one seed.
   const NetVar capture_var = [&](uint32_t net) { return vars.free_vars.at(net); };
-  add_seed_constraints(
+  const std::vector<int> free_seed = add_seed_constraints(
       solver, vars, options,
       [&](uint32_t net) { return launch_vars.at(net); }, &capture_var);
 
@@ -970,6 +1009,7 @@ SatSolveResult solve_two_frame_transition(
     v1_out[pi.name] = solver.val(launch_vars.at(pi.compiled)) > 0;
     v2_out[pi.name] = solver.val(vars.free_vars.at(pi.compiled)) > 0;
   }
+  read_seed(solver, options, free_seed);
   return SatSolveResult::SAT;
 }
 
