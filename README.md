@@ -17,12 +17,19 @@ Manufacturing test of digital chips depends on ATPG, and the established tools (
 - **Native SAT ATPG** (CaDiCaL) for combinational and full-scan designs — cone-of-influence
   CNF, escalating per-fault timeouts, parallel workers, sim-verified compaction.
 - **Stuck-at and transition faults** — transition as combinational broadside plus scan LOC and LOS.
-- **Full-scan insertion** with structural chain validation and scan ATPG on a reduced pseudo-PI/PO view.
-- **DFT rule check** (`rule_check`) — structural scan/clock design rules.
-- **IEEE-1500 wrapper (WBR)** — INTEST (core) and EXTEST (interconnect) boundary test.
-- **Hierarchical SoC aggregation** — per-block INTEST + assembly EXTEST rolled into one chip number.
-- **Scan-pattern retargeting** — remap a block's scan patterns onto a SoC scan path.
+- **Full-scan insertion** with structural chain validation and scan ATPG on a reduced pseudo-PI/PO view; Sky130 scan-cell techmap, checked by `write_netlist -verify`.
+- **Scan compression and compaction** (`scan-compress`, `scan-compact`) — ring-generator decompressor on the scan inputs, XOR-tree space compactor on the scan outputs. SAT ATPG solves through the decompressor, so every compressed pattern is a load it can make; the composed chip is written as sky130 Verilog.
+- **Pattern export** — JSON (`sim --scan --export-patterns`) and STIL (IEEE 1450, `write-patterns`), load and unload overlapped by default; every exported flow is replayed on the sky130 cell models in the test suite.
+- **DFT rule check** (`rule_check`) — structural clock, scan, multi-driver, combinational-loop and compression/compaction rules.
+- **Test-point insertion** — OpenTestability `add_tp` / `reject_tp` from the Tcl shell, with before/after coverage.
+- **IEEE 1500 wrapper** (`wrap`) — boundary cells of real sky130 cells on every data port, set by two mode pins or by an IEEE 1500 wrapper serial port (WIR, WBY; `[wrap] control = wsp`); INTEST and EXTEST are scan tests whose patterns replay on the cells, and `ff.py wsp` grades the WSP's own faults.
+- **Hierarchical SoC flow** (`project`) — the SoC composed from wrapped blocks, per-block INTEST + SoC EXTEST rolled into one chip number, every fault counted once.
+- **Scan-pattern retargeting** — a block's INTEST patterns as the SoC's chains and pins take them, replayed on the SoC's cells.
 - **Multi-clock** — domain-aware protocol, per-domain at-speed, cross-domain paths masked.
+- **Blackbox instances** (`[blackbox]`) — memories and macros as test boundaries; opaque in scan, unknown outputs masked.
+- **autoMBIST integration** (`autombist-generate`) — synthesizes autoMBIST's MBIST design for scan test; coverage per instance category.
+- **MBIST insertion** (`list-memories`, `mbist-insert`) — autoMBIST collars, in shells, swapped in for your RTL's memories, optionally behind a TAP and IJTAG network (warptap); DFT synthesized frozen.
+- **JTAG network-integrity grading** (`jtag`) — TCK program played through the TAP after an X-isolation proof; combined scan + JTAG coverage.
 - **Fault collapsing** — equivalence-based (incl. compound AOI/OAI cells).
 - **PDKs** — Sky130 HD (default) and OSU035; Yosys front end, optional iverilog verification.
 
