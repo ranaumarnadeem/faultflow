@@ -71,6 +71,7 @@ Its top-level structure is:
 | `autombist_categories` | Only with `[autombist] manifest`: `detected`, `denominator`, `blackbox_unresolved`, `hold_unresolved` and `coverage_percent` per autoMBIST instance category, `glue` holding what no instance owns; they add up to the `summary` totals. After `ff.py jtag`, also `combined_detected`, `combined_denominator` and `combined_coverage_percent` (scan and JTAG credit together). `coverage.rpt` shows the same as a table. See [External tools](../external_tools.md) |
 | `jtag` | Only after `ff.py jtag`: the latest JTAG network-integrity grade of this campaign's faults -- the program (`program_digest`, `tck_periods`, `tests`), `graded`, `detected`, `detected_by_test` (each fault credited to the first test that detects it), `detected_only_by_jtag`, `reset_path_ungraded` (faults that could keep a flop out of reset, which a two-valued grade can't judge), `scan_redundant_conflicts` (scan-redundant faults JTAG detects; expected empty) and the `holds` used. The `summary` block is unchanged |
 | `combined` | Only after `ff.py jtag`: scan and JTAG credit together -- `detected` by either, `redundant` only if scan proved it and JTAG didn't detect it, and the two coverage figures over them. The Policy-3 totals hold with these numbers too |
+| `wsp` | Only after `ff.py wsp`, for a block an IEEE 1500 WSP controls: the latest grade of the faults its scan test left to the WSP (`excluded_wsp`) -- the program (`program_digest`, `cycles`, `tests`), `graded`, `detected`, `init_dependent` (faults one initial flop state shows and the other doesn't; not credited), `detected_by_test` -- and `combined`: the scan's and the WSP program's credit together over the scan's faults and the WSP's. The `summary` block is unchanged |
 | `wrapper` | Only for `intest` and `extest` on the wrapper `ff.py wrap` puts on: the `mode`, the number of boundary `cells`, and per part -- `core` (in EXTEST, the core blackbox's boundary nets alone), `boundary` (the boundary cells' faults, an input cell's port bit among them) and `mode` (the mode pins') -- `detected`, `denominator`, `decoupled` (left to the other mode, `excluded_wbr_decoupled`), `blackbox_unresolved`, `hold_unresolved` and `coverage_percent`. The parts add up to the `summary` totals. `coverage.rpt` shows the same as a table |
 
 ### The `summary` block
@@ -88,7 +89,8 @@ Its top-level structure is:
 | `excluded_clock` | Clock-net faults (unless `include_clock_faults`) |
 | `excluded_reset` | Reset-net faults (unless `include_reset_faults`) |
 | `excluded_scan`, `excluded_scan_internal`, `excluded_scan_chain` | Scan-cell-internal and scan-path-only faults (scan campaigns) |
-| `excluded_jtag` | Scan campaigns with `[scan] nonscan_cells`: faults scan leaves to `ff.py jtag` -- the non-scan cells' own, those whose every path ends at a non-scan flop or `tdo`, and the stuck-ats that would release a flop held in reset. The `combined` block counts every one of them |
+| `excluded_jtag` | Scan campaigns with `[scan] nonscan_cells`: faults scan leaves to `ff.py jtag` -- the non-scan cells' own, those whose every path ends at a non-scan flop or `tdo`, the stuck-ats that would release a flop held in reset or a programmed one, and those that would change what the test setup program loads. The `combined` block counts every one of them |
+| `excluded_wsp` | Scan campaigns of a wrapper an IEEE 1500 WSP controls (`[wrap] control = wsp`): the WSP's own faults -- its ports', its instruction and bypass registers', its decode's and its serial path's -- which a scan test, the instruction programmed and held, leaves to the WSP's own test |
 | `blackbox_unresolved` | Scan campaigns: faults, counted in `undetected`, that have a test only if a `[blackbox]` instance could be driven, observed or known, which no scan test can do (Tessent's AU.BB) |
 | `hold_unresolved` | Scan campaigns with `[scan] hold`: faults, counted in `undetected`, that have a test only if the held inputs, and the non-scan flops they keep in reset, were free (Tessent's AU.PC) |
 | `test_coverage_percent` | `detected / denominator x 100` — credits proven-redundant faults by removing them from the denominator; the **headline** figure |
@@ -98,7 +100,7 @@ Its top-level structure is:
 ```{note}
 `total_raw_faults = denominator + redundant + collapsed + excluded_blackbox +
 excluded_clock + excluded_reset + excluded_scan + excluded_cross_domain +
-excluded_wbr_decoupled + excluded_jtag`. Exclusions
+excluded_wbr_decoupled + excluded_jtag + excluded_wsp`. Exclusions
 are always *tagged and counted*, never silently dropped, and a zero denominator is
 raised as an error rather than producing a NaN.
 ```
@@ -136,7 +138,7 @@ pulse between the load and the capture, or `los`, one more shift with scan enabl
 and each chain's `launch_scan_in` bit at its scan input. `capture_pi_values` holds the
 primary inputs' values and the primary outputs' expected values at the capture
 (but an output a blackbox's unknown value reaches); a bus port's bits are named
-`port[i]`. An EXTEST pattern of the wrapper `ff.py wrap` puts on loads and unloads
+`port[i]`. With `[scan] test_setup`, every pattern carries the program as `setup`, the cycles to give before everything else. An EXTEST pattern of the wrapper `ff.py wrap` puts on loads and unloads
 the wrapper chains alone: it carries `shift_length`, their longest, the shifts its
 load and its unload take; the core's chains shift as many bits, uncompared. `write-patterns` writes the export as STIL, the cycles a tester applies
 (see [Running without the shell](running_without_shell.md#write-patterns)). External

@@ -10,7 +10,9 @@ returns each block's net remap, which traces a fault of the SoC back to its bloc
 (faultflow.project.identity). The SoC's scan manifest is traced on its cells
 (faultflow.project.chip) and carries one wrapper record for every block
 (faultflow.project.soc_wrapper); its sky130 Verilog is the scan techmap of the
-composed cells, as a block's is.
+composed cells, as a block's is. Blocks an IEEE 1500 WSP controls share one on the
+SoC, their WSI and WSO chained: their chains are traced through the WSP's
+chain-head muxes, its serial nets at 0, and their WSPs' flops stay out of scan.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.reports import hash_file
 from faultflow.scan.techmap import write_scan_techmap
 from faultflow.scan.yosys import run_scan_techmap
-from faultflow.wrap.record import mode_holds
+from faultflow.wrap.record import mode_holds, serial_nets
 
 # Where each block's INTEST patterns are exported, in its scope's output directory:
 # what retargeting onto the SoC reads.
@@ -146,9 +148,27 @@ def build_soc(project: SocProject, base: FaultflowConfig, out: Path) -> SocBuild
         for instance, (_, manifest) in blocks.items()
         for record in manifest["cells"]
     }
+    # The blocks' WSP serial nets, 0 while the chains shift in a scan test: the
+    # chains pass the WSPs' chain-head muxes.
+    known = {
+        int(remaps[instance].get(net, net)): value
+        for instance, (_, block_manifest) in blocks.items()
+        for net, value in serial_nets(block_manifest["wrapper"]).items()
+    }
     manifest = chip_manifest(
-        module, project.soc.top, cell_map, composed, original_types=original
+        module,
+        project.soc.top,
+        cell_map,
+        composed,
+        original_types=original,
+        known=known,
     )
+    manifest["ineligible_ffs"] = [
+        {**item, "instance": f"{instance}__{item['instance']}"}
+        for instance, (_, block_manifest) in blocks.items()
+        for item in block_manifest.get("ineligible_ffs", [])
+        if isinstance(item, dict) and item.get("reason") == "wsp"
+    ]
     manifest["wrapper"] = soc_wrapper(
         module,
         cell_map,
@@ -231,6 +251,11 @@ def run_soc_project(
     workspace under `out`, its patterns exported there (INTEST_PATTERNS) for
     :func:`retarget_block`, and the SoC's EXTEST, its patterns exported to
     `soc_patterns` when given. `run_atpg` and `check_scan` are the FlowService's."""
+    if base.scan.test_setup is not None:
+        raise ProjectError(
+            "[scan] test_setup applies to one chip's scan test; a project's blocks "
+            "and SoC each take their own, which a project doesn't set up yet"
+        )
     build = build_soc(project, base, out)
     check_scan(build.cfg)
     options: dict[str, Any] = {

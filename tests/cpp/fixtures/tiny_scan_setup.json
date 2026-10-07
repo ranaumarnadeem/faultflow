@@ -1,0 +1,95 @@
+{
+  "creator": "faultflow hand fixture: a test-mode bit a setup program loads",
+  "modules": {
+    "tiny_scan_setup": {
+      "attributes": {"top": "1"},
+      "ports": {
+        "CLK": {"direction": "input", "bits": [2]},
+        "scan_in": {"direction": "input", "bits": [3]},
+        "scan_en": {"direction": "input", "bits": [4]},
+        "en": {"direction": "input", "bits": [5]},
+        "din": {"direction": "input", "bits": [6]},
+        "upd": {"direction": "input", "bits": [7]},
+        "rst_n": {"direction": "input", "bits": [8]},
+        "D0": {"direction": "input", "bits": [9]},
+        "scan_out": {"direction": "output", "bits": [20]},
+        "mode_out": {"direction": "output", "bits": [12]}
+      },
+      "cells": {
+        "mux_sh": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__mux2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A0": "input", "A1": "input", "S": "input", "X": "output"},
+          "connections": {"A0": [10], "A1": [6], "S": [5], "X": [11]}
+        },
+        "sh": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+          "connections": {"CLK": [2], "D": [11], "Q": [10]}
+        },
+        "mux_up": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__mux2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A0": "input", "A1": "input", "S": "input", "X": "output"},
+          "connections": {"A0": [12], "A1": [10], "S": [7], "X": [13]}
+        },
+        "up": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfbbn_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "CLK_N": "input",
+            "D": "input",
+            "RESET_B": "input",
+            "SET_B": "input",
+            "Q": "output"
+          },
+          "connections": {"CLK_N": [2], "D": [13], "RESET_B": [8], "SET_B": ["1"], "Q": [12]}
+        },
+        "g": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__and2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "X": "output"},
+          "connections": {"A": [9], "B": [12], "X": [14]}
+        },
+        "ff0": {
+          "hide_name": 0,
+          "type": "$scanff_faultflow",
+          "parameters": {},
+          "attributes": {"faultflow_scan": "1"},
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "SDI": "input",
+            "SE": "input",
+            "Q": "output"
+          },
+          "connections": {"CLK": [2], "D": [14], "SDI": [3], "SE": [4], "Q": [20]}
+        }
+      },
+      "netnames": {
+        "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+        "scan_in": {"hide_name": 0, "bits": [3], "attributes": {}},
+        "scan_en": {"hide_name": 0, "bits": [4], "attributes": {}},
+        "en": {"hide_name": 0, "bits": [5], "attributes": {}},
+        "din": {"hide_name": 0, "bits": [6], "attributes": {}},
+        "upd": {"hide_name": 0, "bits": [7], "attributes": {}},
+        "rst_n": {"hide_name": 0, "bits": [8], "attributes": {}},
+        "D0": {"hide_name": 0, "bits": [9], "attributes": {}},
+        "sh_q": {"hide_name": 0, "bits": [10], "attributes": {}},
+        "mode_out": {"hide_name": 0, "bits": [12], "attributes": {}},
+        "scan_out": {"hide_name": 0, "bits": [20], "attributes": {}}
+      }
+    }
+  }
+}

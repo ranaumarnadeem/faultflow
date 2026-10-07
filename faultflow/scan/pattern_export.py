@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from faultflow.scan.protocol import ScanPattern
+from faultflow.scan.setup import setup_from_list, setup_to_list
 
 
 def scan_pattern_to_dict(pattern: ScanPattern) -> dict[str, Any]:
@@ -74,6 +75,7 @@ def scan_pattern_to_dict(pattern: ScanPattern) -> dict[str, Any]:
             if pattern.shift_length is not None
             else {}
         ),
+        **({"setup": setup_to_list(pattern.setup)} if pattern.setup else {}),
     }
 
 
@@ -111,4 +113,5 @@ def scan_pattern_from_dict(data: dict[str, Any]) -> ScanPattern:
         shift_length=(
             int(data["shift_length"]) if data.get("shift_length") is not None else None
         ),
+        setup=setup_from_list(data.get("setup", []), "pattern setup"),
     )

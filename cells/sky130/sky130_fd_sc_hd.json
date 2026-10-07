@@ -828,6 +828,28 @@
       "trigger": "POSEDGE"
     }
   },
+  "sky130_fd_sc_hd__dfrtn_*": {
+    "node_type": "FF",
+    "inputs": [
+      "CLK_N",
+      "D",
+      "RESET_B"
+    ],
+    "outputs": {
+      "Q": "Q"
+    },
+    "ff": {
+      "clock": "CLK_N",
+      "data": "D",
+      "output": "Q",
+      "trigger": "NEGEDGE",
+      "clear": {
+        "pin": "RESET_B",
+        "level": "LOW",
+        "value": 0
+      }
+    }
+  },
   "sky130_fd_sc_hd__dfrtp_*": {
     "node_type": "FF",
     "inputs": [

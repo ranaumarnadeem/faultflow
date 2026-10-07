@@ -49,8 +49,10 @@ def bench(
 ) -> str:
     """A testbench applying `program` to `chip`: per cycle its inputs with the
     clocks low, each compared output displayed at the strobe ("E <cycle> <output>
-    <value>"), then the clocks high when it pulses. `unknown_inputs` (bit names)
-    are X throughout, whatever the program gives them."""
+    <value>"), then the clocks it pulses high and low again, within the cycle (the
+    STIL's waveform: a falling-edge flop takes the cycle's inputs).
+    `unknown_inputs` (bit names) are X throughout, whatever the program gives
+    them."""
     ports = chip.module["ports"]
     refs = _refs(ports)
     lines = ["`timescale 1ns/1ps", "module tb;"]
@@ -78,10 +80,16 @@ def bench(
         for name, want in cycle.expect.items():
             if want is not None:
                 lines.append(f'    $display("E {number} {name} %b", {refs[name]});')
+        pulsed = chip.clocks if cycle.clocks is None else cycle.clocks
         if cycle.pulse:
-            for clock in chip.clocks:
+            for clock in pulsed:
                 lines.append(f"    {_escaped(clock)}= 1;")
-        lines.append("    #5;")
+            lines.append("    #3;")
+            for clock in pulsed:
+                lines.append(f"    {_escaped(clock)}= 0;")
+            lines.append("    #2;")
+        else:
+            lines.append("    #5;")
     lines += ["    $finish;", "  end", "endmodule"]
     return "\n".join(lines) + "\n"
 

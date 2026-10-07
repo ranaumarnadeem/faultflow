@@ -21,6 +21,7 @@ from faultflow.atpg import (
     parse_bench_outputs,
     parse_quaigh_test,
 )
+from faultflow.control_trace import port_bits
 from faultflow.config import (
     FaultflowConfig,
     LEGACY_SCAN_DB_NAME,
@@ -52,7 +53,7 @@ from faultflow.scan import (
     verilog_to_json,
 )
 from faultflow.rule_check.model import RuleCheckReport
-from faultflow.scan.checks import check_scan_structure
+from faultflow.scan.checks import Transparent, check_scan_structure
 from faultflow.scan.atpg_view import build_scan_atpg_view
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.compression import Decompressor, insert_compression
@@ -68,7 +69,14 @@ from faultflow.scan.reports import (
     utc_timestamp,
     write_scan_artifacts,
 )
-from faultflow.scan.nonscan import NONSCAN_REASON, NonscanSetup, analyze_nonscan
+from faultflow.scan.nonscan import (
+    NONSCAN_REASON,
+    WSP_REASON,
+    NonscanSetup,
+    analyze_nonscan,
+    scan_clock_off,
+)
+from faultflow.scan.setup import SetupCycle, check_setup, load_setup, setup_hash
 from faultflow.scan.stil import write_stil
 from faultflow.scan.tester_program import chip_of, cycles
 from faultflow.scan.shift_controls import (
@@ -84,7 +92,12 @@ from faultflow.wrap.environment import ENVIRONMENT, intest_harness, with_environ
 from faultflow.wrap.graybox import chip_patterns, extest_graybox, with_core
 from faultflow.wrap.sides import EXTEST, FAULT_TYPES, owner, sides_of
 from faultflow.wrap.errors import WrapError
-from faultflow.wrap.record import mode_holds, wrapper_record
+from faultflow.wrap.record import (
+    mode_holds,
+    mode_setup,
+    serial_nets,
+    wrapper_record,
+)
 
 log = logging.getLogger(__name__)
 
@@ -406,6 +419,11 @@ class Runner:
             # set, so a design without them keeps its config_hash.
             payload["scan_nonscan_cells"] = list(self.cfg.scan.nonscan_cells)
             payload["scan_hold"] = [list(pair) for pair in self.cfg.scan.hold]
+        if self.cfg.scan.test_setup is not None:
+            # What the test setup program loads decides the programmed non-scan
+            # flops' values and the faults left to JTAG. Keyed only when set,
+            # so a design without one keeps its config_hash.
+            payload["scan_test_setup"] = setup_hash(self._user_test_setup())
         if self.cfg.compression.enabled:
             # Compressed, every pattern is a decompressor seed's load
             # (scan.detection_pipeline._decompressed); a campaign graded before
@@ -1203,11 +1221,15 @@ class Runner:
             return format_decisions(result)
         wrapped_json, verilog, report = self._write_wrapped(result)
         inputs = sum(cell.side == "input" for cell in result.cells)
+        control = (
+            "control=wsp"
+            if self.cfg.wrap.control == "wsp"
+            else f"intest={self.cfg.wrap.intest_pin} extest={self.cfg.wrap.extest_pin}"
+        )
         return (
             f"wrap complete top={self.cfg.top} cells={len(result.cells)} "
             f"inputs={inputs} outputs={len(result.cells) - inputs} "
-            f"clock={result.clock} intest={self.cfg.wrap.intest_pin} "
-            f"extest={self.cfg.wrap.extest_pin} "
+            f"clock={result.clock} {control} "
             f"json={wrapped_json} verilog={verilog} report={report}"
         )
 
@@ -1218,6 +1240,7 @@ class Runner:
             intest_pin=self.cfg.wrap.intest_pin,
             extest_pin=self.cfg.wrap.extest_pin,
             exclude=self.cfg.wrap.exclude,
+            control=self.cfg.wrap.control,
         )
         try:
             return wrap_block(
@@ -1793,6 +1816,32 @@ class Runner:
             "netlist": str(destination),
         }
 
+    def _transparent(self, manifest: dict[str, Any]) -> Transparent:
+        """What scan-check follows a scan cell's SDI and SE through: the inputs
+        the scan test holds and the non-scan flops it ties. A non-scan setup that
+        can't be found ties nothing here; the shift-control check reports why."""
+        generic_json = Path(str(manifest["generic_json"]))
+        try:
+            nonscan = self._nonscan_setup(manifest, generic_json)
+        except RunnerError:
+            nonscan = None
+        known = {
+            flop.q: int(flop.value)
+            for flop in (nonscan.flops if nonscan is not None else ())
+            if flop.value is not None
+        }
+        wrapper = manifest.get("wrapper")
+        if isinstance(wrapper, dict):
+            # Every scan test runs with a parallel instruction (or WS_BYPASS) in
+            # a WSP's WIR: no serial path through the wrapper chains' heads, no
+            # WSP shift beside the scan enable.
+            known.update(serial_nets(wrapper))
+        return Transparent(
+            cell_map=_load_json_object(resolve_scan_cell_map(self.cfg)),
+            holds=dict(self._holds(manifest)),
+            known=known,
+        )
+
     def scan_check(
         self,
         vectors_path: Path | None = None,
@@ -1805,7 +1854,11 @@ class Runner:
         if not manifest_path.exists():
             raise RunnerError(f"scan manifest not found: {manifest_path}")
         manifest = load_manifest(manifest_path)
-        structural = check_scan_structure(manifest, require_techmap=require_techmap)
+        structural = check_scan_structure(
+            manifest,
+            require_techmap=require_techmap,
+            transparent=self._transparent(manifest),
+        )
         errors = list(structural.errors)
         warnings = list(structural.warnings)
         if not errors:
@@ -2437,14 +2490,15 @@ class Runner:
             )
         ineligible = manifest.get("ineligible_ffs", [])
         if isinstance(ineligible, list) and ineligible:
-            # Flops left out by [scan] nonscan_cells aren't a full-scan blocker:
-            # the view ties them (scan.nonscan refuses one it can't). Genuinely
-            # unscannable FFs (unsupported_ff_shape, unknown_cell_type,
-            # existing_scan_cell) are.
+            # Flops left out by [scan] nonscan_cells, and an IEEE 1500 WSP's, aren't
+            # a full-scan blocker: the view ties them (scan.nonscan refuses one it
+            # can't). Genuinely unscannable FFs (unsupported_ff_shape,
+            # unknown_cell_type, existing_scan_cell) are.
             blockers = [
                 item
                 for item in ineligible
-                if isinstance(item, dict) and item.get("reason") != NONSCAN_REASON
+                if isinstance(item, dict)
+                and item.get("reason") not in (NONSCAN_REASON, WSP_REASON)
             ]
             if blockers:
                 names = ", ".join(
@@ -2761,6 +2815,32 @@ class Runner:
             blocking_instances=blocking,
         )
 
+    def _user_test_setup(self) -> tuple[SetupCycle, ...]:
+        """The test setup program [scan] test_setup gives, or none."""
+        if self.cfg.scan.test_setup is None:
+            return ()
+        try:
+            return load_setup(self.cfg.scan.test_setup)
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+
+    def _test_setup(self, manifest: Mapping[str, Any]) -> tuple[SetupCycle, ...]:
+        """The scan test's setup program: [scan] test_setup's, or that of a
+        wrapper an IEEE 1500 WSP controls, which loads the test mode's
+        instruction (faultflow.wrap.record.mode_setup) -- not both -- or none."""
+        user = self._user_test_setup()
+        try:
+            wsp = mode_setup(manifest, str(self.cfg.test_mode))
+        except WrapError as exc:
+            raise RunnerError(str(exc)) from exc
+        if wsp and user:
+            raise RunnerError(
+                "[scan] test_setup with a wrapper an IEEE 1500 WSP controls ([wrap] "
+                "control = wsp) isn't supported: the program that loads the test "
+                "mode's instruction into the WSP is the test setup"
+            )
+        return wsp or user
+
     def _nonscan_setup(
         self,
         manifest: dict[str, Any],
@@ -2793,9 +2873,35 @@ class Runner:
                 scan_reset_holds=_scan_reset_pi_holds(
                     generic_json, self.cfg.top, cell_map
                 ),
+                setup=self._test_setup(manifest),
+                blackbox_instances=list(self.cfg.blackbox_instances),
             )
         except ScanError as exc:
             raise RunnerError(str(exc)) from exc
+
+    def _checked_test_setup(
+        self, manifest: Mapping[str, Any], generic_json: Path
+    ) -> tuple[SetupCycle, ...]:
+        """The test setup program, checked against the scanned netlist: it names
+        its inputs and pulses its scan clocks only. v1 refuses it with scan
+        compression or compaction, whose chip is a composed netlist."""
+        setup = self._test_setup(manifest)
+        if not setup:
+            return ()
+        if self.cfg.compression.enabled or self.cfg.compaction.enabled:
+            raise RunnerError(
+                "a test setup program ([scan] test_setup, or a WSP wrapper's) with "
+                "scan compression or compaction isn't supported: the setup program "
+                "drives the scanned design's inputs, and the chip is the composed "
+                "netlist"
+            )
+        _, module = _json_top_module(generic_json, self.cfg.top)
+        inputs = [name for name, _ in port_bits(module, "input")]
+        try:
+            check_setup(setup, inputs, list(scan_clock_off(module, manifest)))
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+        return setup
 
     def _sim_scan(
         self,
@@ -2889,6 +2995,7 @@ class Runner:
         # cfg.blackbox_instances. Non-scan flops and held inputs are tied the
         # same way (scan.nonscan).
         nonscan = self._nonscan_setup(run_manifest, generic_json, extra_holds)
+        setup = self._checked_test_setup(run_manifest, generic_json)
         view, pseudo_port_map = build_scan_atpg_view(
             _load_json_object(generic_json),
             run_manifest,
@@ -2933,6 +3040,7 @@ class Runner:
             nonscan=nonscan,
             wrapper=wrapper if scope is not None else None,
             wrapper_scope=scope,
+            setup=setup,
         )
 
         from faultflow.scan.atpg_view import ATPG_VIEW_SCHEMA_VER
@@ -3139,6 +3247,11 @@ class Runner:
                     f" excluded_jtag={data['excluded_jtag']}"
                     f" hold_unresolved={data.get('hold_unresolved', 0)}"
                     if data.get("excluded_jtag") or data.get("hold_unresolved")
+                    else ""
+                )
+                + (
+                    f" excluded_wsp={data['excluded_wsp']}"
+                    if data.get("excluded_wsp")
                     else ""
                 )
                 + atpg_note

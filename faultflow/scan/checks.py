@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
+from faultflow.control_trace import Netlist
 from faultflow.scan.errors import ScanError
 from faultflow.scan.reports import hash_file
 from faultflow.scan.stitch import SCAN_CELL_TYPES, _load_json, _top_module
@@ -42,14 +43,55 @@ def _conn_bit(cell: dict[str, Any], pin: str, instance: str) -> int:
     return int(bits[0])
 
 
+@dataclass(frozen=True)
+class Transparent:
+    """What the scan test holds while the chains shift, so a scan cell's SDI or
+    SE may reach its chain or the scan enable through gates those values keep
+    passing it on (control_trace.Netlist.through) -- a chain-head mux a held
+    select steers, an OR that a held 0 keeps open: ``holds``, input port bits at
+    their values, and ``known``, the nets of flops the test ties (forced,
+    settled or programmed non-scan flops). The SE is traced with scan enable free,
+    the SDI with it on."""
+
+    cell_map: Mapping[str, Any]
+    holds: Mapping[str, int] = field(default_factory=dict)
+    known: Mapping[int, int] = field(default_factory=dict)
+
+
+def _source(
+    netlist: Netlist | None,
+    net: int,
+    values: Mapping[str, int],
+    known: Mapping[int, int],
+) -> int:
+    """The net `net` passes on, non-inverted, through gates `values` and `known`
+    keep open; `net` itself without a netlist or such a path."""
+    if netlist is None:
+        return net
+    found = netlist.through(net, values, known)
+    if found.inverted or not isinstance(found.source, int):
+        return net
+    return found.source
+
+
 def _collect_chain_cells(
-    cells_obj: dict[str, Any], se_net: int, errors: list[str]
+    cells_obj: dict[str, Any],
+    se_net: int,
+    errors: list[str],
+    *,
+    netlist: Netlist | None = None,
+    transparent: Transparent | None = None,
+    scan_enable: str = "",
 ) -> tuple[dict[int, str], dict[str, int], set[int], set[str]]:
     """Index the scan cells for chain-connectivity validation.
 
     Returns (node_by_in, out_by_node, clock_nets, names): `node_by_in` maps the
-    net feeding a cell's SDI to the cell; `out_by_node` maps a cell to its Q net.
-    Each cell's SE must be the manifest's scan enable (`se_net`)."""
+    net feeding a cell's SDI -- through gates `transparent`'s values keep open --
+    to the cell; `out_by_node` maps a cell to its Q net. Each cell's SE must be the
+    manifest's scan enable (`se_net`), likewise."""
+    holds = dict(transparent.holds) if transparent is not None else {}
+    known = dict(transparent.known) if transparent is not None else {}
+    shifting = {**holds, scan_enable: 1} if scan_enable else dict(holds)
     node_by_in: dict[int, str] = {}
     out_by_node: dict[str, int] = {}
     clock_nets: set[int] = set()
@@ -59,13 +101,13 @@ def _collect_chain_cells(
             continue
         instance = str(instance)
         names.add(instance)
-        chain_in = _conn_bit(cell, "SDI", instance)
+        chain_in = _source(netlist, _conn_bit(cell, "SDI", instance), shifting, known)
         if chain_in in node_by_in:
             errors.append(f"multiple scan cells share SDI net {chain_in}")
         node_by_in[chain_in] = instance
         out_by_node[instance] = _conn_bit(cell, "Q", instance)
         clock_nets.add(_conn_bit(cell, "CLK", instance))
-        if _conn_bit(cell, "SE", instance) != se_net:
+        if _source(netlist, _conn_bit(cell, "SE", instance), holds, known) != se_net:
             errors.append(f"{instance}: SE does not use shared scan enable")
     return node_by_in, out_by_node, clock_nets, names
 
@@ -120,7 +162,12 @@ def _validate_chains(
 def check_scan_structure(
     manifest: dict[str, object],
     require_techmap: bool = False,
+    transparent: Transparent | None = None,
 ) -> StructuralCheckResult:
+    """The scanned netlist's chains are the manifest's: each scan cell's SDI is the
+    one before's Q, or its chain's scan input, and its SE the scan enable --
+    directly or, with `transparent`, through gates the scan test's held values
+    keep open."""
     errors: list[str] = []
     warnings: list[str] = []
     try:
@@ -147,7 +194,16 @@ def check_scan_structure(
         # Every scan flop -- an IEEE 1500 wrapper's among them, on chains of
         # their own -- shifts SDI -> Q on the manifest's scan enable.
         ff_in, ff_out, ff_clocks, ff_names = _collect_chain_cells(
-            cells_obj, se_net, errors
+            cells_obj,
+            se_net,
+            errors,
+            netlist=(
+                Netlist(module, transparent.cell_map)
+                if transparent is not None
+                else None
+            ),
+            transparent=transparent,
+            scan_enable=scan_enable,
         )
         if not ff_clocks:
             errors.append("scanned design has no scan clock net")

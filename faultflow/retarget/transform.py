@@ -19,6 +19,12 @@ INTEST holds. Launching on shift, each block chain's head takes, at the launch
 shift, the bit before it on its SoC chain: that fill bit is the block pattern's
 launch bit for the chain, or the SoC chain's own launch bit when the block chain
 heads it.
+
+A block an IEEE 1500 WSP controls starts each pattern with the program that loads
+WP_INTEST into its WIR (faultflow.wrap.wsp_setup); on the SoC that program is the
+SoC's, which loads WP_INTEST into every block's WIR along their WSI-WSO chain, and
+the block's WSP inputs, held, become the SoC's WSP holds. Its WSO, a constant in
+INTEST, isn't compared.
 """
 
 from __future__ import annotations
@@ -28,8 +34,13 @@ from typing import Any, Mapping, Sequence
 
 from faultflow.config import ConfigError
 from faultflow.control_trace import Netlist, Trace, port_bits
+from faultflow.scan.nonscan import scan_clock_off
 from faultflow.scan.pattern_export import scan_pattern_from_dict, scan_pattern_to_dict
 from faultflow.scan.protocol import ScanPattern
+from faultflow.scan.setup import SetupCycle
+from faultflow.wrap.errors import WrapError
+from faultflow.wrap.record import mode_setup
+from faultflow.wrap.wsp_setup import access_of, holds as wsp_holds
 
 
 class RetargetError(ConfigError):
@@ -118,13 +129,17 @@ def _soc_values(
     outputs: set[str],
     mode_pins: Mapping[str, int],
     where: str,
+    dropped: frozenset[str] = frozenset(),
 ) -> dict[str, bool]:
-    """The SoC input values that give the block inputs `given`'s values."""
+    """The SoC input values that give the block inputs `given`'s values; the
+    ports `dropped` names are left out."""
     values: dict[str, bool] = {}
     for name, value in sorted(given.items()):
         if name in mode_pins:
             if int(value) != mode_pins[name]:
                 raise RetargetError(f"{where} doesn't hold {name} as INTEST does")
+            continue
+        if name in dropped:
             continue
         if name in outputs:
             raise RetargetError(
@@ -178,13 +193,25 @@ def retarget_pattern(
     outputs: set[str],
     mode_pins: Mapping[str, int],
     holds: Mapping[str, int],
+    block_setup: Sequence[SetupCycle] = (),
+    setup: Sequence[SetupCycle] = (),
+    dropped: frozenset[str] = frozenset(),
 ) -> ScanPattern:
-    """Block pattern `pattern` (number `number`) as the SoC takes it."""
+    """Block pattern `pattern` (number `number`) as the SoC takes it.
+    `block_setup`: the program a block pattern starts with, its WSP's for INTEST;
+    `setup`: the SoC's in its place; `dropped`: block ports left out -- those the
+    scan protocol drives, and outputs not compared."""
     where = f"block pattern {number}"
     if pattern.load_care is not None or pattern.seed is not None:
         raise RetargetError(f"{where} is a compressed load")
     if pattern.shift_length is not None:
         raise RetargetError(f"{where} shifts only some of the block's chains")
+    if tuple(pattern.setup) != tuple(block_setup):
+        raise RetargetError(
+            f"{where} doesn't start with its WSP's INTEST program"
+            if block_setup
+            else f"{where} starts with a test setup program, which isn't retargeted"
+        )
     longest = max(soc_lengths.values())
     load = {c: [False] * length for c, length in soc_lengths.items()}
     expected = {c: [False] * length for c, length in soc_lengths.items()}
@@ -229,9 +256,11 @@ def retarget_pattern(
                     f"{segment.block_chain}'s head takes the last bit of the block "
                     "chain before it on the SoC, which its load sets the other way"
                 )
-    values = _soc_values(pattern.capture_pi_values, inputs, outputs, mode_pins, where)
+    values = _soc_values(
+        pattern.capture_pi_values, inputs, outputs, mode_pins, where, dropped
+    )
     shift_values = _soc_values(
-        pattern.shift_pi_values, inputs, outputs, mode_pins, where
+        pattern.shift_pi_values, inputs, outputs, mode_pins, where, dropped
     )
     for port, value in holds.items():
         for given in (values, shift_values):
@@ -259,6 +288,7 @@ def retarget_pattern(
         shift_pi_values=shift_values if pattern.shift_pi_values else {},
         launch=pattern.launch,
         launch_scan_in=launch_scan_in,
+        setup=tuple(setup),
     )
 
 
@@ -280,7 +310,36 @@ def retarget_patterns(
     wrapper = block_manifest.get("wrapper")
     if not isinstance(wrapper, dict):
         raise RetargetError(f"{instance}'s scan manifest records no wrapper")
-    mode_pins = {str(wrapper["intest"]["port"]): 1, str(wrapper["extest"]["port"]): 0}
+    block_setup: tuple[SetupCycle, ...] = ()
+    setup: tuple[SetupCycle, ...] = ()
+    dropped: frozenset[str] = frozenset()
+    if wrapper.get("control") == "wsp":
+        soc_wrapper = soc_manifest.get("wrapper")
+        if not isinstance(soc_wrapper, dict) or soc_wrapper.get("control") != "wsp":
+            raise RetargetError(
+                f"{instance}'s WSP isn't on the SoC's chain of WSPs: the SoC's "
+                "wrapper record has none"
+            )
+        try:
+            mode_pins = wsp_holds(access_of(wrapper))
+            block_setup = mode_setup(block_manifest, "intest")
+            setup = mode_setup(soc_manifest, "intest")
+        except WrapError as exc:
+            raise RetargetError(str(exc)) from exc
+        dropped = frozenset({str(wrapper["wsp"]["ports"]["wso"]["port"])})
+    else:
+        mode_pins = {
+            str(wrapper["intest"]["port"]): 1,
+            str(wrapper["extest"]["port"]): 0,
+        }
+    # What the scan protocol drives -- the scan enable, the scan inputs, the scan
+    # clocks -- no block pattern sets, whatever its ATPG gave a port the view
+    # still had (one a WSP's chain-head mux or scan enable gate reads).
+    dropped |= {
+        str(block_manifest["scan_enable"]),
+        *(str(port) for port in block_manifest.get("scan_inputs", [])),
+        *scan_clock_off(block_module, block_manifest),
+    }
     segments = block_segments(soc_manifest, instance, block_manifest)
     inputs = block_inputs(block_module, soc_module, cell_map, instance)
     outputs = {label for label, _ in port_bits(block_module, "output")}
@@ -300,6 +359,9 @@ def retarget_patterns(
                 outputs=outputs,
                 mode_pins=mode_pins,
                 holds=holds,
+                block_setup=block_setup,
+                setup=setup,
+                dropped=dropped,
             )
         )
         for number, raw in enumerate(patterns)

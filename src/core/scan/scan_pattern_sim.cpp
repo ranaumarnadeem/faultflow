@@ -134,6 +134,40 @@ void append_unload_pulse(TestVector& vec, const ParsedGraph& parsed,
       make_cycle(parsed, clock_ports, clock_off_states, values, false, fault_active));
 }
 
+size_t clock_index(const ScanPatternRequest& req, const std::string& clock) {
+  const auto it = std::find(req.clock_ports.begin(), req.clock_ports.end(), clock);
+  if (it == req.clock_ports.end()) {
+    throw std::runtime_error("test setup pulses " + clock +
+                             ", which is not a scan clock");
+  }
+  return static_cast<size_t>(it - req.clock_ports.begin());
+}
+
+void append_setup_cycle(TestVector& vec, const ParsedGraph& parsed,
+                        const ScanPatternRequest& req, const SetupCycle& setup) {
+  // The cycle's inputs, the clocks off; then the pulsed clocks on and off again
+  // with the same inputs. Fault-inactive and unsampled.
+  std::map<std::string, bool> values = setup.inputs;
+  for (size_t i = 0; i < req.clock_ports.size(); ++i) {
+    if (setup.inputs.count(req.clock_ports[i])) {
+      throw std::runtime_error("test setup sets scan clock " + req.clock_ports[i] +
+                               " as a level; it can only pulse it");
+    }
+    values[req.clock_ports[i]] = clock_off(req, i);
+  }
+  vec.cycles.push_back(
+      make_cycle(parsed, req.clock_ports, req.clock_off_states, values, false, false));
+  if (setup.pulse.empty()) return;
+  for (const auto& clock : setup.pulse)
+    values[clock] = !clock_off(req, clock_index(req, clock));
+  vec.cycles.push_back(
+      make_cycle(parsed, req.clock_ports, req.clock_off_states, values, false, false));
+  for (const auto& clock : setup.pulse)
+    values[clock] = clock_off(req, clock_index(req, clock));
+  vec.cycles.push_back(
+      make_cycle(parsed, req.clock_ports, req.clock_off_states, values, false, false));
+}
+
 std::map<std::string, bool> base_values(const ScanPatternRequest& request) {
   std::map<std::string, bool> values = request.capture_pi_values;
   for (const auto& [name, value] : request.shift_pi_values) values[name] = value;
@@ -170,6 +204,9 @@ TestVector build_scan_pattern_vector(const ParsedGraph& parsed,
   }
 
   TestVector vec;
+  for (const SetupCycle& setup : request.setup_cycles) {
+    append_setup_cycle(vec, parsed, request, setup);
+  }
   for (int pulse = 0; pulse < request.preamble_cycles; ++pulse) {
     append_clock_pulse(vec, parsed, request.clock_ports, request.clock_off_states,
                        base_values(request), false, false);

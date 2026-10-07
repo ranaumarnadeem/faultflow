@@ -8,7 +8,9 @@ A fault belongs to the mode that can activate it:
   port or observes an output port.
 - A stuck-at on a mode net belongs to the mode that holds the net at the other value.
   INTEST holds INTEST at 1 and EXTEST at 0, EXTEST the reverse, so INTEST stuck at 0
-  and EXTEST stuck at 1 are INTEST's, and the other two EXTEST's.
+  and EXTEST stuck at 1 are INTEST's, and the other two EXTEST's. With an IEEE 1500
+  WSP the mode nets are its decode's four (faultflow.wrap.record.mode_nets), and
+  the WSP's own faults are no mode's (faultflow.wrap.wsp.wsp_sites).
 - Everything else -- the core, and the rest of each cell -- belongs to INTEST.
 
 On a SoC (its record, faultflow.project.soc_wrapper) the glue between its blocks is
@@ -18,7 +20,8 @@ SoC input read by one block's core alone is that block's input, and INTEST's. Th
 SoC's mode nets -- its own pins, and its glue's on their way to its blocks -- are
 EXTEST's whichever way they're stuck: no INTEST runs on the SoC, so a stuck-at only
 INTEST would activate is counted there and never credited. A branch into a block's
-cell is the block's, by the rule above.
+cell is the block's, by the rule above. A SoC of WSP-controlled blocks has no mode
+nets of its own: its blocks' decode nets are owned as in each block.
 
 Each mode's campaign leaves the other mode's faults to it, as ``wbr_decoupled``
 (:func:`decoupled`), so every fault is graded where its test runs, once.
@@ -150,8 +153,10 @@ def owner(
     if net in sides.held:
         # A SoC's mode nets are its own pins and glue: its EXTEST owns their stems
         # and what its glue reads of them, whichever way they're stuck.
-        on_soc = "blocks" in wrapper and (
-            str(row["kind"]) == "stem" or consumer in sides.glue_cells
+        on_soc = (
+            "blocks" in wrapper
+            and wrapper.get("control") != "wsp"
+            and (str(row["kind"]) == "stem" or consumer in sides.glue_cells)
         )
         stuck = int(fault_type.lower().removeprefix("sa"))
         return INTEST if stuck != sides.held[net] and not on_soc else EXTEST

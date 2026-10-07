@@ -124,6 +124,28 @@ def test_clocks_off_unknown_port_raises(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # config gate: transition + multi-clock is rejected (deferred follow-up)
 # --------------------------------------------------------------------------- #
+def test_clock_groups_parse(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.ofs"
+    _write_config(cfg_path, "\n[clocks]\ngroups = clk_a clk_b; clk_c, clk_d\n")
+    assert load_config(cfg_path, "demo").clock_groups == (
+        ("clk_a", "clk_b"),
+        ("clk_c", "clk_d"),
+    )
+    _write_config(cfg_path)
+    assert load_config(cfg_path, "demo").clock_groups == ()
+
+
+@pytest.mark.parametrize(
+    "groups, error",
+    [("clk_a", "names one clock"), ("clk_a clk_b; clk_b clk_c", "names clk_b twice")],
+)
+def test_clock_groups_refused(tmp_path: Path, groups: str, error: str) -> None:
+    cfg_path = tmp_path / "config.ofs"
+    _write_config(cfg_path, f"\n[clocks]\ngroups = {groups}\n")
+    with pytest.raises(ConfigError, match=error):
+        load_config(cfg_path, "demo")
+
+
 def test_transition_with_multiple_declared_clocks_allowed(tmp_path: Path) -> None:
     """Phase 6b: transition + multi-clock is now supported (per-domain at-speed)."""
     cfg_path = tmp_path / "config.ofs"

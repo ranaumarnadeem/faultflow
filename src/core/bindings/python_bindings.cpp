@@ -739,6 +739,20 @@ void update_run_vector_count_py(const std::string& db_path, int64_t run_id,
   db::update_run_vector_count(db_path, run_id, vector_count);
 }
 
+// A test setup program as Python passes it: per cycle, (inputs, pulsed clocks).
+using SetupCyclePy =
+    std::pair<std::map<std::string, bool>, std::vector<std::string>>;
+
+std::vector<scan::SetupCycle> setup_cycles_of(
+    const std::vector<SetupCyclePy>& cycles) {
+  std::vector<scan::SetupCycle> out;
+  out.reserve(cycles.size());
+  for (const auto& [inputs, pulse] : cycles) {
+    out.push_back(scan::SetupCycle{inputs, pulse});
+  }
+  return out;
+}
+
 py::dict simulate_scan_pattern_py(
     const std::string& json_path, const std::string& cell_map_path,
     const std::vector<std::string>& clock_ports,
@@ -756,7 +770,8 @@ py::dict simulate_scan_pattern_py(
     const std::vector<std::string>& active_clock_ports,
     const std::vector<std::string>& blackbox_instances = {},
     int preamble_cycles = 0,
-    const std::map<std::string, bool>& shift_pi_values = {}) {
+    const std::map<std::string, bool>& shift_pi_values = {},
+    const std::vector<SetupCyclePy>& setup_cycles = {}) {
   scan::ScanPatternRequest request;
   request.clock_ports = clock_ports;
   request.clock_off_states = clock_off_states;
@@ -772,6 +787,7 @@ py::dict simulate_scan_pattern_py(
   request.los_launch_scan_in = los_launch_scan_in;
   request.active_clock_ports = active_clock_ports;
   request.preamble_cycles = preamble_cycles;
+  request.setup_cycles = setup_cycles_of(setup_cycles);
   request.shift_pi_values = shift_pi_values;
   const scan::ScanPatternResult result = scan::simulate_scan_pattern(
       json_path, cell_map_path, request, unsupported_policy, blackbox_instances);
@@ -804,7 +820,8 @@ py::dict simulate_scan_protocol_faults_py(
     const std::vector<std::string>& blackbox_instances = {},
     const std::map<int, std::vector<bool>>& unload_mask = {},
     int preamble_cycles = 0,
-    const std::map<std::string, bool>& shift_pi_values = {}) {
+    const std::map<std::string, bool>& shift_pi_values = {},
+    const std::vector<SetupCyclePy>& setup_cycles = {}) {
   scan::ScanProtocolFaultRequest request;
   request.capture_diffs = capture_diffs;
   request.unload_mask = unload_mask;
@@ -822,6 +839,7 @@ py::dict simulate_scan_protocol_faults_py(
   request.pattern.los_launch_scan_in = los_launch_scan_in;
   request.pattern.active_clock_ports = active_clock_ports;
   request.pattern.preamble_cycles = preamble_cycles;
+  request.pattern.setup_cycles = setup_cycles_of(setup_cycles);
   request.pattern.shift_pi_values = shift_pi_values;
   request.faults.reserve(faults.size());
   for (const auto& [net_index, fault_type] : faults) {
@@ -1337,7 +1355,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("active_clock_ports") = std::vector<std::string>{},
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("preamble_cycles") = 0,
-        py::arg("shift_pi_values") = std::map<std::string, bool>{});
+        py::arg("shift_pi_values") = std::map<std::string, bool>{},
+        py::arg("setup_cycles") = std::vector<faultflow::SetupCyclePy>{});
   m.def("simulate_scan_protocol_faults",
         &faultflow::simulate_scan_protocol_faults_py,
         py::arg("json_path"), py::arg("cell_map_path"),
@@ -1355,7 +1374,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("unload_mask") = std::map<int, std::vector<bool>>{},
         py::arg("preamble_cycles") = 0,
-        py::arg("shift_pi_values") = std::map<std::string, bool>{});
+        py::arg("shift_pi_values") = std::map<std::string, bool>{},
+        py::arg("setup_cycles") = std::vector<faultflow::SetupCyclePy>{});
   m.def("simulate_sequence_faults", &faultflow::simulate_sequence_faults_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("input_order"),
         py::arg("cycles"), py::arg("sample"), py::arg("observe_outputs"),

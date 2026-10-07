@@ -8,9 +8,10 @@ while scan enable is active. A pattern's load and unload are what FaultFlow comp
 only if every scan flop's clear and preset is *held inactive during shift*: traced
 (:mod:`faultflow.control_trace`) to constants, to inputs held for the whole test --
 scan enable at 1, ``[scan] hold`` and the reset holds -- and to the non-scan flops the
-scan test ties (forced or settled: :mod:`faultflow.scan.nonscan`). A reset from a
-scanned flop -- a reset synchronizer's last stage -- or from an input the patterns set
-isn't; ``scan-check`` refuses those flops (:func:`shift_control_violations`).
+scan test ties (forced, settled or programmed: :mod:`faultflow.scan.nonscan`). A reset
+from a scanned flop -- a reset synchronizer's last stage -- or from an input the
+patterns set isn't; ``scan-check`` refuses those flops
+(:func:`shift_control_violations`).
 
 The *reset holds* (:func:`reset_holds`): an input that reaches a scan flop's clear or
 preset through buffers and inverters is held for the whole test at the value that

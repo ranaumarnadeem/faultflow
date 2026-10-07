@@ -2,15 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://faultflow.local/schemas/wrapper.schema.json",
   "title": "faultflow IEEE 1500 wrapper record (the scan manifest's \"wrapper\")",
-  "description": "The wrapper ff.py wrap put on a block (faultflow.wrap.record): how its mode is set, its mode pins and clock, and each boundary cell -- its port bit, its mux, gate and flop instances, its system-side and core-side nets, and its flop's place on the wrapper chains.",
+  "description": "The wrapper ff.py wrap put on a block (faultflow.wrap.record): how its mode is set -- its mode pins, or its IEEE 1500 WSP (the WSP's ports, the nets its decode drives, the instruction codes) -- its clock, and each boundary cell -- its port bit, its mux, gate and flop instances, its system-side and core-side nets, and its flop's place on the wrapper chains.",
   "type": "object",
-  "required": ["version", "control", "intest", "extest", "clock", "cells"],
+  "required": ["version", "control", "clock", "cells"],
   "additionalProperties": false,
   "properties": {
     "version": {"const": "faultflow_wrapper_v1"},
-    "control": {"enum": ["pins"]},
+    "control": {"enum": ["pins", "wsp"]},
     "intest": {"$ref": "#/$defs/port"},
     "extest": {"$ref": "#/$defs/port"},
+    "wsp": {"$ref": "#/$defs/wsp"},
     "clock": {"$ref": "#/$defs/port"},
     "cells": {
       "type": "array",
@@ -18,7 +19,84 @@
       "items": {"$ref": "#/$defs/cell"}
     }
   },
+  "allOf": [
+    {
+      "if": {"properties": {"control": {"const": "pins"}}},
+      "then": {"required": ["intest", "extest"], "not": {"required": ["wsp"]}}
+    },
+    {
+      "if": {"properties": {"control": {"const": "wsp"}}},
+      "then": {
+        "required": ["wsp"],
+        "not": {"anyOf": [{"required": ["intest"]}, {"required": ["extest"]}]}
+      }
+    }
+  ],
   "$defs": {
+    "wsp": {
+      "type": "object",
+      "required": ["ports", "nets", "opcodes"],
+      "additionalProperties": false,
+      "properties": {
+        "ports": {
+          "type": "object",
+          "required": [
+            "wrck",
+            "wrstn",
+            "selectwir",
+            "shiftwr",
+            "capturewr",
+            "updatewr",
+            "wsi",
+            "wso"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "wrck": {"$ref": "#/$defs/port"},
+            "wrstn": {"$ref": "#/$defs/port"},
+            "selectwir": {"$ref": "#/$defs/port"},
+            "shiftwr": {"$ref": "#/$defs/port"},
+            "capturewr": {"$ref": "#/$defs/port"},
+            "updatewr": {"$ref": "#/$defs/port"},
+            "wsi": {"$ref": "#/$defs/port"},
+            "wso": {"$ref": "#/$defs/port"}
+          }
+        },
+        "nets": {
+          "description": "The nets the WSP's decode drives: each side's hold and safe, serial (a serial instruction is in force) and serial_shift (it shifts the WBR); update, the instruction register's update stage, bit 0 first.",
+          "type": "object",
+          "required": [
+            "in_hold",
+            "in_safe",
+            "out_hold",
+            "out_safe",
+            "serial",
+            "serial_shift",
+            "update"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "in_hold": {"type": "integer"},
+            "in_safe": {"type": "integer"},
+            "out_hold": {"type": "integer"},
+            "out_safe": {"type": "integer"},
+            "serial": {"type": "integer"},
+            "serial_shift": {"type": "integer"},
+            "update": {
+              "type": "array",
+              "items": {"type": "integer"},
+              "minItems": 3,
+              "maxItems": 3
+            }
+          }
+        },
+        "opcodes": {
+          "type": "object",
+          "required": ["WS_BYPASS", "WS_EXTEST", "WP_INTEST", "WP_EXTEST", "WS_INTEST"],
+          "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 7}
+        }
+      }
+    },
     "port": {
       "type": "object",
       "required": ["port", "net"],

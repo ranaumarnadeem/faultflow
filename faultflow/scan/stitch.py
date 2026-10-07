@@ -404,7 +404,10 @@ def _collect_ffs(
     nonscan_cells: Sequence[str] = (),
 ) -> tuple[list[_EligibleFF], list[IneligibleFF]]:
     """Every flop of ``module``, eligible for scan or not. A flop whose instance name
-    matches a ``nonscan_cells`` glob stays out of scan whatever its shape."""
+    matches a ``nonscan_cells`` glob stays out of scan whatever its shape, and so
+    does an IEEE 1500 WSP's (faultflow.wrap.wsp: reason ``wsp``)."""
+    from faultflow.wrap.wsp import WSP_ATTR  # wrap imports scan
+
     cells = module.get("cells", {})
     if not isinstance(cells, dict):
         raise ScanError("top module cells must be an object")
@@ -432,6 +435,9 @@ def _collect_ffs(
             continue
         if any(fnmatch.fnmatchcase(str(instance), glob) for glob in nonscan_cells):
             ineligible.append(IneligibleFF(str(instance), cell_type, "nonscan_policy"))
+            continue
+        if WSP_ATTR in cell.get("attributes", {}):
+            ineligible.append(IneligibleFF(str(instance), cell_type, "wsp"))
             continue
         ff_meta = entry.get("ff")
         if not isinstance(ff_meta, dict):
@@ -985,7 +991,12 @@ def stitch_scan_json(
     """``netlist_json`` scanned into ``output_json``: its core flops on the requested
     chains; an IEEE 1500 wrapper's flops (faultflow.wrap) on chains of their own,
     after them, in ring order -- ``wrapper_chains`` of them, else as many as keep
-    each no longer than the longest core chain."""
+    each no longer than the longest core chain. A wrapper an IEEE 1500 WSP controls
+    gets its serial instructions' path through those chains
+    (faultflow.wrap.wsp.link_wsp)."""
+    from faultflow.wrap.errors import WrapError  # wrap imports scan
+    from faultflow.wrap.wsp import link_wsp
+
     data = _load_json(netlist_json)
     cell_map = _load_json(cell_map_json)
     top_name, module = _top_module(data, top)
@@ -1083,6 +1094,21 @@ def stitch_scan_json(
 
     for chain in plan.chains:
         _add_port(stitched_module, chain.scan_out, "output", chain.scan_out_net)
+    try:
+        link_wsp(
+            stitched_module,
+            [
+                {
+                    "index": chain.index,
+                    "kind": chain.kind,
+                    "cells": [cell.instance for cell in chain.cells],
+                }
+                for chain in plan.chains
+            ],
+            plan.scan_enable,
+        )
+    except WrapError as exc:
+        raise ScanError(str(exc)) from exc
 
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(

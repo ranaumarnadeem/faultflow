@@ -71,6 +71,7 @@ from faultflow.scan.compaction import CompactionMap, build_compactor_fanout
 from faultflow.scan.compression import CompressionMap, build_broadcast_fanout
 from faultflow.scan.errors import ScanError
 from faultflow.scan.nonscan import NonscanSetup, jtag_sites, settled_sites
+from faultflow.scan.setup import SetupCycle, setup_request
 from faultflow.scan.shift_controls import reset_holds
 from faultflow.scan.ring_generator import (
     bitmask_to_index_list,
@@ -88,6 +89,7 @@ from faultflow.scan.x_mask import (
 )
 from faultflow.testpoint.preflight import PreflightData, run_preflight
 from faultflow.wrap.sides import decoupled
+from faultflow.wrap.wsp import wsp_sites
 
 log = logging.getLogger(__name__)
 
@@ -161,6 +163,9 @@ class ScanPipelineContext:
     # (faultflow.wrap.sides) are left to it, wbr_decoupled. None without one.
     wrapper: dict[str, Any] | None = None
     wrapper_scope: str | None = None
+    # The test setup program ([scan] test_setup, faultflow.scan.setup): every
+    # pattern starts with it (_serialize). Empty: none.
+    setup: tuple[SetupCycle, ...] = ()
 
 
 @dataclass
@@ -203,6 +208,7 @@ def build_scan_pipeline_context(
     nonscan: NonscanSetup | None = None,
     wrapper: dict[str, Any] | None = None,
     wrapper_scope: str | None = None,
+    setup: tuple[SetupCycle, ...] = (),
 ) -> ScanPipelineContext:
     q_stems = {
         str(entry["boundary"]["q_stem_site_key"])
@@ -296,6 +302,7 @@ def build_scan_pipeline_context(
         ),
         wrapper=wrapper,
         wrapper_scope=wrapper_scope,
+        setup=tuple(setup),
     )
 
 
@@ -465,7 +472,31 @@ def _protocol_fault_sim_kwargs(
         "unload_mask": pattern.unload_mask or {},
         "preamble_cycles": pattern.preamble_cycles,
         "shift_pi_values": dict(pattern.shift_pi_values),
+        "setup_cycles": setup_request(pattern.setup),
     }
+
+
+def _clock_group_nets(ctx: ScanPipelineContext) -> list[list[int]]:
+    """[clocks] groups, each by its clocks' nets: every name must be a scan
+    clock."""
+    if not ctx.cfg.clock_groups:
+        return []
+    nets = {
+        port: int(net)
+        for port, net in zip(
+            ctx.clock_ports, manifest_clock_net_ids(ctx.manifest, error_cls=RunnerError)
+        )
+    }
+    groups: list[list[int]] = []
+    for group in ctx.cfg.clock_groups:
+        unknown = sorted(set(group) - set(nets))
+        if unknown:
+            raise RunnerError(
+                f"[clocks] groups: {unknown[0]} is not a scan clock "
+                f"({', '.join(sorted(nets)) or 'none'})"
+            )
+        groups.append([nets[port] for port in group])
+    return groups
 
 
 def _launch_known(ctx: ScanPipelineContext, row: _FaultRow) -> bool:
@@ -487,8 +518,9 @@ def _serialize(
 ) -> ScanPattern:
     """serialize_vector, with the X-masked expected bits marked don't-care, the
     held inputs, which the view ties rather than lists, at their values, the
-    preamble that settles the non-scan flops the scan clock settles, and, testing
-    the reset, the reset holds while the chains shift."""
+    test setup program, the preamble that settles the non-scan flops the scan
+    clock settles, and, testing the reset, the reset holds while the chains
+    shift."""
     pattern = serialize_vector(
         {**serialize_input, **ctx.input_holds},
         ctx.pseudo_port_map,
@@ -508,7 +540,9 @@ def _serialize(
     # candidate leaves it free); it stays inactive while the chains shift, where
     # a real scan flop's reset would wipe the load (scan.shift_controls).
     shift = dict(ctx.reset_pi_holds) if ctx.cfg.fault_model.include_reset_faults else {}
-    return replace(pattern, preamble_cycles=preamble, shift_pi_values=shift)
+    return replace(
+        pattern, preamble_cycles=preamble, shift_pi_values=shift, setup=ctx.setup
+    )
 
 
 def _seed_kwargs(
@@ -1743,7 +1777,9 @@ def run_progressive_scan_atpg(
         clock_nets_raw = scan_ctx.manifest.get("clock_nets", [])
         if isinstance(clock_nets_raw, list) and len(clock_nets_raw) > 1:
             cross_domain_ids = compute_cross_domain_net_ids(
-                scan_ctx.generic_json, scan_ctx.manifest
+                scan_ctx.generic_json,
+                scan_ctx.manifest,
+                groups=_clock_group_nets(scan_ctx),
             )
             if cross_domain_ids:
                 generic_rows: list[dict[str, Any]] = list(
@@ -1759,6 +1795,31 @@ def run_progressive_scan_atpg(
                     "cross-domain: tagged %d fault sites excluded_cross_domain",
                     n_xd,
                 )
+    # An IEEE 1500 WSP's own logic: its program and holds keep it still through
+    # the test, which leaves it to the WSP's own test (excluded_wsp) -- before
+    # JTAG's tags, which its programmed flops' faults would otherwise get.
+    wsp_keys: frozenset[str] = frozenset()
+    manifest_wrapper = scan_ctx.manifest.get("wrapper")
+    if isinstance(manifest_wrapper, dict) and manifest_wrapper.get("control") == "wsp":
+        _, wsp_module = _top_module(
+            json.loads(scan_ctx.generic_json.read_text(encoding="utf-8")),
+            str(scan_ctx.manifest.get("top", cfg.top)),
+        )
+        wsp_keys = wsp_sites(
+            [
+                dict(row)
+                for row in core.list_site_keys(
+                    str(scan_ctx.generic_json), generic_cell_map, unsupported, bb
+                )
+            ],
+            wsp_module,
+            json.loads(Path(generic_cell_map).read_text(encoding="utf-8")),
+            manifest_wrapper,
+        )
+        log.info(
+            "wsp: %d fault sites left to the IEEE 1500 WSP's own test (excluded_wsp)",
+            len(wsp_keys),
+        )
     # Non-scan cells: their own faults, and what only they see, are left to
     # JTAG (ff.py jtag) -- tagged before any SAT, which would otherwise call
     # them redundant -- and so are the stuck-ats that could release a flop the
@@ -1775,13 +1836,16 @@ def run_progressive_scan_atpg(
                 str(scan_ctx.generic_json), generic_cell_map, unsupported, bb
             )
         )
-        jtag_keys = jtag_sites(
-            site_rows,
-            generic_module,
-            json.loads(Path(generic_cell_map).read_text(encoding="utf-8")),
-            scan_ctx.nonscan,
-            tdo=cfg.jtag.tdo,
-            blackbox_instances=bb,
+        jtag_keys = (
+            jtag_sites(
+                site_rows,
+                generic_module,
+                json.loads(Path(generic_cell_map).read_text(encoding="utf-8")),
+                scan_ctx.nonscan,
+                tdo=cfg.jtag.tdo,
+                blackbox_instances=bb,
+            )
+            - wsp_keys
         )
         reset_keys = settled_sites(site_rows, scan_ctx.nonscan)
         log.info(
@@ -1827,6 +1891,7 @@ def run_progressive_scan_atpg(
             ),
             reset_sites=reset_keys,
             decoupled_faults=decoupled_faults,
+            wsp_sites=wsp_keys,
         )
         released = mark_blackbox_unresolved(conn, campaign_id, release)
     if scan_ctx.wrapper_scope is not None:

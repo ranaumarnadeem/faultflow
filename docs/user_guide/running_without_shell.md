@@ -288,13 +288,15 @@ python3 ff.py write-patterns --top <top> -c config.ofs --patterns patterns.json 
 
 Write the scan patterns `sim --scan --export-patterns` exported as STIL (IEEE 1450):
 the cycles a tester applies to the chip, one pattern after another. Each load also
-unloads the pattern before, the usual way, with half the shifts: the preamble is
-given once, first, and a last unload ends the patterns. With `--no-overlap` each
-pattern is applied alone, as FaultFlow grades it -- its preamble, load, launch,
-capture and unload. Nothing an unload compares depends on what shifts in at the
-same time or on the inputs a load holds, the holds keep every flop a preamble
-settles settled, and each capture's pulse arms the decompressor's reseed for the
-next load, so both give the same results; the test suite checks both on the cells.
+unloads the pattern before, the usual way, with half the shifts: the test setup
+program (`[scan] test_setup`) and then the preamble are given once, first, and a last
+unload ends the patterns. With `--no-overlap` each pattern is applied alone, as
+FaultFlow grades it -- its test setup program, preamble, load, launch, capture and
+unload. Nothing an unload compares depends on what shifts in at the same time or on
+the inputs a load holds, what the setup program loads holds through every pattern,
+the holds keep every flop a preamble settles settled, and each capture's pulse arms
+the decompressor's reseed for the next load, so both give the same results; the test
+suite checks both on the cells.
 The chip is the scanned netlist, or with scan compression or compaction the one
 `scan-compress` or `scan-compact` wrote (with both, the compacted one).
 The Tcl shell's `write_patterns -patterns PATH -o PATH [-no_overlap]` does the same.
@@ -329,6 +331,9 @@ What the STIL holds:
   An unload compares the expected bits, X where a flop captured an unknown value or
   the decompressor's bits come out of a shorter chain. The preamble is a Loop, once
   first, or before each pattern's load with `--no-overlap`.
+- With a test setup program, the `test_setup` macro (MacroDefs): a vector per cycle,
+  each setting every signal, the clocks it pulses `P` and the others `0`, nothing
+  compared. It is called first, or before each pattern with `--no-overlap`.
 
 These are exactly the cycles the test suite replays on the chip's sky130 cell models,
 and an independent STIL parser, Semi-ATE-STIL, reads every file it writes.
@@ -379,7 +384,11 @@ Print scan-insertion status.
 python3 ff.py scan-check --top <top> -c config.ofs [options]
 ```
 
-Validate the inserted scan chains (structural and normal-mode checks). It also fails
+Validate the inserted scan chains (structural and normal-mode checks). Each scan flop's
+scan input must be the flop before's output, or its chain's scan input, and its scan
+enable the scan enable: directly, or through gates the scan test's held inputs
+(`[scan] hold`) and the non-scan flops it ties keep passing the signal on -- a chain-head
+mux a held select steers, an OR a held 0 keeps open -- but never inverted. It also fails
 on a scan flop whose asynchronous clear or preset isn't held inactive while the chains
 shift -- a scanned reset synchronizer's output, say: a real scan flop's clear and preset
 act during shift, which FaultFlow's simulation doesn't model. The error names each flop
@@ -439,6 +448,39 @@ detected or not.
 | `--force` | Grade again when an identical grade (program, netlist, holds) is recorded |
 | `--threads N` | Grading threads (default: `[simulation] sim_threads`) |
 | `--export FILE` | Write the TCK program played |
+
+## `wsp`
+
+```bash
+python3 ff.py wsp --top <top> -c config.ofs [--force] [--threads N]
+```
+
+Grade the faults a scan test of a block wrapped with an IEEE 1500 WSP (`[wrap]
+control = wsp`) leaves to the WSP (`excluded_wsp`) with the WSP's integrity program,
+compared at `wso`, at the wrapped outputs and at the wrapper chains' scan-outs. Needs a
+completed scan test of the block in the current `[testmode] mode` (`sim --scan`,
+`intest` or `extest`); stuck-at only; a block's WSP, not a SoC's chain of them.
+
+The program resets the WSP, shifts a pattern through the WIR, then loads each of the
+eight instruction codes in turn and shifts and captures the data register it selects
+(WBY, or the boundary register in a serial instruction, the input cells capturing the
+ports the program drives), and checks that an update without `selectwir` changes
+nothing. What the WSP's behavioural model can't know -- the core's outputs, which the
+program never clocks -- is no care. Every input but the WSP's and the wrapped data
+inputs is 0.
+
+Before grading, the netlist's own outputs must be the model's at every care bit, from
+all-0 and all-1 flop states alike; otherwise the run is refused and writes nothing. A
+fault is credited when it changes a care bit from both initial states; one only one of
+them shows is counted `init_dependent` and not credited. The result is written to
+`wsp_report.json` in the intermediate directory, kept beside the scan campaign, and
+reported as the coverage report's `wsp` block: what the program detected, and with the
+scan's credit, the combined coverage over the scan's faults and the WSP's.
+
+| Option | Meaning |
+|---|---|
+| `--force` | Grade again when an identical grade (program, netlist) is recorded |
+| `--threads N` | Grading threads (default: `[simulation] sim_threads`) |
 
 ## `rule_check`
 
@@ -556,6 +598,7 @@ side.
 | Scan status | `status -scan` | `scan-status` / `status --scan` |
 | Regenerate techmap | `write_netlist -scan -techmap` | `scan-techmap` |
 | JTAG network-integrity grade | `run_jtag` | `jtag` |
+| WSP integrity grade | `run_wsp` | `wsp` |
 | Status | `status` | `status` |
 | INTEST | `set_testmode intest` + scan flow + `run_atpg -scan` | `intest` |
 | EXTEST | `set_testmode extest` + scan flow + `run_atpg -scan` | `extest` |

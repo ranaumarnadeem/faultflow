@@ -11,6 +11,11 @@ inputs first, then outputs -- which is their place on the wrapper ring:
 The cells' flops run on the wrapper clock: the design's one clock, or the port
 ``clock`` names (a block without flops gets it as a new input). The module records
 the wrapper in its attributes -- control, mode pins and clock -- for scan insertion.
+
+With ``control = "wsp"`` the mode is an instruction an IEEE 1500 wrapper serial port
+shifts in (:mod:`faultflow.wrap.wsp`) in place of the mode pins: the WSP's ports, its
+instruction and bypass registers and their decode join the cells, which read the
+decode's four nets and run on WRCK.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from typing import Any, Mapping
 from faultflow.wrap.cell import INPUT, OUTPUT, CellNets, add_cell
 from faultflow.wrap.classify import Decision, classify, clock_ports
 from faultflow.wrap.errors import WrapError
+from faultflow.wrap.wsp import WSP_RECORD_ATTR, WspPorts, add_wsp, wsp_attribute
 
 CONTROL_ATTR = "faultflow_wrapper_control"
 INTEST_ATTR = "faultflow_wrapper_intest"
@@ -31,13 +37,17 @@ CLOCK_ATTR = "faultflow_wrapper_clock"
 
 @dataclass(frozen=True)
 class WrapOptions:
-    """The wrapper clock port ("": the design's one clock), the mode pins, and the
-    port or "port[bit]" globs left unwrapped."""
+    """The wrapper clock port ("": the design's one clock), the mode pins, the port
+    or "port[bit]" globs left unwrapped, and how the mode is set: "pins", the mode
+    pins, or "wsp", an IEEE 1500 WSP's instruction (its ports ``wsp``; the wrapper
+    then runs on WRCK)."""
 
     clock: str = ""
     intest_pin: str = "wbr_intest"
     extest_pin: str = "wbr_extest"
     exclude: tuple[str, ...] = ()
+    control: str = "pins"
+    wsp: WspPorts = WspPorts()
 
 
 @dataclass(frozen=True)
@@ -124,12 +134,28 @@ def wrap_block(
     cells: dict[str, Any] = module.setdefault("cells", {})
     netnames: dict[str, Any] = module.setdefault("netnames", {})
     decisions = classify(module, cell_map, options.exclude)
-    if options.intest_pin == options.extest_pin:
-        raise WrapError("the INTEST and EXTEST mode pins need two names")
-    for pin in (options.intest_pin, options.extest_pin):
-        if pin in ports:
-            raise WrapError(f"the mode pin {pin} is already a port")
-    clock, add_clock = _clock(ports, decisions, options.clock)
+    if options.control not in ("pins", "wsp"):
+        raise WrapError(f"the wrapper's control is pins or wsp, not {options.control}")
+    wsp = options.control == "wsp"
+    if wsp:
+        if options.clock:
+            raise WrapError(
+                "with control = wsp the wrapper runs on WRCK, not "
+                f"{options.clock} ([wrap] clock)"
+            )
+        for pin in (*options.wsp.inputs(), options.wsp.wso):
+            if pin in ports:
+                raise WrapError(f"the WSP's port {pin} is already a port")
+        if len(set((*options.wsp.inputs(), options.wsp.wso))) != 8:
+            raise WrapError("the WSP's eight ports need eight names")
+        clock, add_clock = options.wsp.wrck, False
+    else:
+        if options.intest_pin == options.extest_pin:
+            raise WrapError("the INTEST and EXTEST mode pins need two names")
+        for pin in (options.intest_pin, options.extest_pin):
+            if pin in ports:
+                raise WrapError(f"the mode pin {pin} is already a port")
+        clock, add_clock = _clock(ports, decisions, options.clock)
     next_id = _next_id(module)
 
     def name_net(name: str, bits: list[int | str]) -> None:
@@ -149,22 +175,35 @@ def wrap_block(
         ports[name] = {"direction": "input", "bits": [bit]}
         return bit
 
-    intest = add_input(options.intest_pin)
-    extest = add_input(options.extest_pin)
-    if add_clock:
-        clock_net = add_input(clock)
-    else:
-        found = next(d.bit.net for d in decisions if d.bit.label == clock)
-        if not isinstance(found, int):
-            raise WrapError(f"the wrapper clock {clock} has no net")
-        clock_net = found
+    def add_output(name: str, bit: int) -> None:
+        ports[name] = {"direction": "output", "bits": [bit]}
+
     original = list(cells)
+    # The nets each side's cells read: (hold, safe).
+    if wsp:
+        found_wsp = add_wsp(cells, add_input, add_output, net, options.wsp)
+        controls = {
+            INPUT: (found_wsp.in_hold, found_wsp.in_safe),
+            OUTPUT: (found_wsp.out_hold, found_wsp.out_safe),
+        }
+        clock_net = found_wsp.wrck
+    else:
+        intest = add_input(options.intest_pin)
+        extest = add_input(options.extest_pin)
+        controls = {INPUT: (intest, extest), OUTPUT: (extest, intest)}
+        if add_clock:
+            clock_net = add_input(clock)
+        else:
+            found = next(d.bit.net for d in decisions if d.bit.label == clock)
+            if not isinstance(found, int):
+                raise WrapError(f"the wrapper clock {clock} has no net")
+            clock_net = found
     outputs = [p for p in ports.values() if p.get("direction") == "output"]
     wrapped_cells: list[WrappedCell] = []
 
     def add(side: str, label: str, cfi: int | str, out: int) -> None:
         flat = _flat(label)
-        hold, safe = (intest, extest) if side == INPUT else (extest, intest)
+        hold, safe = controls[side]
         nets = CellNets(
             cfi=cfi,
             out=out,
@@ -205,14 +244,24 @@ def wrap_block(
         name_net(name, list(ports[name]["bits"]))
     if not wrapped_cells:
         raise WrapError("no port bit to wrap")
-    module.setdefault("attributes", {}).update(
-        {
-            CONTROL_ATTR: "pins",
-            INTEST_ATTR: options.intest_pin,
-            EXTEST_ATTR: options.extest_pin,
-            CLOCK_ATTR: clock,
-        }
-    )
+    attributes = module.setdefault("attributes", {})
+    if wsp:
+        attributes.update(
+            {
+                CONTROL_ATTR: "wsp",
+                CLOCK_ATTR: clock,
+                WSP_RECORD_ATTR: wsp_attribute(options.wsp, found_wsp),
+            }
+        )
+    else:
+        attributes.update(
+            {
+                CONTROL_ATTR: "pins",
+                INTEST_ATTR: options.intest_pin,
+                EXTEST_ATTR: options.extest_pin,
+                CLOCK_ATTR: clock,
+            }
+        )
     return WrapResult(wrapped, top, decisions, wrapped_cells, clock)
 
 

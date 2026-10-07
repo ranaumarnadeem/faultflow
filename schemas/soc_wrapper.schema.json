@@ -2,18 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://faultflow.local/schemas/soc_wrapper.schema.json",
   "title": "faultflow SoC wrapper record (a composed SoC's scan manifest \"wrapper\")",
-  "description": "Every block's IEEE 1500 wrapper in a SoC composed from wrapped blocks (faultflow.project.soc_wrapper): each block's mode pins and the SoC inputs that set them, per mode the SoC inputs it holds, per net on a mode pin's path the value INTEST holds it at, and every boundary cell under its name and nets in the SoC, with its block.",
+  "description": "Every block's IEEE 1500 wrapper in a SoC composed from wrapped blocks (faultflow.project.soc_wrapper): each block's mode pins and the SoC inputs that set them, per mode the SoC inputs it holds -- or, for blocks an IEEE 1500 WSP controls, the WSP they share on the SoC -- per net that sets the cells' mode the value INTEST holds it at, and every boundary cell under its name and nets in the SoC, with its block.",
   "type": "object",
-  "required": ["version", "control", "blocks", "mode_nets", "holds", "cells"],
+  "required": ["version", "control", "blocks", "mode_nets", "cells"],
   "additionalProperties": false,
   "properties": {
     "version": {"const": "faultflow_soc_wrapper_v1"},
-    "control": {"enum": ["pins"]},
+    "control": {"enum": ["pins", "wsp"]},
     "blocks": {
       "type": "array",
-      "minItems": 1,
-      "items": {"$ref": "#/$defs/block"}
+      "minItems": 1
     },
+    "wsp": {"$ref": "#/$defs/wsp"},
     "mode_nets": {
       "type": "object",
       "propertyNames": {"pattern": "^[0-9]+$"},
@@ -34,6 +34,17 @@
       "minItems": 1,
       "items": {"$ref": "#/$defs/cell"}
     }
+  },
+  "if": {"properties": {"control": {"const": "wsp"}}},
+  "then": {
+    "required": ["wsp"],
+    "not": {"required": ["holds"]},
+    "properties": {"blocks": {"items": {"$ref": "#/$defs/wsp_block"}}}
+  },
+  "else": {
+    "required": ["holds"],
+    "not": {"required": ["wsp"]},
+    "properties": {"blocks": {"items": {"$ref": "#/$defs/block"}}}
   },
   "$defs": {
     "pin": {
@@ -60,6 +71,64 @@
     "held": {
       "type": "object",
       "additionalProperties": {"enum": [0, 1]}
+    },
+    "wsp_block": {
+      "type": "object",
+      "required": ["block", "instance"],
+      "additionalProperties": false,
+      "properties": {
+        "block": {"type": "string", "minLength": 1},
+        "instance": {"type": "string", "minLength": 1}
+      }
+    },
+    "wsp_pin": {
+      "description": "The SoC input behind a WSP input of every block, and whether the way there inverts it.",
+      "type": "object",
+      "required": ["port", "inverted"],
+      "additionalProperties": false,
+      "properties": {
+        "port": {"type": "string", "minLength": 1},
+        "inverted": {"type": "boolean"}
+      }
+    },
+    "wsp": {
+      "description": "The blocks' WSPs as the SoC drives them: the SoC input behind each WSP input, the scan clock that is WRCK, the SoC output WSO reaches, the blocks' WIRs from WSI to WSO (by instance), the nets and glue cells on the way from the SoC's inputs to the WSPs, and the blocks' serial nets, 0 in every scan test.",
+      "type": "object",
+      "required": [
+        "pins",
+        "wrck",
+        "wso",
+        "chain",
+        "path_nets",
+        "path_cells",
+        "serial_nets"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "pins": {
+          "type": "object",
+          "required": ["wrstn", "selectwir", "shiftwr", "capturewr", "updatewr", "wsi"],
+          "additionalProperties": false,
+          "properties": {
+            "wrstn": {"$ref": "#/$defs/wsp_pin"},
+            "selectwir": {"$ref": "#/$defs/wsp_pin"},
+            "shiftwr": {"$ref": "#/$defs/wsp_pin"},
+            "capturewr": {"$ref": "#/$defs/wsp_pin"},
+            "updatewr": {"$ref": "#/$defs/wsp_pin"},
+            "wsi": {"$ref": "#/$defs/wsp_pin"}
+          }
+        },
+        "wrck": {"type": "string", "minLength": 1},
+        "wso": {"type": "string", "minLength": 1},
+        "chain": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "path_nets": {"type": "array", "items": {"type": "integer"}},
+        "path_cells": {"type": "array", "items": {"type": "string"}},
+        "serial_nets": {"type": "array", "items": {"type": "integer"}}
+      }
     },
     "cell": {
       "type": "object",

@@ -6,6 +6,7 @@ from typing import Any
 
 from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX
 from faultflow.scan.protocol_constants import load_sequence, unload_sequence
+from faultflow.scan.setup import SetupCycle
 
 
 def _with_clock(values: dict[str, bool], clock: str, level: bool) -> dict[str, bool]:
@@ -185,6 +186,9 @@ class ScanPattern:
     # other chains shift as many bits, and nothing of theirs is compared. None:
     # the chip's longest chain.
     shift_length: int | None = None
+    # The test setup program ([scan] test_setup, faultflow.scan.setup), applied
+    # before everything else: what puts the chip in its test mode. Empty: none.
+    setup: tuple[SetupCycle, ...] = ()
 
 
 def _chain_lengths(manifest: dict[str, Any]) -> dict[int, int]:

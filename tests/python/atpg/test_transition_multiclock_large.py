@@ -141,6 +141,16 @@ def test_large_design_only_net16_cross_domain() -> None:
     assert cross == {16}, f"expected only {{16}} as cross-domain; got {sorted(cross)}"
 
 
+def test_clocks_pulsed_together_are_one_domain() -> None:
+    """[clocks] groups: clk_a and clk_b pulsed together, at speed, are one domain,
+    so net 16, launched from clk_a's flops and captured by clk_b's, is testable."""
+    from faultflow.scan.domain_reach import compute_cross_domain_net_ids
+
+    assert compute_cross_domain_net_ids(STITCHED, _MANIFEST, groups=[[2, 3]]) == set()
+    # A group naming a clock the design hasn't keeps the rest as they are.
+    assert compute_cross_domain_net_ids(STITCHED, _MANIFEST, groups=[[2, 9]]) == {16}
+
+
 # ---------------------------------------------------------------------------
 # 6B-V05 — per-domain C++ staggered LOC simulation
 # ---------------------------------------------------------------------------

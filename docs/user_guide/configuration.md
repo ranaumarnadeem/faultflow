@@ -162,9 +162,10 @@ There is no silent-skip option.
 | `scan_out` | `scan_out` | Scan output port base name |
 | `scan_enable` | `scan_en` | Scan enable port name |
 | `run_techmap` | `true` | Run the Sky130 scan-cell techmap after stitching |
-| `nonscan_cells` | (none) | Instance-name globs, e.g. `u_tap__*, u_sib_*`: flip-flops left out of scan on purpose, like a JTAG TAP and its IJTAG network that `ff.py jtag` tests through TCK. Each must hold still for the whole scan test: either a `hold` input keeps its clear or preset active, and the scan view ties its output at the value that forces, or its clock is held and nothing free can reset it, and its output is unknown, masked like an unknown blackbox output, or it *settles*: a scan clock clocks it, the holds keep its clear and preset inactive, and its D traces to holds, constants and other settled flops (a reset synchronizer with `rst_n` held inactive). A settled flop is tied at the value it settles to, every pattern starts with the pulses that settle it (`preamble_cycles`), and its own faults are `excluded_reset`. Anything else is an error. The other non-scan flops' faults, and those only they see, are `excluded_jtag`; a glob selects settled flops or others, not both |
+| `nonscan_cells` | (none) | Instance-name globs, e.g. `u_tap__*, u_sib_*`: flip-flops left out of scan on purpose, like a JTAG TAP and its IJTAG network that `ff.py jtag` tests through TCK. Each must hold still for the whole scan test: either a `hold` input keeps its clear or preset active, and the scan view ties its output at the value that forces, or the `test_setup` program loads it and it holds that value through the test (its clock held, its enable held off, or its D tracing back to that value, its own output through a mux a held input selects, say: a *programmed* flop, tied at that value), or its clock is held and nothing free can reset it, and its output is unknown, masked like an unknown blackbox output, or it *settles*: a scan clock clocks it, the holds keep its clear and preset inactive, and its D traces to holds, constants and other settled flops (a reset synchronizer with `rst_n` held inactive). A settled flop is tied at the value it settles to, every pattern starts with the pulses that settle it (`preamble_cycles`), and its own faults are `excluded_reset`. Anything else is an error. The other non-scan flops' faults, and those only they see, are `excluded_jtag`; a glob selects settled flops or others, not both |
 | `hold` | (none) | `input:0\|1` list, e.g. `trst_n:0, tck:0`: inputs held at that value in every scan pattern, e.g. to keep a non-scan TAP in reset. Not a scan port or scan clock, and not a value that clears or presets scan flops. A fault only the held values block is `hold_unresolved` |
-| `shift_controls` | `fail` | What `scan-check` does with a scan flop whose asynchronous clear or preset isn't held inactive while the chains shift: fail (`fail`), or pass with a warning (`warn`), for resets you have checked yourself. On a real chip a scan flop's clear and preset act during shift too, but FaultFlow's simulation turns them off, so that flop's patterns wouldn't unload what FaultFlow expects. Held inactive means traced through buffers, inverters, gates a held input sets, muxes a held select steers and any other cell whose held inputs fix its output, to constants, held inputs and settled or forced `nonscan_cells` flops. The held inputs are scan enable (at 1), `hold`, and any input that reaches a scan flop's clear or preset through buffers and inverters alone, which the scan test holds inactive by itself (`rst_n`, or `rst` through an inverter). A scanned reset synchronizer, or a reset from an input the patterns set, isn't held: list the synchronizer's flops in `nonscan_cells`, hold the input, or gate the reset in the RTL with scan enable or a held test-mode input |
+| `test_setup` | (none) | A test setup program (JSON, see below): the cycles a tester applies before every scan pattern to put the chip in its test mode, a test-mode register loaded through ports of its own, say. Each cycle sets every input (0 if it doesn't name it) and may pulse scan clocks; FaultFlow grades every pattern after it, fault-free, and the non-scan flops it leaves at a value they hold are *programmed* (`nonscan_cells`). A stuck-at that would change what it loads into one is `excluded_jtag`, like those that would let one go during the test. Not with scan compression or compaction |
+| `shift_controls` | `fail` | What `scan-check` does with a scan flop whose asynchronous clear or preset isn't held inactive while the chains shift: fail (`fail`), or pass with a warning (`warn`), for resets you have checked yourself. On a real chip a scan flop's clear and preset act during shift too, but FaultFlow's simulation turns them off, so that flop's patterns wouldn't unload what FaultFlow expects. Held inactive means traced through buffers, inverters, gates a held input sets, muxes a held select steers and any other cell whose held inputs fix its output, to constants, held inputs and settled, forced or programmed `nonscan_cells` flops. The held inputs are scan enable (at 1), `hold`, and any input that reaches a scan flop's clear or preset through buffers and inverters alone, which the scan test holds inactive by itself (`rst_n`, or `rst` through an inverter). A scanned reset synchronizer, or a reset from an input the patterns set, isn't held: list the synchronizer's flops in `nonscan_cells`, hold the input, or gate the reset in the RTL with scan enable or a held test-mode input |
 
 ## `[testpoint]`
 
@@ -187,6 +188,31 @@ one-shot from the CLI with `add-clock`).
 |---|---|---|
 | `ports` | comma list, e.g. `clk_a, clk_b` | Clock port names |
 | `off` | comma list of `port:0\|1` | Per-port inactive level |
+| `groups` | `;`-separated groups, e.g. `clk wrck; clk_b clk_c` | Scan clocks a tester pulses together, at speed: one domain to a transition test, so a path from one to another is tested rather than `excluded_cross_domain`. FaultFlow pulses every scan clock in each capture; a group says the chip's clocks really are synchronous. Each must be a scan clock |
+
+### The test setup program (`[scan] test_setup`)
+
+```json
+{"format": "faultflow_test_setup_v1",
+ "cycles": [{"inputs": {"cfg_rst_n": 0}},
+            {"inputs": {"cfg_rst_n": 1, "cfg_en": 1, "cfg_in": 1},
+             "pulse": ["clk"]}]}
+```
+
+Each cycle sets every input of the scanned chip to the value it gives it (an input is
+named as a pattern names it: the port, or `port[i]` for a bus bit), 0 if it doesn't
+name it -- `[scan] hold` doesn't apply in it. The scan clocks stay low but those in
+`pulse`, which rise at the cycle's end and fall again with the same inputs, so a
+falling-edge flop takes the cycle's inputs, as on a tester. A clock that isn't a scan
+clock (a TCK) is an input like any other, set as a level. The file is checked when the
+config loads.
+
+FaultFlow runs it before every pattern it grades, with no fault active and nothing
+compared, and finds what it leaves in each `nonscan_cells` flop from any power-up state
+(three-valued: a flop it doesn't set is unknown). A flop it leaves at a value that then
+holds through the test is tied there in the scan view. Every exported pattern carries
+the program (`setup`); `write-patterns` writes it as the `test_setup` macro, given
+before each pattern, or once, first, when the loads overlap the unloads.
 
 ## `[blackbox]`
 
@@ -213,10 +239,72 @@ The IEEE 1500 wrapper `ff.py wrap` puts on the design's ports (see
 | `intest_pin` | a port name | `wbr_intest` | The INTEST mode pin the wrapper adds |
 | `extest_pin` | a port name | `wbr_extest` | The EXTEST mode pin the wrapper adds |
 | `exclude` | comma list of globs on `port` or `port[bit]` | empty | Port bits left unwrapped; `*` and `?` are wildcards, brackets match themselves (`b[1]`, `b[*]`) |
-| `control` | `pins` | `pins` | How the mode is set: the two mode pins |
+| `control` | `pins`, `wsp` | `pins` | How the mode is set: the two mode pins, or an IEEE 1500 wrapper serial port's instruction (below) |
 
 `wbr_model` went with the abstract `$wbc_*` wrapper; a config that sets it is
 refused.
+
+### The wrapper serial port (`control = wsp`)
+
+In place of the mode pins, the wrapper gets an IEEE 1500 wrapper serial port --
+`wrck`, `wrstn`, `selectwir`, `shiftwr`, `capturewr`, `updatewr` and `wsi` in, `wso`
+out -- and, as sky130 cells:
+
+- the instruction register (WIR): a 3-bit shift stage on `wrck` (`wsi` into bit 0,
+  shifting while `selectwir` and `shiftwr` are 1), and an update stage, the
+  instruction in force, which takes it on the falling edge of `wrck` while
+  `selectwir` and `updatewr` are 1, and which `wrstn` at 0 clears to WS_BYPASS at once;
+- the bypass register (WBY): one bit from `wsi` to `wso`, shifting while `shiftwr` is
+  1 and capturing 0 while `capturewr` is 1, the WIR deselected; `wrstn` clears it;
+- the decode of the instruction onto the boundary cells' controls.
+
+| Instruction | Code | The wrapper |
+|---|---|---|
+| WS_BYPASS | 000 (after `wrstn`) | functional; `wso` is WBY |
+| WS_EXTEST | 001 | EXTEST, the boundary register shifted from `wsi` to `wso` |
+| WP_INTEST | 010 | INTEST, the wrapper chains shifted on their own ports with the scan enable |
+| WP_EXTEST | 011 | EXTEST, likewise |
+| WS_INTEST | 100 | INTEST, the boundary register shifted from `wsi` to `wso` |
+| any other | | as WS_BYPASS |
+
+In a serial instruction (WS_*) the wrapper chains join into one boundary register,
+`wsi` into the first chain's head and the last chain's tail out to `wso`, shifting
+while `shiftwr` is 1 with the WIR deselected; every boundary cell holds its value but
+while `capturewr` is 1 with the WIR deselected, when the cells the mode observes
+capture -- so they keep their values while the WIR shifts and updates. The boundary
+cells' flops run on `wrck`, so `[wrap] clock` stays empty. The instruction and bypass
+registers' flops stay out of the scan chains (reason `wsp`).
+
+`ff.py wrap`, `ff.py scan` and `scan-check` take such a wrapper; scan-check follows
+the chains as a parallel instruction (or WS_BYPASS) leaves them.
+
+#### Scan tests through the WIR
+
+A scan test of such a wrapper puts its instruction in the WIR first: every pattern
+starts with a test setup program -- WS_BYPASS for `sim --scan`, WP_INTEST for
+`intest`, WP_EXTEST for `extest` -- that clears the WSP (`wrstn` at 0), shifts the
+instruction in (bit 2 first, a `wrck` pulse each) and updates it (one more pulse).
+The test then holds `wrstn` at 1 and `selectwir`, `shiftwr`, `capturewr`,
+`updatewr` and `wsi` at 0, so the WIR and WBY keep their values while `wrck` pulses
+with the scan clock; a `[scan] hold` that disagrees is an error, and so is a
+`[scan] test_setup` of its own. The exported patterns carry the program (`setup`),
+the tester program applies it, and the STIL writes it as the `test_setup` macro.
+The boundary cells run on `wrck`, the core on its own clock: for transition faults
+on the paths between them, group the two (`[clocks] groups = clk wrck`).
+
+Such a test can't test the WSP itself, its instruction programmed and held: it
+leaves the WSP's faults -- its ports', its registers', its decode's and its serial
+path's -- to the WSP's own test (`excluded_wsp`). Where the decode's nets enter the
+boundary cells, the faults are the cells', owned by the mode that activates them,
+as the mode pins' are.
+
+In a project (`ff.py project`), blocks wrapped so share one WSP on the SoC: the glue
+brings each of `wrck`, `wrstn`, `selectwir`, `shiftwr`, `capturewr` and `updatewr`
+to every block from one SoC input, through buffers and inverters (`wrck` through
+buffers alone), and chains their `wsi` and `wso` through buffers, from a SoC input
+through every block to a SoC output. The SoC's program loads the mode's instruction
+into every block's WIR along that chain, and a block's retargeted INTEST patterns
+start with it. A project's blocks are wrapped all one way.
 
 ## `[autombist]`
 

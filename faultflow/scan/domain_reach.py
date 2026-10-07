@@ -8,6 +8,9 @@ both through purely combinational logic.
 If no single domain satisfies both, the fault is cross-domain and is tagged
 ``excluded_cross_domain`` per Policy 3 (tagged, never silently skipped).
 
+Clocks the tester pulses together, at speed, are one domain (``[clocks] groups``):
+an IEEE 1500 wrapper's WRCK with the core clock, say.
+
 Only applies when fault_model == "transition" and there are >= 2 clock domains.
 """
 
@@ -16,7 +19,7 @@ from __future__ import annotations
 import fnmatch
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 # Scan-control pins that are NOT data paths through the FF.
 _SCAN_CONTROL_PINS: frozenset[str] = frozenset({"CLK", "SE", "SCE", "SDI", "SI"})
@@ -61,6 +64,7 @@ def compute_cross_domain_net_ids(
     generic_json_path: Path | str,
     manifest: dict[str, Any],
     cell_map_path: Path | str | None = None,
+    groups: Sequence[Sequence[int]] = (),
 ) -> set[int]:
     """Return the set of yosys net IDs that are cross-domain for transition faults.
 
@@ -69,12 +73,21 @@ def compute_cross_domain_net_ids(
     - capture the fault (forward reachable to that domain's FF-D inputs or any PO).
 
     PI (primary input) nets are never cross-domain; they are directly controllable.
+    ``groups``: clock nets pulsed together, each group one domain.
     """
     clock_nets_raw = manifest.get("clock_nets", [])
-    if not isinstance(clock_nets_raw, list) or len(clock_nets_raw) <= 1:
+    if not isinstance(clock_nets_raw, list):
+        return set()
+    # Each clock's domain: the first clock of its group, or itself.
+    domain_of: dict[int, int] = {int(n): int(n) for n in clock_nets_raw}
+    for group in groups:
+        members = [int(n) for n in group if int(n) in domain_of]
+        for net in members:
+            domain_of[net] = members[0]
+    if len(set(domain_of.values())) <= 1:
         return set()  # Single domain — no cross-domain exclusions possible.
 
-    clock_nets: list[int] = [int(n) for n in clock_nets_raw]
+    clock_nets: list[int] = sorted(set(domain_of.values()))
 
     data: dict[str, Any] = json.loads(
         Path(generic_json_path).read_text(encoding="utf-8")
@@ -93,7 +106,7 @@ def compute_cross_domain_net_ids(
             inst = str(record.get("instance", ""))
             clk = record.get("clock_net")
             if inst and isinstance(clk, int):
-                ff_clock_net[inst] = int(clk)
+                ff_clock_net[inst] = domain_of.get(int(clk), int(clk))
 
     cells = module.get("cells", {})
     if not isinstance(cells, dict):
