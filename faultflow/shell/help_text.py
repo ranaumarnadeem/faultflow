@@ -137,7 +137,8 @@ COMMAND_HELP = {
     ),
     "wrap": CommandHelp(
         "Test Mode",
-        "wrap [-clock PORT] [-exclude GLOBS] [-intest PIN] [-extest PIN] [-o PATH]",
+        "wrap [-clock PORT] [-exclude GLOBS] [-intest PIN] [-extest PIN] "
+        "[-control pins|wsp] [-o PATH]",
         "Put an IEEE 1500 wrapper on the boundary ports",
         "Puts a boundary cell -- a mux, a gate and a flop, all sky130 cells -- on "
         "every data input and output bit of the current synthesized netlist, and "
@@ -145,11 +146,16 @@ COMMAND_HELP = {
         "wbr_extest). Clocks and asynchronous clears and presets stay unwrapped, "
         "and so do the ports -exclude names (globs on a port or port[bit], comma "
         "or space separated). The flops run on -clock (default: the design's one "
-        "clock). The wrapped netlist is saved alongside the source and becomes "
-        "the new active design; scan insertion state is cleared. add_scan then "
-        "gives the wrapper's flops chains of their own (wbr_si/wbr_so).",
+        "clock). With -control wsp an IEEE 1500 wrapper serial port sets the mode "
+        "instead of the mode pins: its ports (wrck, wrstn, selectwir, shiftwr, "
+        "capturewr, updatewr, wsi, wso), instruction and bypass registers, and the "
+        "flops run on wrck. The wrapped netlist is saved alongside the source and "
+        "becomes the new active design; scan insertion state is cleared. add_scan "
+        "then gives the wrapper's flops chains of their own (wbr_si/wbr_so).",
         "A synthesized Yosys JSON netlist.",
-        "wrap\n" "wrap -clock clk -exclude test_* -o /tmp/core_wrapped.json",
+        "wrap\n"
+        "wrap -clock clk -exclude test_* -o /tmp/core_wrapped.json\n"
+        "wrap -control wsp",
     ),
     "set_testmode": CommandHelp(
         "Test Mode",

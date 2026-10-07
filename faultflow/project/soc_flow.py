@@ -108,6 +108,12 @@ def build_soc(project: SocProject, base: FaultflowConfig, out: Path) -> SocBuild
                 f"block {block.name}'s scan manifest records no wrapper: scan it "
                 "with [wrap] enabled"
             )
+        if manifest["wrapper"].get("control") == "wsp":
+            raise ProjectError(
+                f"block {block.name}'s wrapper is set by an IEEE 1500 WSP ([wrap] "
+                "control = wsp), which a project doesn't chain yet: wrap it with "
+                "control = pins"
+            )
         for key in ("compression", "compaction"):
             if isinstance(manifest.get(key), dict) and manifest[key].get("enabled"):
                 raise ProjectError(f"block {block.name} has scan {key}")

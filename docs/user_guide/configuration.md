@@ -239,10 +239,45 @@ The IEEE 1500 wrapper `ff.py wrap` puts on the design's ports (see
 | `intest_pin` | a port name | `wbr_intest` | The INTEST mode pin the wrapper adds |
 | `extest_pin` | a port name | `wbr_extest` | The EXTEST mode pin the wrapper adds |
 | `exclude` | comma list of globs on `port` or `port[bit]` | empty | Port bits left unwrapped; `*` and `?` are wildcards, brackets match themselves (`b[1]`, `b[*]`) |
-| `control` | `pins` | `pins` | How the mode is set: the two mode pins |
+| `control` | `pins`, `wsp` | `pins` | How the mode is set: the two mode pins, or an IEEE 1500 wrapper serial port's instruction (below) |
 
 `wbr_model` went with the abstract `$wbc_*` wrapper; a config that sets it is
 refused.
+
+### The wrapper serial port (`control = wsp`)
+
+In place of the mode pins, the wrapper gets an IEEE 1500 wrapper serial port --
+`wrck`, `wrstn`, `selectwir`, `shiftwr`, `capturewr`, `updatewr` and `wsi` in, `wso`
+out -- and, as sky130 cells:
+
+- the instruction register (WIR): a 3-bit shift stage on `wrck` (`wsi` into bit 0,
+  shifting while `selectwir` and `shiftwr` are 1), and an update stage, the
+  instruction in force, which takes it on the falling edge of `wrck` while
+  `selectwir` and `updatewr` are 1, and which `wrstn` at 0 clears to WS_BYPASS at once;
+- the bypass register (WBY): one bit from `wsi` to `wso`, shifting while `shiftwr` is
+  1 and capturing 0 while `capturewr` is 1, the WIR deselected; `wrstn` clears it;
+- the decode of the instruction onto the boundary cells' controls.
+
+| Instruction | Code | The wrapper |
+|---|---|---|
+| WS_BYPASS | 000 (after `wrstn`) | functional; `wso` is WBY |
+| WS_EXTEST | 001 | EXTEST, the boundary register shifted from `wsi` to `wso` |
+| WP_INTEST | 010 | INTEST, the wrapper chains shifted on their own ports with the scan enable |
+| WP_EXTEST | 011 | EXTEST, likewise |
+| WS_INTEST | 100 | INTEST, the boundary register shifted from `wsi` to `wso` |
+| any other | | as WS_BYPASS |
+
+In a serial instruction (WS_*) the wrapper chains join into one boundary register,
+`wsi` into the first chain's head and the last chain's tail out to `wso`, shifting
+while `shiftwr` is 1 with the WIR deselected; every boundary cell holds its value but
+while `capturewr` is 1 with the WIR deselected, when the cells the mode observes
+capture -- so they keep their values while the WIR shifts and updates. The boundary
+cells' flops run on `wrck`, so `[wrap] clock` stays empty. The instruction and bypass
+registers' flops stay out of the scan chains (reason `wsp`).
+
+`ff.py wrap`, `ff.py scan` and `scan-check` take such a wrapper; scan-check follows
+the chains as a parallel instruction (or WS_BYPASS) leaves them. Scan tests of it, and
+projects of blocks wrapped so, aren't supported yet.
 
 ## `[autombist]`
 

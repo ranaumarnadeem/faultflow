@@ -412,7 +412,9 @@ class WrapConfig:
     scan. ``clock``: the port the wrapper's flops run on ("": the
     design's one clock; a block without flops gets it as a new input). The two mode
     pins it adds; ``exclude``, port or "port[bit]" globs it leaves unwrapped; and
-    ``control``, how the mode is set: "pins", the two mode pins."""
+    ``control``, how the mode is set: "pins", the two mode pins, or "wsp", an IEEE
+    1500 wrapper serial port's instruction (faultflow.wrap.wsp; the wrapper then
+    runs on its WRCK, so ``clock`` stays empty)."""
 
     enabled: bool = False
     clock: str = ""
@@ -687,8 +689,12 @@ def _parse_scan(parser: ConfigParser) -> ScanConfig:
 
 def _parse_wrap(parser: ConfigParser) -> WrapConfig:
     control = parser.get("wrap", "control", fallback="pins").strip().lower()
-    if control != "pins":
-        raise ConfigError(f"[wrap] control must be pins, got '{control}'")
+    if control not in ("pins", "wsp"):
+        raise ConfigError(f"[wrap] control must be pins or wsp, got '{control}'")
+    if control == "wsp" and parser.get("wrap", "clock", fallback="").strip():
+        raise ConfigError(
+            "[wrap] clock: with control = wsp the wrapper runs on the WSP's WRCK"
+        )
     intest = parser.get("wrap", "intest_pin", fallback="wbr_intest").strip()
     extest = parser.get("wrap", "extest_pin", fallback="wbr_extest").strip()
     if not intest or not extest or intest == extest:

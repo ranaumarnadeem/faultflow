@@ -560,14 +560,15 @@ proc {name} {{args}} {{
         return self.session.reject_tp()
 
     def _wrap(self, args: list[str]) -> Any:
-        """wrap [-clock PORT] [-exclude GLOBS] [-intest PIN] [-extest PIN] [-o PATH]:
-        the IEEE 1500 wrapper."""
+        """wrap [-clock PORT] [-exclude GLOBS] [-intest PIN] [-extest PIN]
+        [-control pins|wsp] [-o PATH]: the IEEE 1500 wrapper."""
         from pathlib import Path as _Path
 
         names = {
             "-clock": "clock",
             "-intest": "intest_pin",
             "-extest": "extest_pin",
+            "-control": "control",
         }
         kwargs: dict[str, object] = {}
         idx = 0

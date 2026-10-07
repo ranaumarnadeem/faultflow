@@ -64,7 +64,8 @@
               "existing_scan_cell",
               "unsupported_ff_shape",
               "multiple_clock_nets",
-              "nonscan_policy"
+              "nonscan_policy",
+              "wsp"
             ]
           }
         }

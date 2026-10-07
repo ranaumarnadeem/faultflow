@@ -605,9 +605,11 @@ class ProjectSession:
         intest_pin: str = "wbr_intest",
         extest_pin: str = "wbr_extest",
         output: Path | None = None,
+        control: str = "pins",
     ) -> OperationResult:
         """Put the IEEE 1500 wrapper on the boundary ports of the current netlist
-        (faultflow.wrap.block): three sky130 cells per port bit, two mode pins.
+        (faultflow.wrap.block): three sky130 cells per port bit, two mode pins --
+        or with ``control`` "wsp", an IEEE 1500 WSP (faultflow.wrap.wsp).
 
         Saves the wrapped JSON next to the source (or to ``output`` if given),
         then updates the session to point at the wrapped file so subsequent
@@ -629,16 +631,23 @@ class ProjectSession:
         cell_map = _json.loads(
             self.materialize_config().cell_lib.read_text(encoding="utf-8")
         )
-        options = WrapOptions(clock or "", intest_pin, extest_pin, exclude)
+        options = WrapOptions(
+            clock or "", intest_pin, extest_pin, exclude, control=control
+        )
         try:
             result = wrap_block(src, self.top, cell_map, options)
         except WrapError as exc:
             raise ShellError(str(exc), "CONFIG", "WRAP_FAILED") from exc
         inputs = sum(cell.side == "input" for cell in result.cells)
+        mode = (
+            "an IEEE 1500 WSP"
+            if control == "wsp"
+            else f"mode pins {intest_pin}/{extest_pin}"
+        )
         summary = (
             f"wrapped {len(result.cells)} port bits ({inputs} inputs, "
             f"{len(result.cells) - inputs} outputs) in IEEE 1500 boundary cells, "
-            f"mode pins {intest_pin}/{extest_pin}, clock {result.clock}"
+            f"{mode}, clock {result.clock}"
         )
         return self._adopt_wrapped(result.netlist, output, summary)
 

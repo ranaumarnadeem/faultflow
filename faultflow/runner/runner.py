@@ -1215,11 +1215,15 @@ class Runner:
             return format_decisions(result)
         wrapped_json, verilog, report = self._write_wrapped(result)
         inputs = sum(cell.side == "input" for cell in result.cells)
+        control = (
+            "control=wsp"
+            if self.cfg.wrap.control == "wsp"
+            else f"intest={self.cfg.wrap.intest_pin} extest={self.cfg.wrap.extest_pin}"
+        )
         return (
             f"wrap complete top={self.cfg.top} cells={len(result.cells)} "
             f"inputs={inputs} outputs={len(result.cells) - inputs} "
-            f"clock={result.clock} intest={self.cfg.wrap.intest_pin} "
-            f"extest={self.cfg.wrap.extest_pin} "
+            f"clock={result.clock} {control} "
             f"json={wrapped_json} verilog={verilog} report={report}"
         )
 
@@ -1230,6 +1234,7 @@ class Runner:
             intest_pin=self.cfg.wrap.intest_pin,
             extest_pin=self.cfg.wrap.extest_pin,
             exclude=self.cfg.wrap.exclude,
+            control=self.cfg.wrap.control,
         )
         try:
             return wrap_block(
@@ -1819,6 +1824,13 @@ class Runner:
             for flop in (nonscan.flops if nonscan is not None else ())
             if flop.value is not None
         }
+        wrapper = manifest.get("wrapper")
+        if isinstance(wrapper, dict) and wrapper.get("control") == "wsp":
+            # Every scan test runs with a parallel instruction (or WS_BYPASS) in
+            # the WIR: no serial path through the wrapper chains' heads, no WSP
+            # shift beside the scan enable.
+            nets = wrapper["wsp"]["nets"]
+            known.update({int(nets["serial"]): 0, int(nets["serial_shift"]): 0})
         return Transparent(
             cell_map=_load_json_object(resolve_scan_cell_map(self.cfg)),
             holds=dict(self._holds(manifest)),
@@ -2470,6 +2482,13 @@ class Runner:
             raise RunnerError(
                 "scan-check is stale for the current generic scanned JSON; "
                 "re-run scan-check"
+            )
+        wrapper = manifest.get("wrapper")
+        if isinstance(wrapper, dict) and wrapper.get("control") == "wsp":
+            raise RunnerError(
+                "a scan test of a wrapper an IEEE 1500 WSP controls ([wrap] control = "
+                "wsp) needs its instruction register programmed for the test, which "
+                "FaultFlow doesn't do yet: wrap with control = pins to test"
             )
         ineligible = manifest.get("ineligible_ffs", [])
         if isinstance(ineligible, list) and ineligible:
