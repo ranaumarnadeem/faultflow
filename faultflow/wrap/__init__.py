@@ -1,18 +1,15 @@
-"""IEEE 1500 wrapper insertion for faultflow.
+"""The IEEE 1500 wrapper FaultFlow puts on a block (ff.py wrap, [wrap] enabled).
 
-`wrap_ports` injects boundary cells onto a synthesized Yosys-JSON netlist's ports.
-Two models, selected by ``wbr_model``:
-
-* ``buffer`` (default) — transparent ``$wbc_in/out_faultflow`` cells (Stages 1-3).
-* ``scan`` — native shiftable ``$wbc_in/out_scan_faultflow`` cells (Stage 4): each
-  is a scan FF whose state q drives the core/interconnect through a mode-mux, with
-  the wrapper boundary register stitched into a dedicated scan chain (its own
-  ``scan_in``/``scan_out``, sharing the design ``CLK``/``SE``). This is what makes
-  the boundary stimulus/observe retargetable at the SoC level (Stage 5).
+Each wrapped port bit gets a boundary cell of three sky130 cells (cell): a mux
+choosing the functional value or the cell's flop, a gate making the core or the
+port safe, and the flop. Two mode pins set functional, INTEST and EXTEST
+(record.MODES). classify decides which ports are wrapped, block puts the cells
+on, record writes them into the scan manifest; sides, environment, graybox and
+report serve the INTEST and EXTEST scan tests.
 """
 
 from __future__ import annotations
 
-from faultflow.wrap.ports import WrapError, wrap_ports
+from faultflow.wrap.errors import WrapError
 
-__all__ = ["wrap_ports", "WrapError"]
+__all__ = ["WrapError"]

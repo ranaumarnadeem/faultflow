@@ -49,12 +49,10 @@ DEFAULT_SCAN_IN = "scan_in"
 DEFAULT_SCAN_OUT = "scan_out"
 DEFAULT_SCAN_ENABLE = "scan_en"
 
-# Attributes set by wrap_ports on WBR scan cells; used to collect the wrapper chain.
-WBR_SCAN_ATTR = "faultflow_wbr"
-WBR_CHAIN_ATTR = "faultflow_wbr_chain"
-WBR_BIT_ATTR = "wbr_bit"
-DEFAULT_WBR_SCAN_IN = "wbr_si"
-DEFAULT_WBR_SCAN_OUT = "wbr_so"
+# The scan ports of the IEEE 1500 wrapper's chains (faultflow.wrap): wbr_si and
+# wbr_so, or wbr_si_<k> and wbr_so_<k> with more than one.
+DEFAULT_WRAPPER_SCAN_IN = "wbr_si"
+DEFAULT_WRAPPER_SCAN_OUT = "wbr_so"
 
 INELIGIBLE_REASONS = {
     "has_async_reset",
@@ -66,7 +64,6 @@ INELIGIBLE_REASONS = {
     "no_output_pin",
     "unknown_cell_type",
     "existing_scan_cell",
-    "wbr_scan_cell",
     "unsupported_ff_shape",
     "multiple_clock_nets",
     "nonscan_policy",  # matched by [scan] nonscan_cells: left out of scan on purpose
@@ -101,6 +98,8 @@ class ScanChainRecord:
     scan_in_net: int
     scan_out_net: int
     cells: list[ScanCellRecord]
+    # "core", or "wrapper": an IEEE 1500 wrapper's boundary cells, in ring order.
+    kind: str = "core"
 
     @property
     def length(self) -> int:
@@ -119,7 +118,6 @@ class ScanPlan:
     chains: list[ScanChainRecord]
     cells: list[ScanCellRecord]
     ineligible_ffs: list[IneligibleFF]
-    wrapper_chains: list[ScanChainRecord]  # WBR scan cells; empty if wbr_model=buffer
 
 
 @dataclass(frozen=True)
@@ -155,21 +153,6 @@ class _EligibleFF:
     enable_net: int = -1
     enable_level: str = "HIGH"
     enable_const: bool | None = None
-
-
-@dataclass(frozen=True)
-class _WBRCell:
-    """One WBR scan boundary cell, ordered into a wrapper chain."""
-
-    instance: str
-    cell_type: str
-    chain_group: int  # faultflow_wbr_chain attribute
-    bit_pos: int  # wbr_bit attribute
-    clock_net: int
-    cti_net: int  # CTI — scan chain in
-    cto_net: int  # CTO — scan chain out (= q)
-    se_net: int
-    func_net: int  # FROM_SYS / FROM_CORE; -1 if absent
 
 
 def _truthy_attr(value: object) -> bool:
@@ -437,11 +420,6 @@ def _collect_ffs(
                 IneligibleFF(str(instance), cell_type, "existing_scan_cell")
             )
             continue
-        # WBR scan cells ($wbc_*_scan_faultflow) form the wrapper chain — skip here.
-        attrs = cell.get("attributes", {})
-        if isinstance(attrs, dict) and WBR_SCAN_ATTR in attrs:
-            ineligible.append(IneligibleFF(str(instance), cell_type, "wbr_scan_cell"))
-            continue
         match = _lookup_cell(cell_map, cell_type)
         if match is None:
             if _is_ffish(cell_type):
@@ -597,7 +575,22 @@ def _build_plan(
     scan_enable: str,
     scan_enable_bit: int,
     scan_in_bits: list[int],
+    allow_empty: bool = False,
 ) -> ScanPlan:
+    if not eligible and allow_empty:
+        _check_names_free(module, [scan_enable])
+        return ScanPlan(
+            top=top,
+            chain_count=0,
+            cell_count=0,
+            clock_nets=[],
+            scan_inputs=[],
+            scan_outputs=[],
+            scan_enable=scan_enable,
+            chains=[],
+            cells=[],
+            ineligible_ffs=ineligible,
+        )
     if not eligible:
         if ineligible:
             reasons = ", ".join(sorted({ff.reason for ff in ineligible}))
@@ -682,127 +675,156 @@ def _build_plan(
         chains=chains,
         cells=records,
         ineligible_ffs=ineligible,
-        wrapper_chains=[],  # populated by callers after _collect_wbr_cells
     )
 
 
-def _collect_wbr_cells(
-    module: dict[str, Any], cell_map: dict[str, Any]
-) -> list[_WBRCell]:
-    """Collect WBR scan cells (tagged faultflow_wbr), ordered by chain group + bit."""
-    cells = module.get("cells", {})
-    if not isinstance(cells, dict):
-        return []
-    result: list[_WBRCell] = []
-    for instance, cell in sorted(cells.items()):
-        if not isinstance(cell, dict):
-            continue
-        attrs = cell.get("attributes", {})
-        if not isinstance(attrs, dict) or WBR_SCAN_ATTR not in attrs:
-            continue
-        cell_type = str(cell.get("type", ""))
-        match = _lookup_cell(cell_map, cell_type)
-        if match is None:
-            raise ScanError(
-                f"{instance}: WBR scan cell {cell_type!r} not found in cell map"
-            )
-        _, entry = match
-        wbr = entry.get("wbr", {})
-        if not isinstance(wbr, dict) or not wbr.get("scan"):
-            raise ScanError(
-                f"{instance}: {cell_type!r} does not have wbr.scan=true in cell map"
-            )
-        conns = cell.get("connections", {})
-        if not isinstance(conns, dict):
-            raise ScanError(f"{instance}: WBR scan cell has no connections")
-        cti_pin = str(wbr.get("chain_in_pin", "CTI"))
-        cto_pin = str(wbr.get("chain_out_pin", "CTO"))
-        se_pin = str(wbr.get("scan_enable_pin", "SE"))
-        clk_pin = str(wbr.get("clock_pin", "CLK"))
-        func_pin = str(wbr.get("func_in_pin", "FROM_SYS"))
-        chain_group = int(str(attrs.get(WBR_CHAIN_ATTR, "0")))
-        bit_pos = int(str(attrs.get(WBR_BIT_ATTR, "0")))
-        func_bits = conns.get(func_pin)
-        func_net = _maybe_one_bit(func_bits) if func_bits is not None else None
-        result.append(
-            _WBRCell(
-                instance=str(instance),
-                cell_type=cell_type,
-                chain_group=chain_group,
-                bit_pos=bit_pos,
-                clock_net=_one_bit(conns.get(clk_pin), f"{instance}.{clk_pin}"),
-                cti_net=_one_bit(conns.get(cti_pin), f"{instance}.{cti_pin}"),
-                cto_net=_one_bit(conns.get(cto_pin), f"{instance}.{cto_pin}"),
-                se_net=_one_bit(conns.get(se_pin), f"{instance}.{se_pin}"),
-                func_net=func_net if func_net is not None else -1,
-            )
-        )
-    return sorted(result, key=lambda c: (c.chain_group, c.bit_pos))
+def _split_wrapper(
+    eligible: list[_EligibleFF],
+) -> tuple[list[_EligibleFF], list[_EligibleFF]]:
+    """The core flops, and the IEEE 1500 wrapper's (faultflow.wrap.cell), in ring
+    order."""
+    from faultflow.wrap.cell import INDEX_ATTR, ROLE_ATTR  # wrap imports scan
+
+    def attributes(ff: _EligibleFF) -> dict[str, Any]:
+        found = ff.cell.get("attributes", {})
+        return found if isinstance(found, dict) else {}
+
+    wrapper = [ff for ff in eligible if attributes(ff).get(ROLE_ATTR) == "ff"]
+    core = [ff for ff in eligible if attributes(ff).get(ROLE_ATTR) != "ff"]
+    wrapper.sort(key=lambda ff: int(str(attributes(ff)[INDEX_ATTR])))
+    return core, wrapper
 
 
-def _build_wrapper_chains(
+def wrapper_chain_count(
+    flops: int,
+    core_lengths: Sequence[int],
+    requested: int | None,
+    max_chain_length: int | None,
+) -> int:
+    """How many chains the wrapper's ``flops`` get: ``requested``, else as many as
+    keep each no longer than the longest core chain (with no core chain,
+    ``max_chain_length``; with neither, one)."""
+    if flops == 0:
+        return 0
+    if requested is not None:
+        if not 1 <= requested <= flops:
+            raise ScanError(f"wrapper_chains must be between 1 and {flops}")
+        return requested
+    limit = max(core_lengths, default=0) or max_chain_length or flops
+    return -(-flops // limit)
+
+
+def _with_wrapper(
+    plan: ScanPlan,
     module: dict[str, Any],
-    wbr_cells: list[_WBRCell],
-    wbr_scan_in_base: str = DEFAULT_WBR_SCAN_IN,
-    wbr_scan_out_base: str = DEFAULT_WBR_SCAN_OUT,
-) -> list[ScanChainRecord]:
-    """Build wrapper ScanChainRecords from ordered WBR cells.
-
-    The wrapper chain ports (wbr_si / wbr_so) are created by wrap_ports and must
-    already exist in the module — this function reads them, not creates them.
-    """
-    if not wbr_cells:
-        return []
-    groups: dict[int, list[_WBRCell]] = {}
-    for cell in wbr_cells:
-        groups.setdefault(cell.chain_group, []).append(cell)
-    ports = module.get("ports", {})
-    ports = ports if isinstance(ports, dict) else {}
-    num_groups = len(groups)
+    wrapper: list[_EligibleFF],
+    count: int,
+    scan_enable_bit: int,
+    first_bit: int,
+) -> ScanPlan:
+    """``plan`` with the wrapper's flops, in ring order, on ``count`` balanced chains
+    after the core's: scan ins ``first_bit`` on."""
+    if not wrapper:
+        return plan
+    inputs, outputs = scan_port_names(
+        count, DEFAULT_WRAPPER_SCAN_IN, DEFAULT_WRAPPER_SCAN_OUT
+    )
+    _check_names_free(module, [*inputs, *outputs])
     chains: list[ScanChainRecord] = []
-    for group_idx in sorted(groups):
-        group = sorted(groups[group_idx], key=lambda c: c.bit_pos)
-        si_name = (
-            wbr_scan_in_base if num_groups == 1 else f"{wbr_scan_in_base}_{group_idx}"
-        )
-        so_name = (
-            wbr_scan_out_base if num_groups == 1 else f"{wbr_scan_out_base}_{group_idx}"
-        )
-        si_port = ports.get(si_name)
-        si_net = (
-            _maybe_one_bit(si_port.get("bits")) if isinstance(si_port, dict) else None
-        )
-        if si_net is None:
-            raise ScanError(
-                f"wrapper scan-in port {si_name!r} not found in module; "
-                "run wrap_ports with wbr_model='scan' first"
-            )
-        records: list[ScanCellRecord] = []
-        for pos, cell in enumerate(group):
-            records.append(
+    cursor = 0
+    for k, length in enumerate(balanced_chain_lengths(len(wrapper), count)):
+        index = plan.chain_count + k
+        previous_q = first_bit + k
+        cells: list[ScanCellRecord] = []
+        for position, ff in enumerate(wrapper[cursor : cursor + length]):
+            cells.append(
                 ScanCellRecord(
-                    instance=cell.instance,
-                    original_type=cell.cell_type,
-                    chain_index=group_idx,
-                    chain_position=pos,
-                    clock_net=cell.clock_net,
-                    data_net=cell.func_net if cell.func_net >= 0 else 0,
-                    scan_in_net=cell.cti_net,
-                    scan_enable_net=cell.se_net,
-                    q_net=cell.cto_net,
+                    instance=ff.instance,
+                    original_type=ff.original_type,
+                    chain_index=index,
+                    chain_position=position,
+                    clock_net=ff.clock_net,
+                    data_net=ff.data_net,
+                    scan_in_net=previous_q,
+                    scan_enable_net=scan_enable_bit,
+                    q_net=ff.q_net,
                 )
             )
+            previous_q = ff.q_net
         chains.append(
             ScanChainRecord(
-                index=group_idx,
-                scan_in=si_name,
-                scan_out=so_name,
-                scan_in_net=si_net,
-                scan_out_net=group[-1].cto_net,
-                cells=records,
+                index=index,
+                scan_in=inputs[k],
+                scan_out=outputs[k],
+                scan_in_net=first_bit + k,
+                scan_out_net=previous_q,
+                cells=cells,
+                kind="wrapper",
             )
         )
-    return chains
+        cursor += length
+    added = [cell for chain in chains for cell in chain.cells]
+    return dataclasses.replace(
+        plan,
+        chain_count=plan.chain_count + count,
+        cell_count=plan.cell_count + len(added),
+        clock_nets=sorted(set(plan.clock_nets) | {cell.clock_net for cell in added}),
+        scan_inputs=[*plan.scan_inputs, *inputs],
+        scan_outputs=[*plan.scan_outputs, *outputs],
+        chains=[*plan.chains, *chains],
+        cells=[*plan.cells, *added],
+    )
+
+
+def _plan(
+    module: dict[str, Any],
+    cell_map: dict[str, Any],
+    top: str,
+    scan_chains: int,
+    max_chain_length: int | None,
+    scan_in_base: str,
+    scan_out_base: str,
+    scan_enable: str,
+    nonscan_cells: Sequence[str],
+    wrapper_chains: int | None,
+) -> tuple[ScanPlan, list[_EligibleFF], int, int]:
+    """The scan plan of ``module`` -- its core flops on the requested chains, an IEEE
+    1500 wrapper's on chains of their own -- every eligible flop, the scan enable's
+    net, and the first net id the plan leaves free."""
+    eligible, ineligible = _collect_ffs(module, cell_map, nonscan_cells)
+    core, wrapper = _split_wrapper(eligible)
+    chain_count = (
+        _chain_count_from_options(_domain_sizes(core), scan_chains, max_chain_length)
+        if core or not wrapper
+        else 0
+    )
+    next_id = _next_net_id(module)
+    scan_in_bits = [next_id + index for index in range(chain_count)]
+    scan_enable_bit = next_id + chain_count
+    plan = _build_plan(
+        top=top,
+        module=module,
+        eligible=core,
+        ineligible=ineligible,
+        scan_chains=scan_chains,
+        max_chain_length=max_chain_length,
+        scan_in_base=scan_in_base,
+        scan_out_base=scan_out_base,
+        scan_enable=scan_enable,
+        scan_enable_bit=scan_enable_bit,
+        scan_in_bits=scan_in_bits,
+        allow_empty=bool(wrapper),
+    )
+    count = wrapper_chain_count(
+        len(wrapper),
+        [chain.length for chain in plan.chains],
+        wrapper_chains,
+        max_chain_length,
+    )
+    plan = _with_wrapper(
+        plan, module, wrapper, count, scan_enable_bit, scan_enable_bit + 1
+    )
+    return plan, eligible, scan_enable_bit, scan_enable_bit + 1 + count
 
 
 def scan_clock_domains(
@@ -831,33 +853,25 @@ def plan_scan_json(
     scan_out_base: str = DEFAULT_SCAN_OUT,
     scan_enable: str = DEFAULT_SCAN_ENABLE,
     nonscan_cells: Sequence[str] = (),
+    *,
+    wrapper_chains: int | None = None,
 ) -> ScanPlan:
     data = _load_json(netlist_json)
     cell_map = _load_json(cell_map_json)
     top_name, module = _top_module(data, top)
-    eligible, ineligible = _collect_ffs(module, cell_map, nonscan_cells)
-    chain_count = _chain_count_from_options(
-        _domain_sizes(eligible), scan_chains, max_chain_length
+    plan, _, _, _ = _plan(
+        module,
+        cell_map,
+        top_name,
+        scan_chains,
+        max_chain_length,
+        scan_in_base,
+        scan_out_base,
+        scan_enable,
+        nonscan_cells,
+        wrapper_chains,
     )
-    next_id = _next_net_id(module)
-    scan_in_bits = [next_id + index for index in range(chain_count)]
-    scan_enable_bit = next_id + chain_count
-    plan = _build_plan(
-        top=top_name,
-        module=module,
-        eligible=eligible,
-        ineligible=ineligible,
-        scan_chains=scan_chains,
-        max_chain_length=max_chain_length,
-        scan_in_base=scan_in_base,
-        scan_out_base=scan_out_base,
-        scan_enable=scan_enable,
-        scan_enable_bit=scan_enable_bit,
-        scan_in_bits=scan_in_bits,
-    )
-    wbr_cells = _collect_wbr_cells(module, cell_map)
-    wrapper_chains = _build_wrapper_chains(module, wbr_cells)
-    return dataclasses.replace(plan, wrapper_chains=wrapper_chains)
+    return plan
 
 
 def _add_internal_buf1_cell(
@@ -965,38 +979,31 @@ def stitch_scan_json(
     scan_out_base: str = DEFAULT_SCAN_OUT,
     scan_enable: str = DEFAULT_SCAN_ENABLE,
     nonscan_cells: Sequence[str] = (),
+    *,
+    wrapper_chains: int | None = None,
 ) -> ScanStitchResult:
+    """``netlist_json`` scanned into ``output_json``: its core flops on the requested
+    chains; an IEEE 1500 wrapper's flops (faultflow.wrap) on chains of their own,
+    after them, in ring order -- ``wrapper_chains`` of them, else as many as keep
+    each no longer than the longest core chain."""
     data = _load_json(netlist_json)
     cell_map = _load_json(cell_map_json)
     top_name, module = _top_module(data, top)
     stitched = copy.deepcopy(data)
     _, stitched_module = _top_module(stitched, top_name)
 
-    eligible, ineligible = _collect_ffs(stitched_module, cell_map, nonscan_cells)
-    chain_count = _chain_count_from_options(
-        _domain_sizes(eligible), scan_chains, max_chain_length
+    plan, eligible, scan_enable_bit, free_id = _plan(
+        stitched_module,
+        cell_map,
+        top_name,
+        scan_chains,
+        max_chain_length,
+        scan_in_base,
+        scan_out_base,
+        scan_enable,
+        nonscan_cells,
+        wrapper_chains,
     )
-    next_id = _next_net_id(stitched_module)
-    scan_in_bits = [next_id + index for index in range(chain_count)]
-    scan_enable_bit = next_id + chain_count
-    plan = _build_plan(
-        top=top_name,
-        module=stitched_module,
-        eligible=eligible,
-        ineligible=ineligible,
-        scan_chains=scan_chains,
-        max_chain_length=max_chain_length,
-        scan_in_base=scan_in_base,
-        scan_out_base=scan_out_base,
-        scan_enable=scan_enable,
-        scan_enable_bit=scan_enable_bit,
-        scan_in_bits=scan_in_bits,
-    )
-    # Collect wrapper chain from WBR scan cells (already skipped by _collect_ffs).
-    # _collect_wbr_cells reads the pre-existing wbr_si/wbr_so ports from wrap_ports.
-    wbr_cells = _collect_wbr_cells(stitched_module, cell_map)
-    wrapper_chains = _build_wrapper_chains(stitched_module, wbr_cells)
-
     for chain in plan.chains:
         _add_port(stitched_module, chain.scan_in, "input", chain.scan_in_net)
     _add_port(stitched_module, plan.scan_enable, "input", scan_enable_bit)
@@ -1006,7 +1013,7 @@ def stitch_scan_json(
     # Running counter for enable-hold-mux nets (see _add_enable_hold_mux) --
     # NOT re-scanned per FF (_next_net_id is O(module size); this loop can
     # touch thousands of FFs on real designs).
-    mux_next_id = scan_enable_bit + 1
+    mux_next_id = free_id
     for record in plan.cells:
         ff = by_instance[record.instance]
         attrs = dict(ff.cell.get("attributes", {}))
@@ -1094,5 +1101,4 @@ def stitch_scan_json(
         chains=plan.chains,
         cells=plan.cells,
         ineligible_ffs=plan.ineligible_ffs,
-        wrapper_chains=wrapper_chains,
     )

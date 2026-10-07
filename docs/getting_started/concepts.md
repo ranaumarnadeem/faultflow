@@ -112,10 +112,14 @@ chains, check them, map them to Sky130 scan cells, and run scan ATPG.
 
 ## Test modes (IEEE 1500)
 
-For a core wrapped with an IEEE 1500 boundary, faultflow supports three wrapper test
-modes: **functional** (wrapper transparent), **intest** (test the core internals), and
-**extest** (test the interconnect around the core). These are selected in the
-[Tcl shell](../user_guide/tcl_shell.md) or via the `[testmode]` config section.
+faultflow puts an IEEE 1500 wrapper on a block's ports (`ff.py wrap`): a boundary
+cell of sky130 cells on each data port bit, and two mode pins. A scan test holds the
+mode pins in one of three modes: **functional** (wrapper transparent), **intest**
+(test the core, whatever drives the block unknown), and **extest** (test the
+boundary cells and the ports around the core, the core a blackbox). They are run by
+`ff.py intest` and `ff.py extest`, the [Tcl shell](../user_guide/tcl_shell.md)'s
+`set_testmode`, or the `[testmode]` config section. A SoC of wrapped blocks gets
+one chip coverage number from `ff.py project`.
 
 ## A few synthesis terms
 

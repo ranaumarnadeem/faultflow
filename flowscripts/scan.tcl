@@ -1,10 +1,11 @@
 # =============================================================================
 # flowscripts/scan.tcl
 #
-# Scan-insertion flow: synthesise a netlist, stitch generic scan chains,
-# validate the chain structure, and export both a generic and a techmap-bound
-# scanned netlist.  The session is checkpointed so that intest.tcl / core_atpg.tcl
-# can resume from the scan state without re-running insertion.
+# Scan-insertion flow: synthesise a netlist, put the IEEE 1500 wrapper on its
+# ports when asked (wrap 1), stitch generic scan chains, validate the chain
+# structure, and export both a generic and a techmap-bound scanned netlist.  The
+# session is checkpointed so that intest.tcl / extest.tcl can resume from the
+# scan state without re-running insertion.
 #
 # Usage (standalone):
 #   python ff.py shell -f flowscripts/scan.tcl
@@ -34,6 +35,8 @@ proc ff::log {msg} { puts "\[ff\] $msg" }
 #   scan_enable    — scan-enable port name         [scan_en]
 #   max_chain_len  — max FFs per chain; 0=unlimited [0]
 #   clock_off      — inactive clock level           [0]
+#   wrap           — put the IEEE 1500 wrapper on first (1), for INTEST and
+#                    EXTEST: its flops get chains of their own (wbr_si/wbr_so) [0]
 #
 # Side effects:
 #   Saves session to output/<top>/.faultflow/session.json.
@@ -47,6 +50,7 @@ proc ff::run_scan_insert {args} {
         scan_enable   "scan_en"
         max_chain_len 0
         clock_off     0
+        wrap          0
     }
     array set opt $args
     foreach req {top netlist lib_cells clock_port scan_chains} {
@@ -69,6 +73,19 @@ proc ff::run_scan_insert {args} {
     ff::log "auditing cell coverage..."
     check_cells
 
+    if {$opt(wrap)} {
+        # A boundary cell on every data port bit, two mode pins (wbr_intest,
+        # wbr_extest); clocks and asynchronous resets stay unwrapped.
+        ff::log "wrapping the ports (IEEE 1500)..."
+        wrap -clock $opt(clock_port)
+    }
+
+    # A chain length limit only when one is set (0: none)
+    set length_limit {}
+    if {$opt(max_chain_len) > 0} {
+        set length_limit [list -max_length $opt(max_chain_len)]
+    }
+
     # Dry-run: preview chain assignment without modifying the netlist
     ff::log "planning scan chains (dry-run)..."
     add_scan \
@@ -76,7 +93,7 @@ proc ff::run_scan_insert {args} {
         -SI         $opt(scan_in)       \
         -SO         $opt(scan_out)      \
         -SE         $opt(scan_enable)   \
-        -max_length $opt(max_chain_len) \
+        {*}$length_limit                \
         -dry_run
 
     # Real insertion: stitch scan FFs into chains
@@ -86,13 +103,13 @@ proc ff::run_scan_insert {args} {
         -SI         $opt(scan_in)       \
         -SO         $opt(scan_out)      \
         -SE         $opt(scan_enable)   \
-        -max_length $opt(max_chain_len)
+        {*}$length_limit
 
     # Structural validation + normal-mode equivalence check
     ff::log "validating scan structure..."
     check_scan
 
-    # Export generic (untechmapped) scanned JSON for ATPG / retarget
+    # Export generic (untechmapped) scanned JSON for ATPG
     ff::log "writing generic scanned netlist..."
     write_netlist -scan
 
@@ -103,7 +120,8 @@ proc ff::run_scan_insert {args} {
         ff::log "note: techmap write skipped — $techmap_err"
     }
 
-    # Checkpoint session so intest.tcl can resume without re-running scan
+    # Checkpoint session so intest.tcl / extest.tcl can resume without
+    # re-running scan
     save_session
 
     ff::log "scan insertion complete: $opt(scan_chains) chain(s) written"

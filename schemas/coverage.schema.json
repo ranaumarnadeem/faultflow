@@ -289,6 +289,49 @@
         "fault_coverage_percent": { "type": ["number", "null"] },
         "test_coverage_percent": { "type": ["number", "null"] }
       }
+    },
+    "wrapper": {
+      "description": "A wrapped block's -- or a SoC's -- test in a wrapper mode (faultflow.wrap.report), by part: its core, its boundary cells, its mode pins, and a SoC's glue. decoupled: left to the other mode (wbr_decoupled)",
+      "type": "object",
+      "required": ["mode", "cells", "parts"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["intest", "extest"] },
+        "cells": { "type": "integer", "minimum": 1 },
+        "parts": {
+          "type": "object",
+          "required": ["core", "boundary", "mode"],
+          "additionalProperties": false,
+          "properties": {
+            "core": { "$ref": "#/$defs/wrapper_part" },
+            "boundary": { "$ref": "#/$defs/wrapper_part" },
+            "mode": { "$ref": "#/$defs/wrapper_part" },
+            "glue": { "$ref": "#/$defs/wrapper_part" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "wrapper_part": {
+      "type": "object",
+      "required": [
+        "detected",
+        "denominator",
+        "decoupled",
+        "blackbox_unresolved",
+        "hold_unresolved",
+        "coverage_percent"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "detected": { "type": "integer", "minimum": 0 },
+        "denominator": { "type": "integer", "minimum": 0 },
+        "decoupled": { "type": "integer", "minimum": 0 },
+        "blackbox_unresolved": { "type": "integer", "minimum": 0 },
+        "hold_unresolved": { "type": "integer", "minimum": 0 },
+        "coverage_percent": { "type": ["number", "null"] }
+      }
     }
   }
 }

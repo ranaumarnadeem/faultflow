@@ -38,29 +38,6 @@ struct NormNode {
   std::map<std::string, int> output_pins;
   int level = 0;
   FFConfig ff_config;
-  // Stage 4 native shiftable WBR: this FF node is the scan-FF half of a wrapper
-  // cell. GraphCompiler lowers it into the FF (drives ff_config.output_net = CTO)
-  // PLUS a mode-mux node driving `wbr_drive_net` (TO_CORE for an input cell,
-  // TO_SYS for an output cell) from the FF state in INTEST/EXTEST.
-  bool wbr_scan = false;
-  int wbr_drive_net = -1;
-  bool wbr_is_input = false;
-};
-
-// IEEE 1500 wrapper boundary cell, in NormalizedGraph (YosysNetID) space.
-// `core_net` is the core-facing data net, `sys_net` the system/outside-facing
-// net. `is_input` marks a cell on a core INPUT port (the WBR_IN node drives
-// core_net) vs a core OUTPUT port (the WBR_OUT node drives sys_net). The driven
-// net is stable across all modes; see TestMode for the mode-dependent roles.
-struct NormWrapperCell {
-  YosysNetID core_net = 0;
-  YosysNetID sys_net = 0;
-  bool is_input = false;
-  // Stage 4 native shiftable WBR. `scan` marks the cell as a real boundary-scan
-  // cell (vs a transparent buffer); `cto_net` is the FF state / scan-chain output
-  // net (q), which the mode-mux drives the functional output from in INTEST/EXTEST.
-  bool scan = false;
-  YosysNetID cto_net = 0;
 };
 
 // Top-module attribute: space-separated Yosys ids of output bits no simulator
@@ -88,8 +65,6 @@ struct NormalizedGraph {
   // set of instance names blackboxed by name (boundary test interface).
   std::set<int> pseudo_inputs;
   std::set<std::string> blackbox_instances;
-  // IEEE 1500 wrapper boundary cells, in declaration order (serial WBR order).
-  std::vector<NormWrapperCell> wrapper_cells;
 
   static NormalizedGraph from_parsed(
       const ParsedGraph& parsed, const CellMap& cell_map,

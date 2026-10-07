@@ -8,10 +8,11 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 from faultflow.atpg import (
     PatternError,
@@ -29,11 +30,11 @@ from faultflow.config import (
     benchmark_synth_test,
 )
 from faultflow.db import (
-    CAMPAIGN_TYPE_COMB,
     CAMPAIGN_TYPE_SCAN,
     CAMPAIGN_TYPE_SCAN_EXTEST,
     SchemaError,
     abort_pending_candidates,
+    campaign_type_of,
     connect,
     ensure_campaign,
     init_schema,
@@ -76,7 +77,14 @@ from faultflow.scan.shift_controls import (
     shift_control_violations,
 )
 from faultflow.scan.x_mask import XMask, launch_mode_key, mask_scan_view
+from faultflow.scan.yosys import json_to_verilog
 from faultflow.verify import IverilogVerifier, VerificationError
+from faultflow.wrap.block import WrapOptions, WrapResult, format_decisions, wrap_block
+from faultflow.wrap.environment import ENVIRONMENT, intest_harness, with_environment
+from faultflow.wrap.graybox import chip_patterns, extest_graybox, with_core
+from faultflow.wrap.sides import EXTEST, FAULT_TYPES, owner, sides_of
+from faultflow.wrap.errors import WrapError
+from faultflow.wrap.record import mode_holds, wrapper_record
 
 log = logging.getLogger(__name__)
 
@@ -337,16 +345,23 @@ class Runner:
             conn.close()
 
     def _campaign_type(self, scan: bool = False) -> str:
-        return CAMPAIGN_TYPE_SCAN if scan else CAMPAIGN_TYPE_COMB
+        return campaign_type_of(scan, str(self.cfg.test_mode))
 
     def _ensure_campaign(
-        self, conn: sqlite3.Connection, fp: dict[str, object], *, scan: bool = False
+        self,
+        conn: sqlite3.Connection,
+        fp: dict[str, object],
+        *,
+        scan: bool = False,
+        campaign_type: str | None = None,
     ) -> int:
         payload = dict(fp)
         if scan:
             payload.setdefault("manifest_hash", "")
             payload.setdefault("atpg_view_schema_ver", "")
-        return ensure_campaign(conn, self._campaign_type(scan), payload)
+        return ensure_campaign(
+            conn, campaign_type or self._campaign_type(scan), payload
+        )
 
     def _config_fingerprint_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -366,10 +381,6 @@ class Runner:
             # IEEE 1500 test mode reconfigures the observable/control point sets,
             # so INTEST and EXTEST are distinct runs from FUNCTIONAL.
             "test_mode": self.cfg.test_mode,
-            # The native shiftable WBR model adds the boundary register as a scan
-            # chain (new control/observe points + fault sites), so buffer<->scan is
-            # a distinct campaign.
-            "wbr_model": self.cfg.wbr_model,
             # Enabling/disabling compression, or resizing its channel count,
             # changes the synthesized netlist (new ring-generator/phase-shifter
             # gates = new fault sites), so it's part of the fingerprint too.
@@ -457,7 +468,6 @@ class Runner:
             "fault_model": self.cfg.fault_model.model,
             "blackbox_instances": list(self.cfg.blackbox_instances),
             "test_mode": self.cfg.test_mode,
-            "wbr_model": self.cfg.wbr_model,
         }
 
     def _stored_fingerprint(
@@ -478,9 +488,12 @@ class Runner:
         current: dict[str, object],
         *,
         scan: bool = False,
+        campaign_type: str | None = None,
     ) -> int:
         try:
-            return self._ensure_campaign(conn, current, scan=scan)
+            return self._ensure_campaign(
+                conn, current, scan=scan, campaign_type=campaign_type
+            )
         except SchemaError as exc:
             raise FingerprintMismatchError(str(exc)) from exc
 
@@ -624,6 +637,7 @@ class Runner:
     ) -> str:
         self.cfg.ensure_workspace()
         netlist = self._find_netlist()
+        wrapped = self._wrap_netlist(netlist) if self.cfg.wrap.enabled else None
         chains = self.cfg.scan.chains if scan_chains is None else scan_chains
         max_len = (
             self.cfg.scan.max_chain_length
@@ -636,21 +650,29 @@ class Runner:
         do_techmap = self.cfg.scan.run_techmap if run_techmap is None else run_techmap
 
         if dry_run:
-            try:
-                plan = plan_scan_json(
-                    netlist_json=netlist,
-                    cell_map_json=self.cfg.cell_lib,
-                    top=self.cfg.top,
-                    scan_chains=chains,
-                    max_chain_length=max_len,
-                    scan_in_base=si_base,
-                    scan_out_base=so_base,
-                    scan_enable=se_name,
-                    nonscan_cells=self.cfg.scan.nonscan_cells,
-                )
-            except ScanError as exc:
-                raise RunnerError(str(exc)) from exc
+            # The wrapped netlist only in a scratch file: a dry run writes nothing.
+            with tempfile.TemporaryDirectory() as scratch:
+                if wrapped is not None:
+                    netlist = Path(scratch) / f"{self.cfg.top}_wrapped.json"
+                    netlist.write_text(json.dumps(wrapped.netlist), encoding="utf-8")
+                try:
+                    plan = plan_scan_json(
+                        netlist_json=netlist,
+                        cell_map_json=self.cfg.cell_lib,
+                        top=self.cfg.top,
+                        scan_chains=chains,
+                        max_chain_length=max_len,
+                        scan_in_base=si_base,
+                        scan_out_base=so_base,
+                        scan_enable=se_name,
+                        nonscan_cells=self.cfg.scan.nonscan_cells,
+                        wrapper_chains=self.cfg.scan.wrapper_chains,
+                    )
+                except ScanError as exc:
+                    raise RunnerError(str(exc)) from exc
             return format_dry_run(plan)
+        if wrapped is not None:
+            netlist = self._write_wrapped(wrapped)[0]
 
         generic_json = generic_json_path or self.cfg.scan_json_path
         techmap_v = self.cfg.generated_scripts_dir / "faultflow_scanff_map.v"
@@ -669,6 +691,7 @@ class Runner:
                 scan_out_base=so_base,
                 scan_enable=se_name,
                 nonscan_cells=self.cfg.scan.nonscan_cells,
+                wrapper_chains=self.cfg.scan.wrapper_chains,
             )
             log.info(
                 "scan   inserted  %d chains  %d scan cells  %.1fs",
@@ -699,6 +722,19 @@ class Runner:
             raise RunnerError(str(exc)) from exc
 
         manifest = manifest_from_result(result, netlist, techmap_v, techmapped)
+        _, stitched = _json_top_module(generic_json, result.top)
+        chains_found = manifest.get("chains")
+        chain_rows = (
+            [c for c in chains_found if isinstance(c, dict)]
+            if isinstance(chains_found, list)
+            else []
+        )
+        try:
+            wrapper = wrapper_record(stitched, chain_rows)
+        except WrapError as exc:
+            raise RunnerError(str(exc)) from exc
+        if wrapper is not None:
+            manifest["wrapper"] = wrapper
         write_scan_artifacts(
             self.cfg.manifests_dir,
             scan_report_path or self.cfg.scan_report_path,
@@ -1155,6 +1191,176 @@ class Runner:
             f"patterns={len(exported)} cycles={len(program)} "
             f"overlapped={'yes' if overlap else 'no'} stil={output}"
         )
+
+    def wrap(self, *, dry_run: bool = False) -> str:
+        """[wrap] on the design: an IEEE 1500 boundary cell on each port bit it wraps
+        (faultflow.wrap.block). ``dry_run``: just the table of port bits; otherwise
+        also the wrapped netlist, as JSON and as Verilog, and the table as a
+        report."""
+        self.cfg.ensure_workspace()
+        result = self._wrap_netlist(self._find_netlist())
+        if dry_run:
+            return format_decisions(result)
+        wrapped_json, verilog, report = self._write_wrapped(result)
+        inputs = sum(cell.side == "input" for cell in result.cells)
+        return (
+            f"wrap complete top={self.cfg.top} cells={len(result.cells)} "
+            f"inputs={inputs} outputs={len(result.cells) - inputs} "
+            f"clock={result.clock} intest={self.cfg.wrap.intest_pin} "
+            f"extest={self.cfg.wrap.extest_pin} "
+            f"json={wrapped_json} verilog={verilog} report={report}"
+        )
+
+    def _wrap_netlist(self, netlist: Path) -> WrapResult:
+        """``netlist`` with [wrap]'s IEEE 1500 wrapper on its ports."""
+        options = WrapOptions(
+            clock=self.cfg.wrap.clock,
+            intest_pin=self.cfg.wrap.intest_pin,
+            extest_pin=self.cfg.wrap.extest_pin,
+            exclude=self.cfg.wrap.exclude,
+        )
+        try:
+            return wrap_block(
+                json.loads(netlist.read_text(encoding="utf-8")),
+                self.cfg.top,
+                _load_json_object(self.cfg.cell_lib),
+                options,
+            )
+        except WrapError as exc:
+            raise RunnerError(str(exc)) from exc
+
+    def _write_wrapped(self, result: WrapResult) -> tuple[Path, Path, Path]:
+        """The wrapped netlist as <top>_wrapped.json and <top>_wrapped.v, and its
+        table of port bits as wrap.rpt."""
+        top = self.cfg.top
+        wrapped_json = self.cfg.output_dir / f"{top}_wrapped.json"
+        wrapped_json.write_text(json.dumps(result.netlist, indent=2), encoding="utf-8")
+        try:
+            verilog = json_to_verilog(
+                wrapped_json,
+                self.cfg.output_dir / f"{top}_wrapped.v",
+                self.cfg.logs_dir / "yosys_wrap.log",
+                self.cfg.generated_scripts_dir / "yosys_wrap.ys",
+            )
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+        report = self.cfg.output_dir / "wrap.rpt"
+        report.write_text(format_decisions(result) + "\n", encoding="utf-8")
+        return wrapped_json, verilog, report
+
+    def _intest_harness(self, manifest: Mapping[str, Any], generic_json: Path) -> Path:
+        """The scanned netlist with its environment around it
+        (wrap.environment.intest_harness), as <top>_intest.json in the workspace.
+        It must have exactly the scanned netlist's fault sites: every fault is
+        graded or excluded, none dropped."""
+        top = str(manifest["top"])
+        try:
+            harness = intest_harness(
+                _load_json_object(generic_json), top, manifest["wrapper"]
+            )
+        except WrapError as exc:
+            raise RunnerError(str(exc)) from exc
+        path = self.cfg.intermediate_dir / f"{top}_intest.json"
+        path.write_text(
+            json.dumps(harness, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        core = _load_core()
+        if core is None:
+            raise RunnerError("C++ extension _faultflow_core is required")
+        cell_map = str(resolve_scan_cell_map(self.cfg))
+        unsupported = self.cfg.simulation.unsupported_cells
+
+        def site_keys(netlist: Path, blackboxes: list[str]) -> list[str]:
+            rows = core.list_site_keys(str(netlist), cell_map, unsupported, blackboxes)
+            return sorted(str(row["site_key"]) for row in rows)
+
+        blackboxes = list(self.cfg.blackbox_instances)
+        if site_keys(path, [*blackboxes, ENVIRONMENT]) != site_keys(
+            generic_json, blackboxes
+        ):
+            raise RunnerError(
+                f"the INTEST harness {path} doesn't have the scanned netlist's "
+                "fault sites"
+            )
+        return path
+
+    def _extest_graybox(
+        self, manifest: Mapping[str, Any], generic_json: Path
+    ) -> tuple[Path, dict[str, Any], dict[int, int], tuple[str, ...]]:
+        """The block's -- or SoC's -- EXTEST graybox (wrap.graybox) as
+        <top>_extest.json in the workspace, its scan manifest (the wrapper chains
+        alone), each of its chains' number on the chip, and the blackboxes standing
+        for cores. Every fault EXTEST owns must sit on one of the scanned netlist's
+        fault sites, as the whole chip grades it."""
+        top = str(manifest["top"])
+        cell_map_path = resolve_scan_cell_map(self.cfg)
+        try:
+            box = extest_graybox(
+                _load_json_object(generic_json),
+                manifest,
+                _load_json_object(cell_map_path),
+            )
+        except WrapError as exc:
+            raise RunnerError(str(exc)) from exc
+        path = self.cfg.intermediate_dir / f"{top}_extest.json"
+        path.write_text(
+            json.dumps(box.netlist, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        core = _load_core()
+        if core is None:
+            raise RunnerError("C++ extension _faultflow_core is required")
+        unsupported = self.cfg.simulation.unsupported_cells
+        wrapper = manifest["wrapper"]
+        rows = [
+            dict(row)
+            for row in core.list_site_keys(
+                str(path), str(cell_map_path), unsupported, list(box.cores)
+            )
+        ]
+        sides = sides_of(wrapper, rows, box.netlist["modules"][top])
+        owned = {
+            str(row["site_key"])
+            for row in rows
+            if any(owner(row, t, wrapper, _sides=sides) == EXTEST for t in FAULT_TYPES)
+        }
+        scanned = {
+            str(row["site_key"])
+            for row in core.list_site_keys(
+                str(generic_json),
+                str(cell_map_path),
+                unsupported,
+                list(self.cfg.blackbox_instances),
+            )
+        }
+        if owned - scanned:
+            raise RunnerError(
+                "EXTEST's fault sites in the graybox aren't the block's: "
+                f"{sorted(owned - scanned)[:5]}"
+            )
+        run_manifest = {
+            **box.manifest,
+            "generic_json": str(path),
+            "generic_json_hash": hash_file(path),
+        }
+        return path, run_manifest, box.chains, box.cores
+
+    def _holds(self, manifest: Mapping[str, Any]) -> tuple[tuple[str, int], ...]:
+        """[scan] hold, and an IEEE 1500 wrapper's mode pins at the campaign's test
+        mode (faultflow.wrap.record.mode_holds)."""
+        try:
+            modes = mode_holds(manifest, str(self.cfg.test_mode))
+        except WrapError as exc:
+            raise RunnerError(str(exc)) from exc
+        user = dict(self.cfg.scan.hold)
+        for port, value in modes.items():
+            if port in user and user[port] != value:
+                raise RunnerError(
+                    f"[scan] hold {port}:{user[port]} contradicts the "
+                    f"{self.cfg.test_mode} mode, which holds the wrapper's mode pin "
+                    f"{port} at {value}"
+                )
+        extra = tuple((p, v) for p, v in modes.items() if p not in user)
+        return tuple(self.cfg.scan.hold) + extra
 
     def _composed_verilog(
         self, manifest: dict[str, Any], composed_json: Path, top: str, name: str
@@ -1733,7 +1939,7 @@ class Runner:
             module,
             manifest,
             _load_json_object(resolve_scan_cell_map(self.cfg)),
-            holds=dict(self.cfg.scan.hold),
+            holds=dict(self._holds(manifest)),
             nonscan=self._nonscan_setup(manifest, generic_json),
         )
 
@@ -1943,7 +2149,6 @@ class Runner:
                 self.cfg.fault_model.collapsing,
                 self.cfg.simulation.unsupported_cells,
                 list(self.cfg.blackbox_instances),
-                self.cfg.test_mode,
             )
         )
 
@@ -2232,28 +2437,15 @@ class Runner:
             )
         ineligible = manifest.get("ineligible_ffs", [])
         if isinstance(ineligible, list) and ineligible:
-            # WBR scan cells are deliberately routed to the wrapper chain (fused
-            # into the view downstream by fuse_wbr_into_view), NOT the main scan
-            # chain -- they are not a full-scan blocker; nor are flops left out
-            # by [scan] nonscan_cells, which the view ties (scan.nonscan refuses
-            # one it can't). Genuinely unscannable FFs (unsupported_ff_shape,
-            # unknown_cell_type, existing_scan_cell) are.
+            # Flops left out by [scan] nonscan_cells aren't a full-scan blocker:
+            # the view ties them (scan.nonscan refuses one it can't). Genuinely
+            # unscannable FFs (unsupported_ff_shape, unknown_cell_type,
+            # existing_scan_cell) are.
             blockers = [
                 item
                 for item in ineligible
-                if isinstance(item, dict)
-                and item.get("reason") not in ("wbr_scan_cell", NONSCAN_REASON)
+                if isinstance(item, dict) and item.get("reason") != NONSCAN_REASON
             ]
-            wbr_count = sum(
-                1
-                for item in ineligible
-                if isinstance(item, dict) and item.get("reason") == "wbr_scan_cell"
-            )
-            if wbr_count:
-                log.info(
-                    "scan preflight: %d WBR cell(s) routed to wrapper chain",
-                    wbr_count,
-                )
             if blockers:
                 names = ", ".join(
                     sorted(str(item.get("instance", "?")) for item in blockers)
@@ -2280,17 +2472,15 @@ class Runner:
                 "is not meaningful in this architecture. A scan-aware vector "
                 "format would be required."
             )
+        mode = str(self.cfg.test_mode)
+        if mode != "functional" and not scan:
+            # INTEST and EXTEST hold the IEEE 1500 wrapper's mode pins in a scan
+            # test (_sim_scan); a combinational run has no wrapper mode.
+            raise RunnerError(
+                f"{mode.upper()} is a scan test of the IEEE 1500 wrapper: run it "
+                f"with --scan (ff.py {mode})"
+            )
         if scan:
-            # EXTEST tests only the wrapper boundary/interconnect with a dead
-            # core, so its fused view is combinational -- it runs through plain
-            # native ATPG, not the scan protocol pipeline (see _sim_extest).
-            if str(self.cfg.test_mode) == "extest":
-                return self._sim_extest(
-                    purge=purge,
-                    clean=clean,
-                    max_rounds=max_rounds,
-                    target_coverage=target_coverage,
-                )
             return self._sim_scan(
                 purge=purge,
                 clean=clean,
@@ -2534,24 +2724,30 @@ class Runner:
         generic_json: Path,
         functional_output_order: list[str],
         nonscan: NonscanSetup | None = None,
+        cfg: FaultflowConfig | None = None,
+        blocking: tuple[str, ...] = (),
     ) -> XMask:
         """Mask, in the scan ATPG view on disk, every observation point an
         unknown value reaches (scan.x_mask) -- a blackbox output's, or a
         non-scan flop's no held input keeps in reset -- for this campaign's
         launch mode. Refuses a design where such a value reaches the scan path
-        itself."""
+        itself. ``cfg``: the run's config, a wrapper mode's INTEST environment or
+        EXTEST cores among its blackboxes (wrap.environment, wrap.graybox);
+        ``blocking``: those, whose outputs the held mode pins keep out are no
+        unknowns."""
+        cfg = cfg if cfg is not None else self.cfg
         launch_mode = launch_mode_key(
-            self.cfg.fault_model.model == "transition", self.cfg.fault_model.launch
+            cfg.fault_model.model == "transition", cfg.fault_model.launch
         )
         x_flops = nonscan.x_sources if nonscan is not None else ()
-        if not self.cfg.blackbox_x_instances and not x_flops:
+        if not cfg.blackbox_x_instances and not x_flops:
             return XMask(launch_mode=launch_mode)
         core = _load_core()
         if core is None:
             raise RunnerError("C++ extension _faultflow_core is required")
         return mask_scan_view(
             core,
-            self.cfg,
+            cfg,
             view,
             view_path,
             manifest,
@@ -2562,14 +2758,26 @@ class Runner:
             nonscan_q_nets=(
                 [flop.q for flop in nonscan.flops] if nonscan is not None else ()
             ),
+            blocking_instances=blocking,
         )
 
     def _nonscan_setup(
-        self, manifest: dict[str, Any], generic_json: Path
+        self,
+        manifest: dict[str, Any],
+        generic_json: Path,
+        extra_holds: Mapping[str, int] | None = None,
     ) -> NonscanSetup | None:
         """[scan] nonscan_cells and [scan] hold, checked against the scanned
-        netlist (scan.nonscan), or None without either."""
-        if not self.cfg.scan.nonscan_cells and not self.cfg.scan.hold:
+        netlist (scan.nonscan), or None without either. `extra_holds`: more inputs
+        held, where neither holds them already."""
+        holds = self._holds(manifest)
+        held = {port for port, _ in holds}
+        holds += tuple(
+            (port, int(value))
+            for port, value in sorted((extra_holds or {}).items())
+            if port not in held
+        )
+        if not self.cfg.scan.nonscan_cells and not holds:
             return None
         from faultflow.scan.detection_pipeline import _scan_reset_pi_holds
 
@@ -2581,7 +2789,7 @@ class Runner:
                 manifest,
                 cell_map,
                 globs=self.cfg.scan.nonscan_cells,
-                holds=self.cfg.scan.hold,
+                holds=holds,
                 scan_reset_holds=_scan_reset_pi_holds(
                     generic_json, self.cfg.top, cell_map
                 ),
@@ -2607,10 +2815,71 @@ class Runner:
         self.cfg.ensure_workspace()
         cleaned = self._clean_workspace() if clean else 0
         removed = self._purge_transients() if purge else 0
-        from faultflow.scan.detection_pipeline import build_scan_pipeline_context
+        from faultflow.scan.detection_pipeline import (
+            _scan_reset_pi_holds,
+            build_scan_pipeline_context,
+        )
 
         manifest = self._preflight_sim_scan()
         generic_json = Path(str(manifest["generic_json"]))
+        # A wrapper test mode of the wrapper ff.py wrap puts on, the mode pins held
+        # (_holds). INTEST runs on a harness of the scanned netlist, the block's
+        # surroundings one more blackbox whose outputs are unknown
+        # (wrap.environment); EXTEST on its graybox, the core that blackbox
+        # (wrap.graybox), and the wrapper chains alone (run_manifest). Everything
+        # but the report runs with `cfg`, that blackbox among
+        # cfg.blackbox_instances.
+        cfg = self.cfg
+        run_manifest: dict[str, Any] = dict(manifest)
+        found = manifest.get("wrapper")
+        wrapper: dict[str, Any] | None = found if isinstance(found, dict) else None
+        scope: str | None = None
+        extra_holds: dict[str, int] = {}
+        chip_chains: dict[int, int] = {}
+        blocking: tuple[str, ...] = ()
+        mode = str(self.cfg.test_mode)
+        if mode != "functional" and wrapper is None:
+            raise RunnerError(
+                f"{mode.upper()} tests the IEEE 1500 wrapper ff.py wrap puts on, and "
+                "the scanned design has none: wrap it ([wrap] enabled, then ff.py "
+                "scan)"
+            )
+        if wrapper is not None and mode == "intest":
+            if "blocks" in wrapper:
+                raise RunnerError(
+                    "a SoC's blocks run INTEST each on its own (ff.py project); "
+                    "the SoC runs EXTEST and its functional scan test"
+                )
+            scope = "intest"
+            generic_json = self._intest_harness(manifest, generic_json)
+            cfg = with_environment(self.cfg)
+            blocking = (ENVIRONMENT,)
+        elif wrapper is not None and mode == "extest":
+            if (
+                self.cfg.fault_model.model == "transition"
+                and self.cfg.fault_model.launch != "los"
+            ):
+                raise RunnerError(
+                    "EXTEST launches on shift ([fault_model] launch = los): on "
+                    "capture it launches nothing at the boundary, where the output "
+                    "cells hold and the input cells capture the same port values "
+                    "twice"
+                )
+            scope = "extest"
+            generic_json, run_manifest, chip_chains, blocking = self._extest_graybox(
+                manifest, generic_json
+            )
+            cfg = with_core(self.cfg, blocking)
+            # The core's resets, as the block's own scan test holds them: the
+            # core stays quiet, though nothing of it is observed.
+            extra_holds = {
+                port: int(value)
+                for port, value in _scan_reset_pi_holds(
+                    Path(str(manifest["generic_json"])),
+                    str(manifest["top"]),
+                    _load_json_object(resolve_scan_cell_map(self.cfg)),
+                ).items()
+            }
         # Blackbox instances are modeled opaque in the reduced view (outputs
         # tied to 0, inputs unobserved) so SAT and the reduced simulators see
         # exactly what the scan protocol does, and every observation point an
@@ -2619,38 +2888,13 @@ class Runner:
         # generic netlist keeps the real instances and still loads with
         # cfg.blackbox_instances. Non-scan flops and held inputs are tied the
         # same way (scan.nonscan).
-        nonscan = self._nonscan_setup(manifest, generic_json)
+        nonscan = self._nonscan_setup(run_manifest, generic_json, extra_holds)
         view, pseudo_port_map = build_scan_atpg_view(
             _load_json_object(generic_json),
-            manifest,
-            blackbox_instances=self.cfg.blackbox_instances,
+            run_manifest,
+            blackbox_instances=cfg.blackbox_instances,
             nonscan=nonscan,
         )
-
-        # INTEST: fuse the wrapper boundary into the scan-reduced view so the
-        # wrapper boundary cells become pseudo-PI/PO alongside the scan FFs.
-        wbr_stimulus: dict[str, str] = {}
-        wbr_observe: dict[str, str] = {}
-        wbr_decoupled: frozenset[int] = frozenset()
-        # EXTEST is routed to _sim_extest before reaching here (see sim()); this
-        # path handles FUNCTIONAL and INTEST scan campaigns only.
-        test_mode = str(self.cfg.test_mode)
-        if test_mode == "intest":
-            from faultflow.scan.wbr_view import (
-                build_wbr_generic_name_map,
-                fuse_wbr_into_view,
-            )
-
-            generic_data = _load_json_object(generic_json)
-            view, wbr_port_map = fuse_wbr_into_view(view, self.cfg.top, test_mode)
-            wbr_stimulus, wbr_observe, _decoupled = build_wbr_generic_name_map(
-                generic_data,
-                self.cfg.top,
-                wbr_port_map,
-                test_mode,
-                manifest,
-            )
-            wbr_decoupled = frozenset(_decoupled)
 
         atpg_view_path = self.cfg.intermediate_dir / "scan_atpg_view.json"
         pseudo_map_path = self.cfg.intermediate_dir / "scan_pseudo_port_map.json"
@@ -2672,40 +2916,48 @@ class Runner:
         x_mask = self._mask_unknown_blackbox_outputs(
             view,
             atpg_view_path,
-            manifest,
+            run_manifest,
             generic_json,
             functional_output_order,
             nonscan=nonscan,
+            cfg=cfg,
+            blocking=blocking,
         )
         scan_pipeline_ctx = build_scan_pipeline_context(
-            self.cfg,
-            manifest,
+            cfg,
+            run_manifest,
             generic_json,
             pseudo_port_map,
             functional_output_order,
-            wbr_stimulus_name_by_port=wbr_stimulus,
-            wbr_observe_name_by_port=wbr_observe,
-            wbr_decoupled_bits=wbr_decoupled,
             x_mask=x_mask,
             nonscan=nonscan,
+            wrapper=wrapper if scope is not None else None,
+            wrapper_scope=scope,
         )
 
         from faultflow.scan.atpg_view import ATPG_VIEW_SCHEMA_VER
 
         # An INTEST campaign cannot resume against a FUNCTIONAL one: test_mode is
-        # part of config_hash (see _config_fingerprint_payload), and the fused
+        # part of config_hash (see _config_fingerprint_payload), and the harness's
         # atpg_view netlist_hash also differs, so the resume guard already holds.
         fp = self._fingerprint(netlist)
         fp["manifest_hash"] = str(manifest.get("generic_json_hash", ""))
         fp["atpg_view_schema_ver"] = ATPG_VIEW_SCHEMA_VER
+        # The real wrapper's EXTEST is a campaign of its own, beside INTEST's.
+        campaign_type = CAMPAIGN_TYPE_SCAN_EXTEST if scope == "extest" else None
         with self._db(scan=True) as conn:
-            campaign_id = self._check_fingerprint(conn, fp, scan=True)
+            campaign_id = self._check_fingerprint(
+                conn, fp, scan=True, campaign_type=campaign_type
+            )
             abort_pending_candidates(conn, campaign_id)
 
         model_id = redundancy_model_id(fp)
+        if scope == "extest" and export_patterns is not None:
+            # Only this run's patterns are rewritten for the chip below.
+            export_patterns.unlink(missing_ok=True)
         vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
             run_progressive_native_atpg(
-                self.cfg,
+                cfg,
                 netlist,
                 model_id,
                 campaign_id=campaign_id,
@@ -2717,9 +2969,27 @@ class Runner:
                 scan_pattern_out=export_patterns,
             )
         )
+        if (
+            scope == "extest"
+            and export_patterns is not None
+            and export_patterns.exists()
+        ):
+            # As the whole block takes them: its chains' numbers, and the wrapper
+            # chains' length to shift.
+            graybox_patterns = json.loads(export_patterns.read_text("utf-8"))
+            export_patterns.write_text(
+                json.dumps(
+                    chip_patterns(
+                        graybox_patterns,
+                        chip_chains,
+                        int(run_manifest["max_chain_length"]),
+                    ),
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         if self.cfg.atpg.compaction != "none":
-            from faultflow.scan.cell_map import resolve_scan_cell_map
-
             scan_cell_map = str(resolve_scan_cell_map(self.cfg))
             if self.cfg.fault_model.model == "transition":
                 # Two-frame scan transition compaction MUST re-grade via the
@@ -2763,10 +3033,19 @@ class Runner:
         total_seconds = time.perf_counter() - total_start
         self._write_run_timings(run_id, atpg_seconds, fault_sim_seconds, total_seconds)
 
-        scan_context = {
+        scan_context: dict[str, Any] = {
             "pseudo_port_map": pseudo_port_map,
             "manifest_hash": str(manifest.get("generic_json_hash", "")),
         }
+        if scope is not None:
+            # The report's coverage by part: core, boundary cells, mode pins --
+            # of the netlist the run graded, the harness or the graybox.
+            scan_context["wrapper"] = {
+                "mode": scope,
+                "record": wrapper,
+                "module": _json_top_module(generic_json, str(manifest["top"]))[1],
+                "cell_map": _load_json_object(resolve_scan_cell_map(self.cfg)),
+            }
         with self._db(scan=True) as conn:
             json_path, txt_path, report = write_reports(
                 conn,
@@ -2785,138 +3064,6 @@ class Runner:
         return (
             f"sim complete top={self.cfg.top} mode=scan "
             f"vectors={vectors.count}{scan_compaction_note} "
-            f"source={vectors.source} sidecar={atpg_view_path} "
-            f"coverage={report['summary']['coverage_percent']:.3f}% "
-            f"atpg_seconds={atpg_seconds:.3f} "
-            f"fault_sim_seconds={fault_sim_seconds:.3f} "
-            f"atpg_terminal={atpg_stats.terminal_reason} "
-            f"report={txt_path} json={json_path}{purge_note}{clean_note}"
-        )
-
-    def _sim_extest(
-        self,
-        *,
-        purge: bool = False,
-        clean: bool = False,
-        max_rounds: int | None = None,
-        target_coverage: float | None = None,
-    ) -> str:
-        """EXTEST coverage on a scan-wrapped core.
-
-        EXTEST holds the core dead/safe and tests only the wrapper boundary +
-        interconnect, so after fusing the scan-reduced view with
-        ``fuse_wbr_into_view(mode="extest")`` the result is a COMBINATIONAL
-        netlist: ``__wbo_ctl_*`` inputs + top PIs drive the interconnect,
-        ``__wbi_obs_*`` outputs + top POs observe it, and the core is const-0
-        safed with its scan observe points dropped. We therefore run plain
-        combinational native ATPG on the fused view -- not the scan protocol
-        pipeline, which exists only to reconcile abstracted FF Q-stems that this
-        view doesn't have. Dead-core faults are unobservable here and fall out as
-        SAT-redundant, so coverage reflects the testable interconnect.
-        """
-        if self.cfg.scan.nonscan_cells or self.cfg.scan.hold:
-            raise RunnerError(
-                "[scan] nonscan_cells and [scan] hold apply to scan ATPG "
-                "(FUNCTIONAL and INTEST), not to EXTEST"
-            )
-        from faultflow.runner.progressive_atpg import (
-            redundancy_model_id,
-            run_progressive_native_atpg,
-        )
-        from faultflow.scan.atpg_view import ATPG_VIEW_SCHEMA_VER
-        from faultflow.scan.cell_map import resolve_scan_cell_map
-        from faultflow.scan.wbr_view import (
-            WBR_SCAN_EXTEST_VIEW_SCHEMA_VER,
-            fuse_wbr_into_view,
-        )
-
-        total_start = time.perf_counter()
-        self.cfg.ensure_workspace()
-        cleaned = self._clean_workspace() if clean else 0
-        removed = self._purge_transients() if purge else 0
-
-        manifest = self._preflight_sim_scan()
-        generic_json = Path(str(manifest["generic_json"]))
-        view, _pseudo_port_map = build_scan_atpg_view(
-            _load_json_object(generic_json), manifest
-        )
-        view, _wbr_port_map = fuse_wbr_into_view(view, self.cfg.top, "extest")
-
-        atpg_view_path = self.cfg.intermediate_dir / "scan_atpg_view.json"
-        atpg_view_path.write_text(
-            json.dumps(view, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        netlist = atpg_view_path
-        scan_cell_map = resolve_scan_cell_map(self.cfg)
-
-        fp = self._fingerprint(netlist)
-        fp["manifest_hash"] = str(manifest.get("generic_json_hash", ""))
-        fp["atpg_view_schema_ver"] = (
-            f"{ATPG_VIEW_SCHEMA_VER}+{WBR_SCAN_EXTEST_VIEW_SCHEMA_VER}"
-        )
-        # EXTEST uses a separate campaign_type so it never collides with the
-        # INTEST/scan campaign in ensure_campaign's latest-campaign lookup.
-        with self._db(scan=True) as conn:
-            campaign_id = ensure_campaign(conn, CAMPAIGN_TYPE_SCAN_EXTEST, fp)
-            abort_pending_candidates(conn, campaign_id)
-
-        model_id = redundancy_model_id(fp)
-        # Fusion removed every $wbc_* cell (replaced by const-0 safe drivers +
-        # observe buffers + ctl/obs ports), so cg.wrapper_cells is empty and the
-        # C++ mode-aware gate is a no-op: combinational ATPG runs plain on the
-        # EXTEST configuration already baked into the netlist structure.
-        vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
-            run_progressive_native_atpg(
-                self.cfg,
-                netlist,
-                model_id,
-                campaign_id=campaign_id,
-                max_rounds=max_rounds,
-                target_coverage=target_coverage,
-                cell_map_path=scan_cell_map,
-            )
-        )
-
-        if self.cfg.atpg.compaction != "none":
-            from faultflow.runner.compaction import compact_run
-
-            vectors, run_id, raw_vectors = compact_run(
-                json_path=str(netlist),
-                cell_map_path=str(scan_cell_map),
-                db_path=str(self.cfg.db_path),
-                campaign_id=campaign_id,
-                run_id=run_id,
-                vectors=vectors,
-                unsupported=self.cfg.simulation.unsupported_cells,
-                blackbox_instances=self.cfg.blackbox_instances,
-            )
-        else:
-            raw_vectors = vectors.count
-
-        total_seconds = time.perf_counter() - total_start
-        self._write_run_timings(run_id, atpg_seconds, fault_sim_seconds, total_seconds)
-
-        scan_context = {
-            "pseudo_port_map": {},
-            "manifest_hash": str(manifest.get("generic_json_hash", "")),
-        }
-        with self._db(scan=True) as conn:
-            json_path, txt_path, report = write_reports(
-                conn,
-                self.cfg,
-                scan_context=scan_context,
-                campaign_id=campaign_id,
-            )
-
-        purge_note = f" purged_transients={removed}" if purge else ""
-        clean_note = f" cleaned_db_files={cleaned}" if clean else ""
-        compaction_note = (
-            f" raw_vectors={raw_vectors}" if raw_vectors != vectors.count else ""
-        )
-        return (
-            f"sim complete top={self.cfg.top} mode=extest "
-            f"vectors={vectors.count}{compaction_note} "
             f"source={vectors.source} sidecar={atpg_view_path} "
             f"coverage={report['summary']['coverage_percent']:.3f}% "
             f"atpg_seconds={atpg_seconds:.3f} "

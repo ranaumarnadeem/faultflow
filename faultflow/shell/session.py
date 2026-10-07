@@ -512,8 +512,6 @@ class ProjectSession:
                     cfg,
                     simulation=replace(cfg.simulation, unsupported_cells=value),
                 )
-            elif key == "wrap.wbr_model":
-                cfg = replace(cfg, wbr_model=value)
             elif key == "atpg.compaction":
                 cfg = replace(cfg, atpg=replace(cfg.atpg, compaction=value))
             elif key == "atpg.pack_orders":
@@ -602,15 +600,14 @@ class ProjectSession:
     def wrap(
         self,
         *,
-        wbr_model: str = "scan",
-        clock: str = "clk",
-        scan_enable: str = "wbr_se",
-        scan_in: str = "wbr_si",
-        scan_out: str = "wbr_so",
-        targets: list[str] | None = None,
+        clock: str | None = None,
+        exclude: tuple[str, ...] = (),
+        intest_pin: str = "wbr_intest",
+        extest_pin: str = "wbr_extest",
         output: Path | None = None,
     ) -> OperationResult:
-        """Inject IEEE 1500 WBR cells onto the boundary ports of the current netlist.
+        """Put the IEEE 1500 wrapper on the boundary ports of the current netlist
+        (faultflow.wrap.block): three sky130 cells per port bit, two mode pins.
 
         Saves the wrapped JSON next to the source (or to ``output`` if given),
         then updates the session to point at the wrapped file so subsequent
@@ -625,98 +622,47 @@ class ProjectSession:
             )
         import json as _json
 
-        from faultflow.wrap.ports import WrapError, wrap_ports
+        from faultflow.wrap.block import WrapOptions, wrap_block
+        from faultflow.wrap.errors import WrapError
 
         src = _json.loads(self.source.read_text(encoding="utf-8"))
+        cell_map = _json.loads(
+            self.materialize_config().cell_lib.read_text(encoding="utf-8")
+        )
+        options = WrapOptions(clock or "", intest_pin, extest_pin, exclude)
         try:
-            dst = wrap_ports(
-                src,
-                self.top,
-                wbr_model=wbr_model,
-                clock=clock,
-                scan_in=scan_in,
-                scan_out=scan_out,
-                scan_enable=scan_enable,
-                targets=targets,
-            )
+            result = wrap_block(src, self.top, cell_map, options)
         except WrapError as exc:
             raise ShellError(str(exc), "CONFIG", "WRAP_FAILED") from exc
+        inputs = sum(cell.side == "input" for cell in result.cells)
+        summary = (
+            f"wrapped {len(result.cells)} port bits ({inputs} inputs, "
+            f"{len(result.cells) - inputs} outputs) in IEEE 1500 boundary cells, "
+            f"mode pins {intest_pin}/{extest_pin}, clock {result.clock}"
+        )
+        return self._adopt_wrapped(result.netlist, output, summary)
 
+    def _adopt_wrapped(
+        self, netlist: dict[str, Any], output: Path | None, summary: str
+    ) -> OperationResult:
+        """Save a wrapped netlist (beside the source unless ``output``) and make it
+        the session's design, scan insertion to do again."""
+        assert self.top is not None and self.source is not None
         if output is None:
-            out_dir = self.source.parent
-            output = out_dir / f"{self.top}_wrapped.json"
-
+            output = self.source.parent / f"{self.top}_wrapped.json"
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(_json.dumps(dst, indent=2) + "\n", encoding="utf-8")
-
-        modules = dst.get("modules", {})
-        mod = modules.get(self.top, {})
-        cells = mod.get("cells", {})
-        n_wbr_in = sum(
-            1 for c in cells.values() if str(c.get("type", "")).startswith("$wbc_in")
-        )
-        n_wbr_out = sum(
-            1 for c in cells.values() if str(c.get("type", "")).startswith("$wbc_out")
-        )
-
+        output.write_text(json.dumps(netlist, indent=2) + "\n", encoding="utf-8")
         self.source = output
         self.source_kind = "yosys_json"
         self.scan_inserted = False
         self.scan_checked = False
         self.scan_campaign_stale = False
         self.checkpoint()
-
-        msg = (
-            f"wrapped {n_wbr_in} wbc_in + {n_wbr_out} wbc_out "
-            f"({wbr_model} model) -> {output}"
-        )
         return OperationResult(
             "wrap",
             self.top,
-            msg,
+            f"{summary} -> {output}",
             artifacts={"wrapped_netlist": output},
-        )
-
-    def retarget(
-        self,
-        *,
-        patterns: Path,
-        soc_access: Path,
-        block: str,
-        out: Path,
-    ) -> OperationResult:
-        """Retarget a block's exported INTEST scan patterns onto a SoC scan path.
-
-        Reads block scan patterns (from ``run_atpg -export-patterns``), places each
-        at its segment offsets on the SoC chains described by the SoC-access
-        manifest, and writes the retargeted patterns to ``out`` — no re-ATPG at
-        the assembly level.
-        """
-        import json as _json
-
-        from faultflow.retarget.emit import pattern_to_dict, write_retargeted
-        from faultflow.retarget.soc_access import load_soc_access
-        from faultflow.retarget.transform import retarget_block_pattern
-        from faultflow.scan.pattern_export import scan_pattern_from_dict
-
-        raw = _json.loads(patterns.read_text(encoding="utf-8"))
-        block_patterns = [scan_pattern_from_dict(d) for d in raw]
-        access = load_soc_access(soc_access)
-        retargeted = [retarget_block_pattern(p, access, block) for p in block_patterns]
-        payload = {
-            "schema": "faultflow_retargeted_v1",
-            "assembly_top": access.assembly_top,
-            "source_block": block,
-            "patterns": [
-                pattern_to_dict(p, assembly_top=access.assembly_top) for p in retargeted
-            ],
-        }
-        written = write_retargeted(out, payload)
-        return OperationResult(
-            "retarget",
-            self.top or block,
-            f"retargeted {len(retargeted)} pattern(s) from {block!r} -> {written}",
-            artifacts={"retargeted": written},
         )
 
     def add_scan(self, **options: object) -> OperationResult:
@@ -895,7 +841,6 @@ class ProjectSession:
             "report.threshold",
             "simulation.sim_threads",
             "simulation.unsupported_cells",
-            "wrap.wbr_model",
             # Deliberately NOT here, even though config.ofs has them:
             #   fault_model.model / fault_model.launch -- controlled by
             #     `run_atpg -tf broadside|los` instead; a second path via
@@ -1000,13 +945,6 @@ class ProjectSession:
             if value not in {"none", "reverse", "dynamic"}:
                 raise ShellError(
                     "atpg.compaction must be 'none', 'reverse', or 'dynamic'",
-                    "CONFIG",
-                    "INVALID_VALUE",
-                )
-        if key == "wrap.wbr_model":
-            if value not in {"buffer", "scan"}:
-                raise ShellError(
-                    "wrap.wbr_model must be 'buffer' or 'scan'",
                     "CONFIG",
                     "INVALID_VALUE",
                 )

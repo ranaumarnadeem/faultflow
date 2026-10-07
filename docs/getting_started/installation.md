@@ -202,7 +202,7 @@ packages everything above. Requires Nix with flakes enabled
 
 `nix flake check` (or `nix build .#checks.<system>.faultflow-core` /
 `.python-tests` individually) runs **both full test suites fully hermetically** —
-the complete Catch2 suite (`ctest`, 201/201) and the complete `tests/python`
+the complete Catch2 suite (`ctest`) and the complete `tests/python`
 suite (`pytest`), inside Nix's sandboxed build, with no manual checkout step and
 no `nix develop` required. Both check derivations regenerate the ISCAS benchmark
 netlists they need (`tests/benchmarks/**/synth_sky130/*.json`,
@@ -230,7 +230,7 @@ narrowing the rules rather than by working around them in the Nix packaging:
 |---|---|---|
 | `cells/{sky130,osu}/*.json`, `osu035.yml` | ~44KB | faultflow's own gate-semantics maps — was always tracked in git history; `.gitignore` only blocks *new* files, it never retroactively untracks. |
 | `cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib` | 13MB | The only Sky130 Liberty corner anything in this repo actually uses (Yosys `dfflibmap`/`abc`). |
-| `cells/osu/osu035_stdcells.lib` | 266KB | Same, for the OSU035 path (`tests/python/wrap/test_wbr_atpg.py`). |
+| `cells/osu/osu035_stdcells.lib` | 266KB | Same, for the OSU035 path (`faultflow/project/profiles.py`, `tools/derive_gate_truth_tables.py`). |
 | `cells/sky130/sky130_fd_sc_hd.v` | 2.3MB | Behavioral models for iverilog-based verification tests. Explicit `Copyright 2020 The SkyWater PDK Authors`, Apache-2.0. |
 | `tests/benchmarks/{iscas85,iscas89}/*.v` | 1.8MB | Public-domain ISCAS85/89 RTL sources (`c17.v` is 529 bytes) — the *inputs* to synthesis. |
 | `config.ofs.example` | tiny | Read directly by several `tests/python` cases; was already tracked. |

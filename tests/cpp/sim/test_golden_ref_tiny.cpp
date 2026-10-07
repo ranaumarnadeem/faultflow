@@ -97,12 +97,6 @@ TEST_CASE("GoldenRefSim reads an observed stem's own value rather than its branc
       cg, golden.simulate_sequence_fault_free(cg, seq),
       golden.simulate_sequence_with_fault(cg, seq, fault)));
 
-  // ... the mode-aware snapshot ...
-  const ModeConfig mc = build_mode_config(cg, TestMode::FUNCTIONAL);
-  CHECK_FALSE(golden.is_detected(cg, golden.simulate_fault_free(cg, vec, mc),
-                                 golden.simulate_with_fault(cg, vec, fault, mc),
-                                 mc));
-
   // ... and the two-frame transition oracle: the branch falls with Y
   // (A: 1 -> 0), but B = 0 still blocks its slow-to-fall effect.
   CHECK_FALSE(golden.simulate_transition_fault(cg, inputs(true, false), vec, fault));

@@ -18,9 +18,6 @@ struct SimState {
   // on the >99.9% of nodes with no fault, instead of calling inject_faults (which
   // linearly scans all <=63 faults) on every node. One per SimState => per-thread.
   std::vector<char> fault_present;
-  // IEEE 1500 test mode for this run. FUNCTIONAL by default; the engine applies
-  // the per-mode wrapper control/observe reconfiguration via a ModeConfig.
-  TestMode test_mode = TestMode::FUNCTIONAL;
 
   void init(int net_count, int frame_count = 1, int ff_count = 0) {
     frames.assign(frame_count, std::vector<uint64_t>(net_count, 0ULL));

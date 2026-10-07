@@ -13,7 +13,7 @@ Solve kinds
 "scan_stuck_at"         core.solve_fault_atpg (fused view; the seed if compressed)
 "broadside_transition"  core.solve_scan_transition_fault_atpg
 "los_transition"        core.solve_scan_los_transition_fault_atpg
-"native_stuck_at"       core.solve_fault_atpg (full signature with bb/test_mode)
+"native_stuck_at"       core.solve_fault_atpg (full signature with blackboxes)
 "native_transition"     core.solve_transition_fault_atpg (combinational broadside)
 """
 
@@ -40,7 +40,7 @@ def install_seed(seed: dict[str, Any]) -> None:
 def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
     """Solve one fault; return (fault_id, result_str, solved_dict).
 
-    ``args`` is a 15-element tuple so multiprocessing can pickle it without
+    ``args`` is a 14-element tuple so multiprocessing can pickle it without
     any process-local state.  All values must be plain Python scalars or
     lists — no Path objects, no dataclasses. The scan kinds also carry the
     seed constraints install_seed installed.
@@ -64,7 +64,6 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
         los_couple_ports,
         los_head_ports,
         bb_instances,
-        test_mode,
         incremental,
     ) = args
     seed = _seed
@@ -133,7 +132,6 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
                     timeout,
                     unsupported,
                     bb_instances,
-                    test_mode,
                     cone_restrict,
                     incremental,
                 )

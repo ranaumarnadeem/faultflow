@@ -19,6 +19,11 @@ from faultflow.scan import (
     stitch_scan_json,
     write_scan_techmap,
 )
+from faultflow.scan.stitch import (
+    YOSYS_CAPTURE_AND_CELL,
+    YOSYS_CAPTURE_INV_CELL,
+    YOSYS_CAPTURE_OR_CELL,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
@@ -512,8 +517,6 @@ def test_async_reset_transition_atpg_with_reset_faults(
     bridge.call("add_clock", "clk")
     bridge.call("set_option", "fault_model.include_reset_faults", "true")
     bridge.call("set_option", "fault_model.collapsing", "false")
-    # buffer WBC: transition (LOC/LOS) ATPG is unsupported with the 1-FF scan WBC.
-    bridge.call("set_option", "wrap.wbr_model", "buffer")
     bridge.call("synth")
     assert "cells=2" in str(bridge.call("add_scan", "-chains", "1"))
     bridge.call("check_scan")
@@ -539,6 +542,21 @@ def test_render_scan_techmap_targets_sky130_scan_cell() -> None:
     assert "sky130_fd_sc_hd__sdfxtp_1 _TECHMAP_REPLACE_" in text
     assert ".SCD(SDI)" in text
     assert ".SCE(SE)" in text
+
+
+def test_render_scan_techmap_maps_an_enable_flops_hold_gates_to_sky130() -> None:
+    """The gates scan stitching folds an enable into become sky130 cells, with the
+    library's own output pin."""
+    text = render_scan_techmap()
+    for celltype, cell, output in (
+        (YOSYS_CAPTURE_AND_CELL, "sky130_fd_sc_hd__and2_1", ".X(Y)"),
+        (YOSYS_CAPTURE_OR_CELL, "sky130_fd_sc_hd__or2_1", ".X(Y)"),
+        (YOSYS_CAPTURE_INV_CELL, "sky130_fd_sc_hd__inv_1", ".Y(Y)"),
+    ):
+        escaped = celltype.replace("\\", "\\\\")
+        module = text.split(f'techmap_celltype = "{escaped}"')[1].split("endmodule")[0]
+        assert f"{cell} _TECHMAP_REPLACE_" in module
+        assert output in module
 
 
 def test_scan_protocol_shift_capture_shiftout_cycles() -> None:

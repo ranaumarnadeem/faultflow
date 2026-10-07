@@ -24,8 +24,9 @@ no native Windows build. See [Installation](getting_started/installation.md).
   a progressive loop, fault collapsing, and reverse-order test-set compaction.
 - **Sequential and scan support**: edge-triggered flip-flops, asynchronous
   set/reset, scan-chain insertion, and scan ATPG.
-- **IEEE 1500 wrapper test and hierarchy**: INTEST/EXTEST boundary test, a native
-  shiftable WBR, and hierarchical block-to-SoC coverage aggregation.
+- **IEEE 1500 wrapper test and hierarchy**: INTEST and EXTEST through a wrapper of
+  sky130 cells, whose patterns a tester applies, and hierarchical block-to-SoC
+  coverage.
 - **Two PDKs**: SkyWater Sky130 HD (default) and OSU035, driven by JSON cell maps.
 - **Deterministic coverage reporting** with an explicit, auditable denominator.
 

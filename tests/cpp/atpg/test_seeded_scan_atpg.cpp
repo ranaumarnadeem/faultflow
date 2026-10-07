@@ -155,7 +155,7 @@ TEST_CASE("seeded stuck-at: a fault no seed can test is UNSAT, free it is SAT",
                                vector) == SatSolveResult::SAT);
 }
 
-TEST_CASE("seeded stuck-at: the incremental and mode-aware solvers honour the seed",
+TEST_CASE("seeded stuck-at: the incremental solver honours the seed",
           "[atpg][seeded]") {
   const ParsedGraph pg = test::load_parsed("tiny_scan_view_seeded.json");
   const CompiledSimGraph cg = test::load_compiled("tiny_scan_view_seeded.json");
@@ -168,13 +168,6 @@ TEST_CASE("seeded stuck-at: the incremental and mode-aware solvers honour the se
   REQUIRE(solve_stuck_at_fault_incremental(cg, pis, fault,
                                            unlimited_solve_options(),
                                            vector) == SatSolveResult::SAT);
-  // EXTEST on a view without wrapper cells observes every output, as
-  // FUNCTIONAL does -- but through the mode-aware miter.
-  const ModeConfig extest = build_mode_config(cg, TestMode::EXTEST);
-  REQUIRE(solve_stuck_at_fault(cg, pis, fault, seeded_options(pg, cg), vector,
-                               extest) == SatSolveResult::UNSAT);
-  REQUIRE(solve_stuck_at_fault(cg, pis, fault, unlimited_solve_options(), vector,
-                               extest) == SatSolveResult::SAT);
 }
 
 TEST_CASE("seeded stuck-at: every verdict matches brute force over the seed space",
@@ -519,11 +512,6 @@ TEST_CASE("seed definitions: a program gives the verdicts of the rows it defines
   }
   REQUIRE(sat > 0);
   REQUIRE(unsat > 0);
-  const CompactFault y_sa0 = stuck_at(cg, pg.net_id_by_name("Y"), FaultType::SA0);
-  std::map<std::string, bool> vector;
-  REQUIRE(solve_stuck_at_fault(cg, pis, y_sa0, program_options(pg, cg), vector,
-                               build_mode_config(cg, TestMode::EXTEST)) ==
-          SatSolveResult::UNSAT);
 }
 
 TEST_CASE("seed readback: a SAT solve gives the seed, and the seed loads the vector",
@@ -532,9 +520,8 @@ TEST_CASE("seed readback: a SAT solve gives the seed, and the seed loads the vec
   const CompiledSimGraph cg = test::load_compiled("tiny_scan_view_seeded.json");
   const NormalizedGraph ng = test::load_normalized("tiny_scan_view_seeded.json");
   const auto pis = ordered_pis(pg, cg);
-  const ModeConfig extest = build_mode_config(cg, TestMode::EXTEST);
   int checked = 0;
-  for (int solver = 0; solver < 3; ++solver) {
+  for (int solver = 0; solver < 2; ++solver) {
     for (bool program : {false, true}) {
       for (const CompactFault& fault : enumerate_faults(ng, cg)) {
         if (fault.exclusion != FaultExclusion::NONE) continue;
@@ -544,11 +531,9 @@ TEST_CASE("seed readback: a SAT solve gives the seed, and the seed loads the vec
         options.seed_out = &seed;
         std::map<std::string, bool> vector;
         const SatSolveResult result =
-            solver == 0   ? solve_stuck_at_fault(cg, pis, fault, options, vector)
-            : solver == 1 ? solve_stuck_at_fault_incremental(cg, pis, fault, options,
-                                                             vector)
-                          : solve_stuck_at_fault(cg, pis, fault, options, vector,
-                                                 extest);
+            solver == 0
+                ? solve_stuck_at_fault(cg, pis, fault, options, vector)
+                : solve_stuck_at_fault_incremental(cg, pis, fault, options, vector);
         if (result != SatSolveResult::SAT) continue;
         REQUIRE(seed.size() == 2);
         const bool loads = program ? seed_loads(seed, kProgramRows, kDefs, vector)

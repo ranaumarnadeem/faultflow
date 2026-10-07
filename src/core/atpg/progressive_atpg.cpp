@@ -455,10 +455,9 @@ SolveFaultResult solve_fault_for_db(
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode, bool cone_restrict, bool incremental,
-    int64_t net_index_override, int seed_width, const SeedRows& seeded_inputs,
-    const SeedDefs& seed_defs) {
+    const std::vector<std::string>& blackbox_instances, bool cone_restrict,
+    bool incremental, int64_t net_index_override, int seed_width,
+    const SeedRows& seeded_inputs, const SeedDefs& seed_defs) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -481,24 +480,12 @@ SolveFaultResult solve_fault_for_db(
   options.seed_out = &out.seed;
 
   std::map<std::string, bool> vector;
-  const TestMode mode = parse_test_mode(test_mode);
-  // Cone restriction applies to both the FUNCTIONAL and the mode-aware
-  // (INTEST/EXTEST) stuck-at paths; the mode-aware path keeps the safe-zero WBR
-  // forcing inside the cone.
   options.cone_restrict = cone_restrict;
   options.incremental = incremental;
-  SatSolveResult result;
-  if (mode == TestMode::FUNCTIONAL) {
-    // IFC is a FUNCTIONAL-only fast path; the mode-aware (INTEST/EXTEST) miter
-    // keeps the single-shot solver until it gains an incremental variant.
-    result = options.incremental
-                 ? solve_stuck_at_fault_incremental(ctx.cg, pis, fault, options,
-                                                    vector)
-                 : solve_stuck_at_fault(ctx.cg, pis, fault, options, vector);
-  } else {
-    const ModeConfig mc = build_mode_config(ctx.cg, mode);
-    result = solve_stuck_at_fault(ctx.cg, pis, fault, options, vector, mc);
-  }
+  const SatSolveResult result =
+      options.incremental
+          ? solve_stuck_at_fault_incremental(ctx.cg, pis, fault, options, vector)
+          : solve_stuck_at_fault(ctx.cg, pis, fault, options, vector);
 
   out.result = solve_result_name(result);
   if (result == SatSolveResult::SAT) {
@@ -512,8 +499,7 @@ bool verify_fault_vector(
     const std::string& db_path, int64_t fault_id,
     const std::map<std::string, bool>& vector,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode) {
+    const std::vector<std::string>& blackbox_instances) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -526,16 +512,8 @@ bool verify_fault_vector(
     }
     return tv;
   }();
-  const TestMode mode = parse_test_mode(test_mode);
-  if (mode == TestMode::FUNCTIONAL || ctx.cg.wrapper_cells.empty()) {
-    return golden.is_detected(ctx.cg, golden.simulate_fault_free(ctx.cg, vec),
-                              golden.simulate_with_fault(ctx.cg, vec, fault));
-  }
-  const ModeConfig mc = build_mode_config(ctx.cg, mode);
-  return golden.is_detected(ctx.cg,
-                             golden.simulate_fault_free(ctx.cg, vec, mc),
-                             golden.simulate_with_fault(ctx.cg, vec, fault, mc),
-                             mc);
+  return golden.is_detected(ctx.cg, golden.simulate_fault_free(ctx.cg, vec),
+                            golden.simulate_with_fault(ctx.cg, vec, fault));
 }
 
 std::vector<ProgressiveDetection> simulate_incremental(
@@ -545,8 +523,7 @@ std::vector<ProgressiveDetection> simulate_incremental(
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode, int sim_threads) {
+    const std::vector<std::string>& blackbox_instances, int sim_threads) {
   if (new_vectors.empty() || fault_ids.empty()) {
     return {};
   }
@@ -558,10 +535,6 @@ std::vector<ProgressiveDetection> simulate_incremental(
     vectors.push_back(vector_from_map(ctx.parsed, raw, input_order));
   }
 
-  const TestMode mode = parse_test_mode(test_mode);
-  const bool use_mode = (mode != TestMode::FUNCTIONAL) && !ctx.cg.wrapper_cells.empty();
-  const ModeConfig mc = use_mode ? build_mode_config(ctx.cg, mode) : ModeConfig{};
-
   BitParallelSim sim;  // stateless; shared by every slice/thread for a vector
   std::vector<ProgressiveDetection> detections;
   std::vector<ActiveFaultRecord> active =
@@ -569,8 +542,7 @@ std::vector<ProgressiveDetection> simulate_incremental(
   for (size_t vi = 0; vi < vectors.size() && !active.empty(); ++vi) {
     const TestVector& vec = vectors[vi];
     const auto grade = [&](const FaultBatch& batch) -> uint64_t {
-      return use_mode ? sim.simulate_batch(ctx.cg, vec, batch, mc)
-                      : sim.simulate_batch(ctx.cg, vec, batch);
+      return sim.simulate_batch(ctx.cg, vec, batch);
     };
     const std::vector<GradeRangeResult> slices =
         grade_active_parallel(active, sim_threads, grade);
@@ -608,17 +580,13 @@ std::vector<int64_t> simulate_tentative_detections(
     const std::vector<std::string>& input_order,
     const std::vector<int64_t>& fault_ids,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode) {
+    const std::vector<std::string>& blackbox_instances) {
   if (fault_ids.empty()) {
     return {};
   }
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const TestVector tv = vector_from_map(ctx.parsed, vector, input_order);
-  const TestMode mode = parse_test_mode(test_mode);
-  const bool use_mode = (mode != TestMode::FUNCTIONAL) && !ctx.cg.wrapper_cells.empty();
-  const ModeConfig mc = use_mode ? build_mode_config(ctx.cg, mode) : ModeConfig{};
   BitParallelSim sim;
   std::vector<int64_t> detected;
   const std::vector<ActiveFaultRecord> active =
@@ -627,9 +595,7 @@ std::vector<int64_t> simulate_tentative_detections(
     const size_t end = std::min(begin + kFaultLanesPerWord, active.size());
     const FaultBatch batch = make_batch(active, begin, end);
     ++g_simulation_instrumentation.batch_fault_calls;
-    const uint64_t detected_mask = use_mode
-        ? sim.simulate_batch(ctx.cg, tv, batch, mc)
-        : sim.simulate_batch(ctx.cg, tv, batch);
+    const uint64_t detected_mask = sim.simulate_batch(ctx.cg, tv, batch);
     for (size_t i = begin; i < end; ++i) {
       const CompactFault& lane = batch.faults[i - begin];
       if ((detected_mask & lane.sa_mask) != 0) {
@@ -941,17 +907,13 @@ std::vector<int64_t> simulate_tentative_from_preloaded(
     const std::map<std::string, bool>& vector,
     const std::vector<std::string>& input_order,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances,
-    const std::string& test_mode, int sim_threads) {
+    const std::vector<std::string>& blackbox_instances, int sim_threads) {
   if (preloaded.empty()) {
     return {};
   }
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const TestVector tv = vector_from_map(ctx.parsed, vector, input_order);
-  const TestMode mode = parse_test_mode(test_mode);
-  const bool use_mode = (mode != TestMode::FUNCTIONAL) && !ctx.cg.wrapper_cells.empty();
-  const ModeConfig mc = use_mode ? build_mode_config(ctx.cg, mode) : ModeConfig{};
   BitParallelSim sim;  // stateless; shared by every slice/thread
 
   std::vector<ActiveFaultRecord> active;
@@ -964,8 +926,7 @@ std::vector<int64_t> simulate_tentative_from_preloaded(
   }
 
   const auto grade = [&](const FaultBatch& batch) -> uint64_t {
-    return use_mode ? sim.simulate_batch(ctx.cg, tv, batch, mc)
-                    : sim.simulate_batch(ctx.cg, tv, batch);
+    return sim.simulate_batch(ctx.cg, tv, batch);
   };
   const std::vector<GradeRangeResult> slices =
       grade_active_parallel(active, sim_threads, grade);

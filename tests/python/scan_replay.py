@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -43,10 +44,13 @@ def _refs(ports: dict[str, Any]) -> dict[str, str]:
     return refs
 
 
-def bench(chip: Chip, program: list[Cycle]) -> str:
+def bench(
+    chip: Chip, program: list[Cycle], unknown_inputs: Collection[str] = ()
+) -> str:
     """A testbench applying `program` to `chip`: per cycle its inputs with the
     clocks low, each compared output displayed at the strobe ("E <cycle> <output>
-    <value>"), then the clocks high when it pulses."""
+    <value>"), then the clocks high when it pulses. `unknown_inputs` (bit names)
+    are X throughout, whatever the program gives them."""
     ports = chip.module["ports"]
     refs = _refs(ports)
     lines = ["`timescale 1ns/1ps", "module tb;"]
@@ -59,9 +63,12 @@ def bench(chip: Chip, program: list[Cycle]) -> str:
             lines.append(f"  wire {vector}{_escaped(name)};")
     conns = ", ".join(f".{_escaped(n)}({_escaped(n)})" for n in ports)
     lines += [f"  {chip.top} dut({conns});", "  initial begin"]
+    lines += [f"    {refs[name]}= 1'bx;" for name in unknown_inputs]
     applied: dict[str, int] = {}
     for number, cycle in enumerate(program):
         for name, value in cycle.inputs.items():
+            if name in unknown_inputs:
+                continue
             if applied.get(name) != value:
                 lines.append(f"    {refs[name]}= {value};")
                 applied[name] = value
@@ -143,12 +150,20 @@ def differences(program: list[Cycle], lines: list[str]) -> list[str]:
     return differ
 
 
-def replay_on_cells(cfg: Any, patterns_path: Path, work: Path) -> list[str]:
+def replay_on_cells(
+    cfg: Any,
+    patterns_path: Path,
+    work: Path,
+    *,
+    unknown_inputs: Collection[str] = (),
+) -> list[str]:
     """Every exported pattern, one after another from power-up, on the chip's
     cells, both ways a tester applies them: each pattern alone, as FaultFlow
     grades it, and each load overlapping the unload before. Each compared output
-    that differs (differences); empty when every one matches. The STIL
-    write-patterns makes of each must be those cycles too (stil_problems)."""
+    that differs (differences) -- an X one included; empty when every one
+    matches. `unknown_inputs` are X all along: a wrapped block's INTEST
+    environment. The STIL write-patterns makes of each must be those cycles too
+    (stil_problems)."""
     manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
     chip = chip_of(manifest)
     patterns = json.loads(patterns_path.read_text(encoding="utf-8"))
@@ -156,7 +171,8 @@ def replay_on_cells(cfg: Any, patterns_path: Path, work: Path) -> list[str]:
     for overlap in (False, True):
         program = cycles(chip, patterns, overlap=overlap)
         where = work / ("overlapped" if overlap else "alone")
-        lines = run(chip, bench(chip, program), where, set(cfg.blackbox_instances))
+        testbench = bench(chip, program, unknown_inputs)
+        lines = run(chip, testbench, where, set(cfg.blackbox_instances))
         mode = "overlapped: " if overlap else ""
         problems += [mode + p for p in differences(program, lines)]
         problems += [mode + p for p in stil_problems(manifest, chip, program, where)]

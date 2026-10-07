@@ -112,28 +112,9 @@ enum class GateType {
   OR4BB,    // in0 | in1 | ~in2 | ~in3   [A, B, C_N, D_N]
   AND4BB,   // ~in0 & ~in1 & in2 & in3   [A_N, B_N, C, D — first two bubbled]
   A2BB2O,   // (~in0 & ~in1) | (in2 & in3)  [A1_N, A2_N bubbled; B1, B2 normal]
-  // IEEE 1500 wrapper boundary cells. WBR_IN sits on a core input (drives the
-  // core-side net); WBR_OUT sits on a core output (drives the system-side net).
-  // In FUNCTIONAL mode both are plain buffers; INTEST/EXTEST reconfigure them
-  // into control/observe points (see TestMode + build_mode_config).
-  WBR_IN,
-  WBR_OUT,
 };
 
 enum class NodeType { GATE, FF, LATCH, CONST, TBUF, ICG };
-
-// IEEE 1500 SerialWBR test mode. FUNCTIONAL = wrapper cells are transparent;
-// INTEST = test the core internals; EXTEST = test the interconnect around the
-// core. Carried on SimState; reconfigures the control/observe point sets.
-enum class TestMode : uint8_t { FUNCTIONAL = 0, INTEST = 1, EXTEST = 2 };
-
-// Parse a Python-side test_mode string ("functional"/"intest"/"extest").
-// Empty string and "functional" both return FUNCTIONAL (safe default).
-inline TestMode parse_test_mode(const std::string& s) {
-  if (s == "intest") return TestMode::INTEST;
-  if (s == "extest") return TestMode::EXTEST;
-  return TestMode::FUNCTIONAL;
-}
 
 enum class TriggerType : uint8_t { POSEDGE = 0, NEGEDGE = 1 };
 

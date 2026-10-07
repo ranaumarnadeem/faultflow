@@ -36,9 +36,9 @@ database.
 
 | Directory | Covers |
 |---|---|
-| `ir/` | ParsedGraph, NormalizedGraph, CompiledSimGraph, WBR cell lowering |
+| `ir/` | ParsedGraph, NormalizedGraph, CompiledSimGraph |
 | `fault/` | Enumeration, collapsing, batch manager, fault-effect polymorphism |
-| `sim/` | Gate evaluation (30+ gate types), golden reference, bit-parallel engine, fault injection, sequential FF, WBR modes |
+| `sim/` | Gate evaluation (30+ gate types), golden reference, bit-parallel engine, fault injection, sequential FF |
 | `atpg/` | Miter construction, CNF truth tables, compaction, cone ordering/equivalence, incremental-SAT, SAT timeout, transition + scan-transition + scan-LOS |
 | `scan/` | Scan chain extraction, multi-clock stagger, scan sequences |
 | `db/` | SQLite campaign store — schema, fingerprinting, resume validation |
@@ -54,9 +54,9 @@ small hand-authored Yosys-JSON fixtures rather than external tools.
 | `cli/` | Shell and CLI command parsing, subcommand flow, config loading |
 | `sim/` | Vector application, fault batching, observable-set tracking, cycle-based sequential simulation |
 | `atpg/` | Progressive ATPG, transition-fault queries, compaction, timeout/unknown handling, redundancy persistence |
-| `scan/` | Scan-chain insertion and protocol, INTEST/EXTEST fusion, scan ATPG |
-| `wrap/` | IEEE 1500 wrapper boundary cells — modes, tri-state control, port observation |
-| `project/` | Hierarchical block-to-SoC aggregation, owning-role rules, SoC retargeting |
+| `scan/` | Scan-chain insertion and protocol, scan ATPG, exported patterns, tester program and STIL |
+| `wrap/` | IEEE 1500 wrapper — its boundary cell, port classification, wrapper chains, INTEST, EXTEST, the flowscripts |
+| `project/` | Hierarchical SoC (`faultflow_project_v2`) — composition, fault identities and the chip number, retargeting |
 | *(root level)* | `config.ofs` parsing, flow-service orchestration, oracle mode, cell inventory |
 
 `tests/unit/` is reserved for future use and currently empty.

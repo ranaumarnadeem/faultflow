@@ -436,7 +436,9 @@ def test_runner_verification_failure_aborts_before_sim(
 
     monkeypatch.setattr(runner, "_find_netlist", lambda: tmp_path / "demo.json")
     monkeypatch.setattr(
-        Runner, "_ensure_campaign", lambda self, conn, fp, scan=False: 1
+        Runner,
+        "_ensure_campaign",
+        lambda self, conn, fp, scan=False, campaign_type=None: 1,
     )
     monkeypatch.setattr(runner, "_find_order_sidecar", lambda: (bench, ["a"]))
     monkeypatch.setattr(
@@ -520,7 +522,9 @@ def test_runner_verify_skipped_when_blackbox_instances_present(
 
     monkeypatch.setattr(runner, "_find_netlist", lambda: tmp_path / "demo.json")
     monkeypatch.setattr(
-        Runner, "_ensure_campaign", lambda self, conn, fp, scan=False: 1
+        Runner,
+        "_ensure_campaign",
+        lambda self, conn, fp, scan=False, campaign_type=None: 1,
     )
     monkeypatch.setattr(runner, "_find_order_sidecar", lambda: (bench, ["a"]))
 

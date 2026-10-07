@@ -14,15 +14,15 @@ tests/
 │   ├── atpg/             SAT ATPG tests (miter, CNF, compaction, transition)
 │   ├── db/               SQLite campaign store tests
 │   ├── fault/            Fault enumeration, collapsing, batch manager
-│   ├── ir/               ParsedGraph, NormalizedGraph, CompiledSimGraph, WBR cells
+│   ├── ir/               ParsedGraph, NormalizedGraph, CompiledSimGraph
 │   ├── scan/             Scan chain, multi-clock stagger, scan sequences
-│   ├── sim/              Bit-parallel engine, golden ref, gate eval, WBR modes
+│   ├── sim/              Bit-parallel engine, golden ref, gate eval
 │   └── benchmarks/       C++ performance benchmarks (c17)
 │
 ├── python/               Python layer tests (pytest)
 │   ├── conftest.py       Shared fixtures: require_cpp_core, pytest markers
 │   ├── campaign_fixtures.py  Campaign setup helpers (imported by test files)
-│   ├── soc2_fixtures.py      SoC 2-block hierarchical test fixture data
+│   ├── soc_v2_fixtures.py    A 2-block wrapped SoC project (faultflow_project_v2)
 │   ├── db_v3_helpers.py      Database schema helpers
 │   ├── preflight_fixtures.py Reconvergent netlist + a fake OpenTestability preflight
 │   ├── scan_replay.py        Replays exported scan patterns on the sky130 cell models
@@ -75,7 +75,6 @@ Graph IR tests:
 - ParsedGraph: Yosys JSON parsing and net ID preservation
 - NormalizedGraph: cell map lookup, aliasing, levelization, clock/reset tagging
 - CompiledSimGraph: compilation to flat arrays, YosysNetID↔CompiledNetIndex mapping
-- WBR cells: wrapper boundary register insertion and lowering
 
 #### `scan/`
 Sequential and scan chain tests:
@@ -92,7 +91,6 @@ Simulation engine tests:
 - Fault injection at net level (SA0/SA1 masking)
 - Fault-free vs. faulty universe tracking
 - Multi-output cell lowering (ADDF, FF+QN, fanout branches)
-- WBR shift and normal-mode operation
 
 #### `benchmarks/`
 Performance benchmarks (Google Benchmark):
@@ -142,28 +140,28 @@ SAT ATPG algorithm tests:
 #### `scan/`
 Scan chain insertion and protocol tests:
 - Scan chain discovery and ordering
-- INTEST wrapper boundary fusion
-- EXTEST wrapper with tri-state control
 - Scan sequence generation (shift, capture, parallel load)
 - Scan ATPG and coverage integration
 - Multi-clock domain test isolation
 
 #### `wrap/`
-IEEE 1500 wrapper boundary cell tests:
-- Boundary register cells (IN, OUT, INOUT)
-- Wrapper operation modes (INTEST, EXTEST, normal)
-- Parallel and serial data paths
-- Tri-state enable/disable control
-- Wrapper port observation and control
+IEEE 1500 wrapper tests:
+- The boundary cell of three sky130 cells, against its spec and the cell models
+- Which ports are wrapped (`ff.py wrap`), and the wrapper chains scan insertion adds
+- INTEST and EXTEST: patterns replayed on the cells with the surroundings at X,
+  every credit reproduced by the full scan protocol
+- Who owns each fault, the INTEST environment, the EXTEST graybox
+- The Tcl flowscripts (`core_atpg.tcl`, `extest.tcl`)
 
 #### `project/`
-Hierarchical project aggregation and SoC retarget tests:
-- Block-as-top INTEST simulation
-- Assembly-level EXTEST fault simulation
-- Owning-role and handoff rules
-- Block-to-block boundary synchronization
-- Coverage aggregation across blocks
-- SoC retargeting from nominal to real blocks
+Hierarchical SoC project (`faultflow_project_v2`) and SoC retarget tests:
+- SoC composition from frozen block netlists (`assemble`), chain tracing, the SoC
+  wrapper record
+- Each block's INTEST and the SoC's EXTEST, run by the project flow
+- Fault identities across the composition, and the aggregation guards (no fault
+  counted twice, every handed-off fault owned or accounted for)
+- The chip number against a flat run of the same SoC
+- SoC retargeting
 
 #### Root-level tests
 Configuration, flow service, and orchestration tests:
@@ -284,7 +282,8 @@ wsl -e bash -c "cd /mnt/c/Users/Potato/Desktop/faultflow && source venv/bin/acti
 - Fixture and helper modules (no `test_` prefix):
   - `conftest.py` — pytest configuration, shared fixtures, marker definitions
   - `campaign_fixtures.py` — campaign and flow setup helpers
-  - `soc2_fixtures.py` — SoC 2-block hierarchical test data
+  - `soc_v2_fixtures.py` — a `faultflow_project_v2` SoC: two blocks Yosys
+    synthesizes, each wrapped (IEEE 1500) and scanned on its own, and their glue
   - `db_v3_helpers.py` — database schema and initialization helpers
   - `preflight_fixtures.py` — a reconvergent netlist and a fake OpenTestability
     `_preflight` that answers with real OT's records for it

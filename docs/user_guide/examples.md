@@ -76,63 +76,55 @@ The combinational and scan campaigns share one database, so `status`
 
 ## IEEE 1500 wrapper test: INTEST and EXTEST
 
-Wrapping a core with an IEEE 1500 boundary is a two-phase flow: inject the
-wrapper once with `wrap`, then scan-insert and run ATPG against the *wrapped*
-netlist. `wrap` saves the wrapped netlist and makes it the new active design in
-the same session, so you can continue straight on:
+`wrap` puts the IEEE 1500 wrapper on the synthesized design's ports and makes the
+wrapped netlist the active design; `add_scan` then gives the wrapper's flops chains
+of their own (`wbr_si`/`wbr_so`). INTEST tests the core, the wrapper's input cells
+holding it; EXTEST tests the boundary cells and the ports around the core, the core
+a blackbox and the wrapper chains alone shifting:
 
 ```tcl
 faultflow> read_netlist examples/serial_adder.v -top serial_adder
 faultflow[serial_adder]> use_lib_cells sky130
+faultflow[serial_adder:sky130]> add_clock clk
 faultflow[serial_adder:sky130]> synth
-faultflow[serial_adder:sky130]> wrap -model scan -clock clk -o output/serial_adder/serial_adder_wrapped.json
-faultflow[serial_adder:sky130]> set_testmode intest
+faultflow[serial_adder:sky130]> wrap
 faultflow[serial_adder:sky130]> add_scan -chains 4
 faultflow[serial_adder:sky130]> check_scan
+faultflow[serial_adder:sky130]> set_testmode intest
+faultflow[serial_adder:sky130]> run_atpg -sa -scan -target 95
+faultflow[serial_adder:sky130]> set_testmode extest
 faultflow[serial_adder:sky130]> run_atpg -sa -scan -target 95
 faultflow[serial_adder:sky130]> status -scan
 ```
 
-`flowscripts/core_atpg.tcl` automates the scan-insertion-plus-INTEST half against
-an already-wrapped netlist; `flowscripts/intest.tcl` resumes a saved scan session
-and runs INTEST alone. The CLI equivalent, once `[design] netlist` in
-`config.ofs` points at the wrapped, scan-inserted netlist, is
-`python3 ff.py intest --top serial_adder -c config.ofs`.
+EXTEST is a campaign of its own, so it needs no clean workspace after INTEST.
+`flowscripts/core_atpg.tcl` automates the wrap, the scan insertion and INTEST;
+`flowscripts/intest.tcl` and `flowscripts/extest.tcl` resume the saved scan session
+for one mode each. The CLI equivalent sets `[wrap] enabled = true`, so that
+`ff.py scan` wraps first, then runs `ff.py scan`, `ff.py scan-check`,
+`ff.py intest` and `ff.py extest` -- each with `--export-patterns` for patterns a
+tester applies.
 
-**EXTEST** targets the interconnect *around* wrapped cores in a multi-block
-assembly, with each core's internals blackboxed so only the wrapper boundary
-cells and the interconnect are faultable:
+## Hierarchical SoC: per-block INTEST + SoC EXTEST
 
-```tcl
-faultflow> read_netlist assembly.json -top my_soc_top
-faultflow[my_soc_top]> use_lib_cells sky130
-faultflow[my_soc_top:sky130]> add_clock clk
-faultflow[my_soc_top:sky130]> add_blackbox u_coreA
-faultflow[my_soc_top:sky130]> add_blackbox u_coreB
-faultflow[my_soc_top:sky130]> synth
-faultflow[my_soc_top:sky130]> set_testmode extest
-faultflow[my_soc_top:sky130]> run_atpg -sa -target 90
-faultflow[my_soc_top:sky130]> status
-```
-
-`flowscripts/extest.tcl` automates this — edit its `CONFIGURATION` block with
-your block instance names, assembly netlist path, and clock port. The CLI
-equivalent is `python3 ff.py extest --top my_soc_top -c config.ofs`.
-
-## Hierarchical SoC: per-block INTEST + assembly EXTEST
-
-For a chip with multiple wrapped blocks, `flowscripts/hereichy_atpg.tcl` drives
-the full flow: scan-insert and INTEST each block in turn, then run one assembly
-EXTEST, following a project manifest (`project_*.json`, schema
-`faultflow_project_v1`) that names each block and the assembly. The CLI
-equivalent is a single command once that manifest exists:
+For a chip built from several blocks, wrap and scan each block on its own
+(`[wrap] enabled = true`, then `ff.py scan` and `ff.py scan-check`), then name the
+blocks and the SoC's glue in a project manifest (schema `faultflow_project_v2`, see
+[`project`](running_without_shell.md#project)). One command composes the SoC, runs
+each block's INTEST and the SoC's EXTEST, and adds them into one chip coverage
+number, each fault counted once:
 
 ```bash
-python3 ff.py project -p project.json -t 95
+python3 ff.py project -p project.json -t 95 --export-patterns soc_extest.json
 ```
 
-`project` aggregates the per-block INTEST results and the assembly EXTEST result
-into one chip-level coverage number.
+Then each block's INTEST patterns, as the SoC takes them, with no ATPG at the top,
+and their STIL:
+
+```bash
+python3 ff.py project retarget -p project.json --block blkA --out blkA_on_soc.json
+python3 ff.py project write-patterns -p project.json --patterns blkA_on_soc.json --out blkA_on_soc.stil
+```
 
 ## More designs under `examples/`
 

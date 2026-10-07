@@ -16,7 +16,6 @@ from faultflow.mbist.autombist_config import CollarConfig
 from faultflow.mbist.memories import analyze_pins
 from faultflow.mbist.shell import CollarPort
 from faultflow.mbist.spec import MemorySpec
-from faultflow.wrap.ports import _next_id
 
 RESET_PORT = "mbist_rst_n"
 
@@ -31,6 +30,19 @@ Modules = dict[str, dict[str, Any]]
 
 def _param(value: int) -> str:
     return format(value, "032b")
+
+
+def _next_id(module: dict[str, Any]) -> int:
+    """A net id no port, cell or net name of `module` uses."""
+    used: set[int] = set()
+    for port in module.get("ports", {}).values():
+        used.update(b for b in port.get("bits", []) if isinstance(b, int))
+    for cell in module.get("cells", {}).values():
+        for bits in cell.get("connections", {}).values():
+            used.update(b for b in bits if isinstance(b, int))
+    for net in module.get("netnames", {}).values():
+        used.update(b for b in net.get("bits", []) if isinstance(b, int))
+    return max(used) + 1 if used else 2
 
 
 def _bits(module: dict[str, Any], count: int) -> list[int]:

@@ -10,8 +10,11 @@ also on the compressed chip itself, the decompressor loading the chains
 
 from __future__ import annotations
 
+import itertools
 import json
 import sqlite3
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -28,19 +31,116 @@ from faultflow.scan.site_resolution import build_site_key_index, fault_type_to_s
 from faultflow.scan.x_mask import _net_of_name, recorded_x_mask
 
 
+@dataclass(frozen=True)
+class _Grader:
+    """The faults the latest scan campaign credits, its exported patterns, and
+    `detect(i, inputs)`: the indices of the credited faults pattern i detects in
+    the full protocol, `inputs` the values of inputs it leaves unset (0
+    otherwise)."""
+
+    credited: list[tuple[str, str]]
+    patterns: list[Any]
+    detect: Callable[..., set[int]]
+
+
 def credit_not_reproduced(
     cfg: Any,
     patterns_path: Path,
     *,
     loc: bool = False,
     preamble: int | None = None,
+    campaign_type: str = "scan",
 ) -> list[tuple[str, str]]:
     """The (site key, fault type) of each fault the latest scan campaign
-    credits that none of the exported patterns in `patterns_path` detects in
-    the full protocol. `loc` replays launch-on-capture patterns (two capture
-    pulses); launch-on-shift patterns don't carry their launch shift and
-    can't be replayed from the file. Each pattern is replayed after its own
-    preamble, or `preamble` clock pulses when given."""
+    (`campaign_type`: "scan_extest" for the real wrapper's EXTEST) credits that
+    none of the exported patterns in `patterns_path` detects in the full protocol
+    on the scanned netlist. `loc` replays launch-on-capture patterns (two capture
+    pulses); launch-on-shift patterns don't carry their launch shift and can't be
+    replayed from the file. Each pattern is replayed after its own preamble, or
+    `preamble` clock pulses when given."""
+    grader = _grader(
+        cfg, patterns_path, loc=loc, preamble=preamble, campaign_type=campaign_type
+    )
+    reproduced: set[int] = set()
+    for number in range(len(grader.patterns)):
+        reproduced |= grader.detect(number, {})
+    return [
+        grader.credited[i] for i in range(len(grader.credited)) if i not in reproduced
+    ]
+
+
+def environment_dependent(
+    cfg: Any, patterns_path: Path, environment: Collection[str], *, loc: bool = False
+) -> list[tuple[str, str]]:
+    """For a wrapped block's INTEST, whose `environment` inputs (bit names) its
+    patterns leave unknown: the credited faults no exported pattern detects for
+    every value of the environment -- each pattern tried with all of them. Empty
+    when no credit depends on what drives the block."""
+    names = sorted(environment)
+    assert len(names) <= 10, "every value of the environment is tried"
+    grader = _grader(cfg, patterns_path, loc=loc, preamble=None)
+    robust: set[int] = set()
+    for number in range(len(grader.patterns)):
+        always: set[int] | None = None
+        for values in itertools.product((False, True), repeat=len(names)):
+            found = grader.detect(number, dict(zip(names, values)))
+            always = found if always is None else always & found
+            if not always:
+                break
+        robust |= always or set()
+    return [grader.credited[i] for i in range(len(grader.credited)) if i not in robust]
+
+
+def core_dependent(
+    cfg: Any, patterns_path: Path, *, loc: bool = False
+) -> list[tuple[str, str]]:
+    """For a wrapped block's EXTEST, whose patterns load the wrapper chains alone
+    and leave the core's state unknown: the credited faults no exported pattern
+    detects in every state of the core, on the whole block -- each pattern
+    tried with every load of the core chains."""
+    manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+    longest = int(manifest["max_chain_length"])
+    core_chains = {
+        int(c["index"]): int(c["length"])
+        for c in manifest["chains"]
+        if c.get("kind", "core") == "core"
+    }
+    states = sum(core_chains.values())
+    assert states <= 10, "every state of the core is tried"
+    grader = _grader(
+        cfg, patterns_path, loc=loc, preamble=None, campaign_type="scan_extest"
+    )
+    robust: set[int] = set()
+    for number, pattern in enumerate(grader.patterns):
+        shifts = pattern.shift_length or longest
+        # The whole chip's shift: the wrapper chains' loads behind as many
+        # zeros as it shifts more, so they end where their own shift puts them.
+        loads = {
+            chain: [False] * (longest - shifts) + list(bits)
+            for chain, bits in pattern.load_seqs.items()
+        }
+        always: set[int] | None = None
+        for state in itertools.product((False, True), repeat=states):
+            bits = iter(state)
+            for chain, length in core_chains.items():
+                own = [next(bits) for _ in range(length)]
+                loads[chain] = [False] * (longest - length) + own
+            found = grader.detect(number, {}, loads=loads, shifts=longest)
+            always = found if always is None else always & found
+            if not always:
+                break
+        robust |= always or set()
+    return [grader.credited[i] for i in range(len(grader.credited)) if i not in robust]
+
+
+def _grader(
+    cfg: Any,
+    patterns_path: Path,
+    *,
+    loc: bool,
+    preamble: int | None,
+    campaign_type: str = "scan",
+) -> _Grader:
     core = _load_core()
     assert core is not None
     top = cfg.top
@@ -63,7 +163,7 @@ def credit_not_reproduced(
     blackboxes = list(cfg.blackbox_instances)
     conn = sqlite3.connect(cfg.db_path)
     (campaign,) = conn.execute(
-        "SELECT MAX(id) FROM campaigns WHERE campaign_type = 'scan'"
+        "SELECT MAX(id) FROM campaigns WHERE campaign_type = ?", (campaign_type,)
     ).fetchone()
     credited = conn.execute(
         "SELECT fault_site_key, fault_type FROM faults "
@@ -78,9 +178,33 @@ def credit_not_reproduced(
         _port_name_for_net(generic, top, net, "input")
         for net in manifest_clock_net_ids(manifest)
     ]
-    reproduced: set[int] = set()
-    for raw in json.loads(patterns_path.read_text(encoding="utf-8")):
-        pattern = scan_pattern_from_dict(raw)
+    patterns = [
+        scan_pattern_from_dict(raw)
+        for raw in json.loads(patterns_path.read_text(encoding="utf-8"))
+    ]
+
+    def detect(
+        number: int,
+        given: Mapping[str, bool],
+        *,
+        loads: Mapping[int, list[bool]] | None = None,
+        shifts: int | None = None,
+    ) -> set[int]:
+        """Pattern `number`'s detections; `loads` and `shifts` instead of its own
+        load and shift length. A chain it doesn't unload isn't compared."""
+        pattern = patterns[number]
+        assert not set(given) & set(pattern.capture_pi_values), "the pattern sets it"
+        length = shifts or pattern.shift_length or int(manifest["max_chain_length"])
+        mask = {
+            chain: (list(bits) + [False] * length)[:length]
+            for chain, bits in (pattern.unload_mask or {}).items()
+        }
+        for chain in range(len(manifest["scan_outputs"])):
+            if chain not in pattern.expected_unload:
+                mask[chain] = [False] * length
+            elif chain not in mask:
+                own = len(pattern.expected_unload[chain])
+                mask[chain] = [t < own for t in range(length)]
         result = core.simulate_scan_protocol_faults(
             str(generic),
             cell_map,
@@ -89,22 +213,25 @@ def credit_not_reproduced(
             scan_input_ports=[str(p) for p in manifest["scan_inputs"]],
             scan_output_ports=[str(p) for p in manifest["scan_outputs"]],
             functional_output_ports=outputs,
-            max_chain_length=int(manifest["max_chain_length"]),
-            load_seqs=pattern.load_seqs,
-            capture_pi_values=pattern.capture_pi_values,
+            max_chain_length=length,
+            load_seqs=dict(loads) if loads is not None else pattern.load_seqs,
+            capture_pi_values={**pattern.capture_pi_values, **given},
             faults=specs,
             unsupported_policy=unsupported,
             loc_two_capture=loc,
             blackbox_instances=blackboxes,
-            unload_mask=pattern.unload_mask or {},
+            unload_mask=mask,
             preamble_cycles=(pattern.preamble_cycles if preamble is None else preamble),
             shift_pi_values=pattern.shift_pi_values,
         )
-        for batch in result["batches"]:
-            for lane in batch["lanes"]:
-                if dict(lane)["outcome"] == "pass":
-                    reproduced.add(int(dict(lane)["fault_index"]))
-    return [tuple(credited[i]) for i in range(len(credited)) if i not in reproduced]
+        return {
+            int(dict(lane)["fault_index"])
+            for batch in result["batches"]
+            for lane in batch["lanes"]
+            if dict(lane)["outcome"] == "pass"
+        }
+
+    return _Grader([(str(k), str(t)) for k, t in credited], patterns, detect)
 
 
 # insert_compression's instance of the core in the composed netlist: compose_soc
@@ -316,3 +443,89 @@ def compressed_credit_not_reproduced(
         ],
         "golden": golden_mismatches,
     }
+
+
+def soc_credit_not_reproduced(
+    block_cfg: Any,
+    soc_cfg: Any,
+    patterns_path: Path,
+    soc_sites: Mapping[str, Collection[str]],
+    environment: Collection[str],
+) -> list[tuple[str, str]]:
+    """For a block's INTEST patterns retargeted onto its SoC (`patterns_path`,
+    faultflow.retarget): the (block site key, fault type) of each fault the
+    block's INTEST campaign credits that they don't detect on the composed SoC,
+    in the full protocol, with the SoC inputs they leave unset (`environment`) all
+    at 0 and all at 1 -- at any of its SoC sites (`soc_sites`: block site key ->
+    the SoC's site keys that stand for it). A credit with no SoC site is listed."""
+    core = _load_core()
+    assert core is not None
+    manifest = json.loads(soc_cfg.scan_manifest_path.read_text(encoding="utf-8"))
+    generic = Path(str(manifest["generic_json"]))
+    top = str(manifest["top"])
+    cell_map = str(resolve_scan_cell_map(soc_cfg))
+    unsupported = soc_cfg.simulation.unsupported_cells
+    conn = sqlite3.connect(block_cfg.db_path)
+    (campaign,) = conn.execute(
+        "SELECT MAX(id) FROM campaigns WHERE campaign_type = 'scan'"
+    ).fetchone()
+    credited = [
+        (str(key), str(fault_type))
+        for key, fault_type in conn.execute(
+            "SELECT fault_site_key, fault_type FROM faults "
+            "WHERE campaign_id = ? AND status = 'detected'",
+            (campaign,),
+        ).fetchall()
+    ]
+    conn.close()
+    assert credited, "the block's campaign credits nothing"
+    index = build_site_key_index(core, generic, cell_map, unsupported, [])
+    specs: list[tuple[Any, Any]] = []
+    owners: list[int] = []
+    for number, (key, fault_type) in enumerate(credited):
+        for site in sorted(soc_sites.get(key, ())):
+            specs.append((index[site], fault_type_to_sa_code(fault_type)))
+            owners.append(number)
+    clock_ports = [
+        _port_name_for_net(generic, top, net, "input")
+        for net in manifest_clock_net_ids(manifest)
+    ]
+    patterns = [
+        scan_pattern_from_dict(raw)
+        for raw in json.loads(patterns_path.read_text(encoding="utf-8"))
+    ]
+    reproduced: list[set[int]] = []
+    for level in (False, True):
+        given = dict.fromkeys(environment, level)
+        found: set[int] = set()
+        for pattern in patterns:
+            assert not set(given) & set(pattern.capture_pi_values), "it's set"
+            result = core.simulate_scan_protocol_faults(
+                str(generic),
+                cell_map,
+                clock_ports,
+                scan_enable_port=str(manifest["scan_enable"]),
+                scan_input_ports=[str(p) for p in manifest["scan_inputs"]],
+                scan_output_ports=[str(p) for p in manifest["scan_outputs"]],
+                functional_output_ports=[],
+                max_chain_length=int(manifest["max_chain_length"]),
+                load_seqs=pattern.load_seqs,
+                capture_pi_values={**pattern.capture_pi_values, **given},
+                faults=specs,
+                unsupported_policy=unsupported,
+                loc_two_capture=pattern.launch == "loc",
+                los_two_capture=pattern.launch == "los",
+                los_launch_scan_in=pattern.launch_scan_in,
+                unload_mask=pattern.unload_mask or {},
+                preamble_cycles=pattern.preamble_cycles,
+                shift_pi_values=pattern.shift_pi_values,
+            )
+            found |= {
+                owners[int(dict(lane)["fault_index"])]
+                for batch in result["batches"]
+                for lane in batch["lanes"]
+                if dict(lane)["outcome"] == "pass"
+            }
+        reproduced.append(found)
+    both = reproduced[0] & reproduced[1]
+    return [credited[i] for i in range(len(credited)) if i not in both]

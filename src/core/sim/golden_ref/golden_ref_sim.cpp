@@ -86,8 +86,7 @@ void seed_ff_outputs(const CompiledSimGraph& cg,
 
 void evaluate_combinational(const CompiledSimGraph& cg,
                             std::vector<bool>& values,
-                            const CompactFault* fault,
-                            const ModeConfig* mc = nullptr) {
+                            const CompactFault* fault) {
   // Reused across nodes so the hot per-node eval does not heap-allocate a fresh
   // vector each time (the scan-pattern sim runs this thousands of times over a
   // large graph; the per-node alloc dominated the runtime).
@@ -104,26 +103,6 @@ void evaluate_combinational(const CompiledSimGraph& cg,
     }
     if (sn.type == GateType::CONST1) {
       values[sn.out] = true;
-      apply_fault(values, fault, sn.out);
-      return;
-    }
-    // Wrapper cells: FUNCTIONAL (mc == nullptr) is a transparent buffer of CFI
-    // (in0); under a ModeConfig a native scan WBR drives its functional output
-    // from the FF state q (in1) on its active side, or safe-0 on the inactive
-    // side. Handled here so the sequential scan-protocol gate is mode-faithful.
-    if (sn.type == GateType::WBR_IN || sn.type == GateType::WBR_OUT) {
-      const uint8_t act = (mc != nullptr)
-                              ? mc->wbr_action[sn.out]
-                              : static_cast<uint8_t>(WbrAction::PASS);
-      if (act == static_cast<uint8_t>(WbrAction::SKIP_STIMULUS)) {
-        // control point: keep the value already in place.
-      } else if (act == static_cast<uint8_t>(WbrAction::FORCE_ZERO)) {
-        values[sn.out] = false;
-      } else if (act == static_cast<uint8_t>(WbrAction::DRIVE_FROM_FF)) {
-        values[sn.out] = (sn.in1 != UNUSED_INPUT) ? values[sn.in1] : false;
-      } else {
-        values[sn.out] = (sn.in0 != UNUSED_INPUT) ? values[sn.in0] : false;
-      }
       apply_fault(values, fault, sn.out);
       return;
     }
@@ -161,81 +140,6 @@ bool edge_active(bool prev, bool cur, TriggerType trigger) {
     return !prev && cur;
   }
   return prev && !cur;
-}
-
-// IEEE 1500 mode-aware combinational evaluation (scalar oracle). Returns the
-// settled net values. PIs and ModeConfig stimulus nets are driven from the
-// vector; wrapper cells apply their per-mode action (buffer / retain stimulus /
-// safe-0). A net fault, if any, overrides after each write.
-std::vector<bool> run_comb_mode(const CompiledSimGraph& cg, const TestVector& vec,
-                                const CompactFault* fault, const ModeConfig& mc) {
-  std::vector<bool> values(cg.net_count, false);
-
-  for (int pi_idx : cg.pi_nets) {
-    const int yid = cg.compiled_to_yosys[pi_idx];
-    auto it = vec.inputs.find(yid);
-    values[pi_idx] = (it != vec.inputs.end()) ? it->second : false;
-    apply_fault(values, fault, static_cast<uint32_t>(pi_idx));
-  }
-  for (uint32_t s : mc.stimulus_nets) {
-    const int yid = cg.compiled_to_yosys[s];
-    auto it = vec.inputs.find(yid);
-    values[s] = (it != vec.inputs.end()) ? it->second : false;
-    apply_fault(values, fault, s);
-  }
-
-  const auto eval_one = [&](const SimNode& sn) {
-    if (sn.type == GateType::INPUT || sn.type == GateType::DFF) {
-      return;
-    }
-    if (sn.type == GateType::CONST0) {
-      values[sn.out] = false;
-      apply_fault(values, fault, sn.out);
-      return;
-    }
-    if (sn.type == GateType::CONST1) {
-      values[sn.out] = true;
-      apply_fault(values, fault, sn.out);
-      return;
-    }
-    if (sn.type == GateType::WBR_IN || sn.type == GateType::WBR_OUT) {
-      const uint8_t act = mc.wbr_action[sn.out];
-      if (act == static_cast<uint8_t>(WbrAction::SKIP_STIMULUS)) {
-        // control point: keep the broadcast stimulus value.
-      } else if (act == static_cast<uint8_t>(WbrAction::FORCE_ZERO)) {
-        values[sn.out] = false;
-      } else if (act == static_cast<uint8_t>(WbrAction::DRIVE_FROM_FF)) {
-        values[sn.out] =
-            (sn.in1 != UNUSED_INPUT) ? values[sn.in1] : false;  // FF state q
-      } else {
-        values[sn.out] = (sn.in0 != UNUSED_INPUT) ? values[sn.in0] : false;
-      }
-      apply_fault(values, fault, sn.out);
-      return;
-    }
-    std::vector<bool> ins;
-    const uint32_t in_slots[] = {sn.in0, sn.in1, sn.in2, sn.in3, sn.in4, sn.in5};
-    for (uint32_t slot : in_slots) {
-      if (slot != UNUSED_INPUT) {
-        ins.push_back(values[slot]);
-      }
-    }
-    values[sn.out] = eval_gate_scalar(sn.type, ins);
-    apply_fault(values, fault, sn.out);
-  };
-
-  if (cg.level_starts.size() >= 2) {
-    for (size_t lvl = 0; lvl + 1 < cg.level_starts.size(); ++lvl) {
-      for (int i = cg.level_starts[lvl]; i < cg.level_starts[lvl + 1]; ++i) {
-        eval_one(cg.nodes[i]);
-      }
-    }
-  } else {
-    for (const auto& sn : cg.nodes) {
-      eval_one(sn);
-    }
-  }
-  return values;
 }
 
 void update_ff_states(const CompiledSimGraph& cg,
@@ -479,26 +383,17 @@ std::vector<std::map<int, bool>> run_sequence(const CompiledSimGraph& cg,
       fault.exclusion == FaultExclusion::NONE ? &fault : nullptr;
   std::vector<std::map<int, bool>> samples;
 
-  // Mode-faithful scan-protocol replay: with native shiftable WBR cells the
-  // boundary mode-mux must drive the core/interconnect from the loaded FF state
-  // q in INTEST/EXTEST. Build the ModeConfig once (mode is fixed for the run).
-  const bool use_mode = vec.test_mode != TestMode::FUNCTIONAL &&
-                        !cg.wrapper_cells.empty();
-  const ModeConfig mode_cfg =
-      use_mode ? build_mode_config(cg, vec.test_mode) : ModeConfig{};
-  const ModeConfig* mcp = use_mode ? &mode_cfg : nullptr;
-
   for (const TestCycle& cycle : cycles_for(vec)) {
     const CompactFault* cycle_fault = cycle.fault_active ? active_fault : nullptr;
     broadcast_inputs(cg, cycle, values, cycle_fault);
     seed_ff_outputs(cg, ff_states, values, cycle_fault);
-    evaluate_combinational(cg, values, cycle_fault, mcp);
+    evaluate_combinational(cg, values, cycle_fault);
     update_ff_states(cg, values, prev_values, ff_states);
     seed_ff_outputs(cg, ff_states, values, cycle_fault);
-    evaluate_combinational(cg, values, cycle_fault, mcp);
+    evaluate_combinational(cg, values, cycle_fault);
     for (int i = 0; i < cycle.settle_cycles; ++i) {
       seed_ff_outputs(cg, ff_states, values, cycle_fault);
-      evaluate_combinational(cg, values, cycle_fault, mcp);
+      evaluate_combinational(cg, values, cycle_fault);
     }
     if (cycle.sample_outputs) {
       samples.push_back(sample_yids ? snapshot_sampled(cg, values, *sample_yids)
@@ -559,35 +454,6 @@ bool GoldenRefSim::is_detected(const CompiledSimGraph& cg,
   for (int cidx : cg.observable) {
     const int yid = cg.compiled_to_yosys[cidx];
     if (fault_free.at(yid) != faulty.at(yid)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-std::map<int, bool> GoldenRefSim::simulate_fault_free(
-    const CompiledSimGraph& cg, const TestVector& vec,
-    const ModeConfig& mode) const {
-  return snapshot(cg, run_comb_mode(cg, vec, nullptr, mode));
-}
-
-std::map<int, bool> GoldenRefSim::simulate_with_fault(
-    const CompiledSimGraph& cg, const TestVector& vec, const CompactFault& fault,
-    const ModeConfig& mode) const {
-  const CompactFault* f =
-      fault.exclusion == FaultExclusion::NONE ? &fault : nullptr;
-  return snapshot(cg, run_comb_mode(cg, vec, f, mode));
-}
-
-bool GoldenRefSim::is_detected(const CompiledSimGraph& cg,
-                               const std::map<int, bool>& fault_free,
-                               const std::map<int, bool>& faulty,
-                               const ModeConfig& mode) const {
-  for (uint32_t cidx : mode.observable_nets) {
-    const int yid = cg.compiled_to_yosys[cidx];
-    auto a = fault_free.find(yid);
-    auto b = faulty.find(yid);
-    if (a != fault_free.end() && b != faulty.end() && a->second != b->second) {
       return true;
     }
   }

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from faultflow.config import ConfigError, load_config
-from faultflow.runner.runner import Runner
+from faultflow.runner.runner import Runner, RunnerError
 from faultflow.shell.errors import ShellError
 from faultflow.shell.help_text import COMMAND_HELP, render_help_overview
 from faultflow.shell.session import ProjectSession
@@ -106,6 +106,25 @@ def test_testmode_change_changes_fingerprint(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # shell session + Tcl commands
 # --------------------------------------------------------------------------- #
+def test_the_abstract_wrappers_wbr_model_is_refused(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.ofs"
+    _write_config(cfg_path, "\n[wrap]\nwbr_model = scan\n")
+    with pytest.raises(ConfigError, match="wbr_model went with the abstract"):
+        load_config(cfg_path, "demo")
+
+
+@pytest.mark.parametrize("mode", ["intest", "extest"])
+def test_a_wrapper_mode_is_a_scan_test(tmp_path: Path, mode: str) -> None:
+    """A combinational run has no wrapper mode to hold: INTEST and EXTEST are
+    scan tests of the wrapped block."""
+    _tiny_json(tmp_path / "demo.json")
+    cfg_path = tmp_path / "config.ofs"
+    _write_config(cfg_path, f"\n[testmode]\nmode = {mode}\n")
+    runner = Runner(load_config(cfg_path, "demo"))
+    with pytest.raises(RunnerError, match="is a scan test of the IEEE 1500 wrapper"):
+        runner.sim()
+
+
 def _loaded_session(tmp_path: Path) -> ProjectSession:
     source = tmp_path / "demo.json"
     _tiny_json(source)

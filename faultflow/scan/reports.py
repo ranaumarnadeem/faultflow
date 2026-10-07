@@ -46,6 +46,11 @@ def _dict_list(value: object) -> list[dict[str, object]]:
     return [item for item in _list(value) if isinstance(item, dict)]
 
 
+def _kind_note(kind: object) -> str:
+    """What the reports add to an IEEE 1500 wrapper's chain: (wrapper)."""
+    return " (wrapper)" if kind == "wrapper" else ""
+
+
 def manifest_from_result(
     result: ScanStitchResult,
     source_json: Path,
@@ -73,6 +78,7 @@ def manifest_from_result(
         "chains": [
             {
                 "index": chain.index,
+                "kind": chain.kind,
                 "scan_in": chain.scan_in,
                 "scan_out": chain.scan_out,
                 "scan_in_net": chain.scan_in_net,
@@ -82,19 +88,6 @@ def manifest_from_result(
                 "cell_records": [_cell_row(cell) for cell in chain.cells],
             }
             for chain in result.chains
-        ],
-        "wrapper_chains": [
-            {
-                "index": chain.index,
-                "scan_in": chain.scan_in,
-                "scan_out": chain.scan_out,
-                "scan_in_net": chain.scan_in_net,
-                "scan_out_net": chain.scan_out_net,
-                "length": chain.length,
-                "cells": [cell.instance for cell in chain.cells],
-                "cell_records": [_cell_row(cell) for cell in chain.cells],
-            }
-            for chain in result.wrapper_chains
         ],
         "cells": [_cell_row(cell) for cell in result.cells],
         "ineligible_ffs": [
@@ -106,48 +99,6 @@ def manifest_from_result(
             for ff in result.ineligible_ffs
         ],
         "latest_check": check_result,
-    }
-
-
-def dry_run_manifest(plan: ScanPlan) -> dict[str, object]:
-    return {
-        "version": 1,
-        "top": plan.top,
-        "chain_order_policy": "sorted by instance name, not netlist order",
-        "chain_count": plan.chain_count,
-        "cell_count": plan.cell_count,
-        "clock_nets": plan.clock_nets,
-        "scan_inputs": plan.scan_inputs,
-        "scan_outputs": plan.scan_outputs,
-        "scan_enable": plan.scan_enable,
-        "chains": [
-            {
-                "index": chain.index,
-                "scan_in": chain.scan_in,
-                "scan_out": chain.scan_out,
-                "length": chain.length,
-                "cells": [cell.instance for cell in chain.cells],
-            }
-            for chain in plan.chains
-        ],
-        "wrapper_chains": [
-            {
-                "index": chain.index,
-                "scan_in": chain.scan_in,
-                "scan_out": chain.scan_out,
-                "length": chain.length,
-                "cells": [cell.instance for cell in chain.cells],
-            }
-            for chain in plan.wrapper_chains
-        ],
-        "ineligible_ffs": [
-            {
-                "instance": ff.instance,
-                "cell_type": ff.cell_type,
-                "reason": ff.reason,
-            }
-            for ff in plan.ineligible_ffs
-        ],
     }
 
 
@@ -173,7 +124,8 @@ def write_scan_chains(path: Path, manifest: dict[str, object]) -> None:
         cells = _list(chain.get("cells", []))
         body = " -> ".join(str(cell) for cell in cells)
         lines.append(
-            f"Chain {chain.get('index')} ({chain.get('length')} FFs): "
+            f"Chain {chain.get('index')}{_kind_note(chain.get('kind'))} "
+            f"({chain.get('length')} FFs): "
             f"{chain.get('scan_in')} -> {body} -> {chain.get('scan_out')}"
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -207,7 +159,8 @@ def render_scan_report(manifest: dict[str, object]) -> str:
     for chain in _dict_list(manifest.get("chains", [])):
         cells = " -> ".join(str(cell) for cell in _list(chain.get("cells", [])))
         lines.append(
-            f"  chain {chain.get('index')} length={chain.get('length')} "
+            f"  chain {chain.get('index')}{_kind_note(chain.get('kind'))} "
+            f"length={chain.get('length')} "
             f"{chain.get('scan_in')} -> {cells} -> {chain.get('scan_out')}"
         )
     lines.extend(["", "ineligible FFs:"])
@@ -271,7 +224,7 @@ def format_dry_run(plan: ScanPlan) -> str:
     for chain in plan.chains:
         cells = " -> ".join(cell.instance for cell in chain.cells)
         lines.append(
-            f"chain {chain.index} length={chain.length}: "
+            f"chain {chain.index}{_kind_note(chain.kind)} length={chain.length}: "
             f"{chain.scan_in} -> {cells} -> {chain.scan_out}"
         )
     lines.append("dry-run wrote no scan artifacts")

@@ -13,56 +13,42 @@ from pathlib import Path
 
 import pytest
 
-from faultflow.project.aggregate import ChipCoverage, ScopeCoverage
+from faultflow.project.soc_aggregate import ChipCoverage, ScopeCoverage
 from faultflow.reporter.soc import SocReportError, soc_report_dict, write_soc_report
 
 
 def _sample_chip() -> ChipCoverage:
-    scope_a = ScopeCoverage(
-        kind="block",
+    block = ScopeCoverage(
         name="blkA",
-        top="blkA",
         campaign_id=1,
-        denominator=100,
-        detected=90,
         owned=100,
         owned_detected=90,
-        foreign=0,
         handoff=5,
-        excluded_by_design=3,
-        total_sites=108,
-        coverage_percent=90.0,
+        excluded=3,
+        total=108,
     )
-    scope_b = ScopeCoverage(
-        kind="interconnect",
-        name="assembly",
-        top="soc_top",
-        campaign_id=2,
-        denominator=20,
-        detected=20,
+    soc = ScopeCoverage(
+        name="soc",
+        campaign_id=1,
         owned=20,
         owned_detected=20,
-        foreign=0,
-        handoff=0,
-        excluded_by_design=0,
-        total_sites=20,
-        coverage_percent=100.0,
+        handoff=40,
+        excluded=0,
+        total=60,
     )
-    chip = ChipCoverage(project="soc2")
-    chip.scopes = [scope_a, scope_b]
-    chip.chip_denominator = scope_a.owned + scope_b.owned
-    chip.chip_detected = scope_a.owned_detected + scope_b.owned_detected
-    chip.chip_coverage_percent = 100.0 * chip.chip_detected / chip.chip_denominator
-    chip.guards = {
-        "tops_disjoint": True,
-        "no_double_count": True,
-        "partition_total": True,
-        "handoff_complete": True,
-        "owned_sites": 120,
-        "handoff_sites": 5,
-        "accounted_sites": 3,
-    }
-    return chip
+    return ChipCoverage(
+        project="soc2",
+        chip_denominator=block.owned + soc.owned,
+        chip_detected=block.owned_detected + soc.owned_detected,
+        scopes=[block, soc],
+        guards={
+            "scopes_distinct": True,
+            "no_fault_counted_twice": True,
+            "handoffs_owned": True,
+            "owned_identities": 120,
+            "handed_identities": 45,
+        },
+    )
 
 
 def test_write_soc_report_validates_from_any_cwd(
@@ -79,7 +65,7 @@ def test_write_soc_report_validates_from_any_cwd(
     assert json_path.exists()
     assert txt_path.exists()
     report = json.loads(json_path.read_text(encoding="utf-8"))
-    assert report["schema"] == "faultflow_soc_coverage_v1"
+    assert report["schema"] == "faultflow_soc_coverage_v2"
     assert report["chip"]["denominator"] == chip.chip_denominator
 
 

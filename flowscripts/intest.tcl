@@ -1,19 +1,20 @@
 # =============================================================================
 # flowscripts/intest.tcl
 #
-# IEEE 1500 INTEST flow: test the core internals of a wrapped + scan-inserted
-# block by loading stimulus through the wrapper boundary (WBC input cells drive
-# core inputs; output cells observe core outputs) and running stuck-at scan ATPG.
+# IEEE 1500 INTEST flow: test the core of a wrapped, scan-inserted block by
+# stuck-at scan ATPG with the wrapper's mode pins held in INTEST: the input
+# cells drive the core from their flops and hold, the output cells capture it.
+# What drives the block in its SoC is unknown.
 #
 # Prerequisites:
-#   1. The block must have been scan-inserted via scan.tcl and the session saved.
-#      (ff::run_scan_insert calls save_session at the end.)
-#   2. The netlist must have IEEE-1500 wrapper boundary cells ($wbc_in/out_*).
+#   The block was wrapped and scan-inserted (scan.tcl with wrap 1, or
+#   core_atpg.tcl) and the session saved (ff::run_scan_insert calls
+#   save_session at the end).
 #
 # Usage (standalone — resumes from a saved scan session):
 #   python ff.py shell -f flowscripts/intest.tcl
 #
-# Usage (sourced by core_atpg.tcl / hereichy_atpg.tcl to import ff::run_intest):
+# Usage (sourced by core_atpg.tcl to import ff::run_intest):
 #   set _ff_intest_sourced 1
 #   source {flowscripts/intest.tcl}
 # =============================================================================
@@ -55,11 +56,13 @@ proc ff::run_intest {args} {
     ff::log "========================================================"
 
     # Restore synthesis + scan-check state from the scan session
-    # (scan_inserted=true, scan_checked=true, netlist path, PDK profile)
+    # (scan_inserted=true, scan_checked=true, netlist path, PDK profile),
+    # setting aside a design already loaded
+    reset
     resume $opt(top)
 
-    # Switch to INTEST mode: WBC input cells drive core inputs from their FF q
-    # and WBC output cells observe core outputs; interconnect side is safe-forced.
+    # Switch to INTEST: the input cells drive the core from their flops, the
+    # output cells capture it and drive their ports at the safe 0.
     set_testmode intest
     ff::log "test mode: [report_testmode]"
 

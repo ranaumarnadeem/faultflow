@@ -60,8 +60,7 @@ GateType parse_gate_type(const std::string& s) {
       {"OR4B", GateType::OR4B},     {"ADDF", GateType::ADDF_S},
       {"ADDF_CO", GateType::ADDF_CO},
       {"ADDH", GateType::ADDH_S},   {"CONST0", GateType::CONST0},
-      {"CONST1", GateType::CONST1}, {"WBR_IN", GateType::WBR_IN},
-      {"WBR_OUT", GateType::WBR_OUT},
+      {"CONST1", GateType::CONST1},
       // Sky130 compound gates
       {"A211O", GateType::A211O},     {"A222OI", GateType::A222OI},
       {"A2BB2OI", GateType::A2BB2OI}, {"A311O", GateType::A311O},
@@ -164,36 +163,6 @@ CellFFMetadata parse_ff_metadata(const nlohmann::json& node) {
   return ff;
 }
 
-CellWBRMetadata parse_wbr_metadata(const nlohmann::json& node) {
-  CellWBRMetadata wbr;
-  wbr.present = true;
-  const std::string side = node.at("side").get<std::string>();
-  if (side == "input") {
-    wbr.is_input = true;
-  } else if (side == "output") {
-    wbr.is_input = false;
-  } else {
-    throw ParseError("WBR side must be 'input' or 'output': " + side);
-  }
-  wbr.core_pin = node.at("core_pin").get<std::string>();
-  wbr.sys_pin = node.at("sys_pin").get<std::string>();
-  wbr.scan = node.value("scan", false);
-  if (wbr.scan) {
-    for (const char* pin : {"func_in_pin", "chain_in_pin", "chain_out_pin",
-                            "scan_enable_pin", "clock_pin"}) {
-      if (!node.contains(pin)) {
-        throw ParseError(std::string("scan WBR metadata missing pin: ") + pin);
-      }
-    }
-    wbr.func_in_pin = node.at("func_in_pin").get<std::string>();
-    wbr.chain_in_pin = node.at("chain_in_pin").get<std::string>();
-    wbr.chain_out_pin = node.at("chain_out_pin").get<std::string>();
-    wbr.scan_enable_pin = node.at("scan_enable_pin").get<std::string>();
-    wbr.clock_pin = node.at("clock_pin").get<std::string>();
-  }
-  return wbr;
-}
-
 CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node) {
   CellMapEntry entry;
   if (node.value("unsupported", false)) {
@@ -220,36 +189,11 @@ CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node)
   if (node.contains("ff")) {
     entry.ff = parse_ff_metadata(node.at("ff"));
   }
-  if (node.contains("wbr")) {
-    entry.wbr = parse_wbr_metadata(node.at("wbr"));
-  }
   if (node.contains("delay")) {
     entry.delay = node.at("delay").get<double>();
   }
   if (entry.node_type == NodeType::FF && !entry.ff.present) {
     throw ParseError("FF cell map entry missing ff metadata: " + pattern);
-  }
-  if ((entry.gate_type == GateType::WBR_IN ||
-       entry.gate_type == GateType::WBR_OUT) &&
-      !entry.wbr.present) {
-    throw ParseError("WBR cell map entry missing wbr metadata: " + pattern);
-  }
-  // A scan WBR cell is BOTH an FF (capture/shift) and a wrapper (mode mux). Its
-  // ff: and wbr: blocks must agree on the shared pins so downstream code can
-  // trust either view (the lowering reads ff.* for the FF half and wbr.core_pin/
-  // sys_pin for the mode-mux drive net).
-  if (entry.wbr.present && entry.wbr.scan) {
-    if (entry.node_type != NodeType::FF || !entry.ff.present) {
-      throw ParseError("scan WBR cell must be node_type FF with ff metadata: " +
-                       pattern);
-    }
-    if (entry.ff.data != entry.wbr.func_in_pin ||
-        entry.ff.scan_in != entry.wbr.chain_in_pin ||
-        entry.ff.output != entry.wbr.chain_out_pin ||
-        entry.ff.scan_enable != entry.wbr.scan_enable_pin ||
-        entry.ff.clock != entry.wbr.clock_pin) {
-      throw ParseError("scan WBR ff/wbr pin cross-check mismatch: " + pattern);
-    }
   }
   return entry;
 }

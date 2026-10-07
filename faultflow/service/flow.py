@@ -11,9 +11,7 @@ from typing import Any, Callable
 
 from faultflow.config import FaultflowConfig
 from faultflow.db import (
-    CAMPAIGN_TYPE_COMB,
-    CAMPAIGN_TYPE_SCAN,
-    CAMPAIGN_TYPE_SCAN_EXTEST,
+    campaign_type_of,
     connect,
     latest_campaign_id,
     summary,
@@ -22,6 +20,7 @@ from faultflow.project.profiles import profile_for_cell_map
 from faultflow.reporter.unified import write_unified_report
 from faultflow.runner import Runner
 from faultflow.scan import run_scan_techmap, write_scan_techmap
+from faultflow.scan.yosys import _quote
 from faultflow.service.models import (
     AtpgResult,
     CampaignStatusResult,
@@ -206,23 +205,24 @@ class FlowService:
         message = str(runner.write_patterns(patterns, output, overlap=overlap))
         return OperationResult("write-patterns", cfg.top, message)
 
+    def wrap(self, cfg: FaultflowConfig, *, dry_run: bool = False) -> OperationResult:
+        log.info("wrap   start  top=%s", cfg.top)
+        message = str(self._runner(cfg).wrap(dry_run=dry_run))
+        return OperationResult("wrap", cfg.top, message)
+
     def run_atpg(self, cfg: FaultflowConfig, **options: object) -> AtpgResult:
         log.info("sim    start  top=%s", cfg.top)
         message = str(self._runner(cfg).sim(**options))
         scan = bool(options.get("scan", False))
-        # Scan-model EXTEST (test_mode="extest" + scan=True) routes to _sim_extest,
-        # which records CAMPAIGN_TYPE_SCAN_EXTEST specifically so it never collides
-        # with the block's own INTEST/scan campaign in the same DB (runner.py) --
-        # metrics must look up that same campaign, not plain "scan".
-        if scan and str(cfg.test_mode) == "extest":
-            campaign_type = CAMPAIGN_TYPE_SCAN_EXTEST
-        else:
-            campaign_type = CAMPAIGN_TYPE_SCAN if scan else CAMPAIGN_TYPE_COMB
+        # Metrics look up the campaign the run wrote: EXTEST's is its own
+        # (scan_extest), beside the block's scan campaign.
         return AtpgResult(
             "run_atpg",
             cfg.top,
             message,
-            metrics=self._campaign_metrics(cfg, campaign_type),
+            metrics=self._campaign_metrics(
+                cfg, campaign_type_of(scan, str(cfg.test_mode))
+            ),
         )
 
     def serial_reference(
@@ -275,7 +275,9 @@ class FlowService:
             message,
             metrics={
                 "scan": scan,
-                **self._campaign_metrics(cfg, "scan" if scan else "comb"),
+                **self._campaign_metrics(
+                    cfg, campaign_type_of(scan, str(cfg.test_mode))
+                ),
             },
             warnings=warnings,
             campaign_state=state,
@@ -335,24 +337,35 @@ class FlowService:
         max_rounds: int | None = None,
         target_coverage: float | None = None,
         clean: bool = False,
+        export_patterns: Path | None = None,
     ) -> OperationResult:
-        """Run per-block INTEST + assembly EXTEST, then aggregate the chip number."""
-        from faultflow.project.aggregate import aggregate_project
-        from faultflow.project.manifest import load_project
-        from faultflow.project.orchestrator import run_project as orchestrate
+        """Build the SoC of a faultflow_project_v2 project, run each block's INTEST
+        and the SoC's EXTEST (its patterns exported to `export_patterns` when
+        given), then aggregate the chip number."""
+        from faultflow.config import load_config
+        from faultflow.project.manifest import load_soc_project
+        from faultflow.project.soc_flow import (
+            project_output,
+            run_soc_project,
+            soc_chip_coverage,
+        )
         from faultflow.reporter.soc import write_soc_report
 
-        project = load_project(project_path)
+        project = load_soc_project(project_path)
         log.info("project start  name=%s blocks=%d", project.name, len(project.blocks))
-        scopes = orchestrate(
+        out_dir = project_output(project)
+        scopes = run_soc_project(
             project,
+            load_config(project.base_config, project.soc.top),
             run_atpg=self.run_atpg,
+            check_scan=self.check_scan,
+            out=out_dir,
             max_rounds=max_rounds,
             target_coverage=target_coverage,
             clean=clean,
+            soc_patterns=export_patterns,
         )
-        chip = aggregate_project(project.name, scopes)
-        out_dir = (project.root / "output" / project.name).resolve()
+        chip = soc_chip_coverage(project, scopes)
         json_path, txt_path = write_soc_report(chip, out_dir)
         log.info(
             "project done  name=%s chip_coverage=%s",
@@ -380,6 +393,49 @@ class FlowService:
             artifacts={"soc_report": txt_path, "soc_json": json_path},
         )
 
+    def retarget_project(
+        self, project_path: Path, block: str, out: Path
+    ) -> OperationResult:
+        """Block `block`'s INTEST patterns, from the project's run, as the SoC
+        takes them: written to `out` as exported scan patterns."""
+        from faultflow.config import load_config
+        from faultflow.project.manifest import load_soc_project
+        from faultflow.project.soc_flow import project_output, retarget_block
+
+        project = load_soc_project(project_path)
+        count = retarget_block(
+            project,
+            load_config(project.base_config, project.soc.top),
+            project_output(project),
+            block,
+            out,
+        )
+        return OperationResult(
+            "retarget_project",
+            project.name,
+            f"retargeted {count} INTEST pattern(s) of block {block} onto "
+            f"{project.soc.top} -> {out}",
+            artifacts={"patterns": out},
+        )
+
+    def write_project_patterns(
+        self, project_path: Path, patterns: Path, output: Path, *, overlap: bool = True
+    ) -> OperationResult:
+        """The SoC's scan patterns (its EXTEST's, or a block's retargeted onto it)
+        as STIL, the cycles a tester applies to the composed SoC
+        (write_patterns)."""
+        from faultflow.config import load_config
+        from faultflow.project.manifest import load_soc_project
+        from faultflow.project.soc_flow import project_output, soc_scope
+
+        project = load_soc_project(project_path)
+        cfg = soc_scope(
+            project,
+            load_config(project.base_config, project.soc.top),
+            project_output(project),
+        )
+        return self.write_patterns(cfg, patterns, output, overlap=overlap)
+
     def write_report(self, cfg: FaultflowConfig) -> ReportResult:
         log.info("report  writing  top=%s ...", cfg.top)
         path = write_unified_report(cfg)
@@ -401,8 +457,9 @@ class FlowService:
         output.parent.mkdir(parents=True, exist_ok=True)
         temporary = output.with_suffix(output.suffix + ".tmp")
         script = cfg.generated_scripts_dir / "write_netlist.ys"
+        # A Yosys script, not Tcl: double quotes quote a path, braces don't.
         script.write_text(
-            f"read_json {{{source}}}\nwrite_verilog {{{temporary}}}\n",
+            f"read_json {_quote(source)}\nwrite_verilog {_quote(temporary)}\n",
             encoding="utf-8",
         )
         proc = subprocess.run(

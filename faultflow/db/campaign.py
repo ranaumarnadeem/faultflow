@@ -9,6 +9,15 @@ CAMPAIGN_TYPE_SCAN_EXTEST = "scan_extest"
 EXPECTED_USER_VERSION = 10
 
 
+def campaign_type_of(scan: bool, test_mode: str) -> str:
+    """The campaign a run writes: a scan or a combinational one -- and the IEEE
+    1500 wrapper's EXTEST a campaign of its own, beside the block's scan
+    campaign (INTEST or functional)."""
+    if scan and test_mode == "extest":
+        return CAMPAIGN_TYPE_SCAN_EXTEST
+    return CAMPAIGN_TYPE_SCAN if scan else CAMPAIGN_TYPE_COMB
+
+
 class SchemaError(RuntimeError):
     """Raised when a legacy database schema is detected."""
 

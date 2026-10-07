@@ -123,31 +123,35 @@ inputs and outputs — which reduces scan ATPG to the combinational SAT problem.
 
 ## IEEE 1500 wrapper and hierarchy
 
-The Tcl shell's `wrap` command injects wrapper boundary register (WBR) cells onto a
-synthesized netlist's boundary ports; they are ordinary lowered cells to the
-simulator, not a special-cased path. `set_testmode` then selects which side of the
-wrapper is the device under test:
+`ff.py wrap` (and the shell's `wrap`) puts an IEEE 1500 wrapper on a synthesized
+netlist's ports (`faultflow/wrap/`): on each data port bit a boundary cell of three
+sky130 cells -- a `mux2_1` choosing the functional value or the cell's flop, an
+`and2b_1` gating to the safe 0, and a `dfxtp_1` capturing the mux -- and two mode
+pins. They are ordinary cells to the simulator, and scan insertion gives the
+wrapper's flops chains of their own. A wrapper mode is a scan test with the mode
+pins held (`ff.py intest` / `extest`, or the shell's `set_testmode`):
 
 ```mermaid
 flowchart TD
-    subgraph INTEST["INTEST — test the core"]
+    subgraph INTEST["INTEST — test the core, its surroundings unknown"]
         direction LR
-        I1[WBC input cells] -->|drive from FF| I2[core inputs]
-        I3[core outputs] -->|observed by FF| I4[WBC output cells]
+        I1[input cells] -->|drive from their flops, hold| I2[core inputs]
+        I3[core outputs] -->|captured| I4[output cells]
     end
-    subgraph EXTEST["EXTEST — test the interconnect, core blackboxed"]
+    subgraph EXTEST["EXTEST — test the boundary, the core a blackbox"]
         direction LR
-        E1[assembly interconnect] -->|drives / observes| E2[WBC input cells]
-        E3[WBC output cells] -->|drives / observes| E4[assembly interconnect]
+        E1[output cells] -->|drive from their flops, hold| E2[ports]
+        E3[ports] -->|captured| E4[input cells]
     end
 ```
 
-For a chip built from several wrapped blocks, `faultflow/project/` (`orchestrator.py`,
-`aggregate.py`, `assemble.py`) drives per-block INTEST plus one assembly EXTEST and
-aggregates the results into a single chip-level coverage number — the `project` CLI
-command and `flowscripts/hereichy_atpg.tcl` are the two ways to run it. Block-level
-scan patterns can also be retargeted onto an SoC-level scan path (`faultflow/retarget/`)
-without re-running ATPG. See [Flow recipes](../user_guide/examples.md) for worked
+For a chip built from several wrapped blocks, `faultflow/project/` composes the SoC
+from the blocks' frozen scan netlists (`assemble.py`), runs each block's INTEST and
+the SoC's EXTEST (`soc_flow.py`), and adds them into one chip coverage number with
+each fault counted once (`identity.py`, `soc_aggregate.py`) — the `project` CLI
+command runs it. Each
+block's INTEST patterns can also be retargeted onto the SoC's chains
+(`faultflow/retarget/`, `project retarget`) without re-running ATPG. See [Flow recipes](../user_guide/examples.md) for worked
 examples of both.
 
 ## The fault model
@@ -231,5 +235,5 @@ changes.
 | `src/core/atpg/fault_solver.cpp` | Native SAT ATPG |
 | `src/core/bindings/python_bindings.cpp` | The exact Python ↔ C++ surface |
 | `faultflow/runner/runner.py` | Yosys invocation and orchestration |
-| `faultflow/wrap/ports.py` | IEEE 1500 WBR injection |
-| `faultflow/project/orchestrator.py` | Hierarchical block-to-SoC aggregation |
+| `faultflow/wrap/block.py` | IEEE 1500 wrapper insertion |
+| `faultflow/project/soc_flow.py` | Hierarchical block-to-SoC test and aggregation |

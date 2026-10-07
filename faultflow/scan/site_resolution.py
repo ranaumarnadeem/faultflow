@@ -41,41 +41,6 @@ def _compiled_by_stem_yid(rows: list[dict[str, Any]]) -> dict[int, int]:
     }
 
 
-def _wbr_observe_sites(
-    view_cells: Mapping[str, Any],
-    reduced_by_key: Mapping[str, Mapping[str, Any]],
-    reduced_stems: Mapping[int, int],
-    exact_stems: set[int],
-) -> dict[str, int]:
-    """Wrapper output cell instance -> the view site its INTEST capture reads:
-    the branch into its `$wbobserve_` buffer, or that buffer's input stem when
-    the buffer is the net's only observer (`exact_stems`)."""
-    sites: dict[str, int] = {}
-    prefix = "$wbobserve_"
-    for name, cell in view_cells.items():
-        if not name.startswith(prefix) or not isinstance(cell, dict):
-            continue
-        bits = cell.get("connections", {}).get("A", [])
-        if len(bits) != 1 or not isinstance(bits[0], int):
-            continue
-        net = bits[0]
-        branch = reduced_by_key.get(
-            canonical_site_key(
-                SiteProvenance(
-                    yosys_net_id=net,
-                    kind="branch",
-                    consumer_instance=name,
-                    input_pin="A",
-                )
-            )
-        )
-        if branch is not None:
-            sites[name[len(prefix) :]] = int(branch["compiled_net_index"])
-        elif net in exact_stems and net in reduced_stems:
-            sites[name[len(prefix) :]] = reduced_stems[net]
-    return sites
-
-
 def build_scan_execution_map(
     core: Any,
     generic_json_path: str | Path,
@@ -85,7 +50,6 @@ def build_scan_execution_map(
     unsupported: str,
     pseudo_port_map: dict[str, dict[str, Any]],
     manifest: Mapping[str, Any],
-    wbr_decoupled_bits: frozenset[int] = frozenset(),
     blackbox_instances: Sequence[str] = (),
 ) -> tuple[dict[str, int], dict[str, str]]:
     # `blackbox_instances` are the GENERIC netlist's: the reduced view models
@@ -162,58 +126,16 @@ def build_scan_execution_map(
             bit for bit in port.get("bits", []) if isinstance(bit, int)
         )
 
-    # IEEE 1500 wrapper boundary cells (buffer- and scan-model). A scan-model cell
-    # lowers (in the C++ normalizer) to an FF half + a `$wbrmux` half, so its core
-    # net fans out to both and its branch sites have no consumer in the fused view
-    # (the cell is removed). Grade those branches at the core net itself -- the
-    # fused view preserves it as a stem (PPI-driven for inputs, observe-tapped for
-    # outputs). The cell's scan-chain nets (CTI/SE/CTO) are wrapper infrastructure
-    # and leave the denominator (tagged scan_chain). Buffer cells carry no chain
-    # nets, so this is a no-op for them.
-    from faultflow.scan.wbr_view import extract_wbr_cells, extract_wbr_chain_bits
-
-    wbr_records = extract_wbr_cells(module)
-    wbr_core_bits = {rec.core_net for rec in wbr_records}
-    wbr_instances = {rec.instance for rec in wbr_records}
-    view_cells = reduced_data["modules"][str(manifest["top"])].get("cells", {})
-    wbr_observe = _wbr_observe_sites(
-        view_cells,
-        reduced_by_key,
-        reduced_stems,
-        {
-            yid
-            for yid in reduced_stems
-            if yid not in reduced_fanout_yids and yid not in reduced_output_yids
-        },
-    )
-    # Use extract_wbr_chain_bits (not just rec.chain_nets) so that chain nets
-    # from constant-FROM_CORE WBR out cells are included: those cells are
-    # skipped by extract_wbr_cells but the C++ still lowers them and emits
-    # their CTO/CTI/SE fault sites in the generic site-key listing.
-    wbr_chain_bits: set[int] = extract_wbr_chain_bits(module)
-
     for raw_row in generic_rows:
         row = dict(raw_row)
         key = str(row["site_key"])
         yid = int(row["yosys_net_id"])
         kind = str(row["kind"])
-        # INTEST/EXTEST: system-side nets decoupled from the fused view have no
-        # reduced mapping and must be excluded rather than raising boundary_map_missing.
-        if yid in wbr_decoupled_bits:
-            exclusions[key] = "wbr_decoupled"
-            continue
         if yid in scan_chain_yids:
             exclusions[key] = "scan_chain"
             continue
         if yid in scan_internal_yids:
             exclusions[key] = "scan_internal"
-            continue
-        if yid in wbr_chain_bits:
-            # Wrapper scan-chain infrastructure (wbr_si/se/so + inter-cell chain).
-            # The combinational INTEST view makes the boundary directly
-            # controllable/observable and abstracts the shift path away, so these
-            # leave the denominator -- exactly like the main chain's SDI nets.
-            exclusions[key] = "scan_chain"
             continue
         if (
             kind == "branch"
@@ -227,32 +149,14 @@ def build_scan_execution_map(
             execution[key] = int(direct["compiled_net_index"])
             continue
         # A branch into a removed scan flop's D or async control: graded where
-        # that flop's capture reads it. Before the Q block -- the branch's net
-        # may be another scan flop's Q -- and before the WBR rules, which would
-        # otherwise take a core net's D branch for the core net.
+        # that flop's capture reads it. Before the Q block: the branch's net may
+        # be another scan flop's Q.
         if kind == "branch":
             observe_yid = d_boundaries.get(key, control_boundaries.get(key))
             if observe_yid is not None:
                 if observe_yid in reduced_stems:
                     execution[key] = reduced_stems[observe_yid]
                 continue
-        # A branch into a removed wrapper cell (either half of its two-node
-        # lowering): graded where the fused view's INTEST capture reads the core
-        # net for that cell -- for a scan flop's Q, a view net with another id.
-        # Without an observe site, at the core net if the view keeps it.
-        if kind == "branch" and yid in wbr_core_bits:
-            wbr_instance = str(row.get("consumer_instance", "")).removesuffix("$wbrmux")
-            if wbr_instance in wbr_instances:
-                if wbr_instance in wbr_observe:
-                    execution[key] = wbr_observe[wbr_instance]
-                elif yid in reduced_stems:
-                    execution[key] = reduced_stems[yid]
-                continue
-        # Any other unmatched site on a WBR core net: the core net, which the
-        # fused view keeps as a stem.
-        if yid in wbr_core_bits and yid in reduced_stems:
-            execution[key] = reduced_stems[yid]
-            continue
         q_entry = q_boundaries.get(yid)
         if q_entry is not None:
             if kind == "stem":
@@ -296,12 +200,15 @@ def apply_scan_execution_map(
     jtag_sites: set[str] | frozenset[str] = frozenset(),
     jtag_faults: frozenset[tuple[str, str]] = frozenset(),
     reset_sites: set[str] | frozenset[str] = frozenset(),
+    decoupled_faults: frozenset[tuple[str, str]] = frozenset(),
 ) -> None:
     """Write the view site of every fault ATPG grades and the exclusion of every
     fault it doesn't. ``reset_sites`` (both faults of each site: a settled non-scan
     flop's, scan/nonscan.py) are reset faults; ``jtag_sites`` (both faults of each
-    site) and ``jtag_faults`` ((site key, "sa0"/"sa1") pairs) are left to JTAG. Each
-    tags only an uncollapsed fault nothing else excludes, so it is counted once."""
+    site) and ``jtag_faults`` ((site key, "sa0"/"sa1") pairs) are left to JTAG;
+    ``decoupled_faults`` (pairs too) to the other IEEE 1500 wrapper test mode
+    (faultflow.wrap.sides). Each tags only an uncollapsed fault nothing else
+    excludes, so it is counted once."""
     conn.execute(
         "UPDATE faults SET atpg_compiled_net_index = NULL WHERE campaign_id = ?",
         (campaign_id,),
@@ -351,6 +258,16 @@ def apply_scan_execution_map(
         jtag_update + " AND lower(fault_type) = ?",
         [(campaign_id, key, fault_type) for key, fault_type in sorted(jtag_faults)],
     )
+    conn.executemany(
+        """
+        UPDATE faults
+        SET exclusion = 'wbr_decoupled', excluded = 'wbr_decoupled',
+            status = 'excluded', atpg_compiled_net_index = NULL
+        WHERE campaign_id = ? AND fault_site_key = ? AND lower(fault_type) = ?
+          AND exclusion = 'none' AND collapsed_into IS NULL
+        """,
+        [(campaign_id, key, ftype) for key, ftype in sorted(decoupled_faults)],
+    )
     missing = conn.execute(
         """
         SELECT fault_site_key
@@ -370,3 +287,24 @@ def apply_scan_execution_map(
             f"canonical site {missing['fault_site_key']}"
         )
     conn.commit()
+
+
+def mark_blackbox_unresolved(
+    conn: sqlite3.Connection, campaign_id: int, faults: frozenset[tuple[str, str]]
+) -> int:
+    """Mark each (site key, "sa0"/"sa1") of ``faults`` blackbox_unresolved before
+    any test is graded: no test may credit it, since its effect lets an unknown
+    value in. Only a fault ATPG would grade -- uncollapsed, excluded by nothing,
+    not detected. How many it marked."""
+    before = conn.total_changes
+    conn.executemany(
+        """
+        UPDATE faults SET blackbox_unresolved = 1
+        WHERE campaign_id = ? AND fault_site_key = ? AND lower(fault_type) = ?
+          AND exclusion = 'none' AND collapsed_into IS NULL
+          AND status != 'detected'
+        """,
+        [(campaign_id, key, ftype) for key, ftype in sorted(faults)],
+    )
+    conn.commit()
+    return conn.total_changes - before

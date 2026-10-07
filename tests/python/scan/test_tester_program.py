@@ -202,12 +202,29 @@ def test_overlapped_each_load_unloads_the_pattern_before(tmp_path: Path) -> None
     assert cycles(chip, [], overlap=True) == []
 
 
-def test_wrapper_cells_and_a_chip_compacted_before_compression_are_refused(
-    tmp_path: Path,
-) -> None:
-    wrapped = _manifest(tmp_path, {"u_wbc": {"type": "$wbc_in_scan_faultflow"}})
-    with pytest.raises(ScanError, match="IEEE 1500 wrapper cells"):
-        chip_of(wrapped)
+def test_a_pattern_loading_one_chain_shifts_its_length(tmp_path: Path) -> None:
+    """shift_length: an EXTEST pattern loads the wrapper chain alone, here chain 1
+    (one flop). It shifts once to load and once to unload; chain 0 shifts that
+    one bit too, and nothing of it is compared."""
+    chip = chip_of(_manifest(tmp_path))
+    pattern = {
+        "load_seqs": {"1": [True]},
+        "capture_pi_values": {"d": True},
+        "expected_unload": {"1": [False]},
+        "shift_length": 1,
+    }
+    program = cycles(chip, [pattern])
+    assert [c.phase for c in program] == ["load", "capture", "unload"]
+    assert (program[0].inputs["scan_in_1"], program[0].inputs["scan_in_0"]) == (1, 0)
+    assert program[2].expect == {"scan_out_0": None, "scan_out_1": 0}
+    with pytest.raises(ScanError, match="must shift as long"):
+        cycles(chip, [pattern, PATTERN], overlap=True)
+    assert len(cycles(chip, [pattern, pattern], overlap=True)) == 5
+    with pytest.raises(ScanError, match="isn't between 1 and"):
+        cycles(chip, [{**pattern, "shift_length": 3}])
+
+
+def test_a_chip_compacted_before_compression_is_refused(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
     manifest["compression"] = {"enabled": True}
     manifest["compaction"] = {"enabled": True, "with_decompressor": False}

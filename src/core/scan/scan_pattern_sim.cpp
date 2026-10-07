@@ -222,7 +222,6 @@ TestVector build_scan_pattern_vector(const ParsedGraph& parsed,
     append_unload_pulse(vec, parsed, request.clock_ports,
                         request.clock_off_states, values, unload_faults);
   }
-  vec.test_mode = request.test_mode;
   return vec;
 }
 

@@ -92,6 +92,23 @@ def test_write_netlist_verify_passes_for_genuine_techmap(
     assert "sky130_fd_sc_hd__sdfxtp_1" in written.read_text(encoding="utf-8")
 
 
+def test_write_netlist_writes_the_generic_netlists(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """write_netlist, and with -scan the generic scanned netlist, as Verilog --
+    their Yosys script quoting each path as Yosys reads it."""
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+    _session, bridge = _scanned_session(tmp_path)
+
+    bridge.call("write_netlist", "-scan")
+    bridge.call("write_netlist")
+
+    out = tmp_path / "out" / "tiny_dff"
+    assert "$scanff_faultflow" in (out / "tiny_dff_scan_generic.v").read_text("utf-8")
+    assert "module tiny_dff" in (out / "tiny_dff.v").read_text("utf-8")
+
+
 @pytest.mark.integration
 def test_verify_techmapped_netlist_catches_broken_mapping(
     tmp_path: Path, require_cpp_core: None

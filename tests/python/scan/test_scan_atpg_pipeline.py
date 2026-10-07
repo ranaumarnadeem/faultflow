@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -151,7 +152,9 @@ def test_sim_scan_passes_scan_db_to_progressive_atpg(
         Runner, "_fingerprint", lambda self, netlist: _stub_fingerprint(netlist)
     )
     monkeypatch.setattr(
-        Runner, "_ensure_campaign", lambda self, conn, fp, scan=False: 1
+        Runner,
+        "_ensure_campaign",
+        lambda self, conn, fp, scan=False, campaign_type=None: 1,
     )
     monkeypatch.setattr(
         "faultflow.runner.runner.write_reports",
@@ -229,24 +232,18 @@ def test_preflight_sim_scan_rejects_ineligible_ffs(
         runner._preflight_sim_scan()
 
 
-def test_preflight_sim_scan_allows_wbr_scan_cells(
+def test_preflight_sim_scan_allows_flops_left_out_on_purpose(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # WBR scan cells live in the wrapper chain (fused downstream by
-    # fuse_wbr_into_view), not the main scan chain -- they must not block
-    # sim --scan even though they are reported as ineligible.
+    # Flops [scan] nonscan_cells leaves out (a TAP, say) are tied in the view,
+    # not a full-scan blocker, though reported as ineligible.
     monkeypatch.chdir(tmp_path)
     runner, _generic, manifest = _install_passing_scan_workspace(tmp_path)
     manifest["ineligible_ffs"] = [
         {
-            "instance": "__wi_D",
-            "cell_type": "$wbc_in_scan_faultflow",
-            "reason": "wbr_scan_cell",
-        },
-        {
-            "instance": "__wo_Q",
-            "cell_type": "$wbc_out_scan_faultflow",
-            "reason": "wbr_scan_cell",
+            "instance": "u_tap",
+            "cell_type": "sky130_fd_sc_hd__dfxtp_1",
+            "reason": "nonscan_policy",
         },
     ]
     manifest_path = runner.cfg.scan_manifest_path
@@ -258,15 +255,15 @@ def test_preflight_sim_scan_allows_wbr_scan_cells(
 def test_preflight_sim_scan_mixed_ineligible_names_only_real_blocker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A genuine blocker mixed with WBR cells still raises, but the message names
-    # only the real blocker -- the exempt WBR cell is not reported.
+    # A genuine blocker mixed with a flop left out on purpose still raises, but
+    # the message names only the real blocker -- the exempt flop isn't reported.
     monkeypatch.chdir(tmp_path)
     runner, _generic, manifest = _install_passing_scan_workspace(tmp_path)
     manifest["ineligible_ffs"] = [
         {
-            "instance": "__wi_D",
-            "cell_type": "$wbc_in_scan_faultflow",
-            "reason": "wbr_scan_cell",
+            "instance": "u_tap",
+            "cell_type": "sky130_fd_sc_hd__dfxtp_1",
+            "reason": "nonscan_policy",
         },
         {
             "instance": "u_bad",
@@ -279,7 +276,21 @@ def test_preflight_sim_scan_mixed_ineligible_names_only_real_blocker(
     with pytest.raises(RunnerError, match="ineligible FFs remain") as exc:
         runner._preflight_sim_scan()
     assert "u_bad" in str(exc.value)
-    assert "__wi_D" not in str(exc.value)
+    assert "u_tap" not in str(exc.value)
+
+
+@pytest.mark.parametrize("mode", ["intest", "extest"])
+def test_a_wrapper_mode_needs_the_wrapper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """INTEST and EXTEST hold the mode pins of the IEEE 1500 wrapper ff.py wrap
+    puts on: on a scanned design without one, the run is refused rather than
+    quietly a functional scan test."""
+    monkeypatch.chdir(tmp_path)
+    runner, _generic, _manifest = _install_passing_scan_workspace(tmp_path)
+    moded = Runner(dataclasses.replace(runner.cfg, test_mode=mode))
+    with pytest.raises(RunnerError, match="the scanned design has none"):
+        moded.sim(scan=True)
 
 
 def test_comb_and_scan_share_unified_db_path(tmp_path: Path) -> None:
