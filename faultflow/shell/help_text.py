@@ -288,6 +288,21 @@ COMMAND_HELP = {
         "A completed scan ATPG run (run_atpg -scan).",
         "run_jtag -verify",
     ),
+    "run_wsp": CommandHelp(
+        "Run",
+        "run_wsp [-force] [-threads N]",
+        "Grade the faults the scan test left to an IEEE 1500 WSP",
+        "Plays the WSP's integrity program on the scanned netlist -- the WIR "
+        "shifted, every instruction code loaded and its data register shifted "
+        "and captured -- and grades the faults the scan test left to the WSP "
+        "(excluded_wsp) at wso, the wrapped outputs and the wrapper scan-outs, "
+        "after checking the netlist's own outputs against the WSP's model. The "
+        "credit is reported beside the scan coverage (wsp). -force grades again "
+        "when an identical grade is recorded.",
+        "A completed scan test of a block wrapped with -control wsp "
+        "(run_atpg -scan).",
+        "run_wsp",
+    ),
     "check_scan": CommandHelp(
         "Scan",
         "check_scan [-structural]",

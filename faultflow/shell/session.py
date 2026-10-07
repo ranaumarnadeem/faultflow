@@ -778,6 +778,33 @@ class ProjectSession:
             },
         )
 
+    def run_wsp(self, **options: Any) -> OperationResult:
+        """ff.py wsp: grade the faults the scan test left to the IEEE 1500 WSP
+        with its integrity program (faultflow.wrap.wsp_grade)."""
+        if self.top is None:
+            raise precondition("run read_netlist first", "NO_DESIGN")
+        if not self.scan_inserted:
+            raise precondition("run add_scan first", "SCAN_REQUIRED")
+        from faultflow.wrap.wsp_grade import run_wsp
+
+        cfg = self.materialize_config()
+        try:
+            outcome = run_wsp(cfg, **options)
+        except RuntimeError as exc:
+            raise ShellError(str(exc), "RUNNER", "WSP_FAILED") from exc
+        self._refresh_report()
+        return OperationResult(
+            operation="wsp",
+            top=cfg.top,
+            message=outcome.message(cfg.top),
+            metrics={
+                "graded": outcome.graded,
+                "detected": outcome.detected,
+                "init_dependent": outcome.init_dependent,
+                "cycles": outcome.cycles,
+            },
+        )
+
     def status(self, *, scan: bool = False) -> OperationResult:
         return self.service.status(self.materialize_config(), scan=scan)
 

@@ -652,6 +652,11 @@ def write_reports(
         jtag_run = jtag_store.latest_run(conn, campaign_id)
         assert jtag_run is not None
         jtag_detected = jtag_store.detected_fault_ids(conn, int(jtag_run["id"]))
+    from faultflow.wrap import wsp_grade
+
+    wsp_block = wsp_grade.report_block(conn, campaign_id, data)
+    if wsp_block is not None:
+        report["wsp"] = wsp_block
     categories = _autombist_categories(
         conn, cfg, campaign_id, str(fp.get("campaign_type", "")), jtag_detected
     )
@@ -746,6 +751,8 @@ def write_reports(
     txt.append("")
     if jtag_blocks is not None:
         txt.extend(_jtag_lines(*jtag_blocks))
+    if wsp_block is not None:
+        txt.extend(wsp_grade.wsp_lines(wsp_block))
         txt.append("")
     if categories is not None:
         txt.extend(

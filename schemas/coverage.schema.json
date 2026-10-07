@@ -292,6 +292,51 @@
         "test_coverage_percent": { "type": ["number", "null"] }
       }
     },
+    "wsp": {
+      "description": "The latest ff.py wsp grade of this campaign's faults: an IEEE 1500 WSP's integrity program, compared at WSO, of the faults the scan test left to it (excluded_wsp); combined: the scan's and its credit together",
+      "type": "object",
+      "required": [
+        "program_digest",
+        "cycles",
+        "tests",
+        "graded",
+        "detected",
+        "init_dependent",
+        "detected_by_test",
+        "combined"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "program_digest": { "type": "string" },
+        "cycles": { "type": "integer", "minimum": 1 },
+        "tests": { "type": "array", "items": { "type": "string" } },
+        "graded": { "type": "integer", "minimum": 0 },
+        "detected": { "type": "integer", "minimum": 0 },
+        "init_dependent": { "type": "integer", "minimum": 0 },
+        "detected_by_test": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "combined": {
+          "type": "object",
+          "required": [
+            "structural_eligible",
+            "denominator",
+            "detected",
+            "redundant",
+            "test_coverage_percent"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "structural_eligible": { "type": "integer", "minimum": 0 },
+            "denominator": { "type": "integer", "minimum": 0 },
+            "detected": { "type": "integer", "minimum": 0 },
+            "redundant": { "type": "integer", "minimum": 0 },
+            "test_coverage_percent": { "type": ["number", "null"] }
+          }
+        }
+      }
+    },
     "wrapper": {
       "description": "A wrapped block's -- or a SoC's -- test in a wrapper mode (faultflow.wrap.report), by part: its core, its boundary cells, its mode pins, and a SoC's glue. decoupled: left to the other mode (wbr_decoupled)",
       "type": "object",

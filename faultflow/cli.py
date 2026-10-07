@@ -425,6 +425,23 @@ def _parser() -> argparse.ArgumentParser:
     )
     jtag.add_argument("--export", type=Path, help="Write the TCK program played")
 
+    wsp = sub.add_parser(
+        "wsp",
+        help=(
+            "Grade the faults the scan test leaves to an IEEE 1500 WSP "
+            "([wrap] control = wsp) with its integrity program, compared at WSO"
+        ),
+    )
+    add_common(wsp)
+    wsp.add_argument(
+        "--force",
+        action="store_true",
+        help="Grade again even if an identical grade is recorded",
+    )
+    wsp.add_argument(
+        "--threads", type=int, help="Grading threads (default: [simulation])"
+    )
+
     wrap = sub.add_parser(
         "wrap",
         help="Put an IEEE 1500 wrapper on the design's ports ([wrap])",
@@ -700,6 +717,11 @@ def main(argv: list[str] | None = None) -> int:
                 verify=args.verify,
             )
             print(outcome.message(cfg.top))
+        elif args.command == "wsp":
+            from faultflow.wrap.wsp_grade import run_wsp
+
+            graded = run_wsp(cfg, force=args.force, sim_threads=args.threads)
+            print(graded.message(cfg.top))
         elif args.command == "wrap":
             print(service.wrap(cfg, dry_run=args.dry_run).message)
         elif args.command == "scan-compress":

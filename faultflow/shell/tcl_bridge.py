@@ -28,6 +28,7 @@ class TclBridge:
             "check_scan": self._check_scan,
             "run_atpg": self._run_atpg,
             "run_jtag": self._run_jtag,
+            "run_wsp": self._run_wsp,
             "status": self._status,
             "report": self._report,
             "write_netlist": self._write_netlist,
@@ -335,6 +336,25 @@ proc {name} {{args}} {{
             else:
                 raise ShellError(usage, "CONFIG", "INVALID_OPTION")
         return self.session.run_jtag(**options)
+
+    def _run_wsp(self, args: list[str]) -> Any:
+        usage = "usage: run_wsp [-force] [-threads N]"
+        options: dict[str, Any] = {}
+        index = 0
+        while index < len(args):
+            key = args[index]
+            if key == "-force":
+                options["force"] = True
+                index += 1
+            elif key == "-threads" and index + 1 < len(args):
+                try:
+                    options["sim_threads"] = int(args[index + 1])
+                except ValueError:
+                    raise ShellError(usage, "CONFIG", "INVALID_OPTION")
+                index += 2
+            else:
+                raise ShellError(usage, "CONFIG", "INVALID_OPTION")
+        return self.session.run_wsp(**options)
 
     def _check_scan(self, args: list[str]) -> Any:
         structural_only = False

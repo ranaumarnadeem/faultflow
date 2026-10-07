@@ -449,6 +449,39 @@ detected or not.
 | `--threads N` | Grading threads (default: `[simulation] sim_threads`) |
 | `--export FILE` | Write the TCK program played |
 
+## `wsp`
+
+```bash
+python3 ff.py wsp --top <top> -c config.ofs [--force] [--threads N]
+```
+
+Grade the faults a scan test of a block wrapped with an IEEE 1500 WSP (`[wrap]
+control = wsp`) leaves to the WSP (`excluded_wsp`) with the WSP's integrity program,
+compared at `wso`, at the wrapped outputs and at the wrapper chains' scan-outs. Needs a
+completed scan test of the block in the current `[testmode] mode` (`sim --scan`,
+`intest` or `extest`); stuck-at only; a block's WSP, not a SoC's chain of them.
+
+The program resets the WSP, shifts a pattern through the WIR, then loads each of the
+eight instruction codes in turn and shifts and captures the data register it selects
+(WBY, or the boundary register in a serial instruction, the input cells capturing the
+ports the program drives), and checks that an update without `selectwir` changes
+nothing. What the WSP's behavioural model can't know -- the core's outputs, which the
+program never clocks -- is no care. Every input but the WSP's and the wrapped data
+inputs is 0.
+
+Before grading, the netlist's own outputs must be the model's at every care bit, from
+all-0 and all-1 flop states alike; otherwise the run is refused and writes nothing. A
+fault is credited when it changes a care bit from both initial states; one only one of
+them shows is counted `init_dependent` and not credited. The result is written to
+`wsp_report.json` in the intermediate directory, kept beside the scan campaign, and
+reported as the coverage report's `wsp` block: what the program detected, and with the
+scan's credit, the combined coverage over the scan's faults and the WSP's.
+
+| Option | Meaning |
+|---|---|
+| `--force` | Grade again when an identical grade (program, netlist) is recorded |
+| `--threads N` | Grading threads (default: `[simulation] sim_threads`) |
+
 ## `rule_check`
 
 ```bash
@@ -565,6 +598,7 @@ side.
 | Scan status | `status -scan` | `scan-status` / `status --scan` |
 | Regenerate techmap | `write_netlist -scan -techmap` | `scan-techmap` |
 | JTAG network-integrity grade | `run_jtag` | `jtag` |
+| WSP integrity grade | `run_wsp` | `wsp` |
 | Status | `status` | `status` |
 | INTEST | `set_testmode intest` + scan flow + `run_atpg -scan` | `intest` |
 | EXTEST | `set_testmode extest` + scan flow + `run_atpg -scan` | `extest` |
