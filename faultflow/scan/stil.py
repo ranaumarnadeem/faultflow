@@ -2,7 +2,9 @@
 (``faultflow.scan.tester_program``), each pattern alone or each load overlapping the
 unload of the pattern before, written with STIL's scan constructs. Each load and
 unload is a call of one ``load_unload`` procedure whose Shift takes every chain's
-bits; a preamble is a Loop; a launch and a capture are one vector each.
+bits; a preamble is a Loop; a launch and a capture are one vector each. The test
+setup program (``[scan] test_setup``) is the ``test_setup`` macro, every vector of
+it setting every signal, where each pulsed clock pulses and the others stay low.
 
 One WaveformTable: inputs change at the start of the period, outputs are strobed
 before the scan clocks rise, and the clocks pulse after the strobe. In STIL every
@@ -34,6 +36,7 @@ from faultflow.scan.tester_program import Chip, Cycle
 
 WAVEFORM_TABLE = "_wft_"
 PROCEDURE = "load_unload"
+SETUP_MACRO = "test_setup"
 PATTERN = "_pattern_"
 BURST = "_burst_"
 
@@ -116,12 +119,15 @@ def write_stil(
         f"    Title {_quoted(title or f'FaultFlow scan patterns: {chip.top}')};"
     )
     overlapped = any(cycle.unloading not in (None, cycle.pattern) for cycle in program)
+    setup = _setup_run(program)
     applied = (
-        "Each load also unloads the pattern before; the preamble is given once, "
-        "first, and a last unload ends the patterns."
+        "Each load also unloads the pattern before; the "
+        + ("test_setup macro and the " if setup else "")
+        + "preamble are given once, first, and a last unload ends the patterns."
         if overlapped
-        else "Each pattern alone: its preamble, load, launch, capture and unload, "
-        "as FaultFlow grades it."
+        else "Each pattern alone: its "
+        + ("test_setup macro, " if setup else "")
+        + "preamble, load, launch, capture and unload, as FaultFlow grades it."
     )
     lines += [
         '    Source "FaultFlow";',
@@ -184,10 +190,49 @@ def write_stil(
     shifted = [("_si", "#" * len(groups.si))] if chip.scan_ins else []
     shifted += [("_so", "#" * len(groups.so)), ("_clk", "P" * len(groups.clk))]
     lines += [f"        Shift {{ V {{ {_assign(shifted)} }} }}", "    }", "}", ""]
+    if setup:
+        lines += [
+            "MacroDefs {",
+            f"    {_quoted(SETUP_MACRO)} {{",
+            f"        W {_quoted(WAVEFORM_TABLE)};",
+        ]
+        lines += [
+            f"        V {{ {_assign(_full_vector(cycle, groups))} }}" for cycle in setup
+        ]
+        lines += ["    }", "}", ""]
     lines += [f"Pattern {_quoted(PATTERN)} {{", f"    W {_quoted(WAVEFORM_TABLE)};"]
-    lines += _Patterns(chip, groups).write(program)
+    lines += _Patterns(chip, groups, setup).write(program)
     lines += ["}", ""]
     return "\n".join(lines)
+
+
+def _setup_run(program: Sequence[Cycle]) -> list[Cycle]:
+    """The first run of setup cycles in `program`: the test_setup macro's."""
+    for (_, phase), run in groupby(program, key=lambda c: (c.pattern, c.phase)):
+        if phase == "setup":
+            return list(run)
+    return []
+
+
+def _clock_data(cycle: Cycle, clocks: Sequence[str]) -> str:
+    """Each scan clock's waveform character in `cycle`: P where it pulses."""
+    return "".join(
+        "P" if cycle.pulse and (cycle.clocks is None or clock in cycle.clocks) else "0"
+        for clock in clocks
+    )
+
+
+def _full_vector(cycle: Cycle, groups: _Groups) -> list[tuple[str, str]]:
+    """A vector setting every group: `cycle`'s inputs and clocks, and what it
+    compares (X where nothing)."""
+    return [
+        ("_pi", _drive(cycle, groups.pi)),
+        ("_si", _drive(cycle, groups.si)),
+        ("_se", _drive(cycle, [groups.se])),
+        ("_po", _compare(cycle, groups.po)),
+        ("_so", _compare(cycle, groups.so)),
+        ("_clk", _clock_data(cycle, groups.clk)),
+    ]
 
 
 def _scan_structures(chip: Chip, chains: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -218,9 +263,12 @@ class _Patterns:
     statement sets only what a run needs changed; after a call, which readers end
     differently, it counts on nothing."""
 
-    def __init__(self, chip: Chip, groups: _Groups) -> None:
+    def __init__(
+        self, chip: Chip, groups: _Groups, setup: Sequence[Cycle] = ()
+    ) -> None:
         self.chip = chip
         self.groups = groups
+        self.setup = list(setup)  # the test_setup macro's cycles
         self.held: dict[str, str] = {}
         self.lines: list[str] = []
 
@@ -230,12 +278,14 @@ class _Patterns:
             program, key=lambda cycle: (cycle.pattern, cycle.phase)
         ):
             cycles = list(run)
-            if any(not cycle.pulse for cycle in cycles):
+            if phase != "setup" and any(not cycle.pulse for cycle in cycles):
                 raise ScanError(f"STIL: pattern {pattern} has a cycle with no pulse")
             if pattern != labelled:
                 self.lines.append(f'    "pattern {pattern}":')
                 labelled = pattern
-            if phase == "preamble":
+            if phase == "setup":
+                self._setup(pattern, cycles)
+            elif phase == "preamble":
                 self._preamble(pattern, cycles)
             elif phase in ("load", "unload"):
                 self._shifts(pattern, cycles)
@@ -297,15 +347,19 @@ class _Patterns:
         self.lines.append(f"    Call {_quoted(PROCEDURE)} {{ {_assign(data)} }}")
         self.held = {}
 
+    def _setup(self, pattern: int, cycles: list[Cycle]) -> None:
+        """A call of the test_setup macro, whose vectors set every signal; after
+        it the writer counts on nothing."""
+        want = [_full_vector(cycle, self.groups) for cycle in self.setup]
+        if [_full_vector(cycle, self.groups) for cycle in cycles] != want:
+            raise ScanError(
+                f"STIL: pattern {pattern}'s test setup program differs from the "
+                "first pattern's, the test_setup macro"
+            )
+        self.lines.append(f"    Macro {_quoted(SETUP_MACRO)};")
+        self.held = {}
+
     def _vector(self, cycle: Cycle) -> None:
-        groups = self.groups
-        vector = [
-            ("_pi", _drive(cycle, groups.pi)),
-            ("_si", _drive(cycle, groups.si)),
-            ("_se", _drive(cycle, [groups.se])),
-            ("_po", _compare(cycle, groups.po)),
-            ("_so", _compare(cycle, groups.so)),
-            ("_clk", "P" * len(groups.clk)),
-        ]
+        vector = _full_vector(cycle, self.groups)
         self.lines.append(f"    V {{ {_assign(vector)} }}")
         self.held.update((group, data) for group, data in vector if data)

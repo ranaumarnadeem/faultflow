@@ -21,6 +21,7 @@ from faultflow.atpg import (
     parse_bench_outputs,
     parse_quaigh_test,
 )
+from faultflow.control_trace import port_bits
 from faultflow.config import (
     FaultflowConfig,
     LEGACY_SCAN_DB_NAME,
@@ -52,7 +53,7 @@ from faultflow.scan import (
     verilog_to_json,
 )
 from faultflow.rule_check.model import RuleCheckReport
-from faultflow.scan.checks import check_scan_structure
+from faultflow.scan.checks import Transparent, check_scan_structure
 from faultflow.scan.atpg_view import build_scan_atpg_view
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.compression import Decompressor, insert_compression
@@ -68,7 +69,13 @@ from faultflow.scan.reports import (
     utc_timestamp,
     write_scan_artifacts,
 )
-from faultflow.scan.nonscan import NONSCAN_REASON, NonscanSetup, analyze_nonscan
+from faultflow.scan.nonscan import (
+    NONSCAN_REASON,
+    NonscanSetup,
+    analyze_nonscan,
+    scan_clock_off,
+)
+from faultflow.scan.setup import SetupCycle, check_setup, load_setup, setup_hash
 from faultflow.scan.stil import write_stil
 from faultflow.scan.tester_program import chip_of, cycles
 from faultflow.scan.shift_controls import (
@@ -406,6 +413,11 @@ class Runner:
             # set, so a design without them keeps its config_hash.
             payload["scan_nonscan_cells"] = list(self.cfg.scan.nonscan_cells)
             payload["scan_hold"] = [list(pair) for pair in self.cfg.scan.hold]
+        if self.cfg.scan.test_setup is not None:
+            # What the test setup program loads decides the programmed non-scan
+            # flops' values and the faults left to JTAG. Keyed only when set,
+            # so a design without one keeps its config_hash.
+            payload["scan_test_setup"] = setup_hash(self._test_setup())
         if self.cfg.compression.enabled:
             # Compressed, every pattern is a decompressor seed's load
             # (scan.detection_pipeline._decompressed); a campaign graded before
@@ -1793,6 +1805,26 @@ class Runner:
             "netlist": str(destination),
         }
 
+    def _transparent(self, manifest: dict[str, Any]) -> Transparent:
+        """What scan-check follows a scan cell's SDI and SE through: the inputs
+        the scan test holds and the non-scan flops it ties. A non-scan setup that
+        can't be found ties nothing here; the shift-control check reports why."""
+        generic_json = Path(str(manifest["generic_json"]))
+        try:
+            nonscan = self._nonscan_setup(manifest, generic_json)
+        except RunnerError:
+            nonscan = None
+        known = {
+            flop.q: int(flop.value)
+            for flop in (nonscan.flops if nonscan is not None else ())
+            if flop.value is not None
+        }
+        return Transparent(
+            cell_map=_load_json_object(resolve_scan_cell_map(self.cfg)),
+            holds=dict(self._holds(manifest)),
+            known=known,
+        )
+
     def scan_check(
         self,
         vectors_path: Path | None = None,
@@ -1805,7 +1837,11 @@ class Runner:
         if not manifest_path.exists():
             raise RunnerError(f"scan manifest not found: {manifest_path}")
         manifest = load_manifest(manifest_path)
-        structural = check_scan_structure(manifest, require_techmap=require_techmap)
+        structural = check_scan_structure(
+            manifest,
+            require_techmap=require_techmap,
+            transparent=self._transparent(manifest),
+        )
         errors = list(structural.errors)
         warnings = list(structural.warnings)
         if not errors:
@@ -2761,6 +2797,15 @@ class Runner:
             blocking_instances=blocking,
         )
 
+    def _test_setup(self) -> tuple[SetupCycle, ...]:
+        """The test setup program ([scan] test_setup), or none."""
+        if self.cfg.scan.test_setup is None:
+            return ()
+        try:
+            return load_setup(self.cfg.scan.test_setup)
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+
     def _nonscan_setup(
         self,
         manifest: dict[str, Any],
@@ -2793,9 +2838,34 @@ class Runner:
                 scan_reset_holds=_scan_reset_pi_holds(
                     generic_json, self.cfg.top, cell_map
                 ),
+                setup=self._test_setup(),
+                blackbox_instances=list(self.cfg.blackbox_instances),
             )
         except ScanError as exc:
             raise RunnerError(str(exc)) from exc
+
+    def _checked_test_setup(
+        self, manifest: Mapping[str, Any], generic_json: Path
+    ) -> tuple[SetupCycle, ...]:
+        """The test setup program, checked against the scanned netlist: it names
+        its inputs and pulses its scan clocks only. v1 refuses it with scan
+        compression or compaction, whose chip is a composed netlist."""
+        setup = self._test_setup()
+        if not setup:
+            return ()
+        if self.cfg.compression.enabled or self.cfg.compaction.enabled:
+            raise RunnerError(
+                "[scan] test_setup with scan compression or compaction isn't "
+                "supported: the setup program drives the scanned design's inputs, "
+                "and the chip is the composed netlist"
+            )
+        _, module = _json_top_module(generic_json, self.cfg.top)
+        inputs = [name for name, _ in port_bits(module, "input")]
+        try:
+            check_setup(setup, inputs, list(scan_clock_off(module, manifest)))
+        except ScanError as exc:
+            raise RunnerError(str(exc)) from exc
+        return setup
 
     def _sim_scan(
         self,
@@ -2889,6 +2959,7 @@ class Runner:
         # cfg.blackbox_instances. Non-scan flops and held inputs are tied the
         # same way (scan.nonscan).
         nonscan = self._nonscan_setup(run_manifest, generic_json, extra_holds)
+        setup = self._checked_test_setup(run_manifest, generic_json)
         view, pseudo_port_map = build_scan_atpg_view(
             _load_json_object(generic_json),
             run_manifest,
@@ -2933,6 +3004,7 @@ class Runner:
             nonscan=nonscan,
             wrapper=wrapper if scope is not None else None,
             wrapper_scope=scope,
+            setup=setup,
         )
 
         from faultflow.scan.atpg_view import ATPG_VIEW_SCHEMA_VER

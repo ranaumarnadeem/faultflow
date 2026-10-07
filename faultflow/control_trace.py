@@ -128,6 +128,18 @@ class Forced:
     steps: tuple[Step, ...]
 
 
+@dataclass(frozen=True)
+class Through:
+    """Where a net's value comes from, followed back through every cell that passes
+    one input on while held values fix its others (:meth:`Netlist.through`): the
+    net it stops at, whether the cells on the way invert it, and the held side
+    inputs that keep them passing it (see :data:`Step`)."""
+
+    source: int | str
+    inverted: bool
+    steps: tuple[Step, ...]
+
+
 def one_net(value: Any) -> int | str | None:
     if not isinstance(value, list) or len(value) != 1:
         return None
@@ -244,6 +256,93 @@ class Netlist:
             ((net, instance, pin, value),) if isinstance(net, int) else ()
         )
         return Forced(value, own + upstream)
+
+    def through(
+        self,
+        net: Any,
+        values: Mapping[str, int],
+        known: Mapping[int, int] | None = None,
+    ) -> Through:
+        """Follow ``net`` back through each single-output gate whose inputs but one
+        are held (``values``: input port bits; ``known``: nets of flops sitting
+        still) and whose output is that input or its complement -- a buffer, an
+        inverter, a mux a held select steers, an OR with its other inputs held at
+        0 -- to the first net no such gate drives: an input port bit, a flop's
+        output, other logic, or a constant."""
+        known = known or {}
+        steps: list[Step] = []
+        inverted = False
+        seen: set[int] = set()
+        while isinstance(net, int) and net not in seen:
+            seen.add(net)
+            if net in self.input_net_names or net in known or net not in self.drivers:
+                break
+            driver = self.drivers[net][0]
+            entry = self.entry(driver) or {}
+            if entry.get("node_type") != "GATE" or len(entry.get("outputs", {})) != 1:
+                break
+            passed = self._passed(driver, entry, values, known)
+            if passed is None:
+                break
+            source, flips, held = passed
+            inverted ^= flips
+            steps.extend(held)
+            net = source
+        return Through(net, inverted, tuple(steps))
+
+    def _passed(
+        self,
+        driver: str,
+        entry: Mapping[str, Any],
+        values: Mapping[str, int],
+        known: Mapping[int, int],
+    ) -> tuple[Any, bool, list[Step]] | None:
+        """The one free input ``driver`` passes on with its others held -- its net,
+        whether the gate inverts it, and the held inputs' paths -- or None."""
+        from faultflow.runner.runner import _load_core
+
+        core = _load_core()
+        gate = str(entry.get("gate_type", ""))
+        inputs = [str(p) for p in entry.get("inputs", [])]
+        if core is None or not gate or len(inputs) > _MAX_EVALUATED_INPUTS:
+            return None
+        conns = self.cells[driver].get("connections", {})
+        held: list[int | None] = []
+        steps: list[Step] = []
+        for pin in inputs:
+            source = one_net(conns.get(pin))
+            found = self._held(source, values, known, {}, set())
+            if found is None:
+                held.append(None)
+                continue
+            held.append(found[0])
+            if isinstance(source, int):
+                steps.append((source, driver, pin, found[0]))
+            steps.extend(found[1])
+        free = [i for i, value in enumerate(held) if value is None]
+        for passing in free:
+            others = [i for i in free if i != passing]
+            relation: set[tuple[int, int]] = set()
+            for assignment in itertools.product((0, 1), repeat=len(others)):
+                given = dict(zip(others, assignment))
+                outputs = []
+                for level in (0, 1):
+                    bits = [
+                        bool(
+                            level
+                            if i == passing
+                            else given[i] if i in given else held[i]
+                        )
+                        for i in range(len(held))
+                    ]
+                    outputs.append(int(core.eval_gate(gate, bits)))
+                relation.add((outputs[0], outputs[1]))
+                if len(relation) > 1:
+                    break
+            if relation == {(0, 1)} or relation == {(1, 0)}:
+                inverted = relation == {(1, 0)}
+                return one_net(conns.get(inputs[passing])), inverted, steps
+        return None
 
     def _held(
         self,

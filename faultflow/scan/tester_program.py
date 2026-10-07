@@ -1,11 +1,12 @@
 """The cycles a tester applies to run exported scan patterns on the chip, cycle for
-cycle as FaultFlow grades them (``scan_pattern_sim.cpp``): each pattern alone -- the
-preamble's pulses, the load, a transition pattern's launch, the capture, then the
-unload -- or, overlapped, each load also unloading the pattern before. A cycle
-gives every input but the scan clocks its value, the outputs it compares at the
-strobe (the clocks low, before their edge), and whether the clocks pulse at its
-end. The real-cell replay drives the PDK's cell models with these cycles, and the
-STIL writer writes them.
+cycle as FaultFlow grades them (``scan_pattern_sim.cpp``): each pattern alone -- its
+test setup program (``[scan] test_setup``), the preamble's pulses, the load, a
+transition pattern's launch, the capture, then the unload -- or, overlapped, each
+load also unloading the pattern before. A cycle gives every input but the scan
+clocks its value, the outputs it compares at the strobe (the clocks low, before
+their edge), and whether the clocks pulse at its end -- all of them, but in a setup
+cycle only those it names. The real-cell replay drives the PDK's cell models with
+these cycles, and the STIL writer writes them.
 
 The chip is the netlist a tester connects to: the scanned one, or with scan
 compression or compaction the one ``scan-compress`` or ``scan-compact`` composed
@@ -22,9 +23,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from faultflow.scan.errors import ScanError
+from faultflow.scan.setup import SetupCycle, setup_from_list
 
 # A pattern's phases, in the order its cycles come.
-PHASES = ("preamble", "load", "launch", "capture", "unload")
+PHASES = ("setup", "preamble", "load", "launch", "capture", "unload")
 
 # The scanned design's instance in a composed netlist (insert_compression,
 # insert_compaction): its cells are named "core_inst__<cell>" there.
@@ -161,6 +163,9 @@ class Cycle:
     # unload, the one before in a load that overlaps that one's unload. None: no
     # unload.
     unloading: int | None = None
+    # When the cycle pulses only some of the scan clocks (a setup cycle may),
+    # those, sorted; None: all of them.
+    clocks: tuple[str, ...] | None = None
 
 
 def cycles(
@@ -171,11 +176,13 @@ def cycles(
     everywhere but the launch on capture and the capture.
 
     Without `overlap` each pattern is applied alone, as FaultFlow grades it: its
-    preamble, load, launch, capture, then its unload. With it, each load also
-    unloads the pattern before -- a tester's usual way, half the shifts. Nothing an
-    unload compares depends on what shifts in or on the inputs the load holds.
-    Every flop a preamble settles stays settled under the holds, so the longest
-    preamble is given once, first, and each capture's pulse, scan enable off, arms
+    test setup program, preamble, load, launch, capture, then its unload. With it,
+    each load also unloads the pattern before -- a tester's usual way, half the
+    shifts. Nothing an unload compares depends on what shifts in or on the inputs
+    the load holds. What the setup program loads holds through every pattern
+    (scan.nonscan's proof), and every flop a preamble settles stays settled under
+    the holds, so the setup program -- the patterns' one -- and then the longest
+    preamble are given once, first, and each capture's pulse, scan enable off, arms
     the decompressor's reseed for the next load. A last unload ends the patterns;
     every pattern must shift as long (shift_length)."""
     inputs = [name for name in chip.inputs if name not in chip.clocks]
@@ -194,6 +201,16 @@ def cycles(
         )
     program: list[Cycle] = []
     if own:
+        setups = {
+            setup_from_list(pattern.get("setup", []), f"pattern {index} setup")
+            for index, pattern in enumerate(patterns)
+        }
+        if len(setups) > 1:
+            raise ScanError(
+                "overlapped, the patterns' test setup program is given once: they "
+                f"must share one, not {len(setups)}"
+            )
+        program += [c for c in own[0] if c.phase == "setup"]
         preamble = max(sum(c.phase == "preamble" for c in o) for o in own)
         program += [_preamble_cycle(chip, own[0])] * preamble
     previous: list[Cycle] = []  # the unload of the pattern before
@@ -241,7 +258,12 @@ def _pattern_cycles(
         values.update(_seeded(chip, pattern, index))
         values.update(dict.fromkeys(chip.scan_ins, 0))
         values[chip.scan_enable] = 0
-    own: list[Cycle] = []
+    own: list[Cycle] = _setup_cycles(
+        chip,
+        inputs,
+        index,
+        setup_from_list(pattern.get("setup", []), f"pattern {index} setup"),
+    )
     for _ in range(int(pattern.get("preamble_cycles", 0))):
         own.append(Cycle(index, "preamble", dict(shift), {}))
     shifts = _shift_length(chip, pattern, index)
@@ -264,6 +286,45 @@ def _pattern_cycles(
         unload = _unloaded(chip, pattern, t)
         own.append(Cycle(index, "unload", shifting, unload, unloading=index))
     return own
+
+
+def _setup_cycles(
+    chip: Chip, inputs: list[str], index: int, setup: Sequence[SetupCycle]
+) -> list[Cycle]:
+    """Pattern `index`'s test setup program: in each cycle every input at the
+    value the program gives it, 0 if none, and the clocks it pulses."""
+    if setup and (chip.seed_bits or chip.channel_bits):
+        raise ScanError(
+            f"pattern {index} has a test setup program, which a chip with scan "
+            "compression or compaction can't take"
+        )
+    found: list[Cycle] = []
+    for cycle in setup:
+        values = dict.fromkeys(inputs, 0)
+        for name, value in cycle.inputs:
+            if name not in values:
+                raise ScanError(
+                    f"pattern {index}'s test setup sets {name}, which is not an "
+                    "input of the chip or is a scan clock"
+                )
+            values[name] = int(value)
+        unknown = sorted(set(cycle.pulse) - set(chip.clocks))
+        if unknown:
+            raise ScanError(
+                f"pattern {index}'s test setup pulses {unknown}, not scan clocks"
+            )
+        pulsed = tuple(sorted(cycle.pulse))
+        found.append(
+            Cycle(
+                index,
+                "setup",
+                values,
+                {},
+                pulse=bool(pulsed),
+                clocks=pulsed if pulsed and set(pulsed) != set(chip.clocks) else None,
+            )
+        )
+    return found
 
 
 def _shift_length(chip: Chip, pattern: Mapping[str, Any], index: int) -> int:

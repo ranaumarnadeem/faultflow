@@ -325,6 +325,9 @@ class ScanConfig:
     # The IEEE 1500 wrapper's chains (faultflow.wrap): None, as many as keep each
     # no longer than the longest core chain.
     wrapper_chains: int | None = None
+    # The test setup program applied before every scan pattern
+    # (faultflow.scan.setup): a JSON file, checked when the config loads. None.
+    test_setup: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -446,6 +449,9 @@ class FaultflowConfig:
     # [design] output_root: the campaign's outputs go to <output_root>/<top>.
     output_root: Path = Path("output")
     clocks: tuple[ClockSpec, ...] = ()
+    # [clocks] groups: clocks a tester pulses together, at speed -- one domain to
+    # the transition test (scan.domain_reach).
+    clock_groups: tuple[tuple[str, ...], ...] = ()
     blackbox_instances: tuple[str, ...] = ()
     # [blackbox] output_value: (instance, value) for each listed instance --
     # what its outputs hold during a scan test. "x" (the default): unknown,
@@ -604,6 +610,28 @@ def _parse_clocks(parser: ConfigParser) -> tuple[ClockSpec, ...]:
     return tuple(ClockSpec(port=p, off_state=off_states.get(p, 0)) for p in ports)
 
 
+def _parse_clock_groups(parser: ConfigParser) -> tuple[tuple[str, ...], ...]:
+    """``[clocks] groups = clk wrck; clk2 clk3``: each group, clocks a tester pulses
+    together."""
+    raw = parser.get("clocks", "groups", fallback="").strip()
+    groups: list[tuple[str, ...]] = []
+    seen: set[str] = set()
+    for chunk in raw.split(";"):
+        group = tuple(name for name in chunk.replace(",", " ").split() if name)
+        if not group:
+            continue
+        if len(group) < 2:
+            raise ConfigError(f"[clocks] groups: '{chunk.strip()}' names one clock")
+        repeated = sorted(seen & set(group)) or sorted(
+            {n for n in group if group.count(n) > 1}
+        )
+        if repeated:
+            raise ConfigError(f"[clocks] groups names {repeated[0]} twice")
+        seen.update(group)
+        groups.append(group)
+    return tuple(groups)
+
+
 def _parse_holds(parser: ConfigParser, section: str) -> tuple[tuple[str, int], ...]:
     """``[<section>] hold = <input>:<0|1>, ...``: inputs held at a constant."""
     hold: list[tuple[str, int]] = []
@@ -633,6 +661,15 @@ def _parse_scan(parser: ConfigParser) -> ScanConfig:
         raise ConfigError(
             f"[scan] shift_controls must be fail or warn, got '{shift_controls}'"
         )
+    test_setup = _optional_path(parser, "scan", "test_setup")
+    if test_setup is not None:
+        from faultflow.scan.errors import ScanError
+        from faultflow.scan.setup import load_setup
+
+        try:
+            load_setup(test_setup)
+        except ScanError as exc:
+            raise ConfigError(str(exc)) from exc
     return ScanConfig(
         chains=_int(parser, "scan", "chains", 1),
         max_chain_length=_optional_int(parser, "scan", "max_chain_length"),
@@ -644,6 +681,7 @@ def _parse_scan(parser: ConfigParser) -> ScanConfig:
         hold=_parse_holds(parser, "scan"),
         shift_controls=shift_controls,
         wrapper_chains=_optional_int(parser, "scan", "wrapper_chains"),
+        test_setup=test_setup,
     )
 
 
@@ -994,6 +1032,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         compression=_compression_config(parser),
         compaction=_compaction_config(parser),
         clocks=clocks,
+        clock_groups=_parse_clock_groups(parser),
         blackbox_instances=blackbox_instances,
         blackbox_output_values=blackbox_output_values,
         testpoint=TestpointConfig(

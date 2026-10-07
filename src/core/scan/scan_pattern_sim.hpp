@@ -11,6 +11,15 @@ namespace faultflow::scan {
 
 constexpr int kScanProtocolFaultBatchSize = 63;
 
+// One cycle of a test setup program (faultflow/scan/setup.py): every input at its
+// value in `inputs` -- an input it doesn't name at 0 -- with the scan clocks off,
+// then the clocks in `pulse` on, then off again with the same inputs (a
+// falling-edge flop takes its value with the cycle's inputs, as on a tester).
+struct SetupCycle {
+  std::map<std::string, bool> inputs;
+  std::vector<std::string> pulse;
+};
+
 struct ScanPatternRequest {
   std::vector<std::string> clock_ports;
   std::vector<bool> clock_off_states;  // parallel to clock_ports; element i is the
@@ -49,6 +58,11 @@ struct ScanPatternRequest {
   // inactive while the chains shift (a real scan flop's set/reset acts during
   // shift too). Empty: capture_pi_values throughout.
   std::map<std::string, bool> shift_pi_values;
+  // The test setup program, before everything else (the preamble too): what puts
+  // the chip in its test mode -- a test-mode register it loads. Fault-inactive
+  // and unsampled, like the load: faults that change what it loads aren't
+  // credited (faultflow/scan/nonscan.py). Empty: none.
+  std::vector<SetupCycle> setup_cycles;
 };
 
 // Returns true if clock i should be pulsed during the launch/capture window.

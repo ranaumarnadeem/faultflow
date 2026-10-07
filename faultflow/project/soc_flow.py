@@ -231,6 +231,11 @@ def run_soc_project(
     workspace under `out`, its patterns exported there (INTEST_PATTERNS) for
     :func:`retarget_block`, and the SoC's EXTEST, its patterns exported to
     `soc_patterns` when given. `run_atpg` and `check_scan` are the FlowService's."""
+    if base.scan.test_setup is not None:
+        raise ProjectError(
+            "[scan] test_setup applies to one chip's scan test; a project's blocks "
+            "and SoC each take their own, which a project doesn't set up yet"
+        )
     build = build_soc(project, base, out)
     check_scan(build.cfg)
     options: dict[str, Any] = {

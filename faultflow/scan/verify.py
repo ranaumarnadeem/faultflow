@@ -7,6 +7,7 @@ from faultflow.config import FaultflowConfig
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.manifest import manifest_clock_net_ids
 from faultflow.scan.protocol import ScanPattern
+from faultflow.scan.setup import setup_request
 
 
 def reduced_protocol_matches(
@@ -101,6 +102,7 @@ def verify_golden_scan_protocol(
             active_clock_ports=active_clock_ports or [],
             preamble_cycles=pattern.preamble_cycles,
             shift_pi_values=pattern.shift_pi_values,
+            setup_cycles=setup_request(pattern.setup),
         )
     )
     real_po_values = dict(result.get("real_po_values", {}))

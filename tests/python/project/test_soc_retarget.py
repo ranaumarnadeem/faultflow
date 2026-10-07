@@ -16,6 +16,7 @@ import pytest
 from faultflow.control_trace import Trace
 from faultflow.retarget import RetargetError, Segment, block_segments, retarget_pattern
 from faultflow.scan.protocol import ScanPattern
+from faultflow.scan.setup import SetupCycle
 from soc_v2_fixtures import write_soc_v2
 
 
@@ -148,6 +149,12 @@ def test_a_pattern_the_soc_cant_apply_is_refused(
         _retarget(_block_pattern(capture_pi_values=values), inputs=inputs)
     # A tie the pattern agrees with costs nothing.
     assert _retarget(_block_pattern(capture_pi_values={"tie": True}), inputs=inputs)
+
+
+def test_a_block_pattern_with_a_test_setup_program_isnt_retargeted() -> None:
+    pattern = _block_pattern(setup=(SetupCycle((("cfg_en", 1),), ()),))
+    with pytest.raises(RetargetError, match="test setup program"):
+        _retarget(pattern)
 
 
 @pytest.fixture

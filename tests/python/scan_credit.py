@@ -27,6 +27,7 @@ from faultflow.runner.runner import (
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.manifest import manifest_clock_net_ids
 from faultflow.scan.pattern_export import scan_pattern_from_dict
+from faultflow.scan.setup import setup_request
 from faultflow.scan.site_resolution import build_site_key_index, fault_type_to_sa_code
 from faultflow.scan.x_mask import _net_of_name, recorded_x_mask
 
@@ -223,6 +224,7 @@ def _grader(
             unload_mask=mask,
             preamble_cycles=(pattern.preamble_cycles if preamble is None else preamble),
             shift_pi_values=pattern.shift_pi_values,
+            setup_cycles=setup_request(pattern.setup),
         )
         return {
             int(dict(lane)["fault_index"])
@@ -519,6 +521,7 @@ def soc_credit_not_reproduced(
                 unload_mask=pattern.unload_mask or {},
                 preamble_cycles=pattern.preamble_cycles,
                 shift_pi_values=pattern.shift_pi_values,
+                setup_cycles=setup_request(pattern.setup),
             )
             found |= {
                 owners[int(dict(lane)["fault_index"])]

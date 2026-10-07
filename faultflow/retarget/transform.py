@@ -185,6 +185,10 @@ def retarget_pattern(
         raise RetargetError(f"{where} is a compressed load")
     if pattern.shift_length is not None:
         raise RetargetError(f"{where} shifts only some of the block's chains")
+    if pattern.setup:
+        raise RetargetError(
+            f"{where} starts with a test setup program, which isn't retargeted"
+        )
     longest = max(soc_lengths.values())
     load = {c: [False] * length for c, length in soc_lengths.items()}
     expected = {c: [False] * length for c, length in soc_lengths.items()}

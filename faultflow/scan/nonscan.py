@@ -11,6 +11,13 @@ whole test. Each must be one of:
   (:mod:`faultflow.control_trace`), like a TDR bit cleared through
   ``trst_n & clr_n`` with ``trst_n`` held at 0. Its output is the value that control
   forces, and the view ties it there (``$faultflow_tie0``/``$faultflow_tie1``).
+- *programmed*: the test setup program (``[scan] test_setup``,
+  :mod:`faultflow.scan.setup`) leaves it at a value, from any power-up state
+  (:mod:`faultflow.scan.setup_sim`), and it holds that value through the test: the
+  holds keep its clear and preset inactive, and its clock is held, or its D traces
+  back to that value -- its own output through a mux a held input selects, say --
+  or its enable is held off; each of these with the other programmed flops at their
+  values. The view ties it there, like a forced flop.
 - *frozen*: its clock is held or constant and no free input can clear or preset it.
   Its value is unknown, so its output is an X source, masked like an unknown blackbox
   output.
@@ -28,7 +35,10 @@ hold must be a single-bit input, can't be a scan port or a scan clock, and can't
 scan flop's clear or preset in its active level.
 
 A stuck-at on a forcing control's traced path can release a forced flop in the faulty
-machine, which a tie can't show: :attr:`NonscanSetup.release_faults` lists those (site
+machine, which a tie can't show, and so can one on a path proving a programmed flop
+holds; and the setup program runs fault-free in grading, so a stuck-at that changes
+what it leaves in a programmed flop (on silicon, the program runs with the fault)
+can't be credited either. :attr:`NonscanSetup.release_faults` lists all those (site
 key, fault type) pairs, which scan leaves to JTAG. A glob may select settled flops or
 others, not both: the logic a glob selects beside JTAG's flops is JTAG's.
 
@@ -45,13 +55,17 @@ from typing import Any, Mapping, Sequence
 
 from faultflow.control_trace import (
     Flop,
+    Forced,
     Netlist,
     TraceError,
     port_bits,
     release_faults,
 )
+from faultflow.coverage.site_key import SiteProvenance, canonical_site_key
 from faultflow.scan.errors import ScanError
 from faultflow.scan.manifest import manifest_clock_net_ids
+from faultflow.scan.setup import SetupCycle, check_setup
+from faultflow.scan.setup_sim import SetupSimulator, changed_by
 
 NONSCAN_REASON = "nonscan_policy"
 # The nets the C++ core gives a constant bit (common/types.hpp; x and z read as 0).
@@ -69,6 +83,7 @@ class NonscanFlop:
     inputs: tuple[tuple[str, int], ...]  # (pin, net) of each input pin
     settle: int = 0  # settled: scan-clock pulses until it holds `value`
     tied: tuple[tuple[str, int], ...] = ()  # (pin, constant's net) of each tied pin
+    programmed: bool = False  # `value` is what the test setup program leaves
 
 
 @dataclass(frozen=True)
@@ -85,6 +100,10 @@ class NonscanSetup:
     @property
     def settled(self) -> tuple[NonscanFlop, ...]:
         return tuple(f for f in self.flops if f.settle)
+
+    @property
+    def programmed(self) -> tuple[NonscanFlop, ...]:
+        return tuple(f for f in self.flops if f.programmed)
 
     @property
     def preamble(self) -> int:
@@ -154,11 +173,17 @@ def analyze_nonscan(
     globs: Sequence[str],
     holds: Sequence[tuple[str, int]],
     scan_reset_holds: Mapping[str, bool],
+    setup: Sequence[SetupCycle] = (),
+    blackbox_instances: Sequence[str] = (),
 ) -> NonscanSetup:
     """Classify every non-scan flop of the stitched ``module`` (see the module
-    docstring), or raise :class:`ScanError`."""
+    docstring), or raise :class:`ScanError`. ``setup``: the test setup program."""
     held = dict(holds)
     _check_holds(module, manifest, held, scan_reset_holds)
+    clock_off = scan_clock_off(module, manifest)
+    check_setup(
+        setup, [name for name, _ in port_bits(module, "input")], list(clock_off)
+    )
     wanted = set(nonscan_instances(manifest))
     netlist = Netlist(module, cell_map)
     try:
@@ -171,7 +196,8 @@ def analyze_nonscan(
 
     result: list[NonscanFlop] = []
     release: set[tuple[str, str]] = set()
-    unsettled: list[tuple[str, Pins, Pins]] = []
+    rest: list[tuple[str, Pins, Pins]] = []  # neither forced
+    forced_values: dict[int, int] = {}
     for instance in sorted(wanted):
         flop = flops[instance]
         entry = netlist.entry(instance) or {}
@@ -208,15 +234,36 @@ def analyze_nonscan(
         if forcing:
             control, found = forcing[0]
             release |= release_faults(found)
+            forced_values[flop.q] = control.value
             result.append(
                 NonscanFlop(instance, flop.q, control.value, inputs, tied=tied)
+            )
+            continue
+        rest.append((instance, inputs, tied))
+    programmed, faults = _program(
+        netlist,
+        flops,
+        [instance for instance, _, _ in rest],
+        held,
+        forced_values,
+        _Program(setup, clock_off, tuple(globs), tuple(blackbox_instances)),
+    )
+    release |= faults
+    unsettled: list[tuple[str, Pins, Pins]] = []
+    for instance, inputs, tied in rest:
+        flop = flops[instance]
+        if instance in programmed:
+            value = programmed[instance]
+            result.append(
+                NonscanFlop(instance, flop.q, value, inputs, tied=tied, programmed=True)
             )
             continue
         if netlist.forced(instance, flop.clock_pin, held) is None:
             unsettled.append((instance, inputs, tied))
             continue
         result.append(NonscanFlop(instance, flop.q, None, inputs, tied=tied))
-    result += _settle(netlist, flops, unsettled, held, manifest)
+    known = {flops[instance].q: value for instance, value in programmed.items()}
+    result += _settle(netlist, flops, unsettled, held, manifest, known)
     _check_globs(globs, result)
     return NonscanSetup(
         flops=tuple(sorted(result, key=lambda f: f.instance)),
@@ -226,19 +273,182 @@ def analyze_nonscan(
     )
 
 
+def scan_clock_off(
+    module: Mapping[str, Any], manifest: Mapping[str, Any]
+) -> dict[str, int]:
+    """Each scan clock input bit of ``module``, by name, and its off level: 0, as
+    FaultFlow grades and a tester applies (tester_program)."""
+    clocks = set(manifest_clock_net_ids(dict(manifest)))
+    return {name: 0 for name, net in port_bits(module, "input") if net in clocks}
+
+
+@dataclass(frozen=True)
+class _Program:
+    """What the programmed class is found with: the test setup program, the scan
+    clocks' off levels, the globs (JTAG's logic) and the blackboxes."""
+
+    cycles: Sequence[SetupCycle]
+    clock_off: Mapping[str, int]
+    globs: tuple[str, ...]
+    blackbox_instances: tuple[str, ...]
+
+
+def _program(
+    netlist: Netlist,
+    flops: Mapping[str, Flop],
+    candidates: Sequence[str],
+    held: Mapping[str, int],
+    forced: Mapping[int, int],
+    program: _Program,
+) -> tuple[dict[str, int], set[tuple[str, str]]]:
+    """The programmed flops among ``candidates`` (non-scan flops not forced), each
+    with its value, and the faults scan must leave to JTAG for them: those that
+    could make one let go of its value during the test (on its proof's paths), and
+    those that change what the program leaves in one. The proofs assume every
+    programmed flop at its value -- and drop any flop whose proof fails until all
+    hold (the largest such set). ``forced``: the forced flops' outputs, at their
+    values."""
+    if not program.cycles or not candidates:
+        return {}, set()
+    sim = SetupSimulator(netlist, candidates, program.blackbox_instances)
+    values, known_nets = sim.run(program.cycles, program.clock_off, held)
+    programmed = {name: v for name, v in values.items() if v is not None}
+    proofs: dict[str, list[Forced] | None] = {}
+    while True:
+        known = {**forced, **{flops[name].q: v for name, v in programmed.items()}}
+        proofs = {
+            name: _holds(netlist, flops[name], v, held, known)
+            for name, v in programmed.items()
+        }
+        failed = [name for name, proof in proofs.items() if proof is None]
+        if not failed:
+            break
+        for name in failed:
+            del programmed[name]
+    faults: set[tuple[str, str]] = set()
+    for proof in proofs.values():
+        for found in proof or ():
+            faults |= release_faults(found)
+    if programmed:
+        faults |= _setup_faults(sim, netlist, program, held, programmed, known_nets)
+    return programmed, faults
+
+
+def _holds(
+    netlist: Netlist,
+    flop: Flop,
+    value: int,
+    held: Mapping[str, int],
+    known: Mapping[int, int],
+) -> list[Forced] | None:
+    """The paths proving ``flop`` keeps ``value`` through a scan test -- the holds
+    at their values, the flops in ``known`` at theirs -- or None: no clear or preset
+    active but at ``value``, and its clock held, its enable held off, or its D held
+    at ``value`` (its scan enable held off first, for a scan cell)."""
+    instance = flop.instance
+    proof: list[Forced] = []
+    active = []
+    for control in flop.controls:
+        found = netlist.forced(instance, control.pin, held, known)
+        if found is None:
+            return None
+        proof.append(found)
+        if found.value == control.active:
+            active.append(control)
+    if active:
+        return proof if len(active) == 1 and active[0].value == value else None
+    clock = netlist.forced(instance, flop.clock_pin, held, known)
+    if clock is not None:
+        return proof + [clock]
+    ff = (netlist.entry(instance) or {}).get("ff", {})
+    scan = ff.get("scan")
+    if isinstance(scan, dict):
+        on = 0 if str(scan.get("enable_polarity", "HIGH")).upper() == "LOW" else 1
+        enable = netlist.forced(instance, str(scan["enable"]), held, known)
+        if enable is None or enable.value == on:
+            return None
+        proof.append(enable)
+    data_enable = ff.get("enable")
+    if isinstance(data_enable, dict):
+        on = 0 if str(data_enable.get("level", "HIGH")).upper() == "LOW" else 1
+        enable = netlist.forced(instance, str(data_enable["pin"]), held, known)
+        if enable is not None and enable.value != on:
+            return proof + [enable]
+    data = netlist.forced(instance, str(ff.get("data", "D")), held, known)
+    if data is not None and data.value == value:
+        return proof + [data]
+    return None
+
+
+def _setup_faults(
+    sim: SetupSimulator,
+    netlist: Netlist,
+    program: _Program,
+    held: Mapping[str, int],
+    programmed: Mapping[str, int],
+    known_nets: set[int],
+) -> set[tuple[str, str]]:
+    """The stuck-ats that change what the program leaves in a programmed flop --
+    to the other value or unknown -- outside the logic the globs select (JTAG's
+    already). Only a net the program sets at some step can: a stuck-at on a net
+    unknown throughout narrows an unknown, and the three-valued run is monotone."""
+
+    def owned(instance: str) -> bool:
+        return any(fnmatch.fnmatchcase(instance, glob) for glob in program.globs)
+
+    readers: dict[int, set[tuple[str, str]]] = {}
+    for gate in sim.gates:
+        for pin, bit in gate.inputs:
+            if isinstance(bit, int):
+                readers.setdefault(bit, set()).add((gate.instance, pin))
+    for cone_flop in sim.flops:
+        for pin, bit in SetupSimulator.flop_pins(cone_flop):
+            if isinstance(bit, int):
+                readers.setdefault(bit, set()).add((cone_flop.instance, pin))
+    faults: set[tuple[str, str]] = set()
+    for net in sorted(known_nets):
+        driver = netlist.drivers.get(net)
+        sites: list[tuple[str | None, str | None]] = []
+        if driver is None or not owned(driver[0]):
+            sites.append((None, None))
+        sites += [
+            (consumer, pin)
+            for consumer, pin in sorted(readers.get(net, set()))
+            if not owned(consumer)
+        ]
+        for reader, reader_pin in sites:
+            if reader is None:
+                where = SiteProvenance(yosys_net_id=net, kind="stem")
+            else:
+                where = SiteProvenance(
+                    yosys_net_id=net,
+                    kind="branch",
+                    consumer_instance=reader,
+                    input_pin=str(reader_pin),
+                )
+            for stuck in (0, 1):
+                fault = (net, reader, reader_pin, stuck)
+                if changed_by(
+                    sim, program.cycles, program.clock_off, held, programmed, fault
+                ):
+                    faults.add((canonical_site_key(where), f"sa{stuck}"))
+    return faults
+
+
 def _settle(
     netlist: Netlist,
     flops: Mapping[str, Flop],
     candidates: list[tuple[str, Pins, Pins]],
     held: Mapping[str, int],
     manifest: Mapping[str, Any],
+    known: Mapping[int, int] | None = None,
 ) -> list[NonscanFlop]:
     """The settled flops among ``candidates`` -- non-scan flops nothing holds still
     -- by induction: a plain flop a scan clock clocks, whose D is held (by the holds,
-    a constant or flops settled already), settles one pulse after its D does.
-    Refuses any other."""
+    a constant, a programmed flop in ``known`` or flops settled already), settles one
+    pulse after its D does. Refuses any other."""
     scan_clocks = set(manifest_clock_net_ids(dict(manifest)))
-    settled: dict[int, int] = {}  # q net -> value
+    settled: dict[int, int] = dict(known or {})  # q net -> value
     depth: dict[int, int] = {}  # q net -> pulses to settle
     found: list[NonscanFlop] = []
     pending = list(candidates)
@@ -269,7 +479,8 @@ def _settle(
                 f"non-scan flop {pending[0][0]}: no held input keeps it in reset and "
                 "its clock isn't held, so it would change during a scan test -- "
                 "unless a scan clock settles it: a plain flop whose D traces to "
-                "holds, constants and other settled flops"
+                "holds, constants and other settled flops; or the test setup "
+                "program ([scan] test_setup) leaves it at a value it then holds"
             )
     return found
 

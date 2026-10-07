@@ -288,13 +288,15 @@ python3 ff.py write-patterns --top <top> -c config.ofs --patterns patterns.json 
 
 Write the scan patterns `sim --scan --export-patterns` exported as STIL (IEEE 1450):
 the cycles a tester applies to the chip, one pattern after another. Each load also
-unloads the pattern before, the usual way, with half the shifts: the preamble is
-given once, first, and a last unload ends the patterns. With `--no-overlap` each
-pattern is applied alone, as FaultFlow grades it -- its preamble, load, launch,
-capture and unload. Nothing an unload compares depends on what shifts in at the
-same time or on the inputs a load holds, the holds keep every flop a preamble
-settles settled, and each capture's pulse arms the decompressor's reseed for the
-next load, so both give the same results; the test suite checks both on the cells.
+unloads the pattern before, the usual way, with half the shifts: the test setup
+program (`[scan] test_setup`) and then the preamble are given once, first, and a last
+unload ends the patterns. With `--no-overlap` each pattern is applied alone, as
+FaultFlow grades it -- its test setup program, preamble, load, launch, capture and
+unload. Nothing an unload compares depends on what shifts in at the same time or on
+the inputs a load holds, what the setup program loads holds through every pattern,
+the holds keep every flop a preamble settles settled, and each capture's pulse arms
+the decompressor's reseed for the next load, so both give the same results; the test
+suite checks both on the cells.
 The chip is the scanned netlist, or with scan compression or compaction the one
 `scan-compress` or `scan-compact` wrote (with both, the compacted one).
 The Tcl shell's `write_patterns -patterns PATH -o PATH [-no_overlap]` does the same.
@@ -329,6 +331,9 @@ What the STIL holds:
   An unload compares the expected bits, X where a flop captured an unknown value or
   the decompressor's bits come out of a shorter chain. The preamble is a Loop, once
   first, or before each pattern's load with `--no-overlap`.
+- With a test setup program, the `test_setup` macro (MacroDefs): a vector per cycle,
+  each setting every signal, the clocks it pulses `P` and the others `0`, nothing
+  compared. It is called first, or before each pattern with `--no-overlap`.
 
 These are exactly the cycles the test suite replays on the chip's sky130 cell models,
 and an independent STIL parser, Semi-ATE-STIL, reads every file it writes.
@@ -379,7 +384,11 @@ Print scan-insertion status.
 python3 ff.py scan-check --top <top> -c config.ofs [options]
 ```
 
-Validate the inserted scan chains (structural and normal-mode checks). It also fails
+Validate the inserted scan chains (structural and normal-mode checks). Each scan flop's
+scan input must be the flop before's output, or its chain's scan input, and its scan
+enable the scan enable: directly, or through gates the scan test's held inputs
+(`[scan] hold`) and the non-scan flops it ties keep passing the signal on -- a chain-head
+mux a held select steers, an OR a held 0 keeps open -- but never inverted. It also fails
 on a scan flop whose asynchronous clear or preset isn't held inactive while the chains
 shift -- a scanned reset synchronizer's output, say: a real scan flop's clear and preset
 act during shift, which FaultFlow's simulation doesn't model. The error names each flop

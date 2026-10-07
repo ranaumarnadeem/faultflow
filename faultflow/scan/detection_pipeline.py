@@ -71,6 +71,7 @@ from faultflow.scan.compaction import CompactionMap, build_compactor_fanout
 from faultflow.scan.compression import CompressionMap, build_broadcast_fanout
 from faultflow.scan.errors import ScanError
 from faultflow.scan.nonscan import NonscanSetup, jtag_sites, settled_sites
+from faultflow.scan.setup import SetupCycle, setup_request
 from faultflow.scan.shift_controls import reset_holds
 from faultflow.scan.ring_generator import (
     bitmask_to_index_list,
@@ -161,6 +162,9 @@ class ScanPipelineContext:
     # (faultflow.wrap.sides) are left to it, wbr_decoupled. None without one.
     wrapper: dict[str, Any] | None = None
     wrapper_scope: str | None = None
+    # The test setup program ([scan] test_setup, faultflow.scan.setup): every
+    # pattern starts with it (_serialize). Empty: none.
+    setup: tuple[SetupCycle, ...] = ()
 
 
 @dataclass
@@ -203,6 +207,7 @@ def build_scan_pipeline_context(
     nonscan: NonscanSetup | None = None,
     wrapper: dict[str, Any] | None = None,
     wrapper_scope: str | None = None,
+    setup: tuple[SetupCycle, ...] = (),
 ) -> ScanPipelineContext:
     q_stems = {
         str(entry["boundary"]["q_stem_site_key"])
@@ -296,6 +301,7 @@ def build_scan_pipeline_context(
         ),
         wrapper=wrapper,
         wrapper_scope=wrapper_scope,
+        setup=tuple(setup),
     )
 
 
@@ -465,7 +471,31 @@ def _protocol_fault_sim_kwargs(
         "unload_mask": pattern.unload_mask or {},
         "preamble_cycles": pattern.preamble_cycles,
         "shift_pi_values": dict(pattern.shift_pi_values),
+        "setup_cycles": setup_request(pattern.setup),
     }
+
+
+def _clock_group_nets(ctx: ScanPipelineContext) -> list[list[int]]:
+    """[clocks] groups, each by its clocks' nets: every name must be a scan
+    clock."""
+    if not ctx.cfg.clock_groups:
+        return []
+    nets = {
+        port: int(net)
+        for port, net in zip(
+            ctx.clock_ports, manifest_clock_net_ids(ctx.manifest, error_cls=RunnerError)
+        )
+    }
+    groups: list[list[int]] = []
+    for group in ctx.cfg.clock_groups:
+        unknown = sorted(set(group) - set(nets))
+        if unknown:
+            raise RunnerError(
+                f"[clocks] groups: {unknown[0]} is not a scan clock "
+                f"({', '.join(sorted(nets)) or 'none'})"
+            )
+        groups.append([nets[port] for port in group])
+    return groups
 
 
 def _launch_known(ctx: ScanPipelineContext, row: _FaultRow) -> bool:
@@ -487,8 +517,9 @@ def _serialize(
 ) -> ScanPattern:
     """serialize_vector, with the X-masked expected bits marked don't-care, the
     held inputs, which the view ties rather than lists, at their values, the
-    preamble that settles the non-scan flops the scan clock settles, and, testing
-    the reset, the reset holds while the chains shift."""
+    test setup program, the preamble that settles the non-scan flops the scan
+    clock settles, and, testing the reset, the reset holds while the chains
+    shift."""
     pattern = serialize_vector(
         {**serialize_input, **ctx.input_holds},
         ctx.pseudo_port_map,
@@ -508,7 +539,9 @@ def _serialize(
     # candidate leaves it free); it stays inactive while the chains shift, where
     # a real scan flop's reset would wipe the load (scan.shift_controls).
     shift = dict(ctx.reset_pi_holds) if ctx.cfg.fault_model.include_reset_faults else {}
-    return replace(pattern, preamble_cycles=preamble, shift_pi_values=shift)
+    return replace(
+        pattern, preamble_cycles=preamble, shift_pi_values=shift, setup=ctx.setup
+    )
 
 
 def _seed_kwargs(
@@ -1743,7 +1776,9 @@ def run_progressive_scan_atpg(
         clock_nets_raw = scan_ctx.manifest.get("clock_nets", [])
         if isinstance(clock_nets_raw, list) and len(clock_nets_raw) > 1:
             cross_domain_ids = compute_cross_domain_net_ids(
-                scan_ctx.generic_json, scan_ctx.manifest
+                scan_ctx.generic_json,
+                scan_ctx.manifest,
+                groups=_clock_group_nets(scan_ctx),
             )
             if cross_domain_ids:
                 generic_rows: list[dict[str, Any]] = list(

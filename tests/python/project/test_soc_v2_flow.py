@@ -30,6 +30,33 @@ def flow_tools() -> None:
         pytest.skip("needs iverilog")
 
 
+@pytest.mark.unit
+def test_a_project_refuses_a_test_setup_program(tmp_path: Path) -> None:
+    """[scan] test_setup is one chip's; a project's blocks and SoC would each need
+    their own. Refused before anything is built."""
+    import dataclasses
+    from typing import cast
+
+    from faultflow.config import SKY130_CELL_LIB
+    from faultflow.project.manifest import ProjectError
+    from faultflow.project.soc_flow import run_soc_project
+
+    ofs = tmp_path / "base.ofs"
+    ofs.write_text(f"[design]\ncell_lib = {SKY130_CELL_LIB}\n", encoding="utf-8")
+    base = load_config(ofs, "soc")
+    base = dataclasses.replace(
+        base, scan=dataclasses.replace(base.scan, test_setup=tmp_path / "setup.json")
+    )
+    with pytest.raises(ProjectError, match="test_setup"):
+        run_soc_project(
+            cast(Any, None),
+            base,
+            run_atpg=lambda *a, **k: None,
+            check_scan=lambda cfg: None,
+            out=tmp_path / "out",
+        )
+
+
 @pytest.mark.integration
 def test_the_soc_is_composed_traced_and_recorded(
     tmp_path: Path, flow_tools: None

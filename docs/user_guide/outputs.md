@@ -88,7 +88,7 @@ Its top-level structure is:
 | `excluded_clock` | Clock-net faults (unless `include_clock_faults`) |
 | `excluded_reset` | Reset-net faults (unless `include_reset_faults`) |
 | `excluded_scan`, `excluded_scan_internal`, `excluded_scan_chain` | Scan-cell-internal and scan-path-only faults (scan campaigns) |
-| `excluded_jtag` | Scan campaigns with `[scan] nonscan_cells`: faults scan leaves to `ff.py jtag` -- the non-scan cells' own, those whose every path ends at a non-scan flop or `tdo`, and the stuck-ats that would release a flop held in reset. The `combined` block counts every one of them |
+| `excluded_jtag` | Scan campaigns with `[scan] nonscan_cells`: faults scan leaves to `ff.py jtag` -- the non-scan cells' own, those whose every path ends at a non-scan flop or `tdo`, the stuck-ats that would release a flop held in reset or a programmed one, and those that would change what the test setup program loads. The `combined` block counts every one of them |
 | `blackbox_unresolved` | Scan campaigns: faults, counted in `undetected`, that have a test only if a `[blackbox]` instance could be driven, observed or known, which no scan test can do (Tessent's AU.BB) |
 | `hold_unresolved` | Scan campaigns with `[scan] hold`: faults, counted in `undetected`, that have a test only if the held inputs, and the non-scan flops they keep in reset, were free (Tessent's AU.PC) |
 | `test_coverage_percent` | `detected / denominator x 100` — credits proven-redundant faults by removing them from the denominator; the **headline** figure |
@@ -136,7 +136,7 @@ pulse between the load and the capture, or `los`, one more shift with scan enabl
 and each chain's `launch_scan_in` bit at its scan input. `capture_pi_values` holds the
 primary inputs' values and the primary outputs' expected values at the capture
 (but an output a blackbox's unknown value reaches); a bus port's bits are named
-`port[i]`. An EXTEST pattern of the wrapper `ff.py wrap` puts on loads and unloads
+`port[i]`. With `[scan] test_setup`, every pattern carries the program as `setup`, the cycles to give before everything else. An EXTEST pattern of the wrapper `ff.py wrap` puts on loads and unloads
 the wrapper chains alone: it carries `shift_length`, their longest, the shifts its
 load and its unload take; the core's chains shift as many bits, uncompared. `write-patterns` writes the export as STIL, the cycles a tester applies
 (see [Running without the shell](running_without_shell.md#write-patterns)). External

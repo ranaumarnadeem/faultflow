@@ -3,7 +3,7 @@ rules: every signal keeps its last waveform character; a condition statement (C)
 sets characters without a cycle; each vector (V) is one cycle; Loop repeats; a
 procedure call runs the procedure with its arguments, each '#' taking the next
 character of each of its signals' data, the Shift repeating until the data is used
-up.
+up; a macro (the test setup program's) runs in its caller's place.
 
 Readers differ on the signal states a procedure starts from and leaves. As a
 subroutine with its own states, it starts with every signal undefined and its
@@ -91,6 +91,8 @@ class ExpandedCycle:
     inputs: dict[str, int]
     expect: dict[str, int]
     pulse: bool
+    # The clocks that pulse, sorted, when only some do; None: all (or none).
+    clocks: tuple[str, ...] | None = None
 
 
 def expand(text: str, *, inherit: bool = False) -> list[ExpandedCycle]:
@@ -110,6 +112,10 @@ def expand(text: str, *, inherit: bool = False) -> list[ExpandedCycle]:
     clocks = set(groups.get("_clk", []))
     procedures = {
         _name(s.words[0]): s.body or [] for s in blocks["Procedures"].body or []
+    }
+    macros = {
+        _name(s.words[0]): s.body or []
+        for s in (blocks["MacroDefs"].body or [] if "MacroDefs" in blocks else [])
     }
     pattern = next(s for s in top if s.words and s.words[0] == "Pattern")
     state: dict[str, str | None] = dict.fromkeys(direction)
@@ -143,6 +149,7 @@ def expand(text: str, *, inherit: bool = False) -> list[ExpandedCycle]:
         undefined = [s for s, v in state.items() if v is None and direction[s] == "In"]
         if undefined:
             raise ValueError(f"STIL: a vector with inputs undefined: {undefined}")
+        pulsed = sorted(clock for clock in clocks if state[clock] == "P")
         cycles.append(
             ExpandedCycle(
                 inputs={
@@ -155,7 +162,10 @@ def expand(text: str, *, inherit: bool = False) -> list[ExpandedCycle]:
                     for s, v in state.items()
                     if direction[s] == "Out" and v in ("L", "H")
                 },
-                pulse=any(state[clock] == "P" for clock in clocks),
+                pulse=bool(pulsed),
+                clocks=(
+                    tuple(pulsed) if pulsed and len(pulsed) < len(clocks) else None
+                ),
             )
         )
 
@@ -204,6 +214,8 @@ def expand(text: str, *, inherit: bool = False) -> list[ExpandedCycle]:
                     raise ValueError("STIL: a call passes data its procedure leaves")
                 if not inherit:
                     state.update(caller)
+            elif keyword == "Macro":
+                run(macros[_name(words[1])], streams)
             else:
                 raise ValueError(f"STIL: statement {words} isn't expanded here")
 
@@ -218,6 +230,7 @@ def model(program: list[Any]) -> list[ExpandedCycle]:
             inputs=dict(cycle.inputs),
             expect={n: int(v) for n, v in cycle.expect.items() if v is not None},
             pulse=cycle.pulse,
+            clocks=cycle.clocks,
         )
         for cycle in program
     ]
