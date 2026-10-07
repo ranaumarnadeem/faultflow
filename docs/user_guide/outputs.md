@@ -89,6 +89,7 @@ Its top-level structure is:
 | `excluded_reset` | Reset-net faults (unless `include_reset_faults`) |
 | `excluded_scan`, `excluded_scan_internal`, `excluded_scan_chain` | Scan-cell-internal and scan-path-only faults (scan campaigns) |
 | `excluded_jtag` | Scan campaigns with `[scan] nonscan_cells`: faults scan leaves to `ff.py jtag` -- the non-scan cells' own, those whose every path ends at a non-scan flop or `tdo`, the stuck-ats that would release a flop held in reset or a programmed one, and those that would change what the test setup program loads. The `combined` block counts every one of them |
+| `excluded_wsp` | Scan campaigns of a wrapper an IEEE 1500 WSP controls (`[wrap] control = wsp`): the WSP's own faults -- its ports', its instruction and bypass registers', its decode's and its serial path's -- which a scan test, the instruction programmed and held, leaves to the WSP's own test |
 | `blackbox_unresolved` | Scan campaigns: faults, counted in `undetected`, that have a test only if a `[blackbox]` instance could be driven, observed or known, which no scan test can do (Tessent's AU.BB) |
 | `hold_unresolved` | Scan campaigns with `[scan] hold`: faults, counted in `undetected`, that have a test only if the held inputs, and the non-scan flops they keep in reset, were free (Tessent's AU.PC) |
 | `test_coverage_percent` | `detected / denominator x 100` — credits proven-redundant faults by removing them from the denominator; the **headline** figure |
@@ -98,7 +99,7 @@ Its top-level structure is:
 ```{note}
 `total_raw_faults = denominator + redundant + collapsed + excluded_blackbox +
 excluded_clock + excluded_reset + excluded_scan + excluded_cross_domain +
-excluded_wbr_decoupled + excluded_jtag`. Exclusions
+excluded_wbr_decoupled + excluded_jtag + excluded_wsp`. Exclusions
 are always *tagged and counted*, never silently dropped, and a zero denominator is
 raised as an error rather than producing a NaN.
 ```

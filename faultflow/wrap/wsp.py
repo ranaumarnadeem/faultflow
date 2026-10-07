@@ -27,14 +27,20 @@ input; the wrapper flops shift with ShiftWR in a serial instruction, beside the 
 enable; and WSO, in a serial instruction with the WIR deselected, is the last wrapper
 chain's last flop. In a parallel instruction (or WS_BYPASS) those paths are the
 plain scan paths, which scan-check follows through them.
+
+A scan test runs with the WIR programmed and held (:mod:`faultflow.wrap.wsp_setup`),
+so it can't test the WSP: it leaves the WSP's fault sites (:func:`wsp_sites`) to
+the WSP's own test (exclusion ``wsp``).
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from faultflow.control_trace import Netlist
+from faultflow.wrap.cell import CELL_ATTR
 from faultflow.wrap.errors import WrapError
 from faultflow.wrap.wsp_model import WIR_BITS
 
@@ -226,6 +232,62 @@ def wsp_of(module: Mapping[str, Any]) -> tuple[WspPorts, WspNets] | None:
     nets = dict(data["nets"])
     nets["update"] = tuple(nets["update"])
     return WspPorts(**data["ports"]), WspNets(**nets)
+
+
+def wsp_sites(
+    rows: Iterable[Mapping[str, Any]],
+    module: Mapping[str, Any],
+    cell_map: Mapping[str, Any],
+    wrapper: Mapping[str, Any],
+) -> frozenset[str]:
+    """The fault sites (of ``rows``, the C++ core's list_site_keys of ``module``) of
+    the WSP the scan manifest's ``wrapper`` record names: the stem of each of its
+    ports' nets -- on a SoC (faultflow.project.soc_wrapper), of each net on the way
+    from the SoC's inputs to its blocks' WSPs -- and of each net a WSP cell drives;
+    and each branch into a WSP cell, or into a SoC's glue cell on that way. Where
+    a control net enters a boundary cell's mux or gate -- its branch there, or its
+    stem when that cell alone reads it -- the site is the cell's."""
+    wsp = wrapper["wsp"]
+    if "blocks" in wrapper:
+        nets = {int(net) for net in wsp["path_nets"]}
+        cells = {str(name) for name in wsp["path_cells"]}
+    else:
+        nets = {int(port["net"]) for port in wsp["ports"].values()}
+        cells = set()
+    cells |= {
+        str(name)
+        for name, cell in module.get("cells", {}).items()
+        if WSP_ATTR in cell.get("attributes", {})
+    }
+    netlist = Netlist(module, cell_map)
+    for net, (driver, _) in netlist.drivers.items():
+        if driver in cells:
+            nets.add(net)
+    readers: dict[int, set[tuple[str, str]]] = {}
+    for instance, cell in netlist.cells.items():
+        entry = netlist.entry(instance)
+        for pin, bits in cell.get("connections", {}).items():
+            if netlist.direction(instance, pin, entry) != "output":
+                for bit in bits:
+                    if isinstance(bit, int):
+                        readers.setdefault(bit, set()).add((instance, pin))
+    sites: set[str] = set()
+    for row in rows:
+        if str(row["kind"]) == "branch":
+            if str(row.get("consumer_instance", "")) in cells:
+                sites.add(str(row["site_key"]))
+            continue
+        net = int(row["yosys_net_id"])
+        only = readers.get(net, set())
+        if len(only) == 1 and CELL_ATTR in netlist.cells[next(iter(only))[0]].get(
+            "attributes", {}
+        ):
+            # A control net one boundary cell alone reads: its one site is that
+            # cell's input, as each branch of one more cells read would be.
+            continue
+        if net in nets:
+            sites.add(str(row["site_key"]))
+    return frozenset(sites)
 
 
 def _next_net(module: Mapping[str, Any]) -> int:

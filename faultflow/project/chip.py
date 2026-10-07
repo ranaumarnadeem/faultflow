@@ -5,7 +5,10 @@ cell's scan input, to a chip output.
 A project composes its SoC from blocks scanned on their own (faultflow.project.
 assemble); the glue strings their chains together, or brings each to pins of its
 own. Nothing records the chip's chains but its cells, so they are traced:
-- a net may pass through buffers on the way, never through anything else;
+- a net may pass through buffers on the way, and through gates the values held
+  while the chains shift make pass it on -- an IEEE 1500 WSP's chain-head muxes
+  and scan enable gate, its serial nets at 0 (``known``) -- never through
+  anything else;
 - every scan cell must sit on exactly one chain, and a chain on no two inputs;
 - a chain holds the flops of IEEE 1500 wrappers (faultflow.wrap) or of cores,
   never both, so each mode shifts the chains it needs alone.
@@ -41,10 +44,23 @@ def _is_scan_cell(cell: Mapping[str, Any]) -> bool:
 
 
 def trace_chains(
-    module: Mapping[str, Any], cell_map: Mapping[str, Any]
+    module: Mapping[str, Any],
+    cell_map: Mapping[str, Any],
+    known: Mapping[int, int] | None = None,
 ) -> list[TracedChain]:
-    """Every scan chain of the composed `module`, in the order of its chip inputs."""
+    """Every scan chain of the composed `module`, in the order of its chip inputs.
+    `known`: nets held at a value while the chains shift."""
     netlist = Netlist(module, cell_map)
+    held = dict(known or {})
+
+    def passes(instance: str, entry: Mapping[str, Any], net: int) -> bool:
+        """Whether gate `instance` passes `net` on, uninverted, the `held` values
+        fixing its other inputs."""
+        if not held or entry.get("node_type") != "GATE":
+            return False
+        found = netlist._passed(instance, entry, {}, held)
+        return found is not None and found[0] == net and not found[1]
+
     readers: dict[int, list[tuple[str, str]]] = {}
     for instance, cell in netlist.cells.items():
         entry = netlist.entry(instance)
@@ -56,14 +72,17 @@ def trace_chains(
                     readers.setdefault(bit, []).append((instance, pin))
 
     def through_buffers(net: int) -> set[int]:
-        """`net` and every net a chain of buffers drives from it."""
+        """`net` and every net a chain of buffers -- and of gates that pass it on
+        (`passes`) -- drives from it."""
         seen = {net}
         frontier = [net]
         while frontier:
             current = frontier.pop()
             for instance, _pin in readers.get(current, []):
                 entry = netlist.entry(instance) or {}
-                if entry.get("gate_type") != "BUF":
+                if entry.get("gate_type") != "BUF" and not passes(
+                    instance, entry, current
+                ):
                     continue
                 outputs = [
                     one_net(bits)
@@ -154,21 +173,25 @@ def chip_manifest(
     generic_json: Path,
     *,
     original_types: Mapping[str, str] | None = None,
+    known: Mapping[int, int] | None = None,
 ) -> dict[str, Any]:
     """The scan manifest of the composed chip `module` (written at `generic_json`),
     its chains traced (trace_chains): the shape ``ff.py scan`` writes. The one
-    scan enable must reach every scan cell. `original_types`: each scan cell's type
-    before scan, by its name in the chip."""
-    chains = trace_chains(module, cell_map)
+    scan enable must reach every scan cell, through gates the `known` values make
+    pass it on (trace_chains). `original_types`: each scan cell's type before
+    scan, by its name in the chip."""
+    chains = trace_chains(module, cell_map, known)
     if not chains:
         raise ProjectError("the chip has no scan chain")
     cells = module["cells"]
     inputs = {net: name for name, net in port_bits(module, "input")}
-    enables = {
-        one_net(cells[name]["connections"].get("SE"))
-        for chain in chains
-        for name in chain.cells
-    }
+    netlist = Netlist(module, cell_map)
+    enables: set[Any] = set()
+    for chain in chains:
+        for name in chain.cells:
+            enable = one_net(cells[name]["connections"].get("SE"))
+            through = netlist.through(enable, {}, dict(known or {}))
+            enables.add(enable if through.inverted else through.source)
     enable_ports = sorted(inputs[n] for n in enables if n in inputs)
     if len(enables) != 1 or len(enable_ports) != 1:
         raise ProjectError(

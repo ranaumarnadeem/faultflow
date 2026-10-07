@@ -10,7 +10,9 @@ returns each block's net remap, which traces a fault of the SoC back to its bloc
 (faultflow.project.identity). The SoC's scan manifest is traced on its cells
 (faultflow.project.chip) and carries one wrapper record for every block
 (faultflow.project.soc_wrapper); its sky130 Verilog is the scan techmap of the
-composed cells, as a block's is.
+composed cells, as a block's is. Blocks an IEEE 1500 WSP controls share one on the
+SoC, their WSI and WSO chained: their chains are traced through the WSP's
+chain-head muxes, its serial nets at 0, and their WSPs' flops stay out of scan.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.reports import hash_file
 from faultflow.scan.techmap import write_scan_techmap
 from faultflow.scan.yosys import run_scan_techmap
-from faultflow.wrap.record import mode_holds
+from faultflow.wrap.record import mode_holds, serial_nets
 
 # Where each block's INTEST patterns are exported, in its scope's output directory:
 # what retargeting onto the SoC reads.
@@ -108,12 +110,6 @@ def build_soc(project: SocProject, base: FaultflowConfig, out: Path) -> SocBuild
                 f"block {block.name}'s scan manifest records no wrapper: scan it "
                 "with [wrap] enabled"
             )
-        if manifest["wrapper"].get("control") == "wsp":
-            raise ProjectError(
-                f"block {block.name}'s wrapper is set by an IEEE 1500 WSP ([wrap] "
-                "control = wsp), which a project doesn't chain yet: wrap it with "
-                "control = pins"
-            )
         for key in ("compression", "compaction"):
             if isinstance(manifest.get(key), dict) and manifest[key].get("enabled"):
                 raise ProjectError(f"block {block.name} has scan {key}")
@@ -152,9 +148,27 @@ def build_soc(project: SocProject, base: FaultflowConfig, out: Path) -> SocBuild
         for instance, (_, manifest) in blocks.items()
         for record in manifest["cells"]
     }
+    # The blocks' WSP serial nets, 0 while the chains shift in a scan test: the
+    # chains pass the WSPs' chain-head muxes.
+    known = {
+        int(remaps[instance].get(net, net)): value
+        for instance, (_, block_manifest) in blocks.items()
+        for net, value in serial_nets(block_manifest["wrapper"]).items()
+    }
     manifest = chip_manifest(
-        module, project.soc.top, cell_map, composed, original_types=original
+        module,
+        project.soc.top,
+        cell_map,
+        composed,
+        original_types=original,
+        known=known,
     )
+    manifest["ineligible_ffs"] = [
+        {**item, "instance": f"{instance}__{item['instance']}"}
+        for instance, (_, block_manifest) in blocks.items()
+        for item in block_manifest.get("ineligible_ffs", [])
+        if isinstance(item, dict) and item.get("reason") == "wsp"
+    ]
     manifest["wrapper"] = soc_wrapper(
         module,
         cell_map,

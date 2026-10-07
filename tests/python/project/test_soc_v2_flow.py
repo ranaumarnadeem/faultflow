@@ -151,6 +151,68 @@ def test_the_project_runs_and_counts_every_fault_once(
 
 
 @pytest.mark.integration
+def test_a_soc_of_wsp_blocks_shares_one_wsp_and_counts_every_fault_once(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """Blocks an IEEE 1500 WSP controls (GLUE_WSP_RTL): the SoC's record traces
+    the WSP inputs they share to its pins -- WRSTN through an inverter -- and
+    their WSI-WSO chain, their WSPs' flops stay out of its chains, and each test
+    of it starts by loading the mode's instruction into both WIRs. The chip
+    number counts every fault once; the SoC's EXTEST patterns replay on its cells,
+    and their every credit is reproduced there."""
+    from faultflow.project.soc_flow import run_soc_project, soc_chip_coverage
+    from faultflow.scan.setup import setup_to_list
+    from faultflow.service.flow import FlowService
+    from faultflow.wrap.record import mode_setup
+    from scan_credit import credit_not_reproduced
+    from scan_replay import replay_on_cells
+
+    patterns = tmp_path / "soc_extest.json"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(tmp_path)
+        project = load_soc_project(write_soc_v2(tmp_path, wsp=True))
+        base = load_config(project.base_config, project.soc.top)
+        service = FlowService()
+        scopes = run_soc_project(
+            project,
+            base,
+            run_atpg=service.run_atpg,
+            check_scan=service.check_scan,
+            out=tmp_path / "out",
+            soc_patterns=patterns,
+        )
+        manifest = json.loads(scopes.build.cfg.scan_manifest_path.read_text("utf-8"))
+        chip = soc_chip_coverage(project, scopes)
+        replayed = replay_on_cells(scopes.soc, patterns, tmp_path / "replay")
+        reproduced = credit_not_reproduced(
+            scopes.soc, patterns, campaign_type="scan_extest"
+        )
+        report = json.loads(scopes.soc.coverage_json_path.read_text("utf-8"))
+        exported = json.loads(patterns.read_text("utf-8"))
+    manifest_validator().validate(manifest)
+    wrapper = manifest["wrapper"]
+    assert wrapper["control"] == "wsp"
+    wsp = wrapper["wsp"]
+    assert (wsp["chain"], wsp["wrck"], wsp["wso"]) == (["u_a", "u_b"], "wrck", "wso")
+    assert wsp["pins"]["wrstn"] == {"port": "wrst", "inverted": True}
+    assert wsp["pins"]["wsi"] == {"port": "wsi", "inverted": False}
+    chains = [(c["scan_in"], c["scan_out"], c["kind"]) for c in manifest["chains"]]
+    assert ("wbr_si", "wbr_so", "wrapper") in chains
+    off_chain = sorted(f["instance"] for f in manifest["ineligible_ffs"])
+    assert [f.split("__")[0] for f in off_chain] == ["u_a"] * 7 + ["u_b"] * 7
+    extest = setup_to_list(mode_setup(manifest, "extest"))
+    assert len(extest) == 1 + 2 * 3 + 1  # WRSTN, both instructions, the update
+    assert exported and all(pattern["setup"] == extest for pattern in exported)
+    assert chip.guards["handoffs_owned"]
+    assert chip.chip_denominator == sum(s.owned for s in chip.scopes)
+    percent = chip.chip_coverage_percent
+    assert percent is not None and percent > 80.0
+    assert replayed == []
+    assert reproduced == []
+    assert report["summary"]["excluded_wsp"] > 0
+
+
+@pytest.mark.integration
 def test_hierarchical_coverage_holds_against_the_flat_soc(
     tmp_path: Path, flow_tools: None
 ) -> None:

@@ -89,6 +89,7 @@ from faultflow.scan.x_mask import (
 )
 from faultflow.testpoint.preflight import PreflightData, run_preflight
 from faultflow.wrap.sides import decoupled
+from faultflow.wrap.wsp import wsp_sites
 
 log = logging.getLogger(__name__)
 
@@ -1794,6 +1795,31 @@ def run_progressive_scan_atpg(
                     "cross-domain: tagged %d fault sites excluded_cross_domain",
                     n_xd,
                 )
+    # An IEEE 1500 WSP's own logic: its program and holds keep it still through
+    # the test, which leaves it to the WSP's own test (excluded_wsp) -- before
+    # JTAG's tags, which its programmed flops' faults would otherwise get.
+    wsp_keys: frozenset[str] = frozenset()
+    manifest_wrapper = scan_ctx.manifest.get("wrapper")
+    if isinstance(manifest_wrapper, dict) and manifest_wrapper.get("control") == "wsp":
+        _, wsp_module = _top_module(
+            json.loads(scan_ctx.generic_json.read_text(encoding="utf-8")),
+            str(scan_ctx.manifest.get("top", cfg.top)),
+        )
+        wsp_keys = wsp_sites(
+            [
+                dict(row)
+                for row in core.list_site_keys(
+                    str(scan_ctx.generic_json), generic_cell_map, unsupported, bb
+                )
+            ],
+            wsp_module,
+            json.loads(Path(generic_cell_map).read_text(encoding="utf-8")),
+            manifest_wrapper,
+        )
+        log.info(
+            "wsp: %d fault sites left to the IEEE 1500 WSP's own test (excluded_wsp)",
+            len(wsp_keys),
+        )
     # Non-scan cells: their own faults, and what only they see, are left to
     # JTAG (ff.py jtag) -- tagged before any SAT, which would otherwise call
     # them redundant -- and so are the stuck-ats that could release a flop the
@@ -1810,13 +1836,16 @@ def run_progressive_scan_atpg(
                 str(scan_ctx.generic_json), generic_cell_map, unsupported, bb
             )
         )
-        jtag_keys = jtag_sites(
-            site_rows,
-            generic_module,
-            json.loads(Path(generic_cell_map).read_text(encoding="utf-8")),
-            scan_ctx.nonscan,
-            tdo=cfg.jtag.tdo,
-            blackbox_instances=bb,
+        jtag_keys = (
+            jtag_sites(
+                site_rows,
+                generic_module,
+                json.loads(Path(generic_cell_map).read_text(encoding="utf-8")),
+                scan_ctx.nonscan,
+                tdo=cfg.jtag.tdo,
+                blackbox_instances=bb,
+            )
+            - wsp_keys
         )
         reset_keys = settled_sites(site_rows, scan_ctx.nonscan)
         log.info(
@@ -1862,6 +1891,7 @@ def run_progressive_scan_atpg(
             ),
             reset_sites=reset_keys,
             decoupled_faults=decoupled_faults,
+            wsp_sites=wsp_keys,
         )
         released = mark_blackbox_unresolved(conn, campaign_id, release)
     if scan_ctx.wrapper_scope is not None:

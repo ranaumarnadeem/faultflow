@@ -71,6 +71,7 @@ from faultflow.scan.reports import (
 )
 from faultflow.scan.nonscan import (
     NONSCAN_REASON,
+    WSP_REASON,
     NonscanSetup,
     analyze_nonscan,
     scan_clock_off,
@@ -91,7 +92,12 @@ from faultflow.wrap.environment import ENVIRONMENT, intest_harness, with_environ
 from faultflow.wrap.graybox import chip_patterns, extest_graybox, with_core
 from faultflow.wrap.sides import EXTEST, FAULT_TYPES, owner, sides_of
 from faultflow.wrap.errors import WrapError
-from faultflow.wrap.record import mode_holds, wrapper_record
+from faultflow.wrap.record import (
+    mode_holds,
+    mode_setup,
+    serial_nets,
+    wrapper_record,
+)
 
 log = logging.getLogger(__name__)
 
@@ -417,7 +423,7 @@ class Runner:
             # What the test setup program loads decides the programmed non-scan
             # flops' values and the faults left to JTAG. Keyed only when set,
             # so a design without one keeps its config_hash.
-            payload["scan_test_setup"] = setup_hash(self._test_setup())
+            payload["scan_test_setup"] = setup_hash(self._user_test_setup())
         if self.cfg.compression.enabled:
             # Compressed, every pattern is a decompressor seed's load
             # (scan.detection_pipeline._decompressed); a campaign graded before
@@ -1825,12 +1831,11 @@ class Runner:
             if flop.value is not None
         }
         wrapper = manifest.get("wrapper")
-        if isinstance(wrapper, dict) and wrapper.get("control") == "wsp":
+        if isinstance(wrapper, dict):
             # Every scan test runs with a parallel instruction (or WS_BYPASS) in
-            # the WIR: no serial path through the wrapper chains' heads, no WSP
-            # shift beside the scan enable.
-            nets = wrapper["wsp"]["nets"]
-            known.update({int(nets["serial"]): 0, int(nets["serial_shift"]): 0})
+            # a WSP's WIR: no serial path through the wrapper chains' heads, no
+            # WSP shift beside the scan enable.
+            known.update(serial_nets(wrapper))
         return Transparent(
             cell_map=_load_json_object(resolve_scan_cell_map(self.cfg)),
             holds=dict(self._holds(manifest)),
@@ -2483,23 +2488,17 @@ class Runner:
                 "scan-check is stale for the current generic scanned JSON; "
                 "re-run scan-check"
             )
-        wrapper = manifest.get("wrapper")
-        if isinstance(wrapper, dict) and wrapper.get("control") == "wsp":
-            raise RunnerError(
-                "a scan test of a wrapper an IEEE 1500 WSP controls ([wrap] control = "
-                "wsp) needs its instruction register programmed for the test, which "
-                "FaultFlow doesn't do yet: wrap with control = pins to test"
-            )
         ineligible = manifest.get("ineligible_ffs", [])
         if isinstance(ineligible, list) and ineligible:
-            # Flops left out by [scan] nonscan_cells aren't a full-scan blocker:
-            # the view ties them (scan.nonscan refuses one it can't). Genuinely
-            # unscannable FFs (unsupported_ff_shape, unknown_cell_type,
-            # existing_scan_cell) are.
+            # Flops left out by [scan] nonscan_cells, and an IEEE 1500 WSP's, aren't
+            # a full-scan blocker: the view ties them (scan.nonscan refuses one it
+            # can't). Genuinely unscannable FFs (unsupported_ff_shape,
+            # unknown_cell_type, existing_scan_cell) are.
             blockers = [
                 item
                 for item in ineligible
-                if isinstance(item, dict) and item.get("reason") != NONSCAN_REASON
+                if isinstance(item, dict)
+                and item.get("reason") not in (NONSCAN_REASON, WSP_REASON)
             ]
             if blockers:
                 names = ", ".join(
@@ -2816,14 +2815,31 @@ class Runner:
             blocking_instances=blocking,
         )
 
-    def _test_setup(self) -> tuple[SetupCycle, ...]:
-        """The test setup program ([scan] test_setup), or none."""
+    def _user_test_setup(self) -> tuple[SetupCycle, ...]:
+        """The test setup program [scan] test_setup gives, or none."""
         if self.cfg.scan.test_setup is None:
             return ()
         try:
             return load_setup(self.cfg.scan.test_setup)
         except ScanError as exc:
             raise RunnerError(str(exc)) from exc
+
+    def _test_setup(self, manifest: Mapping[str, Any]) -> tuple[SetupCycle, ...]:
+        """The scan test's setup program: [scan] test_setup's, or that of a
+        wrapper an IEEE 1500 WSP controls, which loads the test mode's
+        instruction (faultflow.wrap.record.mode_setup) -- not both -- or none."""
+        user = self._user_test_setup()
+        try:
+            wsp = mode_setup(manifest, str(self.cfg.test_mode))
+        except WrapError as exc:
+            raise RunnerError(str(exc)) from exc
+        if wsp and user:
+            raise RunnerError(
+                "[scan] test_setup with a wrapper an IEEE 1500 WSP controls ([wrap] "
+                "control = wsp) isn't supported: the program that loads the test "
+                "mode's instruction into the WSP is the test setup"
+            )
+        return wsp or user
 
     def _nonscan_setup(
         self,
@@ -2857,7 +2873,7 @@ class Runner:
                 scan_reset_holds=_scan_reset_pi_holds(
                     generic_json, self.cfg.top, cell_map
                 ),
-                setup=self._test_setup(),
+                setup=self._test_setup(manifest),
                 blackbox_instances=list(self.cfg.blackbox_instances),
             )
         except ScanError as exc:
@@ -2869,14 +2885,15 @@ class Runner:
         """The test setup program, checked against the scanned netlist: it names
         its inputs and pulses its scan clocks only. v1 refuses it with scan
         compression or compaction, whose chip is a composed netlist."""
-        setup = self._test_setup()
+        setup = self._test_setup(manifest)
         if not setup:
             return ()
         if self.cfg.compression.enabled or self.cfg.compaction.enabled:
             raise RunnerError(
-                "[scan] test_setup with scan compression or compaction isn't "
-                "supported: the setup program drives the scanned design's inputs, "
-                "and the chip is the composed netlist"
+                "a test setup program ([scan] test_setup, or a WSP wrapper's) with "
+                "scan compression or compaction isn't supported: the setup program "
+                "drives the scanned design's inputs, and the chip is the composed "
+                "netlist"
             )
         _, module = _json_top_module(generic_json, self.cfg.top)
         inputs = [name for name, _ in port_bits(module, "input")]
@@ -3230,6 +3247,11 @@ class Runner:
                     f" excluded_jtag={data['excluded_jtag']}"
                     f" hold_unresolved={data.get('hold_unresolved', 0)}"
                     if data.get("excluded_jtag") or data.get("hold_unresolved")
+                    else ""
+                )
+                + (
+                    f" excluded_wsp={data['excluded_wsp']}"
+                    if data.get("excluded_wsp")
                     else ""
                 )
                 + atpg_note

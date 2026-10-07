@@ -276,8 +276,35 @@ cells' flops run on `wrck`, so `[wrap] clock` stays empty. The instruction and b
 registers' flops stay out of the scan chains (reason `wsp`).
 
 `ff.py wrap`, `ff.py scan` and `scan-check` take such a wrapper; scan-check follows
-the chains as a parallel instruction (or WS_BYPASS) leaves them. Scan tests of it, and
-projects of blocks wrapped so, aren't supported yet.
+the chains as a parallel instruction (or WS_BYPASS) leaves them.
+
+#### Scan tests through the WIR
+
+A scan test of such a wrapper puts its instruction in the WIR first: every pattern
+starts with a test setup program -- WS_BYPASS for `sim --scan`, WP_INTEST for
+`intest`, WP_EXTEST for `extest` -- that clears the WSP (`wrstn` at 0), shifts the
+instruction in (bit 2 first, a `wrck` pulse each) and updates it (one more pulse).
+The test then holds `wrstn` at 1 and `selectwir`, `shiftwr`, `capturewr`,
+`updatewr` and `wsi` at 0, so the WIR and WBY keep their values while `wrck` pulses
+with the scan clock; a `[scan] hold` that disagrees is an error, and so is a
+`[scan] test_setup` of its own. The exported patterns carry the program (`setup`),
+the tester program applies it, and the STIL writes it as the `test_setup` macro.
+The boundary cells run on `wrck`, the core on its own clock: for transition faults
+on the paths between them, group the two (`[clocks] groups = clk wrck`).
+
+Such a test can't test the WSP itself, its instruction programmed and held: it
+leaves the WSP's faults -- its ports', its registers', its decode's and its serial
+path's -- to the WSP's own test (`excluded_wsp`). Where the decode's nets enter the
+boundary cells, the faults are the cells', owned by the mode that activates them,
+as the mode pins' are.
+
+In a project (`ff.py project`), blocks wrapped so share one WSP on the SoC: the glue
+brings each of `wrck`, `wrstn`, `selectwir`, `shiftwr`, `capturewr` and `updatewr`
+to every block from one SoC input, through buffers and inverters (`wrck` through
+buffers alone), and chains their `wsi` and `wso` through buffers, from a SoC input
+through every block to a SoC output. The SoC's program loads the mode's instruction
+into every block's WIR along that chain, and a block's retargeted INTEST patterns
+start with it. A project's blocks are wrapped all one way.
 
 ## `[autombist]`
 

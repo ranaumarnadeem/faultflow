@@ -352,6 +352,7 @@ def _reason_summary(
             "excluded_cross_domain",
             "excluded_wbr_decoupled",
             "excluded_jtag",
+            "excluded_wsp",
         )
     )
     summary = {
@@ -423,6 +424,7 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         "excluded_cross_domain",
         "excluded_wbr_decoupled",
         "excluded_jtag",
+        "excluded_wsp",
         "protocol_unresolved",
         "compression_unresolved",
         "compaction_unresolved",
@@ -587,6 +589,7 @@ def write_reports(
         + data.get("excluded_cross_domain", 0)
         + data.get("excluded_wbr_decoupled", 0)
         + data.get("excluded_jtag", 0)
+        + data.get("excluded_wsp", 0)
     )
     if data["total_raw_faults"] != invariant:
         raise CoverageError(
@@ -703,6 +706,7 @@ def write_reports(
             f"excluded_cross_domain:{data.get('excluded_cross_domain', 0)}",
             f"excluded_wbr_decoupled:{data.get('excluded_wbr_decoupled', 0)}",
             f"excluded_jtag:       {data.get('excluded_jtag', 0)}",
+            f"excluded_wsp:        {data.get('excluded_wsp', 0)}",
             f"protocol_unresolved: {data['protocol_unresolved']}",
             f"compression_unresolved: {data.get('compression_unresolved', 0)}",
             f"compaction_unresolved: {data.get('compaction_unresolved', 0)}",

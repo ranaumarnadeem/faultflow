@@ -339,23 +339,27 @@ def test_the_wsp_behaves_as_its_model(tmp_path: Path, flow_tools: None) -> None:
 
 
 @pytest.mark.integration
-def test_the_wsp_on_the_block_and_its_chains(
-    tmp_path: Path, flow_tools: None, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_the_wsp_on_the_block_and_its_chains(tmp_path: Path, flow_tools: None) -> None:
     """The WSP's ports in place of the mode pins, its seven flops off the scan
     chains, the boundary cells' flops on WRCK, the manifest's record of it -- and
-    no scan test yet: the WIR isn't programmed for one."""
+    its functional scan test, every pattern loading WS_BYPASS first
+    (faultflow.wrap.wsp_setup)."""
     from faultflow.cli import main
+    from faultflow.scan.setup import setup_to_list
     from faultflow.wrap.wsp import WSP_ATTR
+    from faultflow.wrap.wsp_setup import mode_program
     from wrap_flow import manifest_validator
 
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(tmp_path)
         wrapped = _wrap(tmp_path)
         ofs = tmp_path / "comb3.ofs"
-        with pytest.raises(SystemExit):
-            main(["sim", "--scan", "--top", TOP, "-c", str(ofs)])
-    assert "instruction register programmed" in capsys.readouterr().err
+        patterns = tmp_path / "functional_patterns.json"
+        run = ["sim", "--scan", "--export-patterns", str(patterns), "--top", TOP]
+        assert main([*run, "-c", str(ofs)]) == 0
+    exported = json.loads(patterns.read_text(encoding="utf-8"))
+    bypass = setup_to_list(mode_program(wrapped.manifest["wrapper"], "functional"))
+    assert exported and all(pattern["setup"] == bypass for pattern in exported)
     ports = wrapped.module["ports"]
     wsp_ports = {"wrck", "wrstn", "selectwir", "shiftwr", "capturewr", "updatewr"}
     assert wsp_ports | {"wsi"} <= {

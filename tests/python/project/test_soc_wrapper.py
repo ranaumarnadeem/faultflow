@@ -194,6 +194,36 @@ def test_a_soc_input_two_blocks_need_apart_is_refused(tmp_path: Path) -> None:
         soc_wrapper(module, SCAN_MAP, blocks, remaps, manifest["chains"])
 
 
+def test_blocks_wrapped_some_with_pins_some_with_a_wsp_are_refused(
+    tmp_path: Path,
+) -> None:
+    module, manifest, blocks, remaps = _compose(tmp_path, b_extest=32)
+    name, record = blocks["u_b"]
+    mixed = {**blocks, "u_b": (name, {**record, "control": "wsp"})}
+    with pytest.raises(ProjectError, match="all one way"):
+        soc_wrapper(module, SCAN_MAP, mixed, remaps, manifest["chains"])
+
+
+def test_the_blocks_wsps_form_one_chain_from_a_soc_input() -> None:
+    """Each block's WSI comes from a SoC input -- one block's -- or a block's WSO
+    (by its net); the chain runs from the first through every block."""
+    from faultflow.project.soc_wrapper import _wsi_chain
+
+    wso = {7: "u_a", 9: "u_b", 11: "u_c"}
+    assert _wsi_chain({"u_b": 7, "u_a": "wsi", "u_c": 9}, wso) == (
+        ["u_a", "u_b", "u_c"],
+        "wsi",
+    )
+    with pytest.raises(ProjectError, match="from SoC inputs"):
+        _wsi_chain({"u_a": "wsi", "u_b": "wsi2"}, wso)
+    with pytest.raises(ProjectError, match="more than one"):
+        _wsi_chain({"u_a": "wsi", "u_b": 7, "u_c": 7}, wso)
+    with pytest.raises(ProjectError, match="neither"):
+        _wsi_chain({"u_a": "wsi", "u_b": 5}, wso)
+    with pytest.raises(ProjectError, match="one chain"):
+        _wsi_chain({"u_a": "wsi", "u_b": 11, "u_c": 9}, wso)
+
+
 def test_each_soc_fault_site_is_the_block_faults_it_stands_for(
     tmp_path: Path, require_cpp_core: None
 ) -> None:

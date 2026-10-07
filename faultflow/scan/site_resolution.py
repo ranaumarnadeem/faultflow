@@ -140,8 +140,10 @@ def build_scan_execution_map(
         if (
             kind == "branch"
             and str(row.get("consumer_instance", "")) in scan_instances
-            and str(row.get("input_pin", "")) == "SDI"
+            and str(row.get("input_pin", "")) in ("SDI", "SE")
         ):
+            # A scan flop's own scan pins, whatever drives them -- the scan
+            # enable port, or an IEEE 1500 WSP's gate beside it (wrap.wsp).
             exclusions[key] = "scan_internal"
             continue
         direct = reduced_by_key.get(key)
@@ -201,10 +203,13 @@ def apply_scan_execution_map(
     jtag_faults: frozenset[tuple[str, str]] = frozenset(),
     reset_sites: set[str] | frozenset[str] = frozenset(),
     decoupled_faults: frozenset[tuple[str, str]] = frozenset(),
+    wsp_sites: set[str] | frozenset[str] = frozenset(),
 ) -> None:
     """Write the view site of every fault ATPG grades and the exclusion of every
     fault it doesn't. ``reset_sites`` (both faults of each site: a settled non-scan
-    flop's, scan/nonscan.py) are reset faults; ``jtag_sites`` (both faults of each
+    flop's, scan/nonscan.py) are reset faults; ``wsp_sites`` (both faults of each
+    site: an IEEE 1500 WSP's, wrap.wsp) are left to the WSP's own test, before
+    JTAG takes any; ``jtag_sites`` (both faults of each
     site) and ``jtag_faults`` ((site key, "sa0"/"sa1") pairs) are left to JTAG;
     ``decoupled_faults`` (pairs too) to the other IEEE 1500 wrapper test mode
     (faultflow.wrap.sides). Each tags only an uncollapsed fault nothing else
@@ -224,12 +229,14 @@ def apply_scan_execution_map(
             for key, compiled_index in execution.items()
         ],
     )
+    # A collapsed fault is counted as collapsed, and only so: one on the scan
+    # enable, say, folded into the gate an IEEE 1500 WSP reads it with.
     conn.executemany(
         """
         UPDATE faults
         SET exclusion = ?, excluded = ?, status = 'excluded',
             atpg_compiled_net_index = NULL
-        WHERE campaign_id = ? AND fault_site_key = ?
+        WHERE campaign_id = ? AND fault_site_key = ? AND collapsed_into IS NULL
         """,
         [
             (exclusion, exclusion, campaign_id, key)
@@ -245,6 +252,16 @@ def apply_scan_execution_map(
           AND exclusion = 'none' AND collapsed_into IS NULL
         """,
         [(campaign_id, key) for key in sorted(reset_sites)],
+    )
+    conn.executemany(
+        """
+        UPDATE faults
+        SET exclusion = 'wsp', excluded = 'wsp', status = 'excluded',
+            atpg_compiled_net_index = NULL
+        WHERE campaign_id = ? AND fault_site_key = ?
+          AND exclusion = 'none' AND collapsed_into IS NULL
+        """,
+        [(campaign_id, key) for key in sorted(wsp_sites)],
     )
     jtag_update = """
         UPDATE faults

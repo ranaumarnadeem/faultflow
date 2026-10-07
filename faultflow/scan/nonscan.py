@@ -29,6 +29,10 @@ whole test. Each must be one of:
   own fault sites are reset faults (:func:`settled_sites`): scan can't test them, and
   they are the reset of what it feeds.
 
+An IEEE 1500 WSP's flops (:mod:`faultflow.wrap.wsp`) stay out of scan too (reason
+``wsp``): the program that loads the test mode's instruction programs them
+(:mod:`faultflow.wrap.wsp_setup`).
+
 Anything else refuses. ``[scan] hold`` inputs are held in every cycle of every scan
 pattern; the view ties them (their port removed), so ATPG can't assign them either. A
 hold must be a single-bit input, can't be a scan port or a scan clock, and can't put a
@@ -68,6 +72,7 @@ from faultflow.scan.setup import SetupCycle, check_setup
 from faultflow.scan.setup_sim import SetupSimulator, changed_by
 
 NONSCAN_REASON = "nonscan_policy"
+WSP_REASON = "wsp"  # an IEEE 1500 WSP's flop: its mode's program programs it
 # The nets the C++ core gives a constant bit (common/types.hpp; x and z read as 0).
 CONST_NETS = {"0": -1, "x": -1, "z": -1, "1": -2}
 
@@ -125,11 +130,12 @@ class NonscanSetup:
 
 
 def nonscan_instances(manifest: Mapping[str, Any]) -> list[str]:
-    """The flops the stitcher left out of scan by policy, from its manifest."""
+    """The flops the stitcher left out of scan by policy, or as an IEEE 1500
+    WSP's, from its manifest."""
     return sorted(
         str(item["instance"])
         for item in manifest.get("ineligible_ffs", [])
-        if isinstance(item, dict) and item.get("reason") == NONSCAN_REASON
+        if isinstance(item, dict) and item.get("reason") in (NONSCAN_REASON, WSP_REASON)
     )
 
 

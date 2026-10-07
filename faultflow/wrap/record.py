@@ -11,11 +11,13 @@ from typing import Any, Mapping, Sequence
 
 from dataclasses import asdict
 
+from faultflow.scan.setup import SetupCycle
 from faultflow.wrap.block import CLOCK_ATTR, CONTROL_ATTR, EXTEST_ATTR, INTEST_ATTR
 from faultflow.wrap.cell import CELL_ATTR, INDEX_ATTR, INPUT, ROLE_ATTR, SIDE_ATTR
 from faultflow.wrap.errors import WrapError
 from faultflow.wrap.wsp import wsp_of
 from faultflow.wrap.wsp_model import OPCODES
+from faultflow.wrap.wsp_setup import access_of, holds, mode_program
 
 VERSION = "faultflow_wrapper_v1"
 MODES = {"functional": (0, 0), "intest": (1, 0), "extest": (0, 1)}
@@ -119,26 +121,62 @@ def wrapper_record(
 
 
 def mode_holds(manifest: Mapping[str, Any], mode: str) -> dict[str, int]:
-    """The mode pins a scan test in ``mode`` holds, and their values: none
-    without a wrapper. A SoC's record (faultflow.project.soc_wrapper) names the SoC
-    inputs that set its blocks' mode pins, per mode."""
+    """The inputs a scan test in ``mode`` holds for the wrapper, and their values:
+    its mode pins -- or, with a WSP, the WSP's inputs, the same in every mode
+    (faultflow.wrap.wsp_setup: the instruction sets the mode) -- none without a
+    wrapper. A SoC's record (faultflow.project.soc_wrapper) names the SoC inputs
+    that set its blocks' mode pins, per mode."""
     wrapper = manifest.get("wrapper")
     if not isinstance(wrapper, dict):
         return {}
     if mode not in MODES:
         raise WrapError(f"no wrapper mode {mode!r}")
     if wrapper.get("control") == "wsp":
-        return {}  # its mode is an instruction, not pins
+        return holds(access_of(wrapper))
     if "holds" in wrapper:
         return {str(port): int(value) for port, value in wrapper["holds"][mode].items()}
     intest, extest = MODES[mode]
     return {wrapper["intest"]["port"]: intest, wrapper["extest"]["port"]: extest}
 
 
+def mode_setup(manifest: Mapping[str, Any], mode: str) -> tuple[SetupCycle, ...]:
+    """The test setup program a scan test in ``mode`` starts with for the
+    wrapper: a WSP's, loading the mode's instruction (faultflow.wrap.wsp_setup);
+    none for mode pins, or without a wrapper."""
+    wrapper = manifest.get("wrapper")
+    if not isinstance(wrapper, dict) or wrapper.get("control") != "wsp":
+        return ()
+    if mode not in MODES:
+        raise WrapError(f"no wrapper mode {mode!r}")
+    return mode_program(wrapper, mode)
+
+
+def serial_nets(wrapper: Mapping[str, Any]) -> dict[int, int]:
+    """A WSP's nets that a scan test, its instruction parallel or WS_BYPASS, holds
+    at 0 -- each WSP's ``serial`` and ``serial_shift`` (faultflow.wrap.wsp), every
+    block's on a SoC -- each at 0: the serial paths through the wrapper chains'
+    heads and beside the scan enable closed. None for mode pins."""
+    if wrapper.get("control") != "wsp":
+        return {}
+    wsp = wrapper["wsp"]
+    if "blocks" in wrapper:
+        return {int(net): 0 for net in wsp["serial_nets"]}
+    return {int(wsp["nets"]["serial"]): 0, int(wsp["nets"]["serial_shift"]): 0}
+
+
 def mode_nets(wrapper: Mapping[str, Any]) -> dict[int, int]:
-    """Each net the mode pins set, and the value INTEST holds it at: a block's two
-    mode nets, or every net on a SoC's paths from its inputs to its blocks' mode
-    pins."""
+    """Each net that sets the boundary cells' mode, and the value INTEST holds it
+    at: a block's two mode nets -- or the four its WSP's decode drives -- or every
+    net on a SoC's paths from its inputs to its blocks' mode pins (with WSPs, its
+    blocks' decode nets)."""
     if "mode_nets" in wrapper:
         return {int(net): int(value) for net, value in wrapper["mode_nets"].items()}
+    if wrapper.get("control") == "wsp":
+        nets = wrapper["wsp"]["nets"]
+        return {
+            int(nets["in_hold"]): 1,
+            int(nets["in_safe"]): 0,
+            int(nets["out_hold"]): 0,
+            int(nets["out_safe"]): 1,
+        }
     return {int(wrapper["intest"]["net"]): 1, int(wrapper["extest"]["net"]): 0}

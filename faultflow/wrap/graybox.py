@@ -5,18 +5,20 @@ In EXTEST the output cells drive the block's ports from their flops and the inpu
 cells capture them, while the core is held off: its outputs reach no boundary cell
 past an output cell's mux, whose select the EXTEST pin holds. So EXTEST grades the
 boundary cells alone. The graybox (:func:`extest_graybox`) keeps every wrapper cell
-and every port, with the same net ids, and replaces every other cell by one
-blackbox instance, :data:`CORE`:
+-- an IEEE 1500 WSP's too, whose instruction sets the cells' mode -- and every
+port, with the same net ids, and replaces every other cell by one blackbox
+instance, :data:`CORE`:
 - what the core drove that the cells or the ports read are its outputs, unknown
   to the scan test (an X source, faultflow.scan.x_mask, which the held EXTEST pin
   keeps out of the cells);
 - what it read is its inputs, which no test observes.
 The core's faults are not in it: no EXTEST campaign can call one redundant.
 
-Its scan manifest has the wrapper chains alone, numbered from 0; the chip numbers
-them after the core's. ``chains`` maps each graybox chain to the chip's, for
-the patterns a tester applies to the whole block: they shift the wrapper chains'
-length (``shift_length``), and the core's chains shift along, uncompared.
+Its scan manifest has the wrapper chains alone, numbered from 0 (the chip numbers
+them after the core's), and the WSP's flops, which stay out of scan. ``chains``
+maps each graybox chain to the chip's, for the patterns a tester applies to the
+whole block: they shift the wrapper chains' length (``shift_length``), and the
+core's chains shift along, uncompared.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from faultflow.config import FaultflowConfig
 from faultflow.control_trace import Netlist
 from faultflow.wrap.cell import ROLES
 from faultflow.wrap.errors import WrapError
+from faultflow.wrap.wsp import WSP_ATTR
 
 CORE = "__core__"
 CORE_TYPE = "$faultflow_core"
@@ -67,11 +70,16 @@ def _nets(bits: Any) -> list[int]:
 
 def _cores(cells: Mapping[str, Any], wrapper: Mapping[str, Any]) -> dict[str, set[str]]:
     """Each blackbox standing for a core, and the cells it replaces: a block's
-    every cell but its wrapper's; a SoC's (faultflow.project.soc_wrapper) every cell
-    of each block -- those the composition tagged with the block's name
-    (``faultflow_block``) -- but its wrapper's, ``<instance>__core``, its glue
-    kept."""
+    every cell but its wrapper's (its WSP's among them); a SoC's
+    (faultflow.project.soc_wrapper) every cell of each block -- those the
+    composition tagged with the block's name (``faultflow_block``) -- but its
+    wrapper's, ``<instance>__core``, its glue kept."""
     kept = {str(cell[role]) for cell in wrapper["cells"] for role in ROLES}
+    kept |= {
+        str(name)
+        for name, cell in cells.items()
+        if WSP_ATTR in cell.get("attributes", {})
+    }
     if "blocks" not in wrapper:
         return {CORE: set(cells) - kept}
     block_of = {
@@ -199,7 +207,7 @@ def _wrapper_manifest(
     manifest: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[int, int]]:
     """`manifest` with the wrapper chains alone, numbered from 0, and each one's
-    number on the chip."""
+    number on the chip. Of the flops scan left out, the WSP's stay."""
     for key in ("compression", "compaction"):
         if isinstance(manifest.get(key), dict) and manifest[key].get("enabled"):
             raise WrapError(f"EXTEST of a block with scan {key} isn't supported")
@@ -237,6 +245,10 @@ def _wrapper_manifest(
         "min_chain_length": min(lengths),
         "chains": chains,
         "cells": cells,
-        "ineligible_ffs": [],
+        "ineligible_ffs": [
+            item
+            for item in manifest.get("ineligible_ffs", [])
+            if isinstance(item, dict) and item.get("reason") == "wsp"
+        ],
     }
     return graybox, {k: int(c["index"]) for k, c in enumerate(chip_chains)}

@@ -70,6 +70,41 @@ module soc_top(input clk, input rst_a, input rst_b, input add_sub, input [3:0] b
 endmodule
 """
 
+# The same SoC of blocks an IEEE 1500 WSP controls ([wrap] control = wsp): their
+# WSPs share the SoC's WRCK and controls -- WRSTN through an inverter from an
+# active-high wrst -- and chain WSI -> u_a -> u_b -> WSO; their wrapper chains are
+# one, between wbr_si and wbr_so.
+GLUE_WSP_RTL = """
+module soc_top(input clk, input rst_a, input rst_b, input add_sub, input [3:0] b,
+               input up_down, input en, input scan_en, input si_a, input si_b,
+               input wbr_si, input wrck, input wrst, input selectwir,
+               input shiftwr, input capturewr, input updatewr, input wsi,
+               output so_a, output so_b, output wbr_so, output wso,
+               output chip_out);
+  wire [3:0] acc_o; wire carry_o; wire [3:0] count_o; wire done_o; wire w_mid;
+  wire [3:0] load_val_n; wire load_n; wire wso_a;
+  wire wrstn = ~wrst;
+  assign load_val_n = ~acc_o;
+  assign load_n = ~carry_o;
+  alu_acc u_a(.clk(clk), .rst(rst_a), .add_sub(add_sub), .b(b),
+              .acc(acc_o), .carry(carry_o),
+              .scan_en(scan_en), .scan_in(si_a), .scan_out(so_a),
+              .wbr_si(wbr_si), .wbr_so(w_mid),
+              .wrck(wrck), .wrstn(wrstn), .selectwir(selectwir),
+              .shiftwr(shiftwr), .capturewr(capturewr), .updatewr(updatewr),
+              .wsi(wsi), .wso(wso_a));
+  ctr_fsm u_b(.clk(clk), .rst(rst_b), .en(en), .up_down(up_down),
+              .load_val_n(load_val_n), .load_n(load_n),
+              .count(count_o), .done(done_o),
+              .scan_en(scan_en), .scan_in(si_b), .scan_out(so_b),
+              .wbr_si(w_mid), .wbr_so(wbr_so),
+              .wrck(wrck), .wrstn(wrstn), .selectwir(selectwir),
+              .shiftwr(shiftwr), .capturewr(capturewr), .updatewr(updatewr),
+              .wsi(wso_a), .wso(wso));
+  assign chip_out = carry_o ^ done_o;
+endmodule
+"""
+
 
 def base_ofs(path: Path, netlist: Path, extra: str = "") -> Path:
     path.write_text(
@@ -80,9 +115,12 @@ def base_ofs(path: Path, netlist: Path, extra: str = "") -> Path:
     return path
 
 
-def scanned_block(work: Path, rtl: str, top: str) -> tuple[Path, Path]:
-    """`top` synthesized, wrapped and scanned on its own (one core chain, one
-    wrapper chain), its scan-check passed: its scan JSON and scan manifest."""
+def scanned_block(
+    work: Path, rtl: str, top: str, control: str = "pins"
+) -> tuple[Path, Path]:
+    """`top` synthesized, wrapped (its mode set by `control`: mode pins or a WSP)
+    and scanned on its own (one core chain, one wrapper chain), its scan-check
+    passed: its scan JSON and scan manifest."""
     from faultflow.cli import main
 
     work.mkdir(parents=True, exist_ok=True)
@@ -91,7 +129,8 @@ def scanned_block(work: Path, rtl: str, top: str) -> tuple[Path, Path]:
     ofs = base_ofs(
         work / f"{top}.ofs",
         source,
-        "[wrap]\nenabled = true\n\n[scan]\nchains = 1\nwrapper_chains = 1\n",
+        f"[wrap]\nenabled = true\ncontrol = {control}\n\n"
+        "[scan]\nchains = 1\nwrapper_chains = 1\n",
     )
     for step in ("init", "scan", "scan-check"):
         assert main([step, "--top", top, "-c", str(ofs)]) == 0, step
@@ -105,14 +144,17 @@ def write_soc_v2(
     name: str = "soc2",
     hold: dict[str, int] | None = None,
     base: str = "",
+    wsp: bool = False,
 ) -> Path:
     """The two blocks built under `root`, the glue and the base config written
     there (`base`: its sections beyond [design]), and the project manifest naming
-    them (the SoC inputs `hold` names held in the SoC's tests): its path."""
-    a_json, a_manifest = scanned_block(root / "blkA", ALU_RTL, "alu_acc")
-    b_json, b_manifest = scanned_block(root / "blkB", CTR_RTL, "ctr_fsm")
+    them (the SoC inputs `hold` names held in the SoC's tests): its path. `wsp`:
+    the blocks' wrappers an IEEE 1500 WSP controls, the glue GLUE_WSP_RTL."""
+    control = "wsp" if wsp else "pins"
+    a_json, a_manifest = scanned_block(root / "blkA", ALU_RTL, "alu_acc", control)
+    b_json, b_manifest = scanned_block(root / "blkB", CTR_RTL, "ctr_fsm", control)
     glue = root / "soc_glue.v"
-    glue.write_text(GLUE_RTL, encoding="utf-8")
+    glue.write_text(GLUE_WSP_RTL if wsp else GLUE_RTL, encoding="utf-8")
     base_ofs(root / "config.ofs", glue, base)
     project: dict[str, Any] = {
         "schema": "faultflow_project_v2",

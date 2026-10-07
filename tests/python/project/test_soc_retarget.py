@@ -157,6 +157,36 @@ def test_a_block_pattern_with_a_test_setup_program_isnt_retargeted() -> None:
         _retarget(pattern)
 
 
+def test_a_wsp_blocks_intest_program_becomes_the_socs() -> None:
+    """A block an IEEE 1500 WSP controls: its program, which loads WP_INTEST into
+    its WIR, gives way to the SoC's; its held WSP inputs to the SoC's holds; and
+    its WSO isn't compared. Any other program is refused."""
+    block_program = (SetupCycle((("wrstn", 0),), ()),)
+    soc_program = (
+        SetupCycle((("wrst", 1),), ()),
+        SetupCycle((("wrst", 0), ("sel", 1)), ("wrck",)),
+    )
+    wsp = {
+        "block_setup": block_program,
+        "setup": soc_program,
+        "mode_pins": {"wrstn": 1},
+        "dropped": frozenset({"wso"}),
+    }
+    values = {"wrstn": True, "wso": False, "rst": True}
+    pattern = _block_pattern(setup=block_program, capture_pi_values=values)
+    soc = _retarget(pattern, **wsp)
+    assert soc.setup == soc_program
+    held = {"t_intest": True, "t_extest": False}
+    assert soc.capture_pi_values == {"rst_a": False, **held}
+    with pytest.raises(RetargetError, match="WSP's INTEST program"):
+        _retarget(_block_pattern(), **wsp)
+    with pytest.raises(RetargetError, match="compares block output wso"):
+        _retarget(
+            _block_pattern(setup=block_program, capture_pi_values=values),
+            **{**wsp, "outputs": {"wso"}, "dropped": frozenset()},
+        )
+
+
 @pytest.fixture
 def flow_tools() -> None:
     from faultflow.runner.runner import _load_core
@@ -167,12 +197,13 @@ def flow_tools() -> None:
         pytest.skip("needs iverilog")
 
 
-def _retargeted_on_the_soc(tmp_path: Path, base: str) -> None:
+def _retargeted_on_the_soc(tmp_path: Path, base: str, wsp: bool = False) -> None:
     """The project run, then each block's INTEST patterns retargeted with ff.py
     project retarget: they replay on the composed SoC's cells, every SoC input
     they leave unset at X, and every credit of the block's INTEST is reproduced on
     the SoC with those inputs at 0 and at 1 -- or the credit is of a block input
-    stem the SoC splits into branches, which has no SoC site."""
+    stem the SoC splits into branches, which has no SoC site. `wsp`: the blocks an
+    IEEE 1500 WSP controls, each pattern starting with the SoC's program."""
     from faultflow.cli import main
     from faultflow.config import load_config
     from faultflow.project.identity import merged_inputs, soc_identities
@@ -184,8 +215,10 @@ def _retargeted_on_the_soc(tmp_path: Path, base: str) -> None:
     )
     from faultflow.runner.runner import _load_core
     from faultflow.scan.cell_map import resolve_scan_cell_map
+    from faultflow.scan.setup import setup_to_list
     from faultflow.scan.tester_program import chip_of
     from faultflow.service.flow import FlowService
+    from faultflow.wrap.record import mode_setup
     from scan_credit import soc_credit_not_reproduced
     from scan_replay import replay_on_cells
 
@@ -193,7 +226,7 @@ def _retargeted_on_the_soc(tmp_path: Path, base: str) -> None:
     assert core is not None
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(tmp_path)
-        path = write_soc_v2(tmp_path, base=base)
+        path = write_soc_v2(tmp_path, base=base, wsp=wsp)
         project = load_soc_project(path)
         service = FlowService()
         scopes = run_soc_project(
@@ -219,6 +252,9 @@ def _retargeted_on_the_soc(tmp_path: Path, base: str) -> None:
             assert main([*command, "--out", str(dest)]) == 0
             patterns = json.loads(dest.read_text("utf-8"))
             assert patterns
+            program = setup_to_list(mode_setup(manifest, "intest"))
+            assert bool(program) == wsp
+            assert all(pattern.get("setup", []) == program for pattern in patterns)
             stil = tmp_path / f"{name}_on_soc.stil"
             command = ["project", "write-patterns", "-p", str(path)]
             assert main([*command, "--patterns", str(dest), "--out", str(stil)]) == 0
@@ -251,6 +287,13 @@ def test_each_blocks_intest_patterns_run_on_the_soc(
     tmp_path: Path, flow_tools: None
 ) -> None:
     _retargeted_on_the_soc(tmp_path, "")
+
+
+@pytest.mark.integration
+def test_each_wsp_blocks_intest_patterns_run_on_the_soc_after_its_program(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    _retargeted_on_the_soc(tmp_path, "", wsp=True)
 
 
 @pytest.mark.integration
