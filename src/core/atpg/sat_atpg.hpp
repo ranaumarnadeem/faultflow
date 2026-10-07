@@ -48,6 +48,14 @@ struct SatSolveOptions {
   int seed_width = 0;
   std::vector<SeededInput> seeded_inputs;
   std::vector<SeededInput> seeded_capture_inputs;
+  // A straight-line program over the seed (the continuous-flow decompressor's
+  // ring, shift by shift): variable seed_width + j is the XOR of the variables
+  // seed_defs[j] names, each an earlier one (none: 0). A seeded input's bits may
+  // name any of the seed_width + seed_defs.size() variables, so the CNF grows
+  // with the program, not with each cell's expanded row.
+  std::vector<std::vector<int>> seed_defs;
+  // When set, a SAT solve writes here the seed_width free seed bits it chose.
+  std::vector<bool>* seed_out = nullptr;
 };
 
 // CaDiCaL mapping: 10=SAT, 20=UNSAT, 0=UNKNOWN. Interrupt from conflict/time

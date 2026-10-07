@@ -153,3 +153,107 @@ def test_los_seeded_heads_load_the_launch_shift(
     assert solve("net:8:stem/sa0", seed_width=1, seeded_inputs={"__ppi_ff2": []}) == (
         "SAT"
     )
+
+
+# SEEDED through a program: v2 = s0 ^ s1, v3 = v2 ^ s1 (= s0); ff0 = v3, ff1 = v2,
+# ff2 = s1.
+DEFS = [[0, 1], [2, 1]]
+PROGRAM = {"__ppi_ff0": [3], "__ppi_ff1": [2], "__ppi_ff2": [1]}
+
+
+@pytest.mark.unit
+def test_a_seed_program_decides_as_its_rows_do_and_reads_back_its_seed(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    core, view, db, ids = _view(tmp_path, "tiny_scan_view_seeded.json")
+    sat = 0
+    for key, fault_id in ids.items():
+        flat = _solve(core, view, db, fault_id, seed_width=2, seeded_inputs=SEEDED)
+        solved = _solve(
+            core,
+            view,
+            db,
+            fault_id,
+            seed_width=2,
+            seeded_inputs=PROGRAM,
+            seed_defs=DEFS,
+        )
+        assert solved["result"] == flat["result"], key
+        if solved["result"] != "SAT":
+            assert solved["seed"] == [], key
+            continue
+        sat += 1
+        s0, s1 = solved["seed"]
+        vector = solved["vector"]
+        assert (vector["__ppi_ff0"], vector["__ppi_ff1"], vector["__ppi_ff2"]) == (
+            s0,
+            s0 != s1,
+            s1,
+        ), key
+        assert len(flat["seed"]) == 2
+    assert sat > 0
+
+
+@pytest.mark.unit
+def test_a_seed_program_reading_a_later_variable_is_refused(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    core, view, db, ids = _view(tmp_path, "tiny_scan_view_seeded.json")
+    with pytest.raises(RuntimeError, match="seed definition 0"):
+        _solve(
+            core,
+            view,
+            db,
+            ids["net:6:stem/sa1"],
+            seed_width=2,
+            seeded_inputs=PROGRAM,
+            seed_defs=[[3], [0]],
+        )
+
+
+@pytest.mark.unit
+def test_the_two_frame_solvers_read_back_their_seed(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    core, view, db, ids = _view(tmp_path, "tiny_scan_view_los.json")
+    couples = [("__ppi_ff1", "__ppi_ff0")]
+    heads = ["__ppi_ff0", "__ppi_ff2"]
+    solved = dict(
+        core.solve_scan_los_transition_fault_atpg(
+            view,
+            str(CELL_MAP),
+            db,
+            ids["net:8:stem/sa0"],
+            couples,
+            heads,
+            [],
+            -1,
+            0,
+            # ff2's load is s0, its launch-shift bit v2 = s0 ^ s1.
+            seed_width=2,
+            seeded_inputs={"__ppi_ff2": [0]},
+            seeded_heads={"__ppi_ff2": [2]},
+            seed_defs=[[0, 1]],
+        )
+    )
+    assert solved["result"] == "SAT"
+    s0, s1 = solved["seed"]
+    assert solved["launch"]["__ppi_ff2"] == s0
+    assert solved["capture"]["__ppi_ff2"] == (s0 != s1)
+    (tmp_path / "loc").mkdir()
+    core, view, db, ids = _view(tmp_path / "loc", "tiny_scan_view_loc.json")
+    loc = dict(
+        core.solve_scan_transition_fault_atpg(
+            view,
+            str(CELL_MAP),
+            db,
+            ids["net:3:stem/sa0"],
+            [],
+            -1,
+            0,
+            seed_width=1,
+            seeded_inputs={"__ppi_ff0": [0]},
+        )
+    )
+    assert loc["result"] == "SAT"
+    assert loc["launch"]["__ppi_ff0"] == loc["seed"][0]

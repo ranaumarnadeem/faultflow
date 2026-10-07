@@ -457,7 +457,8 @@ SolveFaultResult solve_fault_for_db(
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
     const std::string& test_mode, bool cone_restrict, bool incremental,
-    int64_t net_index_override, int seed_width, const SeedRows& seeded_inputs) {
+    int64_t net_index_override, int seed_width, const SeedRows& seeded_inputs,
+    const SeedDefs& seed_defs) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -469,12 +470,15 @@ SolveFaultResult solve_fault_for_db(
   CompactFault fault = fault_from_record(rec);
   apply_net_index_override(fault, ctx.cg, net_index_override);
 
+  SolveFaultResult out;
   SatSolveOptions options;
   options.conflict_limit = conflict_limit;
   options.sat_timeout_seconds = sat_timeout_seconds;
   options.blocked_patterns = blocked_patterns;
   options.seed_width = seed_width;
   options.seeded_inputs = seeded_pis(pis, seeded_inputs);
+  options.seed_defs = seed_defs;
+  options.seed_out = &out.seed;
 
   std::map<std::string, bool> vector;
   const TestMode mode = parse_test_mode(test_mode);
@@ -496,7 +500,6 @@ SolveFaultResult solve_fault_for_db(
     result = solve_stuck_at_fault(ctx.cg, pis, fault, options, vector, mc);
   }
 
-  SolveFaultResult out;
   out.result = solve_result_name(result);
   if (result == SatSolveResult::SAT) {
     out.vector = std::move(vector);
@@ -704,7 +707,8 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances, bool cone_restrict,
-    int64_t net_index_override, int seed_width, const SeedRows& seeded_inputs) {
+    int64_t net_index_override, int seed_width, const SeedRows& seeded_inputs,
+    const SeedDefs& seed_defs) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -718,6 +722,7 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
   apply_net_index_override(fault, ctx.cg, net_index_override);
   fault.model = FaultModel::TRANSITION;
 
+  SolveTransitionResult out;
   SatSolveOptions options;
   options.conflict_limit = conflict_limit;
   options.sat_timeout_seconds = sat_timeout_seconds;
@@ -727,13 +732,14 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
   options.cone_restrict = cone_restrict;
   options.seed_width = seed_width;
   options.seeded_inputs = seeded_pis(pis, seeded_inputs);
+  options.seed_defs = seed_defs;
+  options.seed_out = &out.seed;
 
   std::map<std::string, bool> launch;
   std::map<std::string, bool> capture;
   const SatSolveResult result = solve_scan_transition_fault(
       ctx.cg, pis, view.couples, view.held_pis, fault, options, launch, capture);
 
-  SolveTransitionResult out;
   out.result = solve_result_name(result);
   if (result == SatSolveResult::SAT) {
     out.launch = std::move(launch);
@@ -751,7 +757,7 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances, bool cone_restrict,
     int64_t net_index_override, int seed_width, const SeedRows& seeded_inputs,
-    const SeedRows& seeded_heads) {
+    const SeedRows& seeded_heads, const SeedDefs& seed_defs) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -789,6 +795,7 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
   apply_net_index_override(fault, ctx.cg, net_index_override);
   fault.model = FaultModel::TRANSITION;
 
+  SolveTransitionResult out;
   SatSolveOptions options;
   options.conflict_limit = conflict_limit;
   options.sat_timeout_seconds = sat_timeout_seconds;
@@ -798,13 +805,14 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
   options.seed_width = seed_width;
   options.seeded_inputs = seeded_pis(pis, seeded_inputs);
   options.seeded_capture_inputs = seeded_pis(pis, seeded_heads);
+  options.seed_defs = seed_defs;
+  options.seed_out = &out.seed;
 
   std::map<std::string, bool> launch;
   std::map<std::string, bool> capture;
   const SatSolveResult result = solve_scan_los_transition_fault(
       ctx.cg, pis, couples, head_ppi, held, fault, options, launch, capture);
 
-  SolveTransitionResult out;
   out.result = solve_result_name(result);
   if (result == SatSolveResult::SAT) {
     out.launch = std::move(launch);
