@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from faultflow.config import FaultflowConfig
 from faultflow.db import connect, init_schema, summary
 from faultflow.runner.progressive_atpg import (
     ATPGRANDOM_SEED,
@@ -100,6 +101,7 @@ def test_mark_fault_redundant_never_overwrites_detected(
     import faultflow.runner.runner as runner_mod
 
     core = runner_mod._load_core()
+    assert core is not None
     db = tmp_path / "faultflow.sqlite"
     _cid, ids = _four_fault_campaign(db)
 
@@ -251,7 +253,9 @@ def test_duplicate_suppression_drops_repeated_patterns() -> None:
     assert seen == {"10", "01"}
 
 
-def _tiny_inv_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+def _tiny_inv_cfg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[FaultflowConfig, Path]:
     root = Path(__file__).resolve().parents[3]
     fixture = root / "tests/cpp/fixtures/tiny_inv.json"
     if not fixture.exists():
@@ -303,7 +307,7 @@ def _model_id() -> str:
     return redundancy_model_id(fp)
 
 
-def _run_atpg(cfg, netlist, model_id: str, **kwargs: object):
+def _run_atpg(cfg, netlist, model_id: str, **kwargs: Any):
     campaign_id = campaign_id_for_cfg(cfg, netlist)
     return run_progressive_native_atpg(
         cfg, netlist, model_id, campaign_id=campaign_id, **kwargs
