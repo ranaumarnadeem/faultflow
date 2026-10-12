@@ -228,9 +228,10 @@ def test_a_file_that_isnt_a_program_or_doesnt_fit_the_wrapper_is_refused(
 @pytest.mark.unit
 def test_the_refusals_are_wrap_errors_and_a_soc_or_pin_wrapper_has_no_program() -> None:
     assert issubclass(WspProgramError, WrapError)
-    with pytest.raises(WrapError, match="block's"):
+    with pytest.raises(WrapError, match="block's or a SoC's"):
         WspProgram.from_json(_file(), {**RECORD, "control": "pins"}, SCAN_OUTS)
-    with pytest.raises(WrapError, match="block's"):
+    # A record with blocks is a SoC's: without its WSP chain it can't be read.
+    with pytest.raises(WrapError, match="no WSP chain"):
         WspProgram.from_json(_file(), {**RECORD, "blocks": []}, SCAN_OUTS)
     with pytest.raises(WrapError, match="block's"):
         WspProgram.build({**RECORD, "blocks": []})

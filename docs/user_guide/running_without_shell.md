@@ -460,7 +460,12 @@ Grade the faults a scan test of a block wrapped with an IEEE 1500 WSP (`[wrap]
 control = wsp`) leaves to the WSP (`excluded_wsp`) with the WSP's integrity program,
 compared at `wso`, at the wrapped outputs and at the wrapper chains' scan-outs. Needs a
 completed scan test of the block in the current `[testmode] mode` (`sim --scan`,
-`intest` or `extest`); stuck-at only; a block's WSP, not a SoC's chain of them.
+`intest` or `extest`); stuck-at only. It grades a block's WSP, and a SoC's chain of
+them (a project's SoC scope, `[wrap] control = wsp` on its blocks): the blocks share the SoC's
+`wrck` and controls, some through inverters, and chain WSI to WSO. A SoC's block ports are
+the SoC's own nets, not pins, so the program drives none of them and observes WSO alone;
+one scan loads every block's WIR, the far block's bits first, and each block's codes are
+tested in turn with the others in bypass (`u0_code_001`, `u1_code_100`, ...).
 
 The program is warptap's. faultflow writes the wrapper as ICL (an IEEE 1687 description
 of the WIR, WBY, the boundary registers and their decode, from the wrapper record and the
@@ -477,6 +482,13 @@ outputs, which the program never clocks -- is no care. Every input but the WSP's
 wrapped data inputs is 0. `[wsp] program`, or `--program`, plays a `warptap-wsp-program`
 file instead; `--export` writes the program that was played. Without warptap and without a
 program file the run says so (`[wsp] builder = faultflow` selects faultflow's older program).
+
+With the program warptap builds, the test setup programs are checked too: each mode's
+program that loads its instruction into the WIR (what a scan test of that mode starts with)
+must equal, cycle by cycle on the chip's inputs, what warptap's PDL interpreter retargets
+`iReset; iWrite WIR <instruction>; iApply` to, the instruction codes taken from the wrapper
+record (the codes its decode was built with). The PDL is written beside the ICL, as
+`<top>_wsp_setup_functional.pdl`, `..._intest.pdl` and `..._extest.pdl`.
 
 Before the netlist is touched the program is replayed on faultflow's own model of the WSP,
 independent of warptap's, and refused if the two disagree at any care bit. Then the

@@ -10,7 +10,7 @@
     # written against (branch ieee1500-wsp, the 1500 wrapper on top of mbist-jtag);
     # stdlib-only, so its source on PYTHONPATH is enough.
     warptap = {
-      url = "github:ranaumarnadeem/warptap/0c53364a9b66d3683c072b0b2dbda784de681aea";
+      url = "github:ranaumarnadeem/warptap/8aee9cf33dfe3c07743b2ece7f1d1e04870f9772";
       flake = false;
     };
   };

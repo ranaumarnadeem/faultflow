@@ -60,6 +60,12 @@ def _cells(
             {
                 **cell,
                 "block": name,
+                "instance": instance,
+                # Where the cell sits in its block's own wrapper chains (its WSP's
+                # serial order), which ``chain`` and ``position`` -- the SoC's scan
+                # chains -- replace below.
+                "block_chain": cell["chain"],
+                "block_position": cell["position"],
                 "label": f"{name}/{cell['label']}",
                 "mux": f"{instance}__{cell['mux']}",
                 "gate": f"{instance}__{cell['gate']}",

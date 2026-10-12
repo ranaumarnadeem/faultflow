@@ -47,6 +47,7 @@ from faultflow.wrap.wsp_model import (
     OPCODES,
     SERIAL,
     WIR_BITS,
+    WspChainModel,
     WspCycle,
     WspModel,
     instruction,
@@ -102,6 +103,65 @@ def _pattern(length: int, seed: int) -> list[int]:
 def _check_block(wrapper: Mapping[str, Any]) -> None:
     if wrapper.get("control") != "wsp" or "blocks" in wrapper:
         raise WrapError("ff.py wsp grades a block's IEEE 1500 WSP")
+
+
+def is_soc(wrapper: Mapping[str, Any]) -> bool:
+    """Whether ``wrapper`` records a SoC's chain of WSPs (faultflow.project.soc_wrapper)
+    rather than a block's."""
+    return "blocks" in wrapper
+
+
+def check_wsp(wrapper: Mapping[str, Any]) -> None:
+    """Refuse a wrapper record whose mode isn't set by a WSP: a block's or a SoC's is
+    what ``ff.py wsp`` grades."""
+    if wrapper.get("control") != "wsp":
+        raise WrapError("ff.py wsp grades a block's or a SoC's IEEE 1500 WSP")
+
+
+def roles_of(wrapper: Mapping[str, Any]) -> dict[str, str]:
+    """The port of each WSP role (:data:`ROLES`) on the netlist: a block's own, or
+    a SoC's pin that drives it (through an inverter, if its record says so)."""
+    check_wsp(wrapper)
+    wsp = wrapper["wsp"]
+    if is_soc(wrapper):
+        found = {role: str(pin["port"]) for role, pin in wsp["pins"].items()}
+        found["wrck"] = str(wsp["wrck"])
+        found["wso"] = str(wsp["wso"])
+        return {role: found[role] for role in ROLES}
+    return {role: str(wsp["ports"][role]["port"]) for role in ROLES}
+
+
+def soc_blocks(
+    wrapper: Mapping[str, Any],
+) -> list[tuple[str, str, list[list[tuple[str, str]]]]]:
+    """A SoC's blocks from WSI to WSO: for each its instance, its block's name and its
+    boundary register's wrapper chains, each a list of (label, side) from its head
+    -- the order of the block's own WSP, which the SoC's scan chains replace in the
+    cell records' ``chain`` and ``position``."""
+    check_wsp(wrapper)
+    if not is_soc(wrapper):
+        raise WrapError("a block's wrapper has no chain of blocks")
+    named = {str(b["instance"]): str(b["block"]) for b in wrapper["blocks"]}
+    order = [str(instance) for instance in wrapper["wsp"].get("chain", [])]
+    if not order:
+        raise WrapError("the SoC's wrapper record has no WSP chain")
+    found: list[tuple[str, str, list[list[tuple[str, str]]]]] = []
+    for instance in order:
+        if instance not in named:
+            raise WrapError(f"the SoC's WSP chain names {instance}, which is no block")
+        cells = [c for c in wrapper["cells"] if str(c.get("instance")) == instance]
+        if any("block_chain" not in c for c in cells):
+            raise WrapError(
+                "the SoC's wrapper record predates block_chain: scan it again"
+            )
+        cells.sort(key=lambda c: (int(c["block_chain"]), int(c["block_position"])))
+        chains: dict[int, list[tuple[str, str]]] = {}
+        for c in cells:
+            chains.setdefault(int(c["block_chain"]), []).append(
+                (str(c["label"]), str(c["side"]))
+            )
+        found.append((instance, named[instance], [chains[k] for k in sorted(chains)]))
+    return found
 
 
 def legacy_integrity_program(
@@ -221,19 +281,25 @@ class WspProgram:
         self, wrapper: Mapping[str, Any], scan_outs: Mapping[int, str] | None = None
     ) -> dict[str, Any]:
         """The program as a ``warptap-wsp-program`` (version 1) for ``wrapper``."""
-        _check_block(wrapper)
+        check_wsp(wrapper)
+        soc = is_soc(wrapper)
+        roles = roles_of(wrapper)
         if not self.steps:
             raise WspProgramError("a WSP program has no cycles")
-        cells = serial_cells(wrapper)
+        if soc:
+            soc_blocks(wrapper)  # a record that can't be the program's is refused
+            if self.steps[0].expected or any(step.ports for step in self.steps):
+                raise WspProgramError(
+                    "a SoC's program drives no port and observes WSO alone"
+                )
+        cells = [] if soc else serial_cells(wrapper)
         inputs = [str(c["label"]) for c in cells if c["side"] == INPUT]
         outputs = {
             str(c["label"]): k for k, c in enumerate(cells) if c["side"] != INPUT
         }
         chains = sorted({int(c["chain"]) for c in cells})
         by_port = {port: chain for chain, port in (scan_outs or {}).items()}
-        observe: list[dict[str, Any]] = [
-            {"name": str(wrapper["wsp"]["ports"]["wso"]["port"]), "kind": "wso"}
-        ]
+        observe: list[dict[str, Any]] = [{"name": roles["wso"], "kind": "wso"}]
         for name, _ in self.steps[0].expected:
             if name in outputs:
                 observe.append({"name": name, "kind": "output", "index": outputs[name]})
@@ -265,9 +331,7 @@ class WspProgram:
         data: dict[str, Any] = {
             "format": FORMAT,
             "version": VERSION,
-            "roles": {
-                role: str(wrapper["wsp"]["ports"][role]["port"]) for role in ROLES
-            },
+            "roles": roles,
             "drive": inputs,
             "observe": observe,
             "tests": ranges,
@@ -301,9 +365,12 @@ class WspProgram:
         wrapper: Mapping[str, Any],
         scan_outs: Mapping[int, str] | None = None,
     ) -> "WspProgram":
-        """The steps of the ``warptap-wsp-program`` ``data`` for the block ``wrapper``
-        describes (see the module docstring)."""
-        _check_block(wrapper)
+        """The steps of the ``warptap-wsp-program`` ``data`` for the block or SoC
+        ``wrapper`` describes (see the module docstring)."""
+        check_wsp(wrapper)
+        soc = is_soc(wrapper)
+        if soc:
+            soc_blocks(wrapper)
         if data.get("format") != FORMAT:
             raise WspProgramError(
                 f"not a {FORMAT} file (format={data.get('format')!r})"
@@ -313,7 +380,7 @@ class WspProgram:
                 f"{FORMAT} version {data.get('version')!r}: "
                 f"this reads version {VERSION}"
             )
-        cells = serial_cells(wrapper)
+        cells = [] if soc else serial_cells(wrapper)
         sides = [str(c["side"]) for c in cells]
         labels = [str(c["label"]) for c in cells]
         record_inputs = {label for side, label in zip(sides, labels) if side == INPUT}
@@ -355,17 +422,18 @@ class WspProgram:
             raise WspProgramError(
                 "every column of a WSP program is 0/1 and as long as the cycle count"
             )
-        mine = {role: str(wrapper["wsp"]["ports"][role]["port"]) for role in ROLES}
+        mine = roles_of(wrapper)
         for role in ROLES:
             if roles.get(role) != mine[role]:
                 raise WspProgramError(
                     f"role {role} is {roles.get(role)!r} in the program, "
-                    f"{mine[role]!r} on the block"
+                    f"{mine[role]!r} on the {'SoC' if soc else 'block'}"
                 )
         extra = sorted(set(drive) - record_inputs)
         if extra:
             raise WspProgramError(
-                f"the program drives {extra[0]}, which is no input cell of the block"
+                f"the program drives {extra[0]}, which is no input cell of the "
+                f"{'SoC' if soc else 'block'}"
             )
         lacking = sorted(record_inputs - set(drive))
         if lacking:
@@ -377,6 +445,11 @@ class WspProgram:
         for name, kind, which, index in points:
             if kind == "wso":
                 continue
+            if soc:
+                raise WspProgramError(
+                    f"the program observes {name}, which a SoC's WSP chain has no "
+                    "pin for: WSO alone"
+                )
             if which != 0:
                 raise WspProgramError(
                     f"{name} is in wrapper {which}: a block has one wrapper"
@@ -454,7 +527,11 @@ def conformance_failures(
     care bit. A care bit where the model can't know the value (a register not yet
     loaded, a cell that captured the core) is a failure too -- the program claims what
     nothing defines. A no-care bit never fails. Empty: the program and the model agree,
-    so the netlist the golden gate holds to the program is held to the model as well."""
+    so the netlist the golden gate holds to the program is held to the model as well.
+    A SoC's chain is replayed on a chain of models, the first block's WSI the chip's."""
+    check_wsp(wrapper)
+    if is_soc(wrapper):
+        return _soc_conformance_failures(program, wrapper)
     _check_block(wrapper)
     cells = serial_cells(wrapper)
     sides = [str(c["side"]) for c in cells]
@@ -506,4 +583,31 @@ def conformance_failures(
                 )
             elif modelled[name] != value:
                 disagree(number, step, name, value, modelled[name])
+    return failures
+
+
+def _soc_conformance_failures(
+    program: WspProgram, wrapper: Mapping[str, Any]
+) -> list[str]:
+    """:func:`conformance_failures` of a SoC's chain: WSO alone, every cell's
+    functional input unknown (a block port is the SoC's own net)."""
+    model = WspChainModel(
+        [
+            [side for chain in chains for _, side in chain]
+            for _, _, chains in soc_blocks(wrapper)
+        ]
+    )
+    failures: list[str] = []
+    for number, step in enumerate(program.steps):
+        strobed = model.step(step.cycle)
+        if step.expected:
+            failures.append(
+                f"cycle {number} ({step.test}): the program observes "
+                f"{step.expected[0][0]}, which a SoC's chain has no pin for"
+            )
+        if step.wso is not None and step.wso != strobed:
+            failures.append(
+                f"cycle {number} ({step.test}): wso is {step.wso} in the program, "
+                f"{'unknown' if strobed is None else strobed} in the model"
+            )
     return failures

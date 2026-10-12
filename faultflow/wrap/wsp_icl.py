@@ -27,7 +27,11 @@ from faultflow.wrap.wsp_program import (
     WspProgram,
     WspProgramError,
     _check_block,
+    check_wsp,
+    is_soc,
+    roles_of,
     serial_cells,
+    soc_blocks,
 )
 
 _NEEDS_WARPTAP = (
@@ -54,6 +58,7 @@ def wrapper_model(
     """warptap's ``Wrapper1500`` for the block ``wrapper`` records. ``scan_ins`` and
     ``scan_outs``: each wrapper chain's scan ports, by chain index; ``top``: the
     wrapper's (ICL module's) name; ``scan_enable``: the scan enable port."""
+    check_wsp(wrapper)
     _check_block(wrapper)
     model = _warptap("wsp1500_model")
     cells = serial_cells(wrapper)
@@ -77,17 +82,57 @@ def wrapper_model(
         chain_in=tuple(scan_ins[chain] for chain in chain_ids),
         chain_out=tuple(scan_outs[chain] for chain in chain_ids),
     )
-    instructions = tuple(
-        model.Instruction(name, code, name in SERIAL, mode_of(name))
-        for name, code in OPCODES.items()
-    )
     return model.Wrapper1500(
         name=top,
         chains=chains,
         ir_bits=WIR_BITS,
-        instructions=instructions,
+        instructions=_instructions(model, wrapper),
         ports=ports,
     )
+
+
+def _instructions(model: Any, wrapper: Mapping[str, Any]) -> Any:
+    """The instruction table: the codes the netlist's decode was built with (the
+    record's), not the ones faultflow would build it with today."""
+    recorded = wrapper["wsp"].get("opcodes", OPCODES)
+    unknown = sorted(set(recorded) - set(OPCODES))
+    if unknown:
+        raise WrapError(
+            f"the wrapper records instruction {unknown[0]}, which faultflow "
+            "doesn't know"
+        )
+    return tuple(
+        model.Instruction(name, int(code), name in SERIAL, mode_of(name))
+        for name, code in recorded.items()
+    )
+
+
+def soc_design(wrapper: Mapping[str, Any], *, top: str) -> Any:
+    """warptap's ``WspChainDesign`` for the SoC ``wrapper`` records: its blocks'
+    wrappers from WSI to WSO, each in its own serial order, and the SoC's pins -- the
+    port that drives each WSP role and whether an inverter sits between."""
+    check_wsp(wrapper)
+    model = _warptap("wsp1500_model")
+    instructions = _instructions(model, wrapper)
+    wrappers = tuple(
+        model.Wrapper1500(
+            name=block,
+            chains=tuple(
+                tuple(model.WbrCell(label, side) for label, side in chain)
+                for chain in chains
+            ),
+            ir_bits=WIR_BITS,
+            instructions=instructions,
+        )
+        for _instance, block, chains in soc_blocks(wrapper)
+    )
+    roles = roles_of(wrapper)
+    wsp = wrapper["wsp"]
+    pins = {
+        role: (roles[role], bool(wsp["pins"].get(role, {}).get("inverted", False)))
+        for role in ROLES
+    }
+    return model.WspChainDesign(top=top, wrappers=wrappers, pins=pins)
 
 
 def wsp_icl(
@@ -98,8 +143,15 @@ def wsp_icl(
     scan_ins: Mapping[int, str],
     scan_enable: str,
 ) -> str:
-    """The ICL of the block ``wrapper`` records (see :func:`wrapper_model`)."""
+    """The ICL of the block ``wrapper`` records (see :func:`wrapper_model`), or of the
+    SoC's chain of blocks (see :func:`soc_design`; ``scan_outs`` and ``scan_ins`` are
+    a block's)."""
     emit = _warptap("icl_emit_1500")
+    if is_soc(wrapper):
+        design = soc_design(wrapper, top=top)
+        return str(
+            emit.to_icl_1500_chain(design.wrappers, top=design.top, pins=design.pins)
+        )
     return str(
         emit.to_icl_1500(
             wrapper_model(
@@ -120,8 +172,9 @@ def program_from_warptap(
     exhaustive_opcodes: bool = True,
     icl_path: Path | None = None,
 ) -> WspProgram:
-    """warptap's integrity program for the block ``wrapper`` records, built from the
-    ICL :func:`wsp_icl` writes and read against the record. ``margin``: sentinel
+    """warptap's integrity program for the block (or the SoC's chain of blocks)
+    ``wrapper`` records, built from the ICL :func:`wsp_icl` writes and read against
+    the record. ``margin``: sentinel
     bits past each register's length; ``exhaustive_opcodes``: every code of the WIR,
     not only the instructions' own; ``icl_path``: where to write the ICL."""
     text = wsp_icl(
@@ -135,9 +188,12 @@ def program_from_warptap(
         design = importer.import_icl_1500(text)
     except importer.Icl1500ImportError as exc:
         raise WspProgramError(f"warptap can't read the wrapper's ICL: {exc}") from exc
+    # A SoC's block ports are its own nets, not pins: the tester drives none and sees
+    # WSO alone.
+    chain = {"drive": (), "scan_outs": False} if is_soc(wrapper) else {}
     try:
         program = integrity.build_wsp_integrity_program(
-            design, margin=margin, exhaustive_opcodes=exhaustive_opcodes
+            design, margin=margin, exhaustive_opcodes=exhaustive_opcodes, **chain
         )
     except integrity.WspIntegrityError as exc:
         raise WspProgramError(f"warptap can't build the program: {exc}") from exc

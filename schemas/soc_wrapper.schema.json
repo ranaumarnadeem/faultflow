@@ -161,7 +161,22 @@
         "sys_net": {"$ref": "https://faultflow.local/schemas/wrapper.schema.json#/$defs/net"},
         "core_net": {"$ref": "https://faultflow.local/schemas/wrapper.schema.json#/$defs/net"},
         "chain": {"type": "integer", "minimum": 0},
-        "position": {"type": "integer", "minimum": 0}
+        "position": {"type": "integer", "minimum": 0},
+        "instance": {
+          "description": "The block instance the cell belongs to.",
+          "type": "string",
+          "minLength": 1
+        },
+        "block_chain": {
+          "description": "The index of the cell's wrapper chain in its own block, which the SoC's scan chains (chain, position) replace; with block_position, the serial order of the block's WSP.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "block_position": {
+          "description": "The cell's position on its block's wrapper chain.",
+          "type": "integer",
+          "minimum": 0
+        }
       }
     }
   }

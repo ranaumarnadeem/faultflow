@@ -97,12 +97,13 @@ def test_the_icl_reads_back_to_the_wrapper_it_was_written_from() -> None:
 
 
 @pytest.mark.unit
-def test_a_record_that_isnt_a_blocks_wsp_has_no_icl() -> None:
+def test_a_record_whose_mode_isnt_set_by_a_wsp_has_no_icl() -> None:
     from faultflow.wrap.wsp_icl import wsp_icl
 
-    with pytest.raises(WrapError, match="block's"):
+    with pytest.raises(WrapError, match="block's or a SoC's"):
         wsp_icl({**RECORD, "control": "pins"}, SCAN_OUTS, **FIT)
-    with pytest.raises(WrapError, match="block's"):
+    # A SoC record without its WSP chain is no SoC's either.
+    with pytest.raises(WrapError, match="no WSP chain"):
         wsp_icl({**RECORD, "blocks": []}, SCAN_OUTS, **FIT)
 
 

@@ -1,7 +1,9 @@
 """``ff.py wsp``: grade the faults a block's scan test leaves to its IEEE 1500 WSP
 (``excluded_wsp``, faultflow.wrap.wsp.wsp_sites) with the WSP's integrity program
 (faultflow.wrap.wsp_program), compared at WSO, the wrapped outputs and the
-wrapper chains' scan-outs.
+wrapper chains' scan-outs -- or, for a SoC whose blocks' WSPs share its pins and
+chain WSI to WSO (faultflow.project.soc_wrapper), the chain's, compared at WSO
+alone, the WSP inputs that an inverter drives from their pins at the opposite level.
 
 The grade runs on the block's scanned netlist (the scan manifest's
 ``generic_json``), each fault found there by its site key. A program cycle is one
@@ -38,9 +40,11 @@ from faultflow.wrap.wsp_program import (
     WspProgram,
     WspStep,
     conformance_failures,
+    is_soc,
     program_tests,
+    roles_of,
 )
-from faultflow.wrap.wsp_setup import HELD
+from faultflow.wrap.wsp_setup import HELD, MODE_INSTRUCTIONS
 
 
 class WspGradeError(RuntimeError):
@@ -111,17 +115,27 @@ def sim_rows(
     inputs: Sequence[str],
     wsp_ports: Mapping[str, str],
     care: Sequence[bool],
+    inverted: Mapping[str, bool] | None = None,
 ) -> tuple[list[list[bool]], list[bool], list[int]]:
     """The simulator's input rows (in `inputs` order), its sample flags -- the
     strobe of each cycle `care` marks -- and the program cycle of each sample.
-    `wsp_ports`: each WSP input's port, by role."""
+    `wsp_ports`: each WSP input's port, by role; `inverted`: the roles whose WSP
+    input an inverter drives from the port (a SoC's pins), so the port is at the
+    opposite level."""
     index = {name: k for k, name in enumerate(inputs)}
     wrck = wsp_ports["wrck"]
     rows: list[list[bool]] = []
     sample: list[bool] = []
     at: list[int] = []
     for number, step in enumerate(steps):
-        values = {wsp_ports[role]: int(getattr(step.cycle, role)) for role in HELD}
+        values: dict[str, int] = {}
+        for role in HELD:
+            port = wsp_ports[role]
+            level = int(getattr(step.cycle, role)) ^ int((inverted or {}).get(role, 0))
+            if values.setdefault(port, level) != level:
+                raise WspGradeError(
+                    f"chip input {port} drives WSP inputs that need it at 0 and at 1"
+                )
         values.update(dict(step.ports))
         unknown = sorted((set(values) | {wrck}) - set(index))
         if unknown:
@@ -186,6 +200,7 @@ def benches(
     *,
     unsupported: str,
     blackbox: Sequence[str],
+    inverted: Mapping[str, bool] | None = None,
 ) -> list[_Bench]:
     """A bench for every set of compared outputs that care at the same cycles:
     each one's samples are its care bits alone."""
@@ -196,7 +211,7 @@ def benches(
             groups.setdefault(care, []).append(name)
     found: list[_Bench] = []
     for care, names in groups.items():
-        rows, sample, at = sim_rows(steps, inputs, wsp_ports, care)
+        rows, sample, at = sim_rows(steps, inputs, wsp_ports, care, inverted)
         found.append(
             _Bench(
                 core,
@@ -446,6 +461,7 @@ def _program(
     if cfg.wsp.builder == "faultflow":
         return WspProgram.build(wrapper, scan_outs), "faultflow"
     from faultflow.wrap.wsp_icl import program_from_warptap
+    from faultflow.wrap.wsp_pdl import check_setup_program
 
     top = str(manifest["top"])
     scan_ins = {
@@ -453,12 +469,28 @@ def _program(
         for chain in manifest["chains"]
         if chain.get("kind") == "wrapper"
     }
+    scan_enable = str(manifest["scan_enable"])
+    # Each mode's setup program, against warptap's PDL retarget of the same step
+    # (the scan campaign this grades may be a functional or an INTEST one: both are
+    # "scan" campaigns).
+    for mode in MODE_INSTRUCTIONS:
+        pdl = check_setup_program(
+            wrapper,
+            scan_outs,
+            mode=mode,
+            top=top,
+            scan_ins=scan_ins,
+            scan_enable=scan_enable,
+        )
+        (cfg.intermediate_dir / f"{top}_wsp_setup_{mode}.pdl").write_text(
+            pdl, encoding="utf-8"
+        )
     built = program_from_warptap(
         wrapper,
         scan_outs,
         top=top,
         scan_ins=scan_ins,
-        scan_enable=str(manifest["scan_enable"]),
+        scan_enable=scan_enable,
         margin=cfg.wsp.margin,
         exhaustive_opcodes=cfg.wsp.exhaustive_opcodes,
         icl_path=cfg.intermediate_dir / f"{top}_wsp.icl",
@@ -499,8 +531,6 @@ def run_wsp(
             "the scanned design has no IEEE 1500 WSP: wrap it with [wrap] control = "
             "wsp"
         )
-    if "blocks" in wrapper:
-        raise WspGradeError("ff.py wsp grades a block's WSP, not a SoC's chain")
     netlist = Path(str(manifest["generic_json"]))
     data = json.loads(netlist.read_text(encoding="utf-8"))
     module = data["modules"][str(manifest["top"])]
@@ -523,7 +553,12 @@ def run_wsp(
             json.dumps(chosen.to_json(wrapper, scan_outs), indent=2) + "\n",
             encoding="utf-8",
         )
-    ports = {role: str(p["port"]) for role, p in wrapper["wsp"]["ports"].items()}
+    ports = roles_of(wrapper)
+    inverted = (
+        {role: bool(pin["inverted"]) for role, pin in wrapper["wsp"]["pins"].items()}
+        if is_soc(wrapper)
+        else {}
+    )
     inputs = [name for name, _ in port_bits(module, "input")]
     expected = compared(steps, ports["wso"])
     # The graded netlist holds every blackbox the scan campaign's does, but a
@@ -539,6 +574,7 @@ def run_wsp(
         expected,
         unsupported=cfg.simulation.unsupported_cells,
         blackbox=blackbox,
+        inverted=inverted,
     )
     start = time.perf_counter()
     golden_gate(benched, steps, expected)
