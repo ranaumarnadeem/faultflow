@@ -543,8 +543,9 @@ def test_a_wrapped_design_is_built_from_its_test_access_block(
     """Each distinct "separate" module of the wrapped netlist is synthesized
     once and spliced into every instance of it -- the TAP, four SIBs, four TDR
     bits and the parameter-specialized controller -- and the memory stays a
-    blackbox. The TAP runs on tck, the controller on clk: the .ofs declares
-    both and asks for a scan chain per clock."""
+    blackbox. With scan_tap the TAP runs on tck, the controller on clk: the .ofs
+    declares both and asks for a scan chain per clock; without it the TAP and the
+    network stay out of scan, one clock and one chain left."""
     if shutil.which("yosys") is None:
         pytest.skip("yosys is not available")
 
@@ -552,7 +553,11 @@ def test_a_wrapped_design_is_built_from_its_test_access_block(
     access = manifest.test_access
     assert access is not None
     result = synthesize_from_manifest(
-        manifest, out=tmp_path, liberty=SKY130_LIBERTY, cell_lib=SKY130_CELL_MAP
+        manifest,
+        out=tmp_path,
+        liberty=SKY130_LIBERTY,
+        cell_lib=SKY130_CELL_MAP,
+        scan_tap=True,
     )
 
     assert result.top_module == access.top_module
@@ -580,6 +585,7 @@ def test_a_wrapped_design_is_built_from_its_test_access_block(
     assert list(cfg.blackbox_instances) == ["u_sram"]
     assert [c.port for c in cfg.clocks] == ["clk", "tck"]
     assert cfg.scan.chains == 2
+    assert cfg.scan.scan_test_access and cfg.scan.nonscan_cells == ()
 
 
 @pytest.mark.integration
@@ -590,9 +596,9 @@ def test_a_wrapped_design_runs_the_scan_flow_on_two_clock_domains(
     require_cpp_core: None,
 ) -> None:
     """init -> scan -> scan-check -> sim --scan on the .ofs synthesis wrote,
-    unedited. Every flop is scanned, the MBIST logic's and the TAP's each on
-    chains of their own; trst_n resets like rst_n; and the memory's outputs
-    stay unknown to the scan test."""
+    unedited, synthesized with scan_tap. Every flop is scanned, the MBIST logic's
+    and the TAP's each on chains of their own; trst_n resets like rst_n; and the
+    memory's outputs stay unknown to the scan test."""
     if shutil.which("yosys") is None:
         pytest.skip("yosys is not available")
     from faultflow.cli import main
@@ -603,6 +609,7 @@ def test_a_wrapped_design_runs_the_scan_flow_on_two_clock_domains(
         out=tmp_path / "synth",
         liberty=SKY130_LIBERTY,
         cell_lib=SKY130_CELL_MAP,
+        scan_tap=True,
     )
     top, ofs = result.top_module, result.ofs_path
 

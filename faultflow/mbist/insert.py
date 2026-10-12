@@ -757,20 +757,24 @@ def insert_command(
     out: Path | None,
     ofs: Path | None = None,
     *,
-    tap_nonscan: bool = False,
+    scan_tap: bool = False,
 ) -> str:
     """ff.py mbist-insert / Tcl mbist_insert: run mbist_insert -- with the
     design's .ofs, synthesize the result and write its own .ofs -- and say what
-    it did. `tap_nonscan` runs the TAP and the IJTAG network non-scan."""
+    it did. The TAP and the IJTAG network it adds are test instruments, which
+    ff.py jtag tests: they run non-scan in the .ofs, unless `scan_tap` makes
+    them scan flops."""
     from faultflow.mbist.ofs import check_base, read_base
 
     out = out or Path(f"mbist_{top}")
     loaded = load_mbist_spec(spec)
-    if tap_nonscan and (ofs is None or loaded.jtag is None):
+    if scan_tap and (ofs is None or loaded.jtag is None):
         raise InsertError(
-            "--tap-nonscan sets the scan test of the TAP mbist-insert adds: it "
-            "needs jtag in the insertion file and the design's .ofs (-c)"
+            "the scan_tap option (--scan-tap, -scan_tap) makes the TAP mbist-insert "
+            "adds scan flops: it needs jtag in the insertion file and the design's "
+            ".ofs (-c)"
         )
+    tap_nonscan = loaded.jtag is not None and not scan_tap
     taken: frozenset[str] = frozenset()
     base = None
     if ofs is not None:
@@ -812,8 +816,14 @@ def insert_command(
         )
     if base is not None and ofs is not None:
         config = _synthesize_for_flow(
-            result, loaded, base, ofs, out, tap_nonscan=tap_nonscan
+            result, loaded, base, ofs, out, tap_nonscan=tap_nonscan, scan_tap=scan_tap
         )
+        if scan_tap:
+            lines.append(
+                "note: scan_tap makes the TAP and the IJTAG network scan flops on "
+                "tck; they are test instruments, tested through TCK by ff.py jtag "
+                "([scan] scan_test_access records the choice)"
+            )
         lines += [
             f"synthesized, DFT frozen; its .ofs: {config}",
             f"run: python3 ff.py init --top {top} -c {config}, then scan, "
@@ -830,11 +840,12 @@ def _synthesize_for_flow(
     out: Path,
     *,
     tap_nonscan: bool,
+    scan_tap: bool = False,
 ) -> Path:
     """Synthesize the inserted design and write its .ofs: `<out>/<top>_mbist.ofs`,
     its outputs under `<out>/output`."""
     from faultflow.config import SKY130_CELL_LIB, SKY130_LIBERTY
-    from faultflow.integrations.autombist import _clock_domains, tap_nonscan_settings
+    from faultflow.integrations.autombist import _clock_domains, access_nonscan_settings
     from faultflow.mbist.ofs import nonscan_globs, scan_holds, write_inserted_ofs
     from faultflow.mbist.synth import synthesize_inserted
 
@@ -859,7 +870,9 @@ def _synthesize_for_flow(
     )
     jtag_globs: tuple[str, ...] = ()
     if tap_nonscan:
-        jtag_globs, _ = tap_nonscan_settings(load_autombist_manifest(result.manifest))
+        jtag_globs, _ = access_nonscan_settings(
+            load_autombist_manifest(result.manifest)
+        )
     cells = nonscan_globs([m.instance for m in result.memories], jtag_globs)
     clock_ports, domains = _clock_domains(chip.composed_json, chip.top, cell_lib, cells)
     return write_inserted_ofs(
@@ -875,6 +888,7 @@ def _synthesize_for_flow(
         holds=scan_holds(spec.reset, tap_nonscan=tap_nonscan),
         manifest=result.manifest,
         tap=result.jtag is not None,
+        scan_test_access=scan_tap,
     )
 
 

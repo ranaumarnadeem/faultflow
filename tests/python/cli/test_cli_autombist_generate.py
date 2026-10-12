@@ -99,6 +99,7 @@ def test_autombist_generate_passes_algo_through(
             clock_ports=(),
             nonscan_cells=(),
             scan_holds=(),
+            scan_test_access=False,
         )
 
     monkeypatch.setattr(autombist, "run_autombist_generate", run)
@@ -166,17 +167,13 @@ def _fake_autombist_with_test_access(tmp_path: Path) -> Path:
     return stub
 
 
-@pytest.mark.integration
-def test_autombist_generate_cli_test_access_writes_a_two_clock_ofs(
-    tmp_path: Path, require_cpp_core: None, capsys: pytest.CaptureFixture[str]
-) -> None:
-    if shutil.which("yosys") is None:
-        pytest.skip("yosys is not available")
+def _generate_with_test_access(tmp_path: Path, *flags: str) -> tuple[int, Path, Path]:
+    """autombist-generate --test-access (and `flags`) against the JTAG fixture:
+    the exit code, the output directory and the .ofs it wrote."""
     stub = _fake_autombist_with_test_access(tmp_path)
     config_path = tmp_path / "unused.yml"
     config_path.write_text("memory_name: unused\n", encoding="utf-8")
     out_dir = tmp_path / "out"
-
     rc = main(
         [
             "autombist-generate",
@@ -191,74 +188,87 @@ def test_autombist_generate_cli_test_access_writes_a_two_clock_ofs(
             "--cell-lib",
             str(SKY130_CELL_MAP),
             "--test-access",
+            *flags,
         ]
     )
+    return rc, out_dir, out_dir / "input_demo_8x16_scn4m_mbist.ofs"
+
+
+@pytest.mark.integration
+def test_autombist_generate_cli_test_access_runs_the_tap_non_scan_by_default(
+    tmp_path: Path, require_cpp_core: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The TAP and the IJTAG network are test instruments, tested through TCK by
+    ff.py jtag, not by scan ATPG: left out of scan, held in reset. tck clocks no
+    scan flop, so one clock and one chain are left."""
+    from faultflow.integrations.autombist import (
+        load_autombist_manifest,
+        access_nonscan_settings,
+    )
+
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+
+    rc, out_dir, ofs = _generate_with_test_access(tmp_path)
 
     assert rc == 0
     assert (out_dir / "input_demo_8x16_scn4m" / "wrapped.marker").exists()
-    cfg = load_config(
-        out_dir / "input_demo_8x16_scn4m_mbist.ofs", "input_demo_8x16_scn4m_mbist"
-    )
+    cfg = load_config(ofs, "input_demo_8x16_scn4m_mbist")
     assert list(cfg.blackbox_instances) == ["u_sram"]
-    assert [c.port for c in cfg.clocks] == ["clk", "tck"]
-    assert cfg.scan.chains == 2
-    assert "clocks: clk, tck  (scan chains: 2" in capsys.readouterr().out
-
-
-@pytest.mark.integration
-def test_autombist_generate_cli_tap_nonscan_writes_a_one_clock_ofs(
-    tmp_path: Path, require_cpp_core: None, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """--tap-nonscan keeps the TAP and the IJTAG network out of scan, held in
-    reset: tck clocks no scan flop, so one clock and one chain are left."""
-    from faultflow.integrations.autombist import (
-        load_autombist_manifest,
-        tap_nonscan_settings,
-    )
-
-    if shutil.which("yosys") is None:
-        pytest.skip("yosys is not available")
-    stub = _fake_autombist_with_test_access(tmp_path)
-    config_path = tmp_path / "unused.yml"
-    config_path.write_text("memory_name: unused\n", encoding="utf-8")
-    out_dir = tmp_path / "out"
-
-    rc = main(
-        [
-            "autombist-generate",
-            "--config",
-            str(config_path),
-            "--out",
-            str(out_dir),
-            "--autombist-cmd",
-            f"python3 {stub}",
-            "--liberty",
-            str(SKY130_LIBERTY),
-            "--cell-lib",
-            str(SKY130_CELL_MAP),
-            "--test-access",
-            "--tap-nonscan",
-        ]
-    )
-
-    assert rc == 0
-    cfg = load_config(
-        out_dir / "input_demo_8x16_scn4m_mbist.ofs", "input_demo_8x16_scn4m_mbist"
-    )
     assert [c.port for c in cfg.clocks] == ["clk"]
     assert cfg.scan.chains == 1
-    globs, holds = tap_nonscan_settings(
+    assert not cfg.scan.scan_test_access
+    globs, holds = access_nonscan_settings(
         load_autombist_manifest(out_dir / "input_demo_8x16_scn4m" / "manifest.json")
     )
     assert globs and all(glob.endswith("__*") for glob in globs)
     assert (cfg.scan.nonscan_cells, cfg.scan.hold) == (globs, holds)
     assert holds == (("trst_n", 0), ("tck", 0))
-    assert "non-scan:" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "non-scan:" in captured.out
+    assert "deprecated" not in captured.err
 
 
-def test_autombist_generate_tap_nonscan_needs_test_access(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.integration
+def test_autombist_generate_cli_scan_tap_grades_the_tap_with_scan_and_says_so(
+    tmp_path: Path, require_cpp_core: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """--scan-tap is the opt-in to the old behaviour: the TAP and the network are
+    scan flops on a clock domain of their own (tck), two clocks, two chains,
+    and the .ofs records [scan] scan_test_access for the checks that refuse
+    instruments on a chain without it."""
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+
+    rc, _, ofs = _generate_with_test_access(tmp_path, "--scan-tap")
+
+    assert rc == 0
+    cfg = load_config(ofs, "input_demo_8x16_scn4m_mbist")
+    assert [c.port for c in cfg.clocks] == ["clk", "tck"]
+    assert cfg.scan.chains == 2
+    assert cfg.scan.scan_test_access
+    assert cfg.scan.nonscan_cells == () and cfg.scan.hold == ()
+    captured = capsys.readouterr()
+    assert "clocks: clk, tck  (scan chains: 2" in captured.out
+    assert "--scan-tap" in captured.err and "ff.py jtag" in captured.err
+
+
+@pytest.mark.integration
+def test_autombist_generate_cli_tap_nonscan_is_a_deprecated_no_op(
+    tmp_path: Path, require_cpp_core: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+
+    rc, _, ofs = _generate_with_test_access(tmp_path, "--tap-nonscan")
+
+    assert rc == 0
+    cfg = load_config(ofs, "input_demo_8x16_scn4m_mbist")
+    assert (cfg.scan.chains, cfg.scan.scan_test_access) == (1, False)
+    assert "--tap-nonscan is deprecated" in capsys.readouterr().err
+
+
+def _refused(tmp_path: Path, capsys: pytest.CaptureFixture[str], *flags: str) -> str:
     config_path = tmp_path / "unused.yml"
     config_path.write_text("memory_name: unused\n", encoding="utf-8")
     with pytest.raises(SystemExit) as exc:
@@ -273,8 +283,21 @@ def test_autombist_generate_tap_nonscan_needs_test_access(
                 str(SKY130_LIBERTY),
                 "--cell-lib",
                 str(SKY130_CELL_MAP),
-                "--tap-nonscan",
+                *flags,
             ]
         )
     assert exc.value.code == 2
-    assert "--tap-nonscan needs --test-access" in capsys.readouterr().err
+    return capsys.readouterr().err
+
+
+def test_autombist_generate_scan_tap_needs_test_access(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert "--scan-tap needs --test-access" in _refused(tmp_path, capsys, "--scan-tap")
+
+
+def test_autombist_generate_tap_nonscan_and_scan_tap_contradict(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    error = _refused(tmp_path, capsys, "--test-access", "--tap-nonscan", "--scan-tap")
+    assert "--tap-nonscan and --scan-tap contradict" in error

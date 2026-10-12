@@ -33,10 +33,11 @@ parameter-specialized (``$paramod$<hash>\\march_c_top``), plus warptap's TAP,
 SIB and TDR cells. Each distinct "separate" module is synthesized once from
 that file, the glue is the same file with those modules blackboxed, and the
 memory stays the base manifest's blackbox stub. The TAP and its IJTAG network
-run on tck/trst_n, the MBIST logic on clk/rst_n: a two-clock-domain design --
-or, with ``tap_nonscan``, one: the .ofs keeps the TAP and the network out of
-scan ([scan] nonscan_cells) and holds them in reset ([scan] hold), and ff.py
-jtag grades them through TCK instead.
+are test instruments, tested through TCK by ff.py jtag, not by scan ATPG: the .ofs
+keeps them out of scan ([scan] nonscan_cells) and holds them in reset ([scan]
+hold), one clock domain (clk/rst_n) left for the MBIST logic. With ``scan_tap`` they
+are scan flops on tck/trst_n instead -- a two-clock-domain design -- and the .ofs
+says so ([scan] scan_test_access).
 """
 
 from __future__ import annotations
@@ -962,6 +963,7 @@ def write_ofs(
     manifest: Path | None = None,
     nonscan_cells: tuple[str, ...] = (),
     scan_holds: tuple[tuple[str, int], ...] = (),
+    scan_test_access: bool = False,
 ) -> Path:
     """Write a fresh `.ofs` for the composed netlist. `.ofs` paths resolve
     against the CWD, not the .ofs file's own directory (`config.py::_path`) --
@@ -970,7 +972,8 @@ def write_ofs(
     codebase carries one, `top` is always a separate CLI/API argument.
 
     `clock_ports` are declared in `[clocks]`, and `scan_chains`,
-    `nonscan_cells` and `scan_holds` in `[scan]`. `manifest`, the autoMBIST
+    `nonscan_cells`, `scan_holds` and `scan_test_access` (the TAP's flops are scan
+    flops on purpose) in `[scan]`. `manifest`, the autoMBIST
     manifest the netlist was built from, goes in `[autombist]`: the coverage
     report breaks coverage down by its instance categories.
     """
@@ -991,6 +994,8 @@ def write_ofs(
         scan.append(f"nonscan_cells = {', '.join(nonscan_cells)}")
     if scan_holds:
         scan.append("hold = " + ", ".join(f"{port}:{v}" for port, v in scan_holds))
+    if scan_test_access:
+        scan.append("scan_test_access = true")
     if scan:
         lines.extend(["[scan]", *scan, ""])
     if manifest is not None:
@@ -1025,11 +1030,12 @@ def literal_glob(text: str) -> str:
     return re.sub(r"([*?\[])", r"[\1]", text)
 
 
-def tap_nonscan_settings(
+def access_nonscan_settings(
     manifest: AutombistManifest,
 ) -> tuple[tuple[str, ...], tuple[tuple[str, int], ...]]:
     """[scan] nonscan_cells and [scan] hold that run a JTAG-wrapped design's TAP
-    and IJTAG network non-scan: a glob per JTAG-category instance, whose cells the
+    and IJTAG network -- its test instruments -- non-scan: a glob per
+    JTAG-category instance, whose cells the
     composed netlist names `<instance path>__<cell>` (the path matched
     literally), and the TAP held in reset with its clock off -- trst_n clears
     every one of their flops."""
@@ -1071,6 +1077,8 @@ class AutombistSynthesisResult:
     # With the TAP non-scan: the .ofs [scan] nonscan_cells and hold.
     nonscan_cells: tuple[str, ...] = ()
     scan_holds: tuple[tuple[str, int], ...] = ()
+    # The TAP and the network are scan flops (scan_tap): [scan] scan_test_access.
+    scan_test_access: bool = False
 
 
 @dataclass(frozen=True)
@@ -1173,19 +1181,21 @@ def synthesize_from_manifest(
     out: Path,
     liberty: Path,
     cell_lib: Path,
-    tap_nonscan: bool = False,
+    scan_tap: bool = False,
 ) -> AutombistSynthesisResult:
     """Steps 2-6: plan_blocks -> synthesize each block -> synthesize glue ->
     compose_soc -> write .ofs. No autoMBIST subprocess invocation -- this is
     the entry point for callers that already have a manifest (e.g. the
     fixture-based integration test). A design wrapped for JTAG access is built
-    from its `test_access` block instead of `instances`; `tap_nonscan` writes
-    its .ofs to run the TAP and the IJTAG network non-scan
-    (tap_nonscan_settings)."""
+    from its `test_access` block instead of `instances`; its .ofs runs the TAP
+    and the IJTAG network, which ff.py jtag tests, non-scan
+    (access_nonscan_settings), unless `scan_tap` makes them scan flops."""
+    if scan_tap and manifest.test_access is None:
+        raise ConfigError("scan_tap needs a design wrapped for JTAG access")
     nonscan_cells: tuple[str, ...] = ()
     scan_holds: tuple[tuple[str, int], ...] = ()
-    if tap_nonscan:
-        nonscan_cells, scan_holds = tap_nonscan_settings(manifest)
+    if manifest.test_access is not None and not scan_tap:
+        nonscan_cells, scan_holds = access_nonscan_settings(manifest)
     workdir = out / "autombist_synth"
     if manifest.test_access is not None:
         composition = _compose_wrapped(
@@ -1226,6 +1236,7 @@ def synthesize_from_manifest(
         manifest=manifest.path,
         nonscan_cells=nonscan_cells,
         scan_holds=scan_holds,
+        scan_test_access=scan_tap,
     )
 
     instance_counts: dict[str, int] = {}
@@ -1244,6 +1255,7 @@ def synthesize_from_manifest(
         manifest_path=manifest.path,
         nonscan_cells=nonscan_cells,
         scan_holds=scan_holds,
+        scan_test_access=scan_tap,
     )
 
 
@@ -1255,17 +1267,18 @@ def run_autombist_generate(
     liberty: Path,
     cell_lib: Path,
     test_access: bool = False,
-    tap_nonscan: bool = False,
+    scan_tap: bool = False,
     algo: str | None = None,
 ) -> AutombistSynthesisResult:
     """Steps 1-6 in full: invoke autoMBIST -> load its manifest ->
     synthesize_from_manifest. This is what the CLI and Tcl handlers call.
     With `test_access`, autoMBIST first wraps the generated design for JTAG
-    access, and the wrapped design is what gets synthesized; `tap_nonscan`
-    then runs its TAP and IJTAG network non-scan. `algo` picks autoMBIST's
-    MBIST algorithm (its default without it)."""
-    if tap_nonscan and not test_access:
-        raise ConfigError("the TAP runs non-scan only with test access")
+    access, and the wrapped design is what gets synthesized, its TAP and IJTAG
+    network non-scan -- test instruments, tested by ff.py jtag -- unless
+    `scan_tap`. `algo` picks autoMBIST's MBIST algorithm (its default without
+    it)."""
+    if scan_tap and not test_access:
+        raise ConfigError("scan_tap needs test access")
     manifest_path = invoke_autombist_generate(config, out, cmd=autombist_cmd, algo=algo)
     if test_access:
         invoke_autombist_wrap_test_access(manifest_path.parent, cmd=autombist_cmd)
@@ -1280,5 +1293,5 @@ def run_autombist_generate(
         out=out,
         liberty=liberty,
         cell_lib=cell_lib,
-        tap_nonscan=tap_nonscan,
+        scan_tap=scan_tap,
     )

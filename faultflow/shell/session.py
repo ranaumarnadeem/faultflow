@@ -66,9 +66,11 @@ class ProjectSession:
         # coverage report breaks coverage down by instance category.
         self.autombist_manifest: Path | None = None
         # [scan] nonscan_cells and [scan] hold: the TAP and IJTAG network an
-        # autoMBIST design runs non-scan (autombist_generate -tap_nonscan).
+        # autoMBIST design runs non-scan (autombist_generate, by default), and
+        # [scan] scan_test_access when they are scan flops instead (-scan_tap).
         self.scan_nonscan_cells: tuple[str, ...] = ()
         self.scan_holds: tuple[tuple[str, int], ...] = ()
+        self.scan_test_access: bool = False
 
     @property
     def checkpoint_path(self) -> Path:
@@ -102,6 +104,8 @@ class ProjectSession:
         if self.scan_nonscan_cells or self.scan_holds:
             snap["scan_nonscan_cells"] = list(self.scan_nonscan_cells)
             snap["scan_holds"] = [[port, value] for port, value in self.scan_holds]
+        if self.scan_test_access:
+            snap["scan_test_access"] = True
         return snap
 
     def checkpoint(self) -> tuple[Path, str]:
@@ -174,11 +178,18 @@ class ProjectSession:
             self.checkpoint()
 
     def set_scan_nonscan(
-        self, cells: tuple[str, ...], holds: tuple[tuple[str, int], ...]
+        self,
+        cells: tuple[str, ...],
+        holds: tuple[tuple[str, int], ...],
+        *,
+        scan_test_access: bool = False,
     ) -> None:
-        """Keep the flops `cells` names out of scan, held by `holds`."""
+        """Keep the flops `cells` names out of scan, held by `holds`; or, with
+        `scan_test_access`, record that the test instruments' flops are scan flops
+        on purpose."""
         self.scan_nonscan_cells = cells
         self.scan_holds = holds
+        self.scan_test_access = scan_test_access
         if self.top is not None:
             self.checkpoint()
 
@@ -552,13 +563,14 @@ class ProjectSession:
                         verify_use_power_pins=parse_bool_value(value, key),
                     ),
                 )
-        if self.scan_nonscan_cells or self.scan_holds:
+        if self.scan_nonscan_cells or self.scan_holds or self.scan_test_access:
             cfg = replace(
                 cfg,
                 scan=replace(
                     cfg.scan,
                     nonscan_cells=self.scan_nonscan_cells,
                     hold=self.scan_holds,
+                    scan_test_access=self.scan_test_access,
                 ),
             )
         return cfg
@@ -1049,6 +1061,7 @@ class ProjectSession:
         self.scan_holds = tuple(
             (str(row[0]), int(row[1])) for row in data.get("scan_holds", [])
         )
+        self.scan_test_access = bool(data.get("scan_test_access", False))
         if resume and self.scan_inserted:
             cfg = self.materialize_config()
             if not cfg.scan_manifest_path.exists():
@@ -1099,3 +1112,4 @@ class ProjectSession:
         self.autombist_manifest = None
         self.scan_nonscan_cells = ()
         self.scan_holds = ()
+        self.scan_test_access = False

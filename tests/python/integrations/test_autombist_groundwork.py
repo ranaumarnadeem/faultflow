@@ -18,7 +18,7 @@ from faultflow.integrations.autombist import (
     CheckProblem,
     literal_glob,
     parse_check_problems,
-    tap_nonscan_settings,
+    access_nonscan_settings,
 )
 from faultflow.project.assemble import AssembleError
 from warptap_helpers import skip_unless_warptap
@@ -68,25 +68,25 @@ def _wrapped(*instances: tuple[str, str]) -> AutombistManifest:
     )
 
 
-def test_tap_nonscan_globs_match_their_instances_literally() -> None:
+def test_access_globs_match_their_instances_literally() -> None:
     manifest = _wrapped(
         ("u_core.g[0].u_tap", "jtag_tap"),
         ("u_sib_0", "ijtag_sib"),
         ("u_core.g[0].u_ctl", "mbist_controller"),
     )
-    globs, holds = tap_nonscan_settings(manifest)
+    globs, holds = access_nonscan_settings(manifest)
     assert globs == ("u_core.g[[]0].u_tap__*", "u_sib_0__*")
     assert holds == (("trst_n", 0), ("tck", 0))
     assert any(fnmatchcase("u_core.g[0].u_tap__tap_fsm_q", g) for g in globs)
     assert not any(fnmatchcase("u_core.g[0].u_ctl__state_q", g) for g in globs)
 
 
-def test_tap_nonscan_needs_a_design_wrapped_for_jtag() -> None:
+def test_access_settings_need_a_design_wrapped_for_jtag() -> None:
     manifest = AutombistManifest(
         top_module="chip", wrapper=Path("chip.v"), instances=()
     )
     with pytest.raises(AutombistManifestError, match="test_access"):
-        tap_nonscan_settings(manifest)
+        access_nonscan_settings(manifest)
 
 
 # --- Yosys check problems ----------------------------------------------------

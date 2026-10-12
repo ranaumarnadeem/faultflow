@@ -185,7 +185,7 @@ COMMAND_HELP = {
     "autombist_generate": CommandHelp(
         "Project",
         "autombist_generate -config PATH -out PATH [-autombist_cmd CMD] "
-        "[-algo NAME] -liberty PATH -cell_lib PATH [-test_access [-tap_nonscan]]",
+        "[-algo NAME] -liberty PATH -cell_lib PATH [-test_access [-scan_tap]]",
         "Generate a FaultFlow synthesis from an autoMBIST manifest",
         "Runs `autombist generate --emit-manifest` (or the command given by "
         "-autombist_cmd, e.g. 'python3 -m autombist.cli'; -algo passes its "
@@ -199,10 +199,11 @@ COMMAND_HELP = {
         "wrap-test-access`, which puts the control/status ports behind a JTAG "
         "TAP and an IJTAG network, and synthesizes that wrapped design; its "
         "clocks (the MBIST clock and tck) are declared in the session, and "
-        "scan insertion needs a chain per clock (add_scan -chains 2). "
-        "-tap_nonscan keeps that TAP and IJTAG network out of scan instead, "
-        "held in reset (trst_n and tck at 0), leaving one clock and one chain "
-        "(add_scan -chains 1); `ff.py jtag` grades their faults through TCK.",
+        "the TAP and the IJTAG network are test instruments, so they are kept "
+        "out of scan, held in reset (trst_n and tck at 0), leaving one clock "
+        "and one chain (add_scan -chains 1); `ff.py jtag` grades their faults "
+        "through TCK. -scan_tap makes them scan flops instead, on a clock of "
+        "their own (add_scan -chains 2), graded by scan ATPG.",
         "autoMBIST installed and reachable via -autombist_cmd (or on PATH); "
         "for -test_access, warptap importable by autoMBIST.",
         "autombist_generate -config mbist.yml -out build -liberty "
@@ -230,7 +231,7 @@ COMMAND_HELP = {
     ),
     "mbist_insert": CommandHelp(
         "Project",
-        "mbist_insert -top NAME -spec PATH [-out DIR] [-config OFS] [-tap_nonscan]",
+        "mbist_insert -top NAME -spec PATH [-out DIR] [-config OFS] [-scan_tap]",
         "Insert MBIST into a design's RTL, in place of the configured memories",
         "For every memory the insertion file (-spec) configures, runs `autombist "
         "generate` (once per config and algorithm) and puts the collar, inside a "
@@ -257,8 +258,9 @@ COMMAND_HELP = {
         ".ofs given, with the synthesized netlist, outputs under -out, the "
         "memories blackboxed, each shell's reset synchronizer non-scan and the "
         "chip reset held inactive in scan (an .ofs that holds it active, or "
-        "names it a scan port or clock, is refused). -tap_nonscan also runs the "
-        "TAP and the network non-scan, trst_n and tck held at 0.",
+        "names it a scan port or clock, is refused). The TAP and the network, "
+        "test instruments, run non-scan too, trst_n and tck held at 0, for "
+        "`ff.py jtag` to test; -scan_tap makes them scan flops instead.",
         "autoMBIST (the file's autombist_cmd), Yosys on PATH, PyYAML; warptap "
         "with jtag.",
         "mbist_insert -top chip_top -spec mbist.yml -out build/mbist",

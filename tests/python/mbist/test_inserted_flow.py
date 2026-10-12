@@ -1,4 +1,4 @@
-"""The inserted chip through the whole flow: mbist-insert -c --tap-nonscan, then
+"""The inserted chip through the whole flow: mbist-insert -c, then
 init, scan, scan-check, sim --scan and ff.py jtag from the .ofs it wrote.
 
 Scan settles each shell's reset synchronizer in a preamble, leaves the TAP and the
@@ -52,7 +52,7 @@ def flowed(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Any]:
         encoding="utf-8",
     )
     out = tmp / "out"
-    insert_command(spec, TOP, out, base, tap_nonscan=True)
+    insert_command(spec, TOP, out, base)
     ofs = out / f"{TOP}_mbist.ofs"
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(out)
@@ -214,7 +214,7 @@ def compressed(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Any]:
         encoding="utf-8",
     )
     out = tmp / "out"
-    insert_command(spec, TOP, out, base, tap_nonscan=True)
+    insert_command(spec, TOP, out, base)
     ofs = out / f"{TOP}_mbist.ofs"
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(out)

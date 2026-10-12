@@ -135,15 +135,16 @@ JTAG_FIXTURE = ROOT / "tests/fixtures/autombist/input_demo_8x16_scn4m_jtag"
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("tap_nonscan", [False, True])
+@pytest.mark.parametrize("scan_tap", [False, True])
 def test_tcl_autombist_generate_test_access_declares_its_clocks(
-    tmp_path: Path, require_cpp_core: None, tap_nonscan: bool
+    tmp_path: Path, require_cpp_core: None, scan_tap: bool
 ) -> None:
     """-test_access wraps the generated design and loads the wrapped one: its
     two clocks are declared in the session, and the result says how many scan
-    chains insertion needs. -tap_nonscan keeps the TAP and its IJTAG network
-    out of scan, held in reset: tck clocks no scan flop, and the session's
-    scan config carries the policy."""
+    chains insertion needs. The TAP and its IJTAG network are test instruments:
+    left out of scan by default, held in reset (tck clocks no scan flop, and the
+    session's scan config carries the policy), unless -scan_tap grades them with
+    scan, which the session records."""
     if shutil.which("yosys") is None:
         pytest.skip("yosys is not available")
     stub = tmp_path / "fake_autombist.py"
@@ -167,23 +168,37 @@ def test_tcl_autombist_generate_test_access_declares_its_clocks(
         f"autombist_generate -config {config_path} -out {tmp_path / 'out'} "
         f"-autombist_cmd {{python3 {stub}}} -test_access "
         f"-liberty {SKY130_LIBERTY} -cell_lib {SKY130_CELL_MAP}"
-        + (" -tap_nonscan" if tap_nonscan else "")
+        + (" -scan_tap" if scan_tap else "")
     )
 
-    chains, clocks = (1, ["clk"]) if tap_nonscan else (2, ["clk", "tck"])
+    chains, clocks = (2, ["clk", "tck"]) if scan_tap else (1, ["clk"])
     assert f"add_scan -chains {chains}" in str(out)
     assert session.top == "input_demo_8x16_scn4m_mbist"
     assert session.declared_blackbox == ["u_sram"]
     assert [c.port for c in session.declared_clocks] == clocks
-    assert bool(session.scan_nonscan_cells) == tap_nonscan
-    assert session.scan_holds == ((("trst_n", 0), ("tck", 0)) if tap_nonscan else ())
+    assert bool(session.scan_nonscan_cells) != scan_tap
+    assert session.scan_holds == (() if scan_tap else (("trst_n", 0), ("tck", 0)))
+    assert session.scan_test_access == scan_tap
+    assert scan_tap == ("-scan_tap" in str(out))
 
 
-def test_tcl_autombist_generate_tap_nonscan_needs_test_access(tmp_path: Path) -> None:
+def test_tcl_autombist_generate_scan_tap_needs_test_access(tmp_path: Path) -> None:
     session = ProjectSession(output_root=tmp_path / "output")
-    with pytest.raises(ShellError, match="-tap_nonscan needs -test_access"):
+    with pytest.raises(ShellError, match="-scan_tap needs -test_access"):
         TclBridge(session).call(
             "autombist_generate",
             *("-config", "c.yml", "-out", "out", "-liberty", "x.lib"),
-            *("-cell_lib", "x.json", "-tap_nonscan"),
+            *("-cell_lib", "x.json", "-scan_tap"),
+        )
+
+
+def test_tcl_autombist_generate_tap_nonscan_and_scan_tap_contradict(
+    tmp_path: Path,
+) -> None:
+    session = ProjectSession(output_root=tmp_path / "output")
+    with pytest.raises(ShellError, match="-tap_nonscan and -scan_tap contradict"):
+        TclBridge(session).call(
+            "autombist_generate",
+            *("-config", "c.yml", "-out", "out", "-liberty", "x.lib"),
+            *("-cell_lib", "x.json", "-test_access", "-tap_nonscan", "-scan_tap"),
         )

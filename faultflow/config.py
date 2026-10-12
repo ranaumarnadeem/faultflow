@@ -328,6 +328,10 @@ class ScanConfig:
     # The test setup program applied before every scan pattern
     # (faultflow.scan.setup): a JSON file, checked when the config loads. None.
     test_setup: Path | None = None
+    # The test instruments' flops -- a JTAG TAP, the IJTAG network -- are scan
+    # flops on purpose (autombist-generate / mbist-insert --scan-tap). They are
+    # tested through TCK by ff.py jtag; scan ATPG grading them is the opt-in.
+    scan_test_access: bool = False
 
 
 @dataclass(frozen=True)
@@ -684,6 +688,7 @@ def _parse_scan(parser: ConfigParser) -> ScanConfig:
         shift_controls=shift_controls,
         wrapper_chains=_optional_int(parser, "scan", "wrapper_chains"),
         test_setup=test_setup,
+        scan_test_access=_bool(parser, "scan", "scan_test_access", False),
     )
 
 

@@ -628,6 +628,7 @@ proc {name} {{args}} {{
         kwargs: dict[str, str] = {}
         test_access = False
         tap_nonscan = False
+        scan_tap = False
         idx = 0
         while idx < len(args):
             flag = args[idx]
@@ -637,6 +638,10 @@ proc {name} {{args}} {{
                 continue
             if flag == "-tap_nonscan":
                 tap_nonscan = True
+                idx += 1
+                continue
+            if flag == "-scan_tap":
+                scan_tap = True
                 idx += 1
                 continue
             if flag not in flag_to_key:
@@ -660,9 +665,16 @@ proc {name} {{args}} {{
                     "CONFIG",
                     "MISSING_ARG",
                 )
-        if tap_nonscan and not test_access:
+        if tap_nonscan and scan_tap:
             raise ShellError(
-                "autombist_generate: -tap_nonscan needs -test_access",
+                "autombist_generate: -tap_nonscan and -scan_tap contradict: the TAP "
+                "and the IJTAG network are non-scan by default",
+                "CONFIG",
+                "INVALID_OPTION",
+            )
+        if scan_tap and not test_access:
+            raise ShellError(
+                "autombist_generate: -scan_tap needs -test_access",
                 "CONFIG",
                 "INVALID_OPTION",
             )
@@ -675,7 +687,7 @@ proc {name} {{args}} {{
             liberty=Path(kwargs["liberty"]),
             cell_lib=Path(kwargs["cell_lib"]),
             test_access=test_access,
-            tap_nonscan=tap_nonscan,
+            scan_tap=scan_tap,
             algo=kwargs.get("algo"),
         )
         self.session.load_json(result.composed_json_path, result.top_module)
@@ -685,8 +697,12 @@ proc {name} {{args}} {{
             self.session.add_clock(port)
         if result.manifest_path is not None:
             self.session.set_autombist_manifest(result.manifest_path)
-        if result.nonscan_cells:
-            self.session.set_scan_nonscan(result.nonscan_cells, result.scan_holds)
+        if result.nonscan_cells or result.scan_test_access:
+            self.session.set_scan_nonscan(
+                result.nonscan_cells,
+                result.scan_holds,
+                scan_test_access=result.scan_test_access,
+            )
         message = (
             f"autombist synthesis: {result.ofs_path} "
             f"(top={result.top_module}, blocks={result.block_count})"
@@ -700,6 +716,17 @@ proc {name} {{args}} {{
             message += (
                 f"; TAP and IJTAG network non-scan "
                 f"({len(result.nonscan_cells)} instances), graded by ff.py jtag"
+            )
+        if result.scan_test_access:
+            message += (
+                "; warning: -scan_tap makes the TAP and the IJTAG network scan "
+                "flops, graded by scan ATPG, though they are test instruments "
+                "tested through TCK by ff.py jtag"
+            )
+        if tap_nonscan:
+            message += (
+                "; -tap_nonscan is deprecated and does nothing: the TAP and the "
+                "IJTAG network are non-scan by default"
             )
         return message
 
@@ -739,7 +766,15 @@ proc {name} {{args}} {{
         flags = {"-top": "top", "-spec": "spec", "-out": "out", "-config": "config"}
         values: dict[str, str] = {}
         tap_nonscan = "-tap_nonscan" in args
-        args = [a for a in args if a != "-tap_nonscan"]
+        scan_tap = "-scan_tap" in args
+        args = [a for a in args if a not in ("-tap_nonscan", "-scan_tap")]
+        if tap_nonscan and scan_tap:
+            raise ShellError(
+                "mbist_insert: -tap_nonscan and -scan_tap contradict: the TAP and "
+                "the IJTAG network are non-scan by default",
+                "CONFIG",
+                "INVALID_OPTION",
+            )
         for idx in range(0, len(args), 2):
             flag = args[idx]
             if flag not in flags:
@@ -756,13 +791,19 @@ proc {name} {{args}} {{
                 raise ShellError(
                     f"mbist_insert: -{required} is required", "CONFIG", "MISSING_ARG"
                 )
-        return insert_command(
+        message = insert_command(
             Path(values["spec"]),
             values["top"],
             Path(values["out"]) if "out" in values else None,
             Path(values["config"]) if "config" in values else None,
-            tap_nonscan=tap_nonscan,
+            scan_tap=scan_tap,
         )
+        if tap_nonscan:
+            message += (
+                "\n-tap_nonscan is deprecated and does nothing: the TAP and the "
+                "IJTAG network are non-scan by default"
+            )
+        return message
 
     def _set_testmode(self, args: list[str]) -> Any:
         if len(args) != 1:
