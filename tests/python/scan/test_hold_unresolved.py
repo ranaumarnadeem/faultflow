@@ -307,21 +307,24 @@ def test_what_needs_the_holds_and_a_blackbox_is_blackbox_unresolved(
     """The hold twin keeps the memory opaque, so a fault W alone sees -- W needs
     dout and Q both -- is UNSAT there too. The blackbox twin sets both free: a
     test exists, so it is blackbox_unresolved, not redundant. A fault Y sees still
-    needs the holds lifted only: hold_unresolved."""
+    needs the holds lifted only: hold_unresolved. The TAP flop's output is the
+    access path: its branches into the core gates (g_and, g_both) are JTAG's,
+    whatever the gate also reads."""
     monkeypatch.chdir(tmp_path)
 
     classes, data, stats = _run(tmp_path, with_memory=True, launch_mode=None)
 
     assert classes["hold"] == (
-        _both("net:5:branch:g_and:B")
-        | _both("net:5:stem")
-        | {("net:7:stem", "sa0"), ("net:11:branch:g_and:A", "sa0")}
+        _both("net:5:branch:g_and:B") | _both("net:5:stem") | {("net:7:stem", "sa0")}
     )
     assert classes["blackbox"] == (
-        _both("net:14:stem")
-        | _both("net:13:stem")
+        _both("net:14:stem") | _both("net:13:stem") | _both("net:15:stem")
+    )
+    assert (
+        _both("net:11:stem")
+        | _both("net:11:branch:g_and:A")
         | _both("net:11:branch:g_both:B")
-        | _both("net:15:stem")
+        <= classes["jtag"]
     )
     assert classes["redundant"] == (
         _both("net:5:branch:g_or:A") | {("net:12:stem", "sa1"), ("net:-2:stem", "sa1")}

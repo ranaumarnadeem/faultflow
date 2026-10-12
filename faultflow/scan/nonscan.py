@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import fnmatch
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Collection, Mapping, Sequence
 
 from faultflow.control_trace import (
     Flop,
@@ -548,6 +548,7 @@ def jtag_sites(
     *,
     tdo: str | None,
     blackbox_instances: Sequence[str] = (),
+    tap_inputs: Sequence[str] = (),
 ) -> set[str]:
     """The fault sites of the stitched ``module`` that scan leaves to JTAG (exclusion
     ``jtag``, graded by ``ff.py jtag``) -- settled flops, and their globs, aside:
@@ -558,7 +559,13 @@ def jtag_sites(
     2. what only the non-scan logic sees: a site whose every path through
        combinational logic ends at a non-scan flop's pin or at ``tdo`` -- none at a
        scan flop, another output or a blackbox -- like a TAP's own inputs and the
-       decode that selects its network.
+       decode that selects its network;
+    3. what only the non-scan logic drives: a net whose every source is such a
+       flop's output, one of the ``tap_inputs`` (port names) or a constant -- a TDR
+       bit, or the buffer or gate that carries it on -- is the test-access path:
+       its stem and each of its branches, down to the D pin of the first scan flop
+       on the other side. A gate that mixes in any other signal drives a net that
+       is the core's, though the pin the JTAG side enters by is not.
     """
     netlist = Netlist(module, cell_map)
     nonscan_flops = {flop.instance for flop in setup.flops if not flop.settle}
@@ -639,6 +646,15 @@ def jtag_sites(
             if isinstance(bit, int)
         ]
 
+    owned_flops = {name for name in nonscan_flops if setup.owns(name)}
+    driven = _jtag_driven_nets(
+        netlist,
+        module,
+        owned_flops,
+        tap_inputs if owned_flops else (),
+        passes_through,
+    )
+
     # Logic that reaches nothing at all -- an unread net -- stays scan's, whoever
     # owns it: SAT proves it redundant, which no JTAG program could.
     sites: set[str] = set()
@@ -649,6 +665,13 @@ def jtag_sites(
             consumer = str(row.get("consumer_instance", ""))
             if consumer in nonscan_flops:
                 sites.add(key)
+            elif net in driven and consumer in netlist.cells:
+                # The access path: a JTAG-driven net's branch into anything that
+                # reads it, unless what it feeds reaches nothing.
+                if not passes_through(consumer) or any(
+                    o in seen or o in jtag_seen for o in outputs_of(consumer)
+                ):
+                    sites.add(key)
             elif consumer in netlist.cells and passes_through(consumer):
                 outs = outputs_of(consumer)
                 to_jtag = any(o in jtag_seen for o in outs)
@@ -666,4 +689,78 @@ def jtag_sites(
             sites.add(key)
         elif net in jtag_seen and net not in seen:
             sites.add(key)
+        elif net in driven and live:
+            sites.add(key)
     return sites
+
+
+_JTAG, _CONST, _OTHER = "jtag", "const", "other"
+
+
+def _jtag_driven_nets(
+    netlist: Netlist,
+    module: Mapping[str, Any],
+    owned_flops: Collection[str],
+    tap_inputs: Sequence[str],
+    passes_through: Callable[[str], bool],
+) -> set[int]:
+    """The nets only the JTAG logic drives: the outputs of the ``owned_flops``, the
+    ``tap_inputs`` (port names), and what combinational logic makes of them and of
+    constants -- every source in a net's fan-in is one of those, and at least one is
+    not a constant. A gate with any other input, a core signal, a scan flop's output
+    or a blackbox's, drives a net that isn't."""
+    if not owned_flops:
+        return set()
+    tap_nets = {net for name, net in port_bits(module, "input") if name in tap_inputs}
+    state: dict[int, str] = {}
+    visiting: set[int] = set()
+    for root in sorted(netlist.drivers):
+        if root in state:
+            continue
+        stack = [root]
+        while stack:
+            net = stack[-1]
+            if net in state:
+                stack.pop()
+                continue
+            driver = netlist.drivers.get(net)
+            if driver is None:
+                state[net] = _JTAG if net in tap_nets else _OTHER
+                stack.pop()
+                continue
+            instance = driver[0]
+            if instance in owned_flops:
+                state[net] = _JTAG
+                stack.pop()
+                continue
+            if not passes_through(instance):
+                state[net] = _OTHER
+                stack.pop()
+                continue
+            cell = netlist.cells[instance]
+            entry = netlist.entry(instance)
+            inputs = [
+                bit
+                for pin, bits in cell.get("connections", {}).items()
+                if netlist.direction(instance, pin, entry) != "output"
+                for bit in bits
+                if isinstance(bit, int)
+            ]
+            pending = [bit for bit in inputs if bit not in state]
+            if pending:
+                if net in visiting:  # a combinational loop
+                    state[net] = _OTHER
+                    stack.pop()
+                    continue
+                visiting.add(net)
+                stack.extend(pending)
+                continue
+            kinds = {state[bit] for bit in inputs}
+            if _OTHER in kinds:
+                state[net] = _OTHER
+            elif _JTAG in kinds:
+                state[net] = _JTAG
+            else:
+                state[net] = _CONST
+            stack.pop()
+    return {net for net, kind in state.items() if kind == _JTAG}

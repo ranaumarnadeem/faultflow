@@ -153,12 +153,13 @@ def test_the_categories_add_up_and_jtag_adds_its_credit(
     assert combined["detected"] > summary["detected"]
 
 
-def test_a_control_tdr_bits_branch_into_its_synchronizer_per_fault(
+def test_a_control_tdr_bits_branch_into_its_synchronizer_is_jtags(
     flowed: tuple[Path, Any],
 ) -> None:
-    """The TDR bit is tied at its reset value in scan: stuck at 1, the
-    synchronizer's first flop captures it (detected); stuck at 0, only freeing
-    the hold would show it (hold_unresolved); the bit's own output is JTAG's."""
+    """The TDR bit and the path from it to the MBIST shell are test access, which
+    JTAG tests: the bit's own output, and its branch into the synchronizer's first
+    flop, in both polarities -- not scan's, which would see the bit at its reset
+    value (stuck at 1, detected; stuck at 0, hold_unresolved)."""
     out, cfg = flowed
     sdc = cfg.output_dir / f"{TOP}_scan.sdc"
     first = next(
@@ -183,9 +184,13 @@ def test_a_control_tdr_bits_branch_into_its_synchronizer_per_fault(
                 (campaign, branch, stem),
             )
         }
-    assert rows[(branch, "sa1")][0] == "detected"
-    assert rows[(branch, "sa0")][1] == 1
-    assert rows[(stem, "sa0")][2] == rows[(stem, "sa1")][2] == "jtag"
+    for key in (branch, stem):
+        for fault_type in ("sa0", "sa1"):
+            status, held, exclusion = rows[(key, fault_type)]
+            assert (status, held, exclusion) == ("excluded", 0, "jtag"), (
+                key,
+                fault_type,
+            )
 
 
 @pytest.fixture(scope="module")
