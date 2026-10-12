@@ -34,7 +34,12 @@ from typing import Any, Mapping, Sequence
 
 from faultflow.config import FaultflowConfig
 from faultflow.control_trace import port_bits
-from faultflow.wrap.wsp_program import WspStep, integrity_program, program_tests
+from faultflow.wrap.wsp_program import (
+    WspProgram,
+    WspStep,
+    conformance_failures,
+    program_tests,
+)
 from faultflow.wrap.wsp_setup import HELD
 
 
@@ -424,10 +429,16 @@ def _campaign(conn: sqlite3.Connection, campaign_type: str) -> int:
 
 
 def run_wsp(
-    cfg: FaultflowConfig, *, force: bool = False, sim_threads: int | None = None
+    cfg: FaultflowConfig,
+    *,
+    force: bool = False,
+    sim_threads: int | None = None,
+    program: Path | None = None,
 ) -> WspOutcome:
     """Grade, record and report (see the module docstring) the faults the latest
-    scan campaign of the test mode ([testmode] mode) leaves to the WSP."""
+    scan campaign of the test mode ([testmode] mode) leaves to the WSP, with the
+    program in the ``warptap-wsp-program`` file ``program`` or, without one,
+    faultflow's own (faultflow.wrap.wsp_program)."""
     from faultflow.config import resolve_sim_threads
     from faultflow.db import connect, summary
     from faultflow.runner.runner import _load_core
@@ -458,7 +469,19 @@ def run_wsp(
         for chain in manifest["chains"]
         if chain.get("kind") == "wrapper"
     }
-    steps = integrity_program(wrapper, scan_outs)
+    if program is None:
+        chosen = WspProgram.build(wrapper, scan_outs)
+    else:
+        chosen = WspProgram.from_text(
+            program.read_text(encoding="utf-8"), wrapper, scan_outs
+        )
+    failures = conformance_failures(chosen, wrapper, scan_outs)
+    if failures:
+        raise WspGradeError(
+            f"the WSP program disagrees with faultflow's WSP model at "
+            f"{len(failures)} care bit(s); the first: {failures[0]}"
+        )
+    steps = chosen.steps
     ports = {role: str(p["port"]) for role, p in wrapper["wsp"]["ports"].items()}
     inputs = [name for name, _ in port_bits(module, "input")]
     expected = compared(steps, ports["wso"])
