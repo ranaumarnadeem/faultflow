@@ -230,9 +230,68 @@
           "blackbox_unresolved": { "type": "integer", "minimum": 0 },
           "hold_unresolved": { "type": "integer", "minimum": 0 },
           "coverage_percent": { "type": ["number", "null"] },
+          "graded_by": {
+            "description": "The category's faults by the test that grades them: scan ATPG (exclusion none), ff.py jtag (the faults scan leaves to it) and ff.py wsp",
+            "type": "object",
+            "required": ["scan", "jtag", "wsp"],
+            "additionalProperties": false,
+            "properties": {
+              "scan": { "type": "integer", "minimum": 0 },
+              "jtag": { "type": "integer", "minimum": 0 },
+              "wsp": { "type": "integer", "minimum": 0 }
+            }
+          },
           "combined_detected": { "type": "integer", "minimum": 0 },
           "combined_denominator": { "type": "integer", "minimum": 0 },
           "combined_coverage_percent": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "graded_by": {
+      "description": "Which test grades which faults of a scan campaign: scan ATPG the core and the inserted logic that is ordinary logic; test instruments (a JTAG TAP, the IJTAG network, an IEEE 1500 WSP) by their own programs (ff.py jtag, ff.py wsp: the faults scan leaves to them); memories by MBIST. detected is null where that test has not run. combined: every population together, null until a test has run",
+      "type": "object",
+      "required": ["scan", "jtag", "wsp", "reset", "memories", "combined"],
+      "additionalProperties": false,
+      "properties": {
+        "scan": {
+          "type": "object",
+          "required": ["faults", "detected"],
+          "additionalProperties": false,
+          "properties": {
+            "faults": { "type": "integer", "minimum": 0 },
+            "detected": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "jtag": { "$ref": "#/$defs/left_to_test" },
+        "wsp": { "$ref": "#/$defs/left_to_test" },
+        "reset": {
+          "type": "object",
+          "required": ["faults"],
+          "additionalProperties": false,
+          "properties": { "faults": { "type": "integer", "minimum": 0 } }
+        },
+        "memories": {
+          "type": "object",
+          "required": ["instances"],
+          "additionalProperties": false,
+          "properties": { "instances": { "type": "array", "items": { "type": "string" } } }
+        },
+        "combined": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["structural_eligible", "denominator", "detected", "redundant", "test_coverage_percent"],
+              "additionalProperties": false,
+              "properties": {
+                "structural_eligible": { "type": "integer", "minimum": 0 },
+                "denominator": { "type": "integer", "minimum": 0 },
+                "detected": { "type": "integer", "minimum": 0 },
+                "redundant": { "type": "integer", "minimum": 0 },
+                "test_coverage_percent": { "type": ["number", "null"] }
+              }
+            }
+          ]
         }
       }
     },
@@ -360,6 +419,17 @@
     }
   },
   "$defs": {
+    "left_to_test": {
+      "description": "The faults scan leaves to a test instrument's own test, and what that test detected (null: not run)",
+      "type": "object",
+      "required": ["faults", "detected", "graded"],
+      "additionalProperties": false,
+      "properties": {
+        "faults": { "type": "integer", "minimum": 0 },
+        "detected": { "type": ["integer", "null"], "minimum": 0 },
+        "graded": { "type": "boolean" }
+      }
+    },
     "wrapper_part": {
       "type": "object",
       "required": [

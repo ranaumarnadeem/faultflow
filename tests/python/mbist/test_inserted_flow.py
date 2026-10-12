@@ -153,6 +153,42 @@ def test_the_categories_add_up_and_jtag_adds_its_credit(
     assert combined["detected"] > summary["detected"]
 
 
+def test_graded_by_says_scan_grades_the_logic_and_jtag_the_instruments(
+    flowed: tuple[Path, Any],
+) -> None:
+    """Scan grades the core and the MBIST logic; the TAP, the SIBs and the TDRs
+    -- and the path from them into the shells -- are JTAG's, graded by ff.py jtag;
+    the memories are MBIST's. Each category's split adds up to the report's."""
+    from faultflow.integrations.autombist_coverage import JTAG_CATEGORIES
+
+    out, cfg = flowed
+    report = _report(cfg, out)
+    summary, categories = report["summary"], report["autombist_categories"]
+    graded = report["graded_by"]
+    assert graded["jtag"]["faults"] == summary["excluded_jtag"] > 0
+    assert graded["jtag"]["graded"] and graded["jtag"]["detected"] > 0
+    assert graded["wsp"] == {"faults": 0, "detected": None, "graded": False}
+    assert graded["scan"]["detected"] == summary["detected"]
+    assert len(graded["memories"]["instances"]) == len(SHELLS)
+    for test in ("scan", "jtag", "wsp"):
+        split = sum(c["graded_by"][test] for c in categories.values())
+        expected = (
+            graded["scan"]["faults"] if test == "scan" else graded[test]["faults"]
+        )
+        assert split == expected, test
+    # The instruments' own faults are not scan's; the logic they feed is.
+    instruments = [categories[name] for name in JTAG_CATEGORIES if name in categories]
+    assert instruments and all(c["graded_by"]["jtag"] > 0 for c in instruments)
+    # The shells' logic is scan's -- bar the pin the TDR bit enters by: JTAG's.
+    shell = categories["mbist_shell"]["graded_by"]
+    assert shell["scan"] > 0 and shell["jtag"] > 0
+    combined = graded["combined"]
+    assert combined is not None and combined["detected"] > summary["detected"]
+    text = cfg.coverage_report_path
+    text = text if text.is_absolute() else out / text
+    assert "graded by" in text.read_text(encoding="utf-8")
+
+
 def test_a_control_tdr_bits_branch_into_its_synchronizer_is_jtags(
     flowed: tuple[Path, Any],
 ) -> None:

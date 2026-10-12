@@ -35,7 +35,8 @@ from faultflow.scan.atpg_view import (
 from faultflow.scan.stitch import _load_json, _lookup_cell, _top_module
 
 GLUE = "glue"
-# Graded by scan patterns like any other logic; see category_coverage.
+# Test instruments: tested through TCK by ff.py jtag, not by scan ATPG (their flops
+# run non-scan by default; see category_coverage).
 JTAG_CATEGORIES = frozenset({"jtag_tap", "ijtag_sib", "ijtag_tdr", "ijtag_scan_mux"})
 
 
@@ -145,9 +146,12 @@ def category_coverage(
     is the netlist the campaign's fault sites name: the scan ATPG view for a
     scan campaign. The categories -- GLUE included -- add up to the summary.
 
-    Scan patterns grade the TAP and the IJTAG network like any other logic:
-    their flops are scanned -- unless [scan] nonscan_cells leaves them to JTAG
-    (exclusion jtag), out of these denominators. `jtag_detected` (fault ids
+    The TAP and the IJTAG network are test instruments, tested through TCK by
+    ff.py jtag: their flops run non-scan ([scan] nonscan_cells), and their faults
+    and those of the path they drive are left to JTAG (exclusion jtag), out of
+    these denominators -- unless --scan-tap scanned them. `graded_by` counts each
+    category's faults by the test that grades them: scan (exclusion none), jtag, wsp.
+    `jtag_detected` (fault ids
     ff.py jtag's network-integrity program detected) adds combined_detected,
     combined_denominator and combined_coverage_percent: scan and JTAG credit
     together, a scan-redundant fault JTAG detects counting as detected, and a
@@ -174,7 +178,10 @@ def category_coverage(
           (blackbox_unresolved = 1 AND exclusion = 'none'
            AND collapsed_into IS NULL AND status != 'detected') AS unresolved,
           (hold_unresolved = 1 AND exclusion = 'none'
-           AND collapsed_into IS NULL AND status != 'detected') AS held
+           AND collapsed_into IS NULL AND status != 'detected') AS held,
+          (exclusion = 'none' AND collapsed_into IS NULL) AS to_scan,
+          (exclusion = 'jtag' AND collapsed_into IS NULL) AS to_jtag,
+          (exclusion = 'wsp' AND collapsed_into IS NULL) AS to_wsp
           {jtag_columns}
         FROM faults
         WHERE campaign_id = ?
@@ -190,19 +197,23 @@ def category_coverage(
                 "denominator": 0,
                 "blackbox_unresolved": 0,
                 "hold_unresolved": 0,
+                "graded_by": {"scan": 0, "jtag": 0, "wsp": 0},
             },
         )
         entry["denominator"] += int(row[2])
         entry["detected"] += int(row[3])
         entry["blackbox_unresolved"] += int(row[4])
         entry["hold_unresolved"] += int(row[5])
+        entry["graded_by"]["scan"] += int(row[6])
+        entry["graded_by"]["jtag"] += int(row[7])
+        entry["graded_by"]["wsp"] += int(row[8])
         if jtag_detected is not None:
-            by_jtag = int(row[6]) in jtag_detected and bool(row[7])
+            by_jtag = int(row[9]) in jtag_detected and bool(row[10])
             entry.setdefault("combined_detected", 0)
             entry.setdefault("combined_denominator", 0)
             entry["combined_detected"] += int(bool(row[3]) or by_jtag)
             entry["combined_denominator"] += int(
-                bool(row[2]) or by_jtag or bool(row[8])
+                bool(row[2]) or by_jtag or bool(row[11])
             )
     for entry in counts.values():
         denominator = entry["denominator"]

@@ -112,23 +112,38 @@ netlist is synthesized once — including the parameter-specialized
 `$paramod$<hash>\march_c_top`, used verbatim — and spliced into every instance of it.
 The glue's own non-library cells must be exactly the listed instances.
 
-The TAP and its network run on `tck`/`trst_n`, the MBIST logic on `clk`/`rst_n`: two
-clock domains. The `.ofs` declares both in `[clocks]` and asks for one scan chain per
-domain; scan insertion scans every flop of both, and holds `trst_n` inactive like
-`rst_n`. Scan patterns then grade the TAP and the network like any other logic, and
-`ff.py jtag` (below) adds JTAG credit on top.
+**Test instruments are tested by their own programs, not by scan ATPG.** The TAP, the
+SIBs and the TDRs are test instruments: an industrial flow tests them through TCK with an
+integrity program, and scan ATPG grades the core and the inserted logic that is ordinary
+logic (the MBIST controller and shell, an IEEE 1500 wrapper's boundary cells). So the
+`.ofs` keeps the TAP and the network out of scan: `[scan] nonscan_cells` names the
+JTAG-category instances, and `[scan] hold = trst_n:0, tck:0` keeps them in reset through
+the whole scan test, which leaves `clk` as the only scan clock and one chain. The scan
+view ties each of their flops at the value its reset forces. Scan leaves their faults to
+`ff.py jtag` (`excluded_jtag`):
 
-**TAP non-scan (`--tap-nonscan`, `-tap_nonscan` in the shell).** A production flow keeps
-the TAP out of scan and tests it with JTAG patterns alone. With `--test-access
---tap-nonscan`, the `.ofs` does that: `[scan] nonscan_cells` names the JTAG-category
-instances, and `[scan] hold = trst_n:0, tck:0` keeps the TAP and the network in reset
-through the whole scan test, which leaves `clk` as the only scan clock and one chain. The
-scan view ties each of their flops at the value its reset forces. Scan leaves their
-faults to `ff.py jtag` (`excluded_jtag`), with the faults only they see -- the TAP's
-inputs, the decode that selects the network -- and the stuck-ats that would release a
-tied flop. `ff.py jtag` grades them, and its `combined` block counts every one. A fault
-the held values alone block, like MBIST logic a TDR held at its reset value gates, is
+- the non-scan cells' own, and the faults only they see -- the TAP's inputs, the decode
+  that selects the network;
+- the access path they drive: a TDR bit's net, and a buffer or gate that carries it on,
+  is connectivity of the instrument. Its stem and each branch, down to the D pin of the
+  first scan flop on the other side (the MBIST shell's synchronizer, say), are JTAG's. A
+  gate that mixes in a core signal drives a net that is the core's, but the pin the JTAG
+  side enters by is not;
+- the stuck-ats that would release a flop held in reset.
+
+`ff.py jtag` grades them, and its `combined` block counts every one. A fault the held
+values alone block in the core, like MBIST logic a TDR held at its reset value gates, is
 `hold_unresolved` (Tessent's AU.PC): undetected and in the denominator, not redundant.
+
+**Scanning the TAP anyway (`--scan-tap`, `-scan_tap` in the shell).** The old behaviour,
+for a flow that wants scan to grade them too: the TAP and the network run on
+`tck`/`trst_n`, the MBIST logic on `clk`/`rst_n`, two clock domains. The `.ofs` declares
+both in `[clocks]`, asks for one scan chain per domain, and holds `trst_n` inactive like
+`rst_n`, and says `[scan] scan_test_access = true`. Without that key `ff.py scan` and
+`scan-check` refuse a test instrument on a scan chain -- a flop clocked from `[jtag]
+tck`, an instance of a JTAG category of the manifest, or a `warptap_*` cell -- and
+with it, `ff.py scan` records them in the scan manifest (`test_access_scanned`).
+`--tap-nonscan` is accepted, does nothing and warns: non-scan is the default.
 
 **Coverage by category.** With `[autombist] manifest` set, the coverage report breaks
 detected faults, the denominator, `blackbox_unresolved` and `hold_unresolved` down by
@@ -136,7 +151,11 @@ the manifest's instance categories (`autombist_categories` in `coverage_report.j
 `coverage.rpt`): memory, mbist_controller, self_repair, diagnosis, repair_remap and, for a
 wrapped design, jtag_tap, ijtag_sib, ijtag_tdr, ijtag_scan_mux. A fault belongs to the
 instance of the cell it sits on; what no instance owns — the wrapper's own logic, its
-ports, constant nets — counts as `glue`, so the categories add up to the totals.
+ports, constant nets — counts as `glue`, so the categories add up to the totals. Each
+category's `graded_by` counts its faults by the test that grades them: scan ATPG, `ff.py
+jtag` (the faults scan leaves to it) and `ff.py wsp`. The report's own `graded_by`
+block says the same for the whole chip, names the memories MBIST tests, and gives
+the coverage with every test together once `ff.py jtag` or `ff.py wsp` has run.
 
 **The TAP and the IJTAG network over JTAG.** `ff.py jtag` (the shell's `run_jtag`)
 plays the network-integrity program a production flow uses -- IDCODE, the instruction
