@@ -78,6 +78,12 @@
         {"$ref": "https://faultflow.local/schemas/soc_wrapper.schema.json"}
       ]
     },
+    "test_access_scanned": {
+      "description": "The test instruments (a JTAG TAP and the IJTAG network, tested through TCK by ff.py jtag) that are scan flops on purpose, by [scan] scan_test_access. Absent when none is on a chain.",
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1
+    },
     "latest_check": {"type": ["object", "null"]}
   },
   "$defs": {

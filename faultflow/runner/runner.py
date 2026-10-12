@@ -60,6 +60,10 @@ from faultflow.scan.compression import Decompressor, insert_compression
 from faultflow.scan.compression_checks import check_compression_structure
 from faultflow.scan.compaction import insert_compaction
 from faultflow.scan.compaction_checks import check_compaction_structure
+from faultflow.scan.instrument_guard import (
+    check_test_instruments,
+    manifest_instrument_globs,
+)
 from faultflow.scan.manifest import manifest_clock_net_ids
 from faultflow.scan.reports import (
     format_dry_run,
@@ -717,6 +721,14 @@ class Runner:
                 result.cell_count,
                 time.perf_counter() - t_stitch,
             )
+            _, stitched = _json_top_module(generic_json, result.top)
+            test_access_scanned = check_test_instruments(
+                [(cell.instance, cell.clock_net) for cell in result.cells],
+                stitched,
+                tck=self.cfg.jtag.tck,
+                globs=manifest_instrument_globs(self.cfg.autombist_manifest),
+                allow=self.cfg.scan.scan_test_access,
+            )
             write_scan_techmap(techmap_v)
             techmapped: Path | None = None
             if do_techmap:
@@ -740,7 +752,10 @@ class Runner:
             raise RunnerError(str(exc)) from exc
 
         manifest = manifest_from_result(result, netlist, techmap_v, techmapped)
-        _, stitched = _json_top_module(generic_json, result.top)
+        if test_access_scanned:
+            # The TAP and the IJTAG network are scan flops on purpose
+            # ([scan] scan_test_access); say so.
+            manifest["test_access_scanned"] = test_access_scanned
         chains_found = manifest.get("chains")
         chain_rows = (
             [c for c in chains_found if isinstance(c, dict)]
@@ -1863,6 +1878,11 @@ class Runner:
         warnings = list(structural.warnings)
         if not errors:
             try:
+                self._check_test_instruments(manifest)
+            except (ScanError, RunnerError) as exc:
+                errors.append(str(exc))
+        if not errors:
+            try:
                 violations = self._shift_control_violations(manifest)
             except RunnerError as exc:
                 errors.append(str(exc))
@@ -1978,6 +1998,23 @@ class Runner:
             f"scan-check PASS top={manifest.get('top')} "
             f"vectors={normal_mode.get('vector_count') if normal_mode else 0}"
             f"{tech_note} manifest={manifest_path}"
+        )
+
+    def _check_test_instruments(self, manifest: dict[str, Any]) -> None:
+        """Refuse a scan chain that holds a JTAG TAP's or the IJTAG network's flop
+        unless [scan] scan_test_access says it should (scan.instrument_guard)."""
+        _, module = _json_top_module(Path(str(manifest["generic_json"])), self.cfg.top)
+        cells = [
+            (str(row["instance"]), int(row["clock_net"]))
+            for row in manifest.get("cells", [])
+            if isinstance(row, dict)
+        ]
+        check_test_instruments(
+            cells,
+            module,
+            tck=self.cfg.jtag.tck,
+            globs=manifest_instrument_globs(self.cfg.autombist_manifest),
+            allow=self.cfg.scan.scan_test_access,
         )
 
     def _shift_control_violations(
