@@ -441,6 +441,15 @@ def _parser() -> argparse.ArgumentParser:
     wsp.add_argument(
         "--threads", type=int, help="Grading threads (default: [simulation])"
     )
+    wsp.add_argument(
+        "--program",
+        type=Path,
+        help=(
+            "warptap-wsp-program JSON to play (default: [wsp] program, else built "
+            "with warptap from the wrapper's ICL)"
+        ),
+    )
+    wsp.add_argument("--export", type=Path, help="Write the WSP program played")
 
     wrap = sub.add_parser(
         "wrap",
@@ -720,7 +729,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "wsp":
             from faultflow.wrap.wsp_grade import run_wsp
 
-            graded = run_wsp(cfg, force=args.force, sim_threads=args.threads)
+            graded = run_wsp(
+                cfg,
+                force=args.force,
+                sim_threads=args.threads,
+                program=args.program,
+                export=args.export,
+            )
             print(graded.message(cfg.top))
         elif args.command == "wrap":
             print(service.wrap(cfg, dry_run=args.dry_run).message)

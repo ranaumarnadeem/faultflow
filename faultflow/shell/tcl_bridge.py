@@ -338,7 +338,7 @@ proc {name} {{args}} {{
         return self.session.run_jtag(**options)
 
     def _run_wsp(self, args: list[str]) -> Any:
-        usage = "usage: run_wsp [-force] [-threads N]"
+        usage = "usage: run_wsp [-program PATH] [-force] [-threads N] [-export PATH]"
         options: dict[str, Any] = {}
         index = 0
         while index < len(args):
@@ -346,6 +346,9 @@ proc {name} {{args}} {{
             if key == "-force":
                 options["force"] = True
                 index += 1
+            elif key in ("-program", "-export") and index + 1 < len(args):
+                options[key[1:]] = Path(args[index + 1])
+                index += 2
             elif key == "-threads" and index + 1 < len(args):
                 try:
                     options["sim_threads"] = int(args[index + 1])

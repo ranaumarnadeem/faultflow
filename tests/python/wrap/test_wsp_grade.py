@@ -24,6 +24,7 @@ from faultflow.wrap.wsp_program import (
     program_tests,
     serial_cells,
 )
+from warptap_helpers import skip_unless_warptap
 
 
 def _record(cells: list[tuple[str, str, int, int]]) -> dict[str, Any]:
@@ -103,15 +104,22 @@ def flow_tools() -> None:
 def test_ff_py_wsp_grades_what_intest_left_to_the_wsp(
     tmp_path: Path, flow_tools: None
 ) -> None:
-    """The ring's INTEST through the WIR, then ff.py wsp: every fault the INTEST
-    left to the WSP graded, most detected, the report's wsp block and the side
-    tables agreeing; graded again only with --force."""
+    """The ring's INTEST through the WIR, then ff.py wsp with faultflow's own
+    integrity program ([wsp] builder = faultflow; the warptap-built one is graded in
+    test_wsp_icl): every fault the INTEST left to the WSP graded, most detected, the
+    report's wsp block and the side tables agreeing; graded again only with
+    --force."""
     from faultflow.cli import main
     from wrap_flow import TOP, run_mode
 
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(tmp_path)
-        cfg, _ = run_mode(tmp_path, "intest", wrap="control = wsp\n")
+        cfg, _ = run_mode(
+            tmp_path,
+            "intest",
+            sections="[wsp]\nbuilder = faultflow\n",
+            wrap="control = wsp\n",
+        )
         ofs = str(tmp_path / "chip.ofs")
         assert main(["wsp", "--top", TOP, "-c", ofs]) == 0
         block = json.loads((cfg.intermediate_dir / "wsp_report.json").read_text())
@@ -193,7 +201,9 @@ def test_the_shells_run_wsp_grades_after_intest(
     tmp_path: Path, flow_tools: None
 ) -> None:
     """The shell: the accumulator synthesized, wrapped with -control wsp, scanned,
-    its INTEST, then run_wsp, the batch CLI's ff.py wsp."""
+    its INTEST, then run_wsp, the batch CLI's ff.py wsp -- with the program warptap
+    builds from the wrapper's ICL."""
+    skip_unless_warptap("warptap.wsp_integrity")
     from faultflow.cli import main
     from wrap_flow import ACCUMULATOR
 

@@ -59,17 +59,17 @@
     "warptap": {
       "flake": false,
       "locked": {
-        "lastModified": 1790842380,
-        "narHash": "sha256-reIwMo9wm/B0GqkdhfX7pYWr/XylpX5Zi9NEmKZjbMc=",
+        "lastModified": 1791801918,
+        "narHash": "sha256-T/qaIx7wdFt8r9mi7qVJ9O84aa5FZi+bPtgBmPxye3s=",
         "owner": "ranaumarnadeem",
         "repo": "warptap",
-        "rev": "6f6041717d1a85c990658ca77d2a53c49bacf46d",
+        "rev": "0c53364a9b66d3683c072b0b2dbda784de681aea",
         "type": "github"
       },
       "original": {
         "owner": "ranaumarnadeem",
         "repo": "warptap",
-        "rev": "6f6041717d1a85c990658ca77d2a53c49bacf46d",
+        "rev": "0c53364a9b66d3683c072b0b2dbda784de681aea",
         "type": "github"
       }
     }

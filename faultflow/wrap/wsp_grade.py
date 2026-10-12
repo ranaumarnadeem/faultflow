@@ -57,6 +57,7 @@ class WspGrade:
 
 @dataclass(frozen=True)
 class WspOutcome:
+    source: str
     graded: int
     detected: int
     init_dependent: int
@@ -72,7 +73,8 @@ class WspOutcome:
             else f"{self.combined_coverage:.3f}%"
         )
         return (
-            f"wsp top={top} cycles={self.cycles} graded={self.graded} "
+            f"wsp top={top} program={self.source} cycles={self.cycles} "
+            f"graded={self.graded} "
             f"detected={self.detected} init_dependent={self.init_dependent} "
             f"combined_coverage={combined}"
             + (
@@ -428,17 +430,56 @@ def _campaign(conn: sqlite3.Connection, campaign_type: str) -> int:
     return int(campaign_id)
 
 
+def _program(
+    cfg: FaultflowConfig,
+    manifest: Mapping[str, Any],
+    wrapper: Mapping[str, Any],
+    scan_outs: Mapping[int, str],
+    path: Path | None,
+) -> tuple[WspProgram, str]:
+    """The program to grade with and where it came from: a file (``path``, else
+    [wsp] program), warptap's, or faultflow's own builder ([wsp] builder)."""
+    path = path or cfg.wsp.program
+    if path is not None:
+        text = path.read_text(encoding="utf-8")
+        return WspProgram.from_text(text, wrapper, scan_outs), "file"
+    if cfg.wsp.builder == "faultflow":
+        return WspProgram.build(wrapper, scan_outs), "faultflow"
+    from faultflow.wrap.wsp_icl import program_from_warptap
+
+    top = str(manifest["top"])
+    scan_ins = {
+        int(chain["index"]): str(chain["scan_in"])
+        for chain in manifest["chains"]
+        if chain.get("kind") == "wrapper"
+    }
+    built = program_from_warptap(
+        wrapper,
+        scan_outs,
+        top=top,
+        scan_ins=scan_ins,
+        scan_enable=str(manifest["scan_enable"]),
+        margin=cfg.wsp.margin,
+        exhaustive_opcodes=cfg.wsp.exhaustive_opcodes,
+        icl_path=cfg.intermediate_dir / f"{top}_wsp.icl",
+    )
+    return built, "warptap"
+
+
 def run_wsp(
     cfg: FaultflowConfig,
     *,
     force: bool = False,
     sim_threads: int | None = None,
     program: Path | None = None,
+    export: Path | None = None,
 ) -> WspOutcome:
     """Grade, record and report (see the module docstring) the faults the latest
     scan campaign of the test mode ([testmode] mode) leaves to the WSP, with the
-    program in the ``warptap-wsp-program`` file ``program`` or, without one,
-    faultflow's own (faultflow.wrap.wsp_program)."""
+    program in the ``warptap-wsp-program`` file ``program`` ([wsp] program), else
+    the one ``[wsp] builder`` makes: warptap's, built from the wrapper's ICL, or
+    faultflow's own (faultflow.wrap.wsp_program). ``export``: write the program
+    played as a file."""
     from faultflow.config import resolve_sim_threads
     from faultflow.db import connect, summary
     from faultflow.runner.runner import _load_core
@@ -469,12 +510,7 @@ def run_wsp(
         for chain in manifest["chains"]
         if chain.get("kind") == "wrapper"
     }
-    if program is None:
-        chosen = WspProgram.build(wrapper, scan_outs)
-    else:
-        chosen = WspProgram.from_text(
-            program.read_text(encoding="utf-8"), wrapper, scan_outs
-        )
+    chosen, source = _program(cfg, manifest, wrapper, scan_outs, program)
     failures = conformance_failures(chosen, wrapper, scan_outs)
     if failures:
         raise WspGradeError(
@@ -482,6 +518,11 @@ def run_wsp(
             f"{len(failures)} care bit(s); the first: {failures[0]}"
         )
     steps = chosen.steps
+    if export is not None:
+        export.write_text(
+            json.dumps(chosen.to_json(wrapper, scan_outs), indent=2) + "\n",
+            encoding="utf-8",
+        )
     ports = {role: str(p["port"]) for role, p in wrapper["wsp"]["ports"].items()}
     inputs = [name for name, _ in port_bits(module, "input")]
     expected = compared(steps, ports["wso"])
@@ -517,6 +558,7 @@ def run_wsp(
             block = report_block(conn, campaign_id, totals)
             assert block is not None
             return WspOutcome(
+                source=source,
                 graded=int(previous["graded"]),
                 detected=int(block["detected"]),
                 init_dependent=int(previous["init_dependent"]),
@@ -556,6 +598,7 @@ def run_wsp(
     report = cfg.intermediate_dir / "wsp_report.json"
     report.write_text(json.dumps(block, indent=2) + "\n", encoding="utf-8")
     return WspOutcome(
+        source=source,
         graded=grade.graded,
         detected=len(grade.detected),
         init_dependent=len(grade.init_dependent),

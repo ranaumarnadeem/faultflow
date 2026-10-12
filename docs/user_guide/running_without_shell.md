@@ -452,7 +452,8 @@ detected or not.
 ## `wsp`
 
 ```bash
-python3 ff.py wsp --top <top> -c config.ofs [--force] [--threads N]
+python3 ff.py wsp --top <top> -c config.ofs [--program FILE] [--export FILE]
+                  [--force] [--threads N]
 ```
 
 Grade the faults a scan test of a block wrapped with an IEEE 1500 WSP (`[wrap]
@@ -461,16 +462,26 @@ compared at `wso`, at the wrapped outputs and at the wrapper chains' scan-outs. 
 completed scan test of the block in the current `[testmode] mode` (`sim --scan`,
 `intest` or `extest`); stuck-at only; a block's WSP, not a SoC's chain of them.
 
-The program resets the WSP, shifts a pattern through the WIR, then loads each of the
-eight instruction codes in turn and shifts and captures the data register it selects
-(WBY, or the boundary register in a serial instruction, the input cells capturing the
-ports the program drives), and checks that an update without `selectwir` changes
-nothing. What the WSP's behavioural model can't know -- the core's outputs, which the
-program never clocks -- is no care. Every input but the WSP's and the wrapped data
-inputs is 0.
+The program is warptap's. faultflow writes the wrapper as ICL (an IEEE 1687 description
+of the WIR, WBY, the boundary registers and their decode, from the wrapper record and the
+scan manifest's wrapper chains; `<top>_wsp.icl`, in the intermediate directory), warptap reads
+the ICL back, and builds the program from the model it describes -- so the ICL alone
+suffices. The program resets the WSP, checks the WIR's and the bypass register's lengths with
+a sentinel, loads each code of the WIR in turn (an unused code acts as WS_BYPASS) and shifts
+and captures the data register it selects -- WBY, or in a serial instruction the boundary
+register, scanned three times so that a cell is seen holding against a port value that
+differs from it and capturing both port values -- and checks that WBY holds across a WIR
+scan, that an update without `selectwir` changes nothing, and that `capturewr` with
+`selectwir` captures nothing. What the WSP's behavioural model can't know -- the core's
+outputs, which the program never clocks -- is no care. Every input but the WSP's and the
+wrapped data inputs is 0. `[wsp] program`, or `--program`, plays a `warptap-wsp-program`
+file instead; `--export` writes the program that was played. Without warptap and without a
+program file the run says so (`[wsp] builder = faultflow` selects faultflow's older program).
 
-Before grading, the netlist's own outputs must be the model's at every care bit, from
-all-0 and all-1 flop states alike; otherwise the run is refused and writes nothing. A
+Before the netlist is touched the program is replayed on faultflow's own model of the WSP,
+independent of warptap's, and refused if the two disagree at any care bit. Then the
+netlist's own outputs must be the program's at every care bit, from all-0 and all-1 flop
+states alike; otherwise the run is refused and writes nothing. A
 fault is credited when it changes a care bit from both initial states; one only one of
 them shows is counted `init_dependent` and not credited. The result is written to
 `wsp_report.json` in the intermediate directory, kept beside the scan campaign, and
@@ -479,6 +490,8 @@ scan's credit, the combined coverage over the scan's faults and the WSP's.
 
 | Option | Meaning |
 |---|---|
+| `--program FILE` | `warptap-wsp-program` to play, instead of `[wsp] program` or building one |
+| `--export FILE` | Write the WSP program played |
 | `--force` | Grade again when an identical grade (program, netlist) is recorded |
 | `--threads N` | Grading threads (default: `[simulation] sim_threads`) |
 

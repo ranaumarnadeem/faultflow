@@ -362,6 +362,19 @@ campaign fingerprint (a JTAG grade keys itself to its program, netlist and holds
 | `margin` | integer ≥ 1 | `8` | Sentinel bits fed past each register's length in a built program |
 | `exhaustive_opcodes` | boolean | `true` | Test every unimplemented opcode in a built program |
 
+## `[wsp]`
+
+Used by `ff.py wsp` / `run_wsp` (see [Running without the shell](running_without_shell.md)):
+how the IEEE 1500 WSP's integrity program is made. Every key is optional. Report-only: not part
+of the campaign fingerprint (a WSP grade keys itself to its program, netlist and blackboxes).
+
+| Key | Format | Default | Meaning |
+|---|---|---|---|
+| `program` | path | — | A `warptap-wsp-program` JSON file to play; without it `builder` makes one |
+| `builder` | `warptap` or `faultflow` | `warptap` | `warptap`: warptap builds the program from the ICL of the wrapper (written beside the report as `<top>_wsp.icl`); needs warptap importable. `faultflow`: faultflow's own older builder, kept for comparison |
+| `margin` | integer ≥ 2 | `8` | Sentinel bits fed past each register's length in a warptap-built program |
+| `exhaustive_opcodes` | boolean | `true` | Test every code of the WIR in a warptap-built program, not only the instructions' own |
+
 ## Notes on legacy and inert keys
 
 ```{note}
