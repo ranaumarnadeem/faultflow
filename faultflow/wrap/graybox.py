@@ -189,7 +189,7 @@ def chip_patterns(
     keyed = ("load_seqs", "expected_unload", "unload_mask", "launch_scan_in")
     chip: list[dict[str, Any]] = []
     for pattern in patterns:
-        if pattern.get("load_care") is not None or pattern.get("seed") is not None:
+        if pattern.get("load_care") is not None or pattern.get("channel_seqs"):
             raise WrapError("a compressed pattern can't be one of EXTEST's")
         converted = dict(pattern)
         for key in keyed:

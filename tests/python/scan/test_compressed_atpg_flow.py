@@ -194,11 +194,11 @@ def _assert_every_pattern_is_one_seeds_load(cfg: Any, patterns: Path) -> None:
             (c, t) for c in chains for t in range(max_chain_length)
         ], number
         # The words a tester drives: the one-shot decompressor's seed, held.
-        assert raw["channel_seqs"] == {
-            str(k): [bool((raw["seed"] >> k) & 1)] * max_chain_length
-            for k in range(len(raw["channel_seqs"]))
-        }, number
-        for seed in (seed_of(number, {**raw, "load_care": None}), raw["seed"]):
+        words = raw["channel_seqs"]
+        assert all(len(set(seq)) == 1 for seq in words.values()), number
+        assert all(len(seq) == max_chain_length for seq in words.values()), number
+        carried = sum(1 << int(k) for k, seq in words.items() if seq[0])
+        for seed in (seed_of(number, {**raw, "load_care": None}), carried):
             for chain in chains:
                 assert raw["load_seqs"][str(chain)] == [
                     _parity(rows[t][chain], seed) for t in range(max_chain_length)

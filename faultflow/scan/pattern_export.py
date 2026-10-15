@@ -69,7 +69,6 @@ def scan_pattern_to_dict(pattern: ScanPattern) -> dict[str, Any]:
             if pattern.launch_scan_in
             else {}
         ),
-        **({"seed": pattern.seed} if pattern.seed is not None else {}),
         **(
             {
                 "channel_seqs": {
@@ -119,7 +118,6 @@ def scan_pattern_from_dict(data: dict[str, Any]) -> ScanPattern:
             int(chain): bool(bit)
             for chain, bit in data.get("launch_scan_in", {}).items()
         },
-        seed=int(data["seed"]) if data.get("seed") is not None else None,
         channel_seqs=(
             _int_keyed(data["channel_seqs"])
             if data.get("channel_seqs") is not None

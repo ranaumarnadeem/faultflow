@@ -623,7 +623,6 @@ def _decompressed(
             for chain in sorted(load_seqs)
             for cycle in range(max_chain_length)
         ),
-        seed=seed,
         channel_seqs={
             k: [bool((seed >> k) & 1)] * max_chain_length
             for k in range(scan_ctx.compression_map.num_channels)

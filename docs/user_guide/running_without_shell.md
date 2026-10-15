@@ -311,8 +311,8 @@ What the STIL holds:
 
 - A signal per pin bit (a bus bit is `"port[i]"`), in groups: `_pi` (the inputs but
   the scan clocks, scan enable and scan inputs), `_po` (the outputs but the scan
-  outputs), `_si` (the scan inputs; with compression, the channels a pattern's seed
-  is held on), `_so` (the scan outputs; with compaction, the compactor's channels),
+  outputs), `_si` (the scan inputs; with compression, the channels a pattern's words
+  are driven on), `_so` (the scan outputs; with compaction, the compactor's channels),
   `_clk` (the scan clocks) and `_se`.
 - One WaveformTable, `_wft_`: a 100 ns period, inputs changing at 0 ns, outputs
   strobed at 40 ns, the scan clocks pulsing high from 50 ns to 80 ns.
@@ -320,10 +320,9 @@ What the STIL holds:
   output, length and cells, scan input first.
 - One procedure, `load_unload`, which sets every signal itself, since readers
   differ on whether a procedure keeps its caller's signal states: a call passes it
-  the inputs' values to hold (with compression, the seed too), it turns scan enable
-  on, then a Shift takes a bit per scan input and per scan output each shift. With
-  compression the scan inputs aren't shifted: the decompressor makes the load from
-  the seed they hold.
+  the inputs' values to hold, it turns scan enable on, then a Shift takes a bit per
+  scan input and per scan output each shift. With compression the scan inputs are the
+  channels: the decompressor makes the load from the words shifted onto them.
 - Per pattern: a `load_unload` call for its load -- comparing the unload of the
   pattern before, or nothing -- a vector for a transition pattern's launch and one
   for its capture (the outputs strobed); then a last `load_unload` call for the

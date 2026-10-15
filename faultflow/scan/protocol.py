@@ -151,9 +151,10 @@ class ScanPattern:
     capture_pi_values: dict[str, bool]
     expected_unload: dict[int, list[bool]]
     # (chain_id, cycle) positions of load_seqs a tester must reproduce. With
-    # scan compression every position: the pattern is one decompressor seed's
-    # whole scan-in stream (detection_pipeline._decompressed), so any seed
-    # making them all is that load. None without compression.
+    # scan compression every position: the pattern is what the channel words
+    # (channel_seqs) make the decompressor shift in (detection_pipeline.
+    # _decompressed), so any words making them all are that load. None without
+    # compression.
     load_care: tuple[tuple[int, int], ...] | None = None
     # Per chain, parallel to expected_unload: False where the expected bit is
     # don't-care -- a flop that captured a blackbox output's unknown value
@@ -177,10 +178,6 @@ class ScanPattern:
     # for a stuck-at pattern, which captures right after the load.
     launch: str = ""
     launch_scan_in: dict[int, bool] = field(default_factory=dict)
-    # With scan compression, the decompressor seed whose stream load_seqs is: what
-    # a tester holds on the compression channels, bit k on channel bit k
-    # (detection_pipeline._decompressed). None without compression.
-    seed: int | None = None
     # With scan compression, what a tester drives on the decompressor's channels
     # while the chains load: per channel (the k-th bit of the channel port), one
     # bit per shift of the load (detection_pipeline._decompressed). A one-shot
