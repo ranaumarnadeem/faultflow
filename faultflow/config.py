@@ -410,6 +410,22 @@ class JtagConfig:
 
 
 @dataclass(frozen=True)
+class WspConfig:
+    """``ff.py wsp`` ([wsp]): the integrity program the faults a block's scan test
+    leaves to its IEEE 1500 WSP are graded with. ``program``: a
+    warptap-wsp-program file; else ``builder`` makes one -- "warptap", from the
+    wrapper's ICL (the program's sentinel ``margin``, and whether to test every code of
+    the WIR, not only the instructions' own), or "faultflow", its own older builder.
+    Report-only: not fingerprinted -- a WSP grade keys itself to its program and
+    netlist."""
+
+    program: Path | None = None
+    margin: int = 8
+    exhaustive_opcodes: bool = True
+    builder: str = "warptap"
+
+
+@dataclass(frozen=True)
 class WrapConfig:
     """``[wrap]``: the IEEE 1500 wrapper ``ff.py wrap`` puts on the design's ports
     (``faultflow.wrap``); ``enabled``: ``ff.py scan`` puts it on before inserting
@@ -475,6 +491,7 @@ class FaultflowConfig:
     # coverage down by instance category. Report-only: not fingerprinted.
     autombist_manifest: Path | None = None
     jtag: JtagConfig = JtagConfig()
+    wsp: WspConfig = WspConfig()
 
     @property
     def blackbox_x_instances(self) -> tuple[str, ...]:
@@ -759,6 +776,28 @@ def _parse_jtag(parser: ConfigParser) -> JtagConfig:
         raise ConfigError("[jtag] ir_width must be at least 2")
     if config.margin < 1:
         raise ConfigError("[jtag] margin must be at least 1")
+    return config
+
+
+def _parse_wsp(parser: ConfigParser) -> WspConfig:
+    if not parser.has_section("wsp"):
+        return WspConfig()
+    defaults = WspConfig()
+    builder = parser.get("wsp", "builder", fallback=defaults.builder).strip().lower()
+    if builder not in ("warptap", "faultflow"):
+        raise ConfigError(
+            f"[wsp] builder must be warptap or faultflow, got '{builder}'"
+        )
+    config = WspConfig(
+        program=_optional_path(parser, "wsp", "program"),
+        margin=_int(parser, "wsp", "margin", defaults.margin),
+        exhaustive_opcodes=_bool(
+            parser, "wsp", "exhaustive_opcodes", defaults.exhaustive_opcodes
+        ),
+        builder=builder,
+    )
+    if config.margin < 2:
+        raise ConfigError("[wsp] margin must be at least 2")
     return config
 
 
@@ -1056,6 +1095,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         wrap=_parse_wrap(parser),
         autombist_manifest=_autombist_manifest(parser),
         jtag=_parse_jtag(parser),
+        wsp=_parse_wsp(parser),
         output_root=_optional_path(parser, "design", "output_root") or Path("output"),
     )
 

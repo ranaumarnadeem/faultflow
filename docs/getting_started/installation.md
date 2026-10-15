@@ -130,7 +130,8 @@ shape check runs if it is absent.
 ### Optional: warptap
 
 The JTAG flows (`autombist-generate --test-access`, and `ff.py jtag` building its
-program from a manifest) use [warptap](https://github.com/ranaumarnadeem/warptap).
+program from a manifest) and `ff.py wsp` (which has warptap build the IEEE 1500 WSP's
+integrity program from the wrapper's ICL) use [warptap](https://github.com/ranaumarnadeem/warptap).
 Install it into the same venv from a clone:
 
 ```bash

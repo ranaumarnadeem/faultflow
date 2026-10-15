@@ -5,11 +5,12 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     # warptap inserts the TAP and IJTAG network the JTAG and MBIST-insertion
-    # tests build and grade. Pinned to the commit they were written against
-    # (branch mbist-jtag: W1-W3); stdlib-only, so its source on PYTHONPATH is
-    # enough.
+    # tests build and grade, and writes the IEEE 1500 wrapper's ICL and builds the
+    # integrity program ff.py wsp grades with. Pinned to the commit they were
+    # written against (branch ieee1500-wsp, the 1500 wrapper on top of mbist-jtag);
+    # stdlib-only, so its source on PYTHONPATH is enough.
     warptap = {
-      url = "github:ranaumarnadeem/warptap/6f6041717d1a85c990658ca77d2a53c49bacf46d";
+      url = "github:ranaumarnadeem/warptap/8aee9cf33dfe3c07743b2ece7f1d1e04870f9772";
       flake = false;
     };
   };

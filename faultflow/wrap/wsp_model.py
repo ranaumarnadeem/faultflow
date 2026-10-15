@@ -35,6 +35,7 @@ then falls) when the cycle says so.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -79,7 +80,7 @@ class WspCycle:
     shiftwr: int = 0
     capturewr: int = 0
     updatewr: int = 0
-    wsi: int = 0
+    wsi: int | None = 0
     pulse: bool = True
     cfi: tuple[int | None, ...] = ()
 
@@ -221,3 +222,28 @@ def model_run(
     """WSO at each cycle's strobe, and the model after the cycles."""
     model = WspModel(sides)
     return [model.step(cycle) for cycle in cycles], model
+
+
+class WspChainModel:
+    """Models of wrappers whose WSI and WSO are chained -- WSI into the first, each
+    WSO into the next WSI, the last one's WSO the chain's -- and whose other WSP
+    controls are the same signals, as a SoC's blocks have them. ``sides``: each
+    wrapper's boundary cells' sides, in its serial order, the first wrapper's first."""
+
+    def __init__(self, sides: Sequence[Sequence[str]]) -> None:
+        if not sides:
+            raise ValueError("a chain needs a wrapper")
+        self.models = [WspModel(list(each)) for each in sides]
+
+    def wso(self, cycle: WspCycle) -> int | None:
+        """The chain's WSO at the strobe of ``cycle``, without applying it."""
+        return self.models[-1].wso(cycle)
+
+    def step(self, cycle: WspCycle) -> int | None:
+        """Apply ``cycle`` to every wrapper; the chain's WSO at its strobe. Every WSO
+        is read before any edge, so each wrapper shifts in what its neighbour showed."""
+        strobes = [model.wso(cycle) for model in self.models]
+        feeds = [cycle.wsi, *strobes[:-1]]
+        for model, feed in zip(self.models, feeds):
+            model.step(dataclasses.replace(cycle, wsi=feed))
+        return strobes[-1]
