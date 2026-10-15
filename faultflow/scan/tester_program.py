@@ -11,9 +11,11 @@ these cycles, and the STIL writer writes them.
 The chip is the netlist a tester connects to: the scanned one, or with scan
 compression or compaction the one ``scan-compress`` or ``scan-compact`` composed
 (with both, the compacted netlist holds the decompressor too). A compressed
-pattern's seed is held on the compression channels and the decompressor's cells
-load the chains; a compacted unload is compared on the compactor's channels, each
-channel bit the XOR of the unload bits it reads. Scan clocks idle at 0."""
+pattern's channel words (``channel_seqs``) are driven on the compression channels,
+one per shift of the load, and the decompressor's cells load the chains; the
+channels are 0 in every other cycle. A compacted unload is compared on the
+compactor's channels, each channel bit the XOR of the unload bits it reads. Scan
+clocks idle at 0."""
 
 from __future__ import annotations
 
@@ -256,7 +258,6 @@ def _pattern_cycles(
         {n: int(v) for n, v in pattern.get("shift_pi_values", {}).items() if n in shift}
     )
     for values in (capture, shift):
-        values.update(_seeded(chip, pattern, index))
         values.update(dict.fromkeys(chip.scan_ins, 0))
         values[chip.scan_enable] = 0
     own: list[Cycle] = _setup_cycles(
@@ -268,10 +269,13 @@ def _pattern_cycles(
     for _ in range(int(pattern.get("preamble_cycles", 0))):
         own.append(Cycle(index, "preamble", dict(shift), {}))
     shifts = _shift_length(chip, pattern, index)
+    words = _channel_words(chip, pattern, index)
     for t in range(shifts):
-        own.append(
-            Cycle(index, "load", _shifting(chip, shift, pattern["load_seqs"], t), {})
+        values = _shifting(chip, shift, pattern["load_seqs"], t)
+        values.update(
+            {pin: seq[t] if t < len(seq) else 0 for pin, seq in words.items()}
         )
+        own.append(Cycle(index, "load", values, {}))
     launch = str(pattern.get("launch", ""))
     if launch == "loc":
         own.append(Cycle(index, "launch", dict(capture), {}))
@@ -348,17 +352,27 @@ def _shift_length(chip: Chip, pattern: Mapping[str, Any], index: int) -> int:
     return shifts
 
 
-def _seeded(chip: Chip, pattern: Mapping[str, Any], index: int) -> dict[str, int]:
-    """With compression, the pattern's seed on the channel bits."""
+def _channel_words(
+    chip: Chip, pattern: Mapping[str, Any], index: int
+) -> dict[str, list[int]]:
+    """With compression, what the pattern drives on each channel bit in each shift
+    of its load."""
     if not chip.channel_ins:
         return {}
-    seed = pattern.get("seed")
-    if seed is None:
+    seqs = pattern.get("channel_seqs")
+    if seqs is None:
         raise ScanError(
-            f"pattern {index} has no seed: a compressed pattern is exported with "
-            "its decompressor seed (export the patterns again)"
+            f"pattern {index} has no channel_seqs: a compressed pattern is exported "
+            "with the words a tester drives on the decompressor's channels (export "
+            "the patterns again)"
         )
-    return {bit: (int(seed) >> k) & 1 for k, bit in enumerate(chip.channel_ins)}
+    words: dict[str, list[int]] = {}
+    for k, pin in enumerate(chip.channel_ins):
+        seq = seqs.get(str(k))
+        if seq is None:
+            raise ScanError(f"pattern {index}'s channel_seqs has no channel {k}")
+        words[pin] = [int(bit) for bit in seq]
+    return words
 
 
 def _shifting(

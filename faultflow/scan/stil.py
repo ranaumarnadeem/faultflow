@@ -17,7 +17,7 @@ changes. The procedure leaves every output but the scan outputs uncompared (X),
 and only the capture vectors and the shifts' scan outputs compare anything.
 
 With scan compression, the scan inputs are the compression channels: a call passes
-the pattern's seed, held on them through the shifts, and a character per shift for
+a character per shift for each channel, as for a chain's scan input, and one for
 each scan output. With compaction, the scan outputs are the compactor's channels.
 
 ScanStructures, describing each chain by its pins and cells, are written only for
@@ -170,8 +170,6 @@ def write_stil(
     if chip.scan_ins and chip.scan_outs and chains:
         lines += _scan_structures(chip, chains)
     held = [("_pi", "#" * len(groups.pi))]
-    if not chip.scan_ins:
-        held.append(("_si", "#" * len(groups.si)))  # the seed
     held += [("_se", "1"), ("_po", "X" * len(groups.po))]
     lines += [
         f"PatternBurst {_quoted(BURST)} {{",
@@ -187,7 +185,7 @@ def write_stil(
         f"        W {_quoted(WAVEFORM_TABLE)};",
         f"        C {{ {_assign(held)} }}",
     ]
-    shifted = [("_si", "#" * len(groups.si))] if chip.scan_ins else []
+    shifted = [("_si", "#" * len(groups.si))] if groups.si else []
     shifted += [("_so", "#" * len(groups.so)), ("_clk", "P" * len(groups.clk))]
     lines += [f"        Shift {{ V {{ {_assign(shifted)} }} }}", "    }", "}", ""]
     if setup:
@@ -330,18 +328,15 @@ class _Patterns:
         self.held["_clk"] = pulse
 
     def _shifts(self, pattern: int, cycles: list[Cycle]) -> None:
-        """A call of the load_unload procedure: the inputs' values (with
-        compression, the seed too), and a character per shift for each scan input
-        (the load's bits) and each scan output (compared, or X)."""
-        chip, groups = self.chip, self.groups
+        """A call of the load_unload procedure: the inputs' values, and a character
+        per shift for each scan input (the load's bits, or a channel's) and each
+        scan output (compared, or X)."""
+        groups = self.groups
         if self._same(cycles, [groups.se]) != "1":
             raise ScanError(f"STIL: pattern {pattern} shifts with scan enable off")
         data = [("_pi", self._same(cycles, groups.pi))]
-        if chip.scan_ins:
-            for pin in groups.si:
-                data.append((pin, "".join(str(int(c.inputs[pin])) for c in cycles)))
-        else:
-            data.append(("_si", self._same(cycles, groups.si)))  # the seed
+        for pin in groups.si:
+            data.append((pin, "".join(str(int(c.inputs[pin])) for c in cycles)))
         for pin in groups.so:
             data.append((pin, "".join(_compare(c, [pin]) for c in cycles)))
         self.lines.append(f"    Call {_quoted(PROCEDURE)} {{ {_assign(data)} }}")

@@ -193,6 +193,11 @@ def _assert_every_pattern_is_one_seeds_load(cfg: Any, patterns: Path) -> None:
         assert sorted(map(tuple, raw["load_care"])) == [
             (c, t) for c in chains for t in range(max_chain_length)
         ], number
+        # The words a tester drives: the one-shot decompressor's seed, held.
+        assert raw["channel_seqs"] == {
+            str(k): [bool((raw["seed"] >> k) & 1)] * max_chain_length
+            for k in range(len(raw["channel_seqs"]))
+        }, number
         for seed in (seed_of(number, {**raw, "load_care": None}), raw["seed"]):
             for chain in chains:
                 assert raw["load_seqs"][str(chain)] == [
@@ -244,6 +249,11 @@ def test_stuck_at_through_the_decompressor(
     assert credit_not_reproduced(cfg, patterns) == []
     _, seed_of, _ = _rows_and_seed_solver(cfg)
     assert compressed_credit_not_reproduced(cfg, patterns, seed_of) == {
+        "not_reproduced": [],
+        "golden": [],
+    }
+    # The same from the words the patterns carry, not a tester's own solve.
+    assert compressed_credit_not_reproduced(cfg, patterns) == {
         "not_reproduced": [],
         "golden": [],
     }

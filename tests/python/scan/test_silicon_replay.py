@@ -304,6 +304,36 @@ def test_compressed_patterns_load_through_the_decompressor_cells(
 
 
 @pytest.mark.integration
+def test_a_one_shot_decompressor_ignores_the_channels_after_its_reseed(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """The channel words a pattern carries are per cycle: a one-shot decompressor
+    samples them once, at the first shift, so words that change after it load the
+    same chains. The patterns replay on the cells with every later word flipped
+    -- and the STIL, which now shifts the channels every cycle, expands to the
+    same cycles."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(tmp_path)
+        cfg, patterns = _flow(
+            tmp_path,
+            _ring(),
+            f"[scan]\nchains = 2\n\n{COMPRESSION}",
+            compose=("scan-compress",),
+        )
+        exported = json.loads(patterns.read_text(encoding="utf-8"))
+        flipped = 0
+        for pattern in exported:
+            for seq in pattern["channel_seqs"].values():
+                for t in range(1, len(seq)):
+                    seq[t] = not seq[t]
+                    flipped += 1
+        assert flipped
+        varied = tmp_path / "varied_patterns.json"
+        varied.write_text(json.dumps(exported), encoding="utf-8")
+        assert replay_on_cells(cfg, varied, tmp_path / "replay") == []
+
+
+@pytest.mark.integration
 def test_compressed_and_compacted_patterns_replay_on_the_whole_chip(
     tmp_path: Path, flow_tools: None
 ) -> None:

@@ -276,18 +276,22 @@ def _composed_site_key(key: str, nets: dict[int, int]) -> str:
 
 
 def compressed_credit_not_reproduced(
-    cfg: Any, patterns_path: Path, seed_of: Callable[[int, dict[str, Any]], int]
+    cfg: Any,
+    patterns_path: Path,
+    seed_of: Callable[[int, dict[str, Any]], int] | None = None,
 ) -> dict[str, list[Any]]:
     """Every fault the latest (stuck-at) scan campaign credits must be detected
     by its exported patterns on the COMPRESSED chip itself: the composed
     netlist scan-compress wrote, the decompressor's synthesized gates
-    included. Each pattern's seed (`seed_of(index, exported pattern dict)`: a
-    tester's solve, e.g. warptap's) is held on the channel bus and the chip's
-    own protocol is run cycle by cycle (simulate_sequence_faults) as the core
-    grade runs it -- preamble, load, capture, unload, the faults kept out of
-    the preamble and the load -- and compared where the core grade compares:
-    the unmasked functional outputs at capture and each chain's unmasked
-    unload bits.
+    included. Each pattern's channel words (its channel_seqs: one bit per
+    channel per shift of the load, 0 in every other cycle) are driven on the
+    channel bus -- or, with `seed_of(index, exported pattern dict)`, a tester's
+    own solve (e.g. warptap's) of a one-shot seed, held through the load -- and
+    the chip's own protocol is run cycle by cycle (simulate_sequence_faults) as
+    the core grade runs it -- preamble, load, capture, unload, the faults kept
+    out of the preamble and the load -- and compared where the core grade
+    compares: the unmasked functional outputs at capture and each chain's
+    unmasked unload bits.
 
     Returns {"not_reproduced": [(site key, fault type), ...], "golden": [...]};
     the second lists (pattern index, observation) where the chip's fault-free
@@ -358,9 +362,15 @@ def compressed_credit_not_reproduced(
     golden_mismatches: list[Any] = []
     for number, raw in enumerate(json.loads(patterns_path.read_text(encoding="utf-8"))):
         pattern = scan_pattern_from_dict(raw)
-        seed = seed_of(number, raw)
+        if seed_of is not None:
+            seed = seed_of(number, raw)
+            words = {
+                k: [bool((seed >> k) & 1)] * max_chain_length for k in range(width)
+            }
+        else:
+            assert pattern.channel_seqs is not None, f"pattern {number} has no words"
+            words = pattern.channel_seqs
         base = {k: v for k, v in pattern.capture_pi_values.items() if k in inputs}
-        base.update({f"{channel}[{k}]": bool((seed >> k) & 1) for k in range(width)})
         cycles: list[list[bool]] = []
         active: list[bool] = []
 
@@ -379,8 +389,12 @@ def compressed_credit_not_reproduced(
         }
         for _ in range(pattern.preamble_cycles):
             pulse({**shift, scan_enable: False}, False)
-        for _ in range(max_chain_length):
-            pulse({**shift, scan_enable: True}, False)
+        for t in range(max_chain_length):
+            word = {
+                f"{channel}[{k}]": t < len(words[k]) and bool(words[k][t])
+                for k in range(width)
+            }
+            pulse({**shift, scan_enable: True, **word}, False)
         capture = pulse({**base, scan_enable: False}, True)
         unloads = [
             pulse({**shift, scan_enable: True}, True) for _ in range(max_chain_length)
