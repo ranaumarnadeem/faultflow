@@ -236,7 +236,7 @@ def _grader(
     return _Grader([(str(k), str(t)) for k, t in credited], patterns, detect)
 
 
-# insert_compression's instance of the core in the composed netlist: compose_soc
+# The instance of the core in the composed netlist: compose_soc
 # names the core's cells `<instance>__<cell>`.
 CORE_INSTANCE = "core_inst"
 

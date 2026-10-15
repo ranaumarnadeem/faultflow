@@ -6,7 +6,6 @@ from faultflow.scan.ring_generator import (
     PRIMITIVE_POLYNOMIALS,
     _step,
     bitmask_to_index_list,
-    care_bit_rows,
     lookup_polynomial,
     tap_mask_verilog_literal,
 )
@@ -90,43 +89,8 @@ def test_step_does_not_degenerate_for_wide_widths(width: int) -> None:
 
 
 @pytest.mark.unit
-def test_care_bit_rows_shape_and_seed_identity() -> None:
-    """At cycle 0 the LFSR state equals the seed identically (no clock edge has
-    occurred yet), so with an identity phase shifter, row 0 must be the
-    identity map (row 0's entry for chain i has exactly bit i set)."""
-    poly = lookup_polynomial(8)
-    phase_shifter_taps = [[i] for i in range(8)]
-    rows = care_bit_rows(poly, phase_shifter_taps, max_chain_length=5)
-    assert len(rows) == 5
-    assert len(rows[0]) == 8
-    for i in range(8):
-        assert rows[0][i] == (1 << i)
-
-
-@pytest.mark.unit
 def test_bitmask_to_index_list() -> None:
     assert bitmask_to_index_list(0) == []
     assert bitmask_to_index_list(1) == [0]
     assert bitmask_to_index_list(0b1010) == [1, 3]
     assert bitmask_to_index_list(0b11111111) == [0, 1, 2, 3, 4, 5, 6, 7]
-
-
-@pytest.mark.unit
-def test_care_bit_rows_matches_manual_xor_reduction() -> None:
-    """care_bit_rows[t][c] must equal the XOR (bitwise-XOR of the coefficient
-    masks) of the LFSR's per-register-bit rows at cycle t, restricted to
-    phase_shifter_taps[c] -- cross-checks the XOR composition independently of
-    _step's own internals."""
-    poly = lookup_polynomial(8)
-    phase_shifter_taps = [[0, 3], [1, 2, 7]]
-    max_len = 4
-    rows_table = care_bit_rows(poly, phase_shifter_taps, max_len)
-
-    rows = [1 << i for i in range(8)]
-    for t in range(max_len):
-        for c, taps in enumerate(phase_shifter_taps):
-            expected = 0
-            for tap in taps:
-                expected ^= rows[tap]
-            assert rows_table[t][c] == expected
-        rows = _step(rows, poly)

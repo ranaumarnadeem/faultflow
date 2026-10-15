@@ -30,7 +30,7 @@ from faultflow.scan.setup import SetupCycle, setup_from_list
 # A pattern's phases, in the order its cycles come.
 PHASES = ("setup", "preamble", "load", "launch", "capture", "unload")
 
-# The scanned design's instance in a composed netlist (insert_compression,
+# The scanned design's instance in a composed netlist (insert_continuous_compression,
 # insert_compaction): its cells are named "core_inst__<cell>" there.
 CORE_INSTANCE = "core_inst"
 

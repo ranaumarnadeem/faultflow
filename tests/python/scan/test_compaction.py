@@ -285,7 +285,7 @@ def test_check_compaction_structure_passes_against_real_synthesized_netlist(
     """End-to-end: insert_compaction's REAL Yosys/abc output must satisfy
     check_compaction_structure -- proves the hand-built fixtures in
     test_compaction_checks.py aren't masking a real-synthesis quirk (the
-    exact class of gap compression_checks.py's module docstring warns
+    exact class of gap compaction_checks.py's module docstring warns
     about)."""
     if shutil.which("yosys") is None:
         pytest.skip("yosys is not available")

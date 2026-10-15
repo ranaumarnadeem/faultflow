@@ -100,3 +100,19 @@ def test_the_program_grows_with_the_load_not_with_the_cells_it_feeds():
     assert max(len(d) for d in program.defs) <= 3
     taps = build_phase_shifter(16, 40)
     assert max(len(program.scan_in(t, row)) for t in (50, 150) for row in taps) <= 3
+
+
+@pytest.mark.unit
+def test_a_chip_of_many_chains_costs_each_cell_the_same_few_variables():
+    """1500 chains (a 15,000-flop block at ten flops a chain) on a 64-stage ring,
+    16 channels, 120 shifts: the program is the ring's alone -- at most one definition
+    per stage per shift -- and each chain's scan-in at any shift is the XOR of at most
+    its three taps, so a solve's CNF grows with the cells (a few XOR gates each), not
+    with the chains times the shifts."""
+    poly = PRIMITIVE_POLYNOMIALS[64]
+    program = continuous_seed_program(poly, 16, 120)
+    assert len(program.defs) <= 64 * 120
+    taps = build_phase_shifter(64, 1500)
+    assert len(taps) == 1500
+    widest = max(len(program.scan_in(t, row)) for t in (30, 100, 120) for row in taps)
+    assert widest <= 3
