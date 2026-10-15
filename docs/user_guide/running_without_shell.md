@@ -437,9 +437,9 @@ reset active (`[jtag] hold` overrides) -- except the chip reset of a manifest wh
 control TDRs also clear on it: holding it active would keep them at 0, so the program
 pulses it during its TRST lead-in, then holds it inactive.
 
-With the TAP non-scan (`[scan] nonscan_cells`), the faults scan left to JTAG
-(`excluded_jtag`) are graded too, and the `combined` block counts every one of them,
-detected or not.
+The TAP and the network run non-scan by default (`[scan] nonscan_cells`): the faults
+scan left to JTAG (`excluded_jtag`) are graded too, and the `combined` block counts every
+one of them, detected or not.
 
 | Option | Meaning |
 |---|---|
@@ -529,20 +529,21 @@ reads it, and an entry to paste. `--pattern` (repeatable) replaces the file's
 ## `mbist-insert`
 
 ```bash
-python3 ff.py mbist-insert --top <top> --spec mbist.yml [--out DIR] [-c chip.ofs] [--tap-nonscan]
+python3 ff.py mbist-insert --top <top> --spec mbist.yml [--out DIR] [-c chip.ofs] [--scan-tap]
 ```
 
 Insert an autoMBIST collar, in a shell, in place of every memory the insertion file
 configures, keeping the design's hierarchy; with `jtag` in the file, behind a TAP and an
 IJTAG network, with the BIST program. With `-c`, also synthesize the result, its DFT
-frozen, and write `<top>_mbist.ofs` for the scan and JTAG flow; `--tap-nonscan` runs the
-TAP and the network non-scan there. See [MBIST insertion](mbist.md).
+frozen, and write `<top>_mbist.ofs` for the scan and JTAG flow; the TAP and the network,
+test instruments, run non-scan there unless `--scan-tap`. See [MBIST insertion](mbist.md).
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--out DIR` | `mbist_<top>` | Where everything is written |
 | `-c`, `--config PATH` | — | The design's `.ofs`: its liberty names cells no new module may take, synthesizes the result, and is merged into `<top>_mbist.ofs` |
-| `--tap-nonscan` | off | With `jtag` and `-c`: the TAP and the network non-scan in the written `.ofs`, `trst_n` and `tck` held at 0 |
+| `--scan-tap` | off | With `jtag` and `-c`: make the TAP and the network scan flops in the written `.ofs` (`[scan] scan_test_access = true`), graded by scan ATPG though `ff.py jtag` tests them. By default they run non-scan, `trst_n` and `tck` held at 0 |
+| `--tap-nonscan` | — | Deprecated, does nothing: non-scan is the default |
 
 ## `run` (OpenTestability oracle mode)
 

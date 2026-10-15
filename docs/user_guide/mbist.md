@@ -11,7 +11,7 @@ ready for the scan and JTAG flow.
 
 ```bash
 python3 ff.py list-memories --top chip_top --spec mbist.yml
-python3 ff.py mbist-insert --top chip_top --spec mbist.yml -c chip.ofs --tap-nonscan
+python3 ff.py mbist-insert --top chip_top --spec mbist.yml -c chip.ofs
 ```
 
 Needs autoMBIST (the file's `autombist_cmd`), Yosys on `PATH`, PyYAML for a YAML file,
@@ -145,9 +145,12 @@ It then writes `<top>_mbist.ofs`: your `.ofs`, every section kept, with:
   synchronizer in `nonscan_cells`, and the chip reset held inactive;
 - `[autombist] manifest`: the chip's manifest.
 
-`--tap-nonscan` also runs the TAP and the network non-scan, `trst_n` and `tck` held at
-0, for `ff.py jtag` to test. An `.ofs` that holds the chip reset active, or names it a
-scan port or a clock, is refused before anything is inserted.
+With `jtag`, the TAP and the network run non-scan too, `trst_n` and `tck` held at 0,
+for `ff.py jtag` to test: they are test instruments, which scan ATPG doesn't grade
+(`--scan-tap` scans them on a clock of their own instead, and the `.ofs` says `[scan]
+scan_test_access = true`; `--tap-nonscan` is accepted and does nothing). An `.ofs` that
+holds the chip reset active, or `trst_n` at 1, or names the reset as a scan port or a
+clock, is refused before anything is inserted.
 
 Then the usual flow runs from that `.ofs`:
 

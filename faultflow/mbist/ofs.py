@@ -6,8 +6,9 @@ Scan has to hold the chip reset inactive: each shell's reset synchronizer settle
 with it inactive (faultflow.scan.nonscan), and the collar resets from it. So the
 .ofs holds it, the synchronizers run non-scan, and a user .ofs that contradicts
 that -- holds the reset active, or names it a scan port or a clock -- is refused
-before anything is inserted. With --tap-nonscan, the TAP and the IJTAG network
-run non-scan too, trst_n and tck held at 0, for ff.py jtag to test.
+before anything is inserted. The TAP and the IJTAG network, test instruments,
+run non-scan too, trst_n and tck held at 0, for ff.py jtag to test -- unless
+--scan-tap makes them scan flops.
 """
 
 from __future__ import annotations
@@ -129,15 +130,17 @@ def write_inserted_ofs(
     holds: Sequence[tuple[str, int]],
     manifest: Path,
     tap: bool = False,
+    scan_test_access: bool = False,
 ) -> Path:
     """The user's .ofs (`base`) for the synthesized, inserted chip. Paths are
     absolute (an .ofs's resolve against the current directory). Its blackboxes are
     the chip's -- the user's own that `renamed` doesn't name (memories now inside
     a shell) and the composed netlist's memories; [clocks] are the scan clocks,
     each with the user's off state; [scan] keeps the user's settings, with at least
-    one chain per clock domain and the non-scan cells and holds added. With a `tap`,
-    the scan compression and compaction channels get names of their own unless the
-    user's .ofs names them."""
+    one chain per clock domain and the non-scan cells and holds added; with
+    `scan_test_access` it records that the TAP's flops are scan flops on purpose.
+    With a `tap`, the scan compression and compaction channels get names of their
+    own unless the user's .ofs names them."""
     out = configparser.ConfigParser(interpolation=None)
     out.read_dict({name: dict(base[name]) for name in base.sections()})
 
@@ -193,6 +196,8 @@ def write_inserted_ofs(
     put("scan", "nonscan_cells", ", ".join(dict.fromkeys(cells)))
     merged = {**_holds(base), **dict(holds)}
     put("scan", "hold", ", ".join(f"{port}:{value}" for port, value in merged.items()))
+    if scan_test_access:
+        put("scan", "scan_test_access", "true")
     put("autombist", "manifest", str(manifest.resolve()))
     if tap:
         for section, name in CHANNEL_PORTS:

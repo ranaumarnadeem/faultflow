@@ -1844,6 +1844,12 @@ def run_progressive_scan_atpg(
                 scan_ctx.nonscan,
                 tdo=cfg.jtag.tdo,
                 blackbox_instances=bb,
+                tap_inputs=(
+                    cfg.jtag.tck,
+                    cfg.jtag.tms,
+                    cfg.jtag.tdi,
+                    cfg.jtag.trst_n,
+                ),
             )
             - wsp_keys
         )

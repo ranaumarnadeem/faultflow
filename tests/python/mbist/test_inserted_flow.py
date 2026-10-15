@@ -1,4 +1,4 @@
-"""The inserted chip through the whole flow: mbist-insert -c --tap-nonscan, then
+"""The inserted chip through the whole flow: mbist-insert -c, then
 init, scan, scan-check, sim --scan and ff.py jtag from the .ofs it wrote.
 
 Scan settles each shell's reset synchronizer in a preamble, leaves the TAP and the
@@ -52,7 +52,7 @@ def flowed(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Any]:
         encoding="utf-8",
     )
     out = tmp / "out"
-    insert_command(spec, TOP, out, base, tap_nonscan=True)
+    insert_command(spec, TOP, out, base)
     ofs = out / f"{TOP}_mbist.ofs"
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(out)
@@ -153,12 +153,49 @@ def test_the_categories_add_up_and_jtag_adds_its_credit(
     assert combined["detected"] > summary["detected"]
 
 
-def test_a_control_tdr_bits_branch_into_its_synchronizer_per_fault(
+def test_graded_by_says_scan_grades_the_logic_and_jtag_the_instruments(
     flowed: tuple[Path, Any],
 ) -> None:
-    """The TDR bit is tied at its reset value in scan: stuck at 1, the
-    synchronizer's first flop captures it (detected); stuck at 0, only freeing
-    the hold would show it (hold_unresolved); the bit's own output is JTAG's."""
+    """Scan grades the core and the MBIST logic; the TAP, the SIBs and the TDRs
+    -- and the path from them into the shells -- are JTAG's, graded by ff.py jtag;
+    the memories are MBIST's. Each category's split adds up to the report's."""
+    from faultflow.integrations.autombist_coverage import JTAG_CATEGORIES
+
+    out, cfg = flowed
+    report = _report(cfg, out)
+    summary, categories = report["summary"], report["autombist_categories"]
+    graded = report["graded_by"]
+    assert graded["jtag"]["faults"] == summary["excluded_jtag"] > 0
+    assert graded["jtag"]["graded"] and graded["jtag"]["detected"] > 0
+    assert graded["wsp"] == {"faults": 0, "detected": None, "graded": False}
+    assert graded["scan"]["detected"] == summary["detected"]
+    assert len(graded["memories"]["instances"]) == len(SHELLS)
+    for test in ("scan", "jtag", "wsp"):
+        split = sum(c["graded_by"][test] for c in categories.values())
+        expected = (
+            graded["scan"]["faults"] if test == "scan" else graded[test]["faults"]
+        )
+        assert split == expected, test
+    # The instruments' own faults are not scan's; the logic they feed is.
+    instruments = [categories[name] for name in JTAG_CATEGORIES if name in categories]
+    assert instruments and all(c["graded_by"]["jtag"] > 0 for c in instruments)
+    # The shells' logic is scan's -- bar the pin the TDR bit enters by: JTAG's.
+    shell = categories["mbist_shell"]["graded_by"]
+    assert shell["scan"] > 0 and shell["jtag"] > 0
+    combined = graded["combined"]
+    assert combined is not None and combined["detected"] > summary["detected"]
+    text = cfg.coverage_report_path
+    text = text if text.is_absolute() else out / text
+    assert "graded by" in text.read_text(encoding="utf-8")
+
+
+def test_a_control_tdr_bits_branch_into_its_synchronizer_is_jtags(
+    flowed: tuple[Path, Any],
+) -> None:
+    """The TDR bit and the path from it to the MBIST shell are test access, which
+    JTAG tests: the bit's own output, and its branch into the synchronizer's first
+    flop, in both polarities -- not scan's, which would see the bit at its reset
+    value (stuck at 1, detected; stuck at 0, hold_unresolved)."""
     out, cfg = flowed
     sdc = cfg.output_dir / f"{TOP}_scan.sdc"
     first = next(
@@ -183,9 +220,13 @@ def test_a_control_tdr_bits_branch_into_its_synchronizer_per_fault(
                 (campaign, branch, stem),
             )
         }
-    assert rows[(branch, "sa1")][0] == "detected"
-    assert rows[(branch, "sa0")][1] == 1
-    assert rows[(stem, "sa0")][2] == rows[(stem, "sa1")][2] == "jtag"
+    for key in (branch, stem):
+        for fault_type in ("sa0", "sa1"):
+            status, held, exclusion = rows[(key, fault_type)]
+            assert (status, held, exclusion) == ("excluded", 0, "jtag"), (
+                key,
+                fault_type,
+            )
 
 
 @pytest.fixture(scope="module")
@@ -209,7 +250,7 @@ def compressed(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Any]:
         encoding="utf-8",
     )
     out = tmp / "out"
-    insert_command(spec, TOP, out, base, tap_nonscan=True)
+    insert_command(spec, TOP, out, base)
     ofs = out / f"{TOP}_mbist.ofs"
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(out)

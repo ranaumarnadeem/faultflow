@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -271,12 +272,19 @@ def _parser() -> argparse.ArgumentParser:
         "design",
     )
     autombist_p.add_argument(
+        "--scan-tap",
+        dest="scan_tap",
+        action="store_true",
+        help="With --test-access: make the TAP and its IJTAG network scan flops on "
+        "tck, graded by scan ATPG ([scan] scan_test_access). They are test "
+        "instruments, tested through TCK by ff.py jtag: by default they are "
+        "kept out of scan, held in reset ([scan] nonscan_cells, [scan] hold)",
+    )
+    autombist_p.add_argument(
         "--tap-nonscan",
         dest="tap_nonscan",
         action="store_true",
-        help="With --test-access: keep the TAP and its IJTAG network out of scan, "
-        "held in reset ([scan] nonscan_cells, [scan] hold), for ff.py jtag to "
-        "grade through TCK",
+        help="Deprecated, a no-op: the TAP and the network are non-scan by default",
     )
 
     list_mem = sub.add_parser(
@@ -325,10 +333,17 @@ def _parser() -> argparse.ArgumentParser:
         "<top>_mbist.ofs written for it",
     )
     insert.add_argument(
+        "--scan-tap",
+        action="store_true",
+        help="With jtag and -c: make the TAP and the IJTAG network scan flops in "
+        "the written .ofs, graded by scan ATPG ([scan] scan_test_access). They "
+        "are test instruments, tested through TCK by ff.py jtag: by default they "
+        "run non-scan (trst_n and tck held at 0)",
+    )
+    insert.add_argument(
         "--tap-nonscan",
         action="store_true",
-        help="With jtag and -c: the TAP and the IJTAG network run non-scan in the "
-        "written .ofs (trst_n and tck held at 0), for ff.py jtag to test",
+        help="Deprecated, a no-op: the TAP and the network are non-scan by default",
     )
 
     status = sub.add_parser("status", help="Print current coverage status")
@@ -596,7 +611,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.top,
                     args.out,
                     args.config,
-                    tap_nonscan=args.tap_nonscan,
+                    scan_tap=_scan_tap(args),
                 )
             )
             return 0
@@ -769,6 +784,25 @@ def _handle_project_action(args: Any, parser: argparse.ArgumentParser) -> int:
     return 0
 
 
+def _scan_tap(args: object) -> bool:
+    """--scan-tap, with the deprecated --tap-nonscan (a no-op: the TAP and the
+    IJTAG network, test instruments, are non-scan by default) checked against it."""
+    scan_tap = bool(getattr(args, "scan_tap", False))
+    if getattr(args, "tap_nonscan", False):
+        if scan_tap:
+            raise ConfigError(
+                "--tap-nonscan and --scan-tap contradict: the TAP and the IJTAG "
+                "network are non-scan by default; --scan-tap makes them scan flops"
+            )
+        print(
+            "warning: --tap-nonscan is deprecated and does nothing: the TAP and "
+            "the IJTAG network are non-scan by default (--scan-tap makes them "
+            "scan flops)",
+            file=sys.stderr,
+        )
+    return scan_tap
+
+
 def _handle_autombist_generate(args: object) -> int:
     import shlex
 
@@ -778,9 +812,9 @@ def _handle_autombist_generate(args: object) -> int:
     if not config.exists():
         raise ConfigError(f"autoMBIST config not found: {config}")
     test_access = bool(getattr(args, "test_access", False))
-    tap_nonscan = bool(getattr(args, "tap_nonscan", False))
-    if tap_nonscan and not test_access:
-        raise ConfigError("--tap-nonscan needs --test-access")
+    scan_tap = _scan_tap(args)
+    if scan_tap and not test_access:
+        raise ConfigError("--scan-tap needs --test-access")
     cmd = tuple(shlex.split(str(getattr(args, "autombist_cmd"))))
     result = run_autombist_generate(
         config,
@@ -789,7 +823,7 @@ def _handle_autombist_generate(args: object) -> int:
         liberty=Path(getattr(args, "liberty")),
         cell_lib=Path(getattr(args, "cell_lib")),
         test_access=test_access,
-        tap_nonscan=tap_nonscan,
+        scan_tap=scan_tap,
         algo=getattr(args, "algo", None),
     )
     counts = ", ".join(f"{k}={v}" for k, v in sorted(result.instance_counts.items()))
@@ -807,6 +841,13 @@ def _handle_autombist_generate(args: object) -> int:
             f"non-scan: {len(result.nonscan_cells)} TAP/IJTAG instances, held by "
             + ", ".join(f"{port}:{v}" for port, v in result.scan_holds)
             + "; ff.py jtag grades them after sim --scan"
+        )
+    if result.scan_test_access:
+        print(
+            "warning: --scan-tap: the TAP and the IJTAG network are scan flops, "
+            "graded by scan ATPG; they are test instruments, tested through TCK "
+            "by ff.py jtag ([scan] scan_test_access records the choice)",
+            file=sys.stderr,
         )
     print(
         f"run: python3 ff.py sim --scan --top {result.top_module} -c {result.ofs_path}"

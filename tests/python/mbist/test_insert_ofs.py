@@ -123,6 +123,36 @@ def test_the_users_ofs_is_kept_and_the_chips_settings_added(tmp_path: Path) -> N
     assert (cfg.scan.chains, cfg.scan.scan_in) == (2, "si")
     assert cfg.scan.nonscan_cells == ("u_dbg__*", "u_core0.u_mem__u_rst_sync__*")
     assert cfg.scan.hold == (("mode", 0), ("rst_n", 1))
+    assert not cfg.scan.scan_test_access
+
+
+@pytest.mark.unit
+def test_scan_tap_is_recorded_in_the_ofs(tmp_path: Path) -> None:
+    """[scan] scan_test_access is what lets the TAP's flops be scan flops; it is
+    written only for --scan-tap."""
+    netlist = tmp_path / "composed.json"
+    netlist.write_text("{}", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    base = _base(tmp_path, f"[design]\ncell_lib = {CELL_MAP}\nliberty = {LIBERTY}\n")
+    written = {}
+    for scan_tap in (False, True):
+        ofs = write_inserted_ofs(
+            tmp_path / f"out{int(scan_tap)}/chip_mbist.ofs",
+            base,
+            netlist=netlist,
+            output_root=tmp_path / "output",
+            blackboxes=[],
+            renamed=[],
+            clock_ports=["clk", "tck"],
+            chains=2,
+            nonscan_cells=[],
+            holds=[("rst_n", 1)],
+            manifest=manifest,
+            scan_test_access=scan_tap,
+        )
+        written[scan_tap] = load_config(ofs, "chip").scan.scan_test_access
+    assert written == {False: False, True: True}
 
 
 @pytest.fixture(scope="module")
@@ -142,7 +172,7 @@ def inserted(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     out = tmp / "out"
-    message = insert_command(spec, "chip_top", out, base, tap_nonscan=True)
+    message = insert_command(spec, "chip_top", out, base)
     assert "chip_top_mbist.ofs" in message
     return out, out / "chip_top_mbist.ofs"
 

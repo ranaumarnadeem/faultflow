@@ -142,6 +142,7 @@ def test_a_fault_is_counted_for_the_instance_it_sits_in(
             "blackbox_unresolved": 0,
             "hold_unresolved": 0,
             "coverage_percent": 100.0,
+            "graded_by": {"scan": 1, "jtag": 0, "wsp": 0},
         }
     }
 
@@ -184,6 +185,7 @@ def test_categories_count_the_way_the_summary_does(tmp_path: Path) -> None:
             "blackbox_unresolved": 0,
             "hold_unresolved": 1,
             "coverage_percent": 0.0,
+            "graded_by": {"scan": 3, "jtag": 0, "wsp": 0},
         },
         "mbist_controller": {
             "detected": 1,
@@ -191,8 +193,40 @@ def test_categories_count_the_way_the_summary_does(tmp_path: Path) -> None:
             "blackbox_unresolved": 1,
             "hold_unresolved": 0,
             "coverage_percent": 50.0,
+            "graded_by": {"scan": 2, "jtag": 0, "wsp": 0},
         },
     }
+
+
+@pytest.mark.unit
+def test_each_category_says_which_test_grades_its_faults(tmp_path: Path) -> None:
+    """The faults scan leaves to JTAG (a TAP and network that run non-scan) or to
+    a WSP are the category's, graded by those tests: counted apart, outside the
+    scan denominator."""
+    conn = _db([("net:13:stem", 13, "detected", 0)])
+    conn.executemany(
+        "INSERT INTO faults VALUES (1, ?, ?, 'undetected', ?, NULL, 0, 0)",
+        [
+            ("net:13:stem", 13, "jtag"),
+            ("net:11:stem", 11, "jtag"),
+            ("net:11:stem", 11, "wsp"),
+            ("net:11:stem", 11, "reset"),
+        ],
+    )
+
+    counts = category_coverage(
+        conn,
+        1,
+        netlist_json=_view(tmp_path),
+        cell_map_json=CELL_MAP,
+        top=TOP,
+        categories=CATEGORIES,
+    )
+
+    assert counts["ijtag_sib"]["graded_by"] == {"scan": 1, "jtag": 1, "wsp": 0}
+    assert counts["mbist_controller"]["graded_by"] == {"scan": 0, "jtag": 1, "wsp": 1}
+    assert counts["ijtag_sib"]["denominator"] == 1
+    assert counts["mbist_controller"]["denominator"] == 0
 
 
 @pytest.mark.unit

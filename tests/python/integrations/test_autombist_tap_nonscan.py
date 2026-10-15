@@ -1,5 +1,5 @@
 """The JTAG-wrapped autoMBIST fixture built with its TAP and IJTAG network non-scan
-(synthesize_from_manifest(tap_nonscan=True): [scan] nonscan_cells for the
+(synthesize_from_manifest, as it does by default: [scan] nonscan_cells for the
 JTAG-category instances, [scan] hold = trst_n:0, tck:0): scan ties them in reset and
 leaves their faults to JTAG, and ff.py jtag grades them.
 
@@ -50,7 +50,6 @@ def scanned(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str, Path]:
         out=work / "synth",
         liberty=SKY130_LIBERTY,
         cell_lib=SKY130_CELL_MAP,
-        tap_nonscan=True,
     )
     top, ofs = result.top_module, result.ofs_path
     # tck clocks no scan flop: one clock domain, one chain.

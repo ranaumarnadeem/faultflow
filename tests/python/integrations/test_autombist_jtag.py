@@ -1,6 +1,7 @@
-"""ff.py jtag on the JTAG-wrapped autoMBIST fixture, after its scan flow: the
-network-integrity program is played through the TAP of the stitched netlist, and its
-credit is reported beside the scan campaign's.
+"""ff.py jtag on the JTAG-wrapped autoMBIST fixture, after its scan flow with the
+TAP scanned (scan_tap, the opt-in; test_autombist_tap_nonscan.py has the default,
+the TAP non-scan): the network-integrity program is played through the TAP of the
+stitched netlist, and its credit is reported beside the scan campaign's.
 
 The TCK program is the fixture input_demo_8x16_scn4m_jtag_program.json -- warptap's
 build_integrity_program for this network, exported with ff.py jtag --export -- so
@@ -39,8 +40,8 @@ pytestmark = [
 
 @pytest.fixture(scope="module")
 def scanned(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str, Path]:
-    """The wrapped design synthesized from its manifest, then init -> scan ->
-    scan-check -> sim --scan: (work directory, top, .ofs)."""
+    """The wrapped design synthesized from its manifest with the TAP scanned, then
+    init -> scan -> scan-check -> sim --scan: (work directory, top, .ofs)."""
     from faultflow.cli import main
     from faultflow.runner.runner import _load_core
 
@@ -52,6 +53,7 @@ def scanned(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str, Path]:
         out=work / "synth",
         liberty=SKY130_LIBERTY,
         cell_lib=SKY130_CELL_MAP,
+        scan_tap=True,
     )
     top, ofs = result.top_module, result.ofs_path
     with pytest.MonkeyPatch.context() as patch:

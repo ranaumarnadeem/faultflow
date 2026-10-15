@@ -477,6 +477,18 @@ def _autombist_categories(
     )
 
 
+def _memory_instances(cfg: FaultflowConfig) -> list[str]:
+    """The memory instances of the autoMBIST manifest ([autombist] manifest), which
+    MBIST tests; none without a manifest."""
+    if cfg.autombist_manifest is None:
+        return []
+    from faultflow.integrations.autombist import load_autombist_manifest
+    from faultflow.integrations.autombist_coverage import instance_categories
+
+    categories = instance_categories(load_autombist_manifest(cfg.autombist_manifest))
+    return sorted(path for path, kind in categories.items() if kind == "memory")
+
+
 def _category_lines(
     categories: dict[str, Any], jtag: bool, nonscan: bool = False
 ) -> list[str]:
@@ -516,14 +528,12 @@ def _category_lines(
         )
     elif JTAG_CATEGORIES & set(categories):
         lines.append(
-            "  note: scan patterns grade the TAP and the IJTAG network like any "
-            "other logic"
+            "  note: scan patterns graded the TAP and the IJTAG network (--scan-tap), "
+            "though they are test instruments tested through TCK by ff.py jtag"
             + (
-                ", and ff.py jtag's network-integrity program graded them "
-                "through TCK too (with jtag)"
+                ", whose network-integrity program graded them too (with jtag)"
                 if jtag
-                else "; the IJTAG network-integrity patterns are not graded (ff.py "
-                "jtag grades them), and [scan] nonscan_cells runs them non-scan"
+                else "; ff.py jtag has not graded them"
             )
         )
     return lines
@@ -657,6 +667,14 @@ def write_reports(
     wsp_block = wsp_grade.report_block(conn, campaign_id, data)
     if wsp_block is not None:
         report["wsp"] = wsp_block
+    graded_by: dict[str, Any] | None = None
+    if scan_context is not None:
+        from faultflow.reporter.graded_by import graded_by_block
+
+        graded_by = graded_by_block(
+            conn, campaign_id, data, memories=_memory_instances(cfg)
+        )
+        report["graded_by"] = graded_by
     categories = _autombist_categories(
         conn, cfg, campaign_id, str(fp.get("campaign_type", "")), jtag_detected
     )
@@ -753,6 +771,11 @@ def write_reports(
         txt.extend(_jtag_lines(*jtag_blocks))
     if wsp_block is not None:
         txt.extend(wsp_grade.wsp_lines(wsp_block))
+        txt.append("")
+    if graded_by is not None:
+        from faultflow.reporter.graded_by import graded_by_lines
+
+        txt.extend(graded_by_lines(graded_by))
         txt.append("")
     if categories is not None:
         txt.extend(
