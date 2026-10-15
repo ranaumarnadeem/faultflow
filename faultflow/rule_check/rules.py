@@ -299,18 +299,16 @@ def rules_scan(manifest: dict[str, Any]) -> list[Violation]:
 
 
 # --- COMP001: scan compression structural check ---
-def rules_compression(manifest: dict[str, Any]) -> list[Violation]:
-    """Re-derives the ring generator's XOR structure from the synthesized
-    netlist and diffs it against the manifest -- see
-    faultflow.scan.compression_checks.check_compression_structure for the
-    algorithm (covers both the phase-shifter's fan-out AND the register's
-    own feedback-tap/reseed-mux cone). No-op (returns []) when compression
-    is absent/disabled in the manifest.
+def rules_compression(manifest: dict[str, Any], cell_map_json: Path) -> list[Violation]:
+    """Simulates the synthesized decompressor symbolically over GF(2) and requires
+    every chain's scan-in at every shift to be the continuous model's -- see
+    faultflow.scan.decompressor_check.check_composed_decompressor. No-op
+    (returns []) when compression is absent/disabled in the manifest.
     """
-    from faultflow.scan.compression_checks import check_compression_structure
+    from faultflow.scan.decompressor_check import check_composed_decompressor
 
     try:
-        result = check_compression_structure(manifest)
+        result = check_composed_decompressor(manifest, cell_map_json)
     except Exception as exc:  # defensive: a malformed manifest is itself a finding
         return [
             Violation(
@@ -323,10 +321,6 @@ def rules_compression(manifest: dict[str, Any]) -> list[Violation]:
     out: list[Violation] = []
     for err in result.errors:
         out.append(Violation("COMP001", Severity.ERROR, "compression structure", err))
-    for warn in result.warnings:
-        out.append(
-            Violation("COMP001", Severity.WARNING, "compression structure", warn)
-        )
     return out
 
 
@@ -376,6 +370,6 @@ def run_rule_check(
     report.violations.extend(rule_combinational_feedback(facts))
     if manifest is not None:
         report.violations.extend(rules_scan(manifest))
-        report.violations.extend(rules_compression(manifest))
+        report.violations.extend(rules_compression(manifest, cell_map_json))
         report.violations.extend(rules_compaction(manifest))
     return report

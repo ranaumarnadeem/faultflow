@@ -1,14 +1,15 @@
-"""Scan ATPG through the compression decompressor, end to end: `ff.py scan` ->
+"""Scan ATPG through the continuous decompressor, end to end: `ff.py scan` ->
 `scan-check` -> `scan-compress` -> `sim --scan --export-patterns` on a design
-whose 16 scan cells outnumber the 8 seed bits that load them, in five chains
-of unequal length. Its output Y is the AND of all 16 cells, so Y stuck-at-0
-needs a load no seed makes: compression_unresolved, never redundant.
+whose 16 scan cells outnumber the 21 free bits (3 channels x 7 shifts) that
+load them through an 8-stage ring, in five chains of unequal length. Its output
+Y is the AND of all 16 cells, so Y stuck-at-0 needs a load no channel words
+make: compression_unresolved, never redundant.
 
 Every credited fault must be detected on the compressed chip itself -- each
-exported pattern's seed solved the way warptap's retarget solves it, held on
-the channel bus, the synthesized decompressor loading the chains
-(scan_credit.compressed_credit_not_reproduced) -- and every pattern, random
-fill included, must be one seed's whole load."""
+exported pattern's channel words solved the way warptap's retarget solves them,
+driven on the channel bus every shift, the synthesized decompressor loading the
+chains (scan_credit.compressed_credit_not_reproduced) -- and every pattern,
+random fill included, must be one set of channel words' whole load."""
 
 from __future__ import annotations
 
@@ -118,7 +119,7 @@ def _flow(tmp_path: Path, *, fault_model: str = "", atpg: str = "") -> Any:
         # Four random patterns, so SAT has faults left to find tests for.
         f"[atpg]\nmode = comb\nmax_rounds = 20\nrandom_vectors = 4\n{atpg}\n"
         "[scan]\nchains = 5\n\n"
-        "[compression]\nenabled = true\nchannels = 8\n",
+        "[compression]\nenabled = true\nchannels = 3\n",
         encoding="utf-8",
     )
     patterns = tmp_path / "patterns.json"
@@ -132,39 +133,61 @@ def _flow(tmp_path: Path, *, fault_model: str = "", atpg: str = "") -> Any:
     return load_config(cfg_path, TOP)
 
 
-def _rows_and_seed_solver(cfg: Any) -> tuple[Any, Any, int]:
-    """warptap's model of the decompressor -- its own port of the LFSR and the
-    GF(2) solve -- and the solve its retarget runs on each exported pattern."""
-    skip_unless_warptap("warptap.faultflow_compression")
-    from warptap.faultflow_compression import (
-        care_bit_rows,
-        polynomial_from_manifest,
-        solve_pattern_seed,
+def _continuous_model(cfg: Any) -> tuple[Any, Any, Any, int]:
+    """warptap's model of the decompressor -- its own port of the ring and the
+    GF(2) solve -- its flat scan-in rows, and the solve its retarget runs on each
+    exported pattern: (decompressor, rows, words_of, max_chain_length)."""
+    skip_unless_warptap("warptap.faultflow_continuous")
+    from warptap.faultflow_continuous import (
+        continuous_from_manifest,
+        continuous_scan_in_rows,
+        solve_pattern_channels,
     )
 
     manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
-    compression = manifest["compression"]
-    poly = polynomial_from_manifest(compression)
+    decompressor = continuous_from_manifest(manifest["compression"])
     max_chain_length = int(manifest["max_chain_length"])
-    rows = care_bit_rows(poly, compression["phase_shifter_taps"], max_chain_length + 1)
+    rows = continuous_scan_in_rows(
+        decompressor.poly,
+        decompressor.phase_shifter_taps,
+        decompressor.num_channels,
+        decompressor.shifts(max_chain_length) + 1,
+    )
 
-    def seed_of(number: int, raw: dict[str, Any]) -> int:
+    def words_of(number: int, raw: dict[str, Any]) -> dict[int, list[bool]]:
         care = raw["load_care"]
-        return int(
-            solve_pattern_seed(
-                raw["load_seqs"],
-                rows[:max_chain_length],
-                poly.width,
-                number,
-                None if care is None else {(int(c), int(t)) for c, t in care},
-            )
+        solved: dict[int, list[bool]] = solve_pattern_channels(
+            raw["load_seqs"],
+            decompressor,
+            max_chain_length,
+            number,
+            None if care is None else {(int(c), int(t)) for c, t in care},
         )
+        return solved
 
-    return rows, seed_of, max_chain_length
+    return decompressor, rows, words_of, max_chain_length
 
 
-def _parity(mask: int, seed: int) -> bool:
-    return bin(mask & seed).count("1") % 2 == 1
+def _consistent(equations: list[tuple[int, bool]]) -> bool:
+    """Whether some free bits meet every (row mask, value) equation: Gaussian
+    elimination over GF(2)."""
+    pivots: dict[int, tuple[int, bool]] = {}
+    for mask, value in equations:
+        while mask:
+            low = mask & -mask
+            if low not in pivots:
+                pivots[low] = (mask, value)
+                break
+            mask ^= pivots[low][0]
+            value ^= pivots[low][1]
+        else:
+            if value:
+                return False
+    return True
+
+
+def _parity(mask: int, free: int) -> bool:
+    return bin(mask & free).count("1") % 2 == 1
 
 
 def _campaign_rows(cfg: Any, query: str) -> list[Any]:
@@ -179,13 +202,15 @@ def _campaign_rows(cfg: Any, query: str) -> list[Any]:
         conn.close()
 
 
-def _assert_every_pattern_is_one_seeds_load(cfg: Any, patterns: Path) -> None:
+def _assert_every_pattern_is_a_load_of_its_words(cfg: Any, patterns: Path) -> None:
     """Even read the strictest way -- every load position a hard constraint,
-    as warptap reads a pattern without load_care -- each pattern is one
-    seed's load, and its load_care names every position. The seed it carries,
-    the one a tester applies, makes exactly that load in warptap's own model of
-    the decompressor."""
-    rows, seed_of, max_chain_length = _rows_and_seed_solver(cfg)
+    as warptap reads a pattern without load_care -- each pattern is one set of
+    channel words' load, and its load_care names every position. The words it
+    carries, the ones a tester applies, make exactly that load in warptap's own
+    model of the decompressor, and so do the words warptap solves for."""
+    decompressor, rows, words_of, max_chain_length = _continuous_model(cfg)
+    channels = decompressor.num_channels
+    shifts = decompressor.shifts(max_chain_length)
     exported = json.loads(patterns.read_text(encoding="utf-8"))
     assert exported
     for number, raw in enumerate(exported):
@@ -193,16 +218,24 @@ def _assert_every_pattern_is_one_seeds_load(cfg: Any, patterns: Path) -> None:
         assert sorted(map(tuple, raw["load_care"])) == [
             (c, t) for c in chains for t in range(max_chain_length)
         ], number
-        # The words a tester drives: the one-shot decompressor's seed, held.
+        # The words a tester drives: one per channel per shift of the load, the
+        # warm-up's included.
         words = raw["channel_seqs"]
-        assert all(len(set(seq)) == 1 for seq in words.values()), number
-        assert all(len(seq) == max_chain_length for seq in words.values()), number
-        carried = sum(1 << int(k) for k, seq in words.items() if seq[0])
-        for seed in (seed_of(number, {**raw, "load_care": None}), carried):
+        assert sorted(int(k) for k in words) == list(range(channels)), number
+        assert all(len(seq) == shifts for seq in words.values()), number
+        carried = {int(k): seq for k, seq in words.items()}
+        for source in (words_of(number, {**raw, "load_care": None}), carried):
+            free = sum(
+                1 << (t * channels + k)
+                for k, seq in source.items()
+                for t, bit in enumerate(seq)
+                if bit
+            )
             for chain in chains:
                 assert raw["load_seqs"][str(chain)] == [
-                    _parity(rows[t][chain], seed) for t in range(max_chain_length)
-                ], (number, chain, seed)
+                    _parity(rows[decompressor.warmup + t][chain], free)
+                    for t in range(max_chain_length)
+                ], (number, chain)
 
 
 def _assert_nothing_rejected_for_compression(cfg: Any) -> None:
@@ -222,17 +255,26 @@ def _assert_nothing_rejected_for_compression(cfg: Any) -> None:
 
 
 def _all_ones_is_loadable(cfg: Any) -> bool:
-    """Brute force over the 256 seeds: does any load every cell with 1?"""
-    rows, _, max_chain_length = _rows_and_seed_solver(cfg)
+    """Does any set of channel words load every cell with 1? Warptap's solve over
+    all the free bits at once says."""
+    from warptap.faultflow_compression import FaultflowCompressionError
+    from warptap.faultflow_continuous import solve_pattern_channels
+
+    decompressor, _, _, max_chain_length = _continuous_model(cfg)
     manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
-    cycles = {
-        chain["index"]: range(max_chain_length - chain["length"], max_chain_length)
-        for chain in manifest["chains"]
+    load_seqs = {
+        str(chain["index"]): [True] * max_chain_length for chain in manifest["chains"]
     }
-    return any(
-        all(_parity(rows[t][c], seed) for c, ts in cycles.items() for t in ts)
-        for seed in range(256)
-    )
+    care = {
+        (chain["index"], t)
+        for chain in manifest["chains"]
+        for t in range(max_chain_length - chain["length"], max_chain_length)
+    }
+    try:
+        solve_pattern_channels(load_seqs, decompressor, max_chain_length, 0, care)
+    except FaultflowCompressionError:
+        return False
+    return True
 
 
 @pytest.mark.integration
@@ -245,10 +287,10 @@ def test_stuck_at_through_the_decompressor(
     patterns = tmp_path / "patterns.json"
 
     _assert_nothing_rejected_for_compression(cfg)
-    _assert_every_pattern_is_one_seeds_load(cfg, patterns)
+    _assert_every_pattern_is_a_load_of_its_words(cfg, patterns)
     assert credit_not_reproduced(cfg, patterns) == []
-    _, seed_of, _ = _rows_and_seed_solver(cfg)
-    assert compressed_credit_not_reproduced(cfg, patterns, seed_of) == {
+    _, _, words_of, _ = _continuous_model(cfg)
+    assert compressed_credit_not_reproduced(cfg, patterns, words_of) == {
         "not_reproduced": [],
         "golden": [],
     }
@@ -258,7 +300,7 @@ def test_stuck_at_through_the_decompressor(
         "golden": [],
     }
 
-    # Y stuck-at-0 needs all 16 cells at 1, which no seed loads: testable,
+    # Y stuck-at-0 needs all 16 cells at 1, which no channel words load: testable,
     # but not through this decompressor.
     assert not _all_ones_is_loadable(cfg)
     (y_sa0,) = _campaign_rows(
@@ -280,27 +322,28 @@ def test_launch_on_capture_through_the_decompressor(
     cfg = _flow(tmp_path, fault_model="model = transition\nlaunch = loc\n")
     patterns = tmp_path / "patterns.json"
     _assert_nothing_rejected_for_compression(cfg)
-    _assert_every_pattern_is_one_seeds_load(cfg, patterns)
+    _assert_every_pattern_is_a_load_of_its_words(cfg, patterns)
     assert credit_not_reproduced(cfg, patterns, loc=True) == []
 
 
 @pytest.mark.integration
-def test_launch_on_shift_scan_in_bits_come_from_the_seed(
+def test_launch_on_shift_scan_in_bits_come_from_the_same_words(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Launching on shift, the decompressor keeps running into the launch
-    shift: each chain's launch scan-in bit is its output one cycle after the
-    load, from the same seed. Every accepted candidate's key is V1 followed
-    by those bits in head-port order."""
+    shift: each chain's launch scan-in bit is its output one shift after the
+    load, from the same channel words. Every accepted candidate's key is V1
+    followed by those bits in head-port order."""
     from faultflow.runner.runner import _atpg_pi_names
     from faultflow.scan.detection_pipeline import build_los_couples
 
     monkeypatch.chdir(tmp_path)
     cfg = _flow(tmp_path, fault_model="model = transition\nlaunch = los\n")
     _assert_nothing_rejected_for_compression(cfg)
-    _assert_every_pattern_is_one_seeds_load(cfg, tmp_path / "patterns.json")
+    _assert_every_pattern_is_a_load_of_its_words(cfg, tmp_path / "patterns.json")
 
-    rows, _, max_chain_length = _rows_and_seed_solver(cfg)
+    decompressor, rows, _, max_chain_length = _continuous_model(cfg)
+    warmup = decompressor.warmup
     view = cfg.intermediate_dir / "scan_atpg_view.json"
     order = _atpg_pi_names(view, TOP)
     pseudo = json.loads(
@@ -327,10 +370,10 @@ def test_launch_on_shift_scan_in_bits_come_from_the_seed(
             for i, port in enumerate(head_ports)
         }
         equations = [
-            (rows[max_chain_length - 1 - pos][chain], v1[ppi])
+            (rows[warmup + max_chain_length - 1 - pos][chain], v1[ppi])
             for ppi, (chain, pos) in cells.items()
-        ] + [(rows[max_chain_length][chain], bit) for chain, bit in heads.items()]
-        assert any(
-            all(_parity(mask, seed) == value for mask, value in equations)
-            for seed in range(256)
-        ), key
+        ] + [
+            (rows[warmup + max_chain_length][chain], bit)
+            for chain, bit in heads.items()
+        ]
+        assert _consistent(equations), key

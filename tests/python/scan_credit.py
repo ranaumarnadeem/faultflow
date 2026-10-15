@@ -278,15 +278,16 @@ def _composed_site_key(key: str, nets: dict[int, int]) -> str:
 def compressed_credit_not_reproduced(
     cfg: Any,
     patterns_path: Path,
-    seed_of: Callable[[int, dict[str, Any]], int] | None = None,
+    words_of: Callable[[int, dict[str, Any]], dict[int, list[bool]]] | None = None,
 ) -> dict[str, list[Any]]:
     """Every fault the latest (stuck-at) scan campaign credits must be detected
     by its exported patterns on the COMPRESSED chip itself: the composed
     netlist scan-compress wrote, the decompressor's synthesized gates
     included. Each pattern's channel words (its channel_seqs: one bit per
-    channel per shift of the load, 0 in every other cycle) are driven on the
-    channel bus -- or, with `seed_of(index, exported pattern dict)`, a tester's
-    own solve (e.g. warptap's) of a one-shot seed, held through the load -- and
+    channel per shift of the load, the warm-up's included, 0 in every other
+    cycle) are driven on the channel bus -- or, with
+    `words_of(index, exported pattern dict)`, a tester's own solve (e.g.
+    warptap's) of the words -- and
     the chip's own protocol is run cycle by cycle (simulate_sequence_faults) as
     the core grade runs it -- preamble, load, capture, unload, the faults kept
     out of the preamble and the load -- and compared where the core grade
@@ -308,6 +309,7 @@ def compressed_credit_not_reproduced(
     composed_top = str(compression["composed_top"])
     channel = str(compression.get("channel_port", "tdi"))
     width = int(compression["num_channels"])
+    warmup = int(compression["warmup"])
     generic = Path(str(manifest["generic_json"]))
     core_module = json.loads(generic.read_text(encoding="utf-8"))["modules"][
         str(manifest["top"])
@@ -362,11 +364,8 @@ def compressed_credit_not_reproduced(
     golden_mismatches: list[Any] = []
     for number, raw in enumerate(json.loads(patterns_path.read_text(encoding="utf-8"))):
         pattern = scan_pattern_from_dict(raw)
-        if seed_of is not None:
-            seed = seed_of(number, raw)
-            words = {
-                k: [bool((seed >> k) & 1)] * max_chain_length for k in range(width)
-            }
+        if words_of is not None:
+            words = words_of(number, raw)
         else:
             assert pattern.channel_seqs is not None, f"pattern {number} has no words"
             words = pattern.channel_seqs
@@ -389,7 +388,7 @@ def compressed_credit_not_reproduced(
         }
         for _ in range(pattern.preamble_cycles):
             pulse({**shift, scan_enable: False}, False)
-        for t in range(max_chain_length):
+        for t in range(warmup + max_chain_length):
             word = {
                 f"{channel}[{k}]": t < len(words[k]) and bool(words[k][t])
                 for k in range(width)

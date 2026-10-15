@@ -1,8 +1,7 @@
 """Real, CLI-driven end-to-end coverage for scan compression: `ff.py scan` ->
 `scan-check` -> `scan-compress` -> `rule_check`, on a real Yosys-synthesizable
 design, through the actual `main()` entry point -- not a hand-assembled
-manifest (see test_compression_end_to_end.py for the lower-level mechanism
-proof, which predates this CLI wiring)."""
+manifest."""
 
 from __future__ import annotations
 
@@ -82,8 +81,7 @@ output = missing.test
 [compression]
 enabled = true
 channels = {channels}
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
     return path
@@ -102,9 +100,7 @@ def test_scan_compress_cli_end_to_end(
     assert main(["scan", "--top", "tiny_dff", "-c", str(cfg_path), "--no-techmap"]) == 0
     assert main(["scan-check", "--top", "tiny_dff", "-c", str(cfg_path)]) == 0
 
-    manifest_path = (
-        tmp_path / "output/tiny_dff/.faultflow/manifests/scan_manifest.json"
-    )
+    manifest_path = tmp_path / "output/tiny_dff/.faultflow/manifests/scan_manifest.json"
     before = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert before["latest_check"]["status"] == "PASS"
 
@@ -119,11 +115,15 @@ def test_scan_compress_cli_end_to_end(
 
     compression = after["compression"]
     assert compression["enabled"] is True
+    assert compression["architecture"] == "continuous"
     assert compression["num_channels"] == 8
+    # Default ring: the smallest curated width at least twice the channels; default
+    # warm-up: enough shifts for a channel bit to reach every ring stage.
+    assert (compression["ring_width"], compression["warmup"]) == (16, 2)
     assert compression["scan_in_ports"] == ["scan_in"]
     from faultflow.scan.ring_generator import lookup_polynomial
 
-    polynomial = lookup_polynomial(8)
+    polynomial = lookup_polynomial(16)
     assert compression["polynomial"] == {
         "width": polynomial.width,
         "taps": sorted(polynomial.taps),
@@ -146,7 +146,9 @@ def test_scan_compress_cli_end_to_end(
 
     report = Runner(load_config(cfg_path, "tiny_dff")).rule_check()
     comp_errors = [
-        v for v in report.violations if v.rule_id == "COMP001" and v.severity == Severity.ERROR
+        v
+        for v in report.violations
+        if v.rule_id == "COMP001" and v.severity == Severity.ERROR
     ]
     assert comp_errors == []
 
@@ -179,8 +181,7 @@ unsupported_cells = fail
 [atpg]
 mode = comb
 output = missing.test
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
 
@@ -200,7 +201,7 @@ def test_default_clock_port_resolves_single_declared_clock(tmp_path: Path) -> No
     source = _write_json(tmp_path / "tiny_dff.json", _tiny_dff_json())
     cfg_path = _write_config(tmp_path / "config.ofs", source)
     runner = Runner(load_config(cfg_path, "tiny_dff"))
-    manifest = {"top": "tiny_dff", "clock_nets": [2]}
+    manifest: dict[str, object] = {"top": "tiny_dff", "clock_nets": [2]}
 
     assert runner._default_clock_port(manifest, source) == "CLK"
 
@@ -213,7 +214,7 @@ def test_default_clock_port_rejects_zero_declared_clocks(tmp_path: Path) -> None
     source = _write_json(tmp_path / "tiny_dff.json", _tiny_dff_json())
     cfg_path = _write_config(tmp_path / "config.ofs", source)
     runner = Runner(load_config(cfg_path, "tiny_dff"))
-    manifest = {"top": "tiny_dff", "clock_nets": []}
+    manifest: dict[str, object] = {"top": "tiny_dff", "clock_nets": []}
 
     # manifest_clock_net_ids itself rejects an empty/absent clock declaration
     # before _default_clock_port's own ambiguity check ever runs -- still a
@@ -230,7 +231,7 @@ def test_default_clock_port_rejects_multiple_declared_clocks(tmp_path: Path) -> 
     source = _write_json(tmp_path / "tiny_dff.json", _tiny_dff_json())
     cfg_path = _write_config(tmp_path / "config.ofs", source)
     runner = Runner(load_config(cfg_path, "tiny_dff"))
-    manifest = {"top": "tiny_dff", "clock_nets": [2, 99]}
+    manifest: dict[str, object] = {"top": "tiny_dff", "clock_nets": [2, 99]}
 
     with pytest.raises(RunnerError, match=r"\[compression\] clock must be set"):
         runner._default_clock_port(manifest, source)

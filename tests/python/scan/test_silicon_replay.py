@@ -287,10 +287,10 @@ COMPACTION = "[compaction]\nenabled = true\nchannels = 2\n"
 def test_compressed_patterns_load_through_the_decompressor_cells(
     tmp_path: Path, flow_tools: None
 ) -> None:
-    """With scan compression a pattern is one seed's load: the seed it carries
-    held on the channel bus of the composed chip, the decompressor's own cells
-    load the three chains, and every pattern unloads and strobes what FaultFlow
-    expects."""
+    """With scan compression a pattern is one set of channel words' load: the
+    words it carries on the channel bus of the composed chip every shift, the
+    decompressor's own cells load the three chains, and every pattern unloads and
+    strobes what FaultFlow expects."""
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(tmp_path)
         cfg, patterns = _flow(
@@ -304,14 +304,13 @@ def test_compressed_patterns_load_through_the_decompressor_cells(
 
 
 @pytest.mark.integration
-def test_a_one_shot_decompressor_ignores_the_channels_after_its_reseed(
+def test_every_channel_word_of_a_load_reaches_the_chains(
     tmp_path: Path, flow_tools: None
 ) -> None:
-    """The channel words a pattern carries are per cycle: a one-shot decompressor
-    samples them once, at the first shift, so words that change after it load the
-    same chains. The patterns replay on the cells with every later word flipped
-    -- and the STIL, which now shifts the channels every cycle, expands to the
-    same cycles."""
+    """The continuous decompressor takes a word on every shift, so a pattern's words
+    are all its load: with the words of the later shifts flipped, the chains load
+    something else and the replay on the cells reports it -- which also proves the
+    replay would."""
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(tmp_path)
         cfg, patterns = _flow(
@@ -321,6 +320,7 @@ def test_a_one_shot_decompressor_ignores_the_channels_after_its_reseed(
             compose=("scan-compress",),
         )
         exported = json.loads(patterns.read_text(encoding="utf-8"))
+        assert replay_on_cells(cfg, patterns, tmp_path / "replay") == []
         flipped = 0
         for pattern in exported:
             for seq in pattern["channel_seqs"].values():
@@ -330,7 +330,7 @@ def test_a_one_shot_decompressor_ignores_the_channels_after_its_reseed(
         assert flipped
         varied = tmp_path / "varied_patterns.json"
         varied.write_text(json.dumps(exported), encoding="utf-8")
-        assert replay_on_cells(cfg, varied, tmp_path / "replay") == []
+        assert replay_on_cells(cfg, varied, tmp_path / "replay_varied") != []
 
 
 @pytest.mark.integration

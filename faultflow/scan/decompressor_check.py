@@ -23,11 +23,14 @@ undriven net or a cell FaultFlow has no model of is reported, not followed."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Mapping
 
 from faultflow.control_trace import Netlist, one_net
 from faultflow.scan.compression import ContinuousDecompressor
+from faultflow.scan.errors import ScanError
 from faultflow.scan.ring_generator import continuous_scan_in_rows
 
 # A cone wider than this many distinct leaves isn't a decompressor's.
@@ -379,6 +382,32 @@ def check_continuous_decompressor(
                 continue
             break
     return DecompressorCheckResult(errors)
+
+
+def check_composed_decompressor(
+    manifest: Mapping[str, Any], cell_map_json: Path
+) -> DecompressorCheckResult:
+    """The decompressor the scan manifest's ``compression`` entry describes, checked
+    in the composed chip it records (``composed_json``, its ``composed_top``: the
+    decompressor around the core, or inside the compactor's wrapper), over a load
+    and one more shift. Nothing to check, and no errors, without an enabled entry;
+    an entry that is not a continuous decompressor's is an error that says to run
+    scan-compress again."""
+    compression = manifest.get("compression")
+    if not isinstance(compression, dict) or not compression.get("enabled"):
+        return DecompressorCheckResult([])
+    try:
+        decompressor = ContinuousDecompressor.from_manifest(compression)
+        composed = json.loads(
+            Path(str(compression["composed_json"])).read_text("utf-8")
+        )
+        top = str(compression.get("composed_top") or f"{manifest['top']}_compressed")
+        module = composed["modules"][top]
+        cell_map = json.loads(Path(cell_map_json).read_text("utf-8"))
+        shifts = decompressor.warmup + int(manifest["max_chain_length"]) + 1
+    except (ScanError, KeyError, ValueError, OSError) as exc:
+        return DecompressorCheckResult([f"can't check the decompressor: {exc}"])
+    return check_continuous_decompressor(module, cell_map, decompressor, shifts)
 
 
 def _describe(mask: int, const: int, channels: int) -> str:

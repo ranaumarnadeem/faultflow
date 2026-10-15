@@ -127,8 +127,10 @@ def test_a_compressed_pattern_drives_its_channel_words_in_the_load(
     ports["tdi"] = {"direction": "input", "bits": list(range(20, 28))}
     manifest["compression"] = {
         **_composed(tmp_path, "core_compressed", ports),
+        "architecture": "continuous",
         "num_channels": 8,
         "channel_port": "tdi",
+        "warmup": 2,
     }
     chip = chip_of(manifest)
     assert (chip.top, chip.instance_prefix, chip.scan_ins) == (
@@ -136,21 +138,37 @@ def test_a_compressed_pattern_drives_its_channel_words_in_the_load(
         "core_inst__",
         (),
     )
-    # Two shifts: the words differ between them, as a continuous decompressor's do.
-    words = [[1, 0, 1, 0, 0, 0, 0, 1], [0, 1, 1, 0, 1, 0, 0, 0]]
-    channel_seqs = {str(k): [bool(words[t][k]) for t in range(2)] for k in range(8)}
+    assert chip.warmup == 2
+    # A load is the warm-up's two shifts and the chain's two: four words, which
+    # differ between shifts, as a continuous decompressor's do.
+    words = [
+        [1, 0, 1, 0, 0, 0, 0, 1],
+        [0, 1, 1, 0, 1, 0, 0, 0],
+        [1, 1, 0, 0, 0, 1, 0, 0],
+        [0, 0, 0, 1, 1, 0, 1, 0],
+    ]
+    channel_seqs = {str(k): [bool(words[t][k]) for t in range(4)] for k in range(8)}
     program = cycles(chip, [{**PATTERN, "channel_seqs": channel_seqs}])
     loads = [c for c in program if c.phase == "load"]
-    assert len(loads) == 2
+    assert len(loads) == 4
     for t, cycle in enumerate(loads):
         assert [cycle.inputs[f"tdi[{k}]"] for k in range(8)] == words[t]
     for cycle in program:
         if cycle.phase != "load":
             assert [cycle.inputs[f"tdi[{k}]"] for k in range(8)] == [0] * 8
+    # The unload is the longest chain's two shifts, not the load's four.
     assert [dict(c.expect) for c in program if c.phase == "unload"] == [
         {"scan_out_0": 1, "scan_out_1": 0},
         {"scan_out_0": None, "scan_out_1": None},
     ]
+    # Loads pair with the unload before only where it has shifts: overlapped, the
+    # warm-up's two compare nothing.
+    second = {**PATTERN, "channel_seqs": channel_seqs}
+    overlapped = cycles(chip, [second, second], overlap=True)
+    loads = [c for c in overlapped if c.phase == "load"]
+    assert len(loads) == 8
+    paired = [c.unloading for c in loads[4:]]
+    assert paired == [0, 0, None, None]
     with pytest.raises(ScanError, match="has no channel_seqs"):
         cycles(chip, [PATTERN])
     with pytest.raises(ScanError, match="channel 3"):

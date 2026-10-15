@@ -295,7 +295,7 @@ FaultFlow grades it -- its test setup program, preamble, load, launch, capture a
 unload. Nothing an unload compares depends on what shifts in at the same time or on
 the inputs a load holds, what the setup program loads holds through every pattern,
 the holds keep every flop a preamble settles settled, and each capture's pulse arms
-the decompressor's reseed for the next load, so both give the same results; the test
+the decompressor's ring clear for the next load, so both give the same results; the test
 suite checks both on the cells.
 The chip is the scanned netlist, or with scan compression or compaction the one
 `scan-compress` or `scan-compact` wrote (with both, the compacted one).

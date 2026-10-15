@@ -56,8 +56,11 @@ from faultflow.rule_check.model import RuleCheckReport
 from faultflow.scan.checks import Transparent, check_scan_structure
 from faultflow.scan.atpg_view import build_scan_atpg_view
 from faultflow.scan.cell_map import resolve_scan_cell_map
-from faultflow.scan.compression import Decompressor, insert_compression
-from faultflow.scan.compression_checks import check_compression_structure
+from faultflow.scan.compression import (
+    ContinuousDecompressor,
+    insert_continuous_compression,
+)
+from faultflow.scan.decompressor_check import check_composed_decompressor
 from faultflow.scan.compaction import insert_compaction
 from faultflow.scan.compaction_checks import check_compaction_structure
 from faultflow.scan.instrument_guard import (
@@ -429,11 +432,17 @@ class Runner:
             # so a design without one keeps its config_hash.
             payload["scan_test_setup"] = setup_hash(self._user_test_setup())
         if self.cfg.compression.enabled:
-            # Compressed, every pattern is a decompressor seed's load
-            # (scan.detection_pipeline._decompressed); a campaign graded before
-            # -- random loads, care bits checked after the fact -- credits
-            # tests the chip can't apply, so it must not resume into this one.
-            payload["compression_atpg"] = "seeded"
+            # Compressed, every pattern is the load of a set of channel words
+            # (scan.detection_pipeline._decompressed) through the continuous
+            # decompressor; a campaign graded before -- a one-shot seed's loads,
+            # random loads, care bits checked after the fact -- credits tests the
+            # chip can't apply, so it must not resume into this one, nor one with
+            # another ring or warm-up (the loads those make are not these).
+            payload["compression_atpg"] = "continuous"
+            payload["compression_ring_width"] = (
+                self.cfg.compression.effective_ring_width
+            )
+            payload["compression_warmup"] = self.cfg.compression.effective_warmup
         return payload
 
     def _rendered_yosys_script(self, source: Path | None = None) -> str:
@@ -898,11 +907,12 @@ class Runner:
         return port
 
     def scan_compress(self) -> str:
-        """Insert the sequential ring-generator + phase-shifter scan
-        compression decompressor (``faultflow.scan.compression.
-        insert_compression``) around the already scan-stitched, scan-check-
-        PASSed netlist, producing a new composed netlist artifact and
-        recording it in a ``manifest["compression"]`` section.
+        """Insert the continuous-flow scan compression decompressor (a ring
+        generator that takes the channel bits on every shift, and a phase
+        shifter; ``faultflow.scan.compression.insert_continuous_compression``)
+        around the already scan-stitched, scan-check-PASSed netlist, producing a
+        new composed netlist artifact and recording it in a
+        ``manifest["compression"]`` section.
 
         ``manifest["generic_json"]`` is left UNCHANGED -- it must keep
         pointing at the plain, pre-compression scan-stitched netlist,
@@ -954,7 +964,7 @@ class Runner:
             self.cfg.compression.channels,
         )
         try:
-            _, compression_map = insert_compression(
+            _, decompressor = insert_continuous_compression(
                 generic_json,
                 core_top,
                 scan_in_ports,
@@ -962,6 +972,8 @@ class Runner:
                 self.cfg.liberty,
                 output_json,
                 workdir=workdir,
+                ring_width=self.cfg.compression.ring_width,
+                warmup=self.cfg.compression.warmup,
                 clock_port=clock_port,
                 scan_enable_port=scan_enable_port,
                 channel_port=self.cfg.compression.channel_port,
@@ -969,31 +981,25 @@ class Runner:
         except (ScanError, ValueError) as exc:
             raise RunnerError(str(exc)) from exc
         log.info(
-            "compress complete  channels=%d composed=%s  %.1fs",
-            compression_map.num_channels,
+            "compress complete  channels=%d ring=%d warmup=%d composed=%s  %.1fs",
+            decompressor.num_channels,
+            decompressor.polynomial.width,
+            decompressor.warmup,
             output_json,
             time.perf_counter() - t0,
         )
 
         compression_entry: dict[str, object] = {
             "enabled": True,
-            "num_channels": compression_map.num_channels,
-            "tap_source_net": "effective_state",
-            "scan_in_ports": scan_in_ports,
-            "phase_shifter_taps": compression_map.phase_shifter_taps,
+            **decompressor.manifest_entry(),
             "composed_json": str(output_json),
             "composed_top": f"{core_top}_compressed",
             "composed_json_hash": _hash_file(output_json),
-            "clock_port": clock_port,
-            "scan_enable_port": scan_enable_port,
-            "channel_port": self.cfg.compression.channel_port,
-            "polynomial": {
-                "width": compression_map.polynomial.width,
-                "taps": sorted(compression_map.polynomial.taps),
-            },
         }
         manifest["compression"] = compression_entry
-        structural = check_compression_structure(manifest)
+        structural = check_composed_decompressor(
+            manifest, resolve_scan_cell_map(self.cfg)
+        )
         compression_entry["structural_check"] = {
             "status": "PASS" if structural.passed else "FAIL",
             "errors": structural.errors,
@@ -1035,7 +1041,7 @@ class Runner:
             compacted = f" compacted={composed}"
         return (
             f"scan compress complete top={core_top} "
-            f"channels={compression_map.num_channels} composed={output_json}"
+            f"channels={decompressor.num_channels} composed={output_json}"
             + (f" sdc={sdc}" if sdc is not None else "")
             + compacted
         )
@@ -1101,7 +1107,7 @@ class Runner:
         core_top = str(manifest["top"])
         compression = manifest.get("compression")
         decompressor = (
-            Decompressor.from_manifest(compression)
+            ContinuousDecompressor.from_manifest(compression)
             if isinstance(compression, dict) and compression.get("enabled")
             else None
         )
@@ -1153,7 +1159,7 @@ class Runner:
         if isinstance(compression, dict) and decompressor is not None:
             # The decompressor in the whole chip, checked as scan-compress checks
             # its own netlist's.
-            within = check_compression_structure(
+            within = check_composed_decompressor(
                 {
                     **manifest,
                     "compression": {
@@ -1161,7 +1167,8 @@ class Runner:
                         "composed_json": str(output_json),
                         "composed_top": composed_top,
                     },
-                }
+                },
+                resolve_scan_cell_map(self.cfg),
             )
             errors += [f"decompressor: {error}" for error in within.errors]
         compaction_entry["structural_check"] = {

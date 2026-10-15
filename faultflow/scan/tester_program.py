@@ -77,6 +77,10 @@ class Chip:
     fanout: tuple[tuple[int, ...], ...]
     chain_lengths: Mapping[int, int]
     max_chain_length: int
+    # With compression, the shifts a load takes beyond the longest chain's (the
+    # continuous decompressor's warm-up: the first scan-ins fall off the chains'
+    # far ends); the unload takes the longest chain's alone.
+    warmup: int = 0
 
     @property
     def inputs(self) -> list[str]:
@@ -128,9 +132,16 @@ def chip_of(manifest: Mapping[str, Any]) -> Chip:
         )
         channel_bits = _bus(str(compaction.get("channel_port", "tdo")), len(fanout))
     channel_ins: tuple[str, ...] = ()
+    warmup = 0
     if compression:
+        if compression.get("architecture") != "continuous":
+            raise ScanError(
+                "the manifest's compression entry is not a continuous-flow "
+                "decompressor's: run scan-compress again"
+            )
         port = str(compression.get("channel_port", "tdi"))
         channel_ins = _bus(port, int(compression["num_channels"]))
+        warmup = int(compression["warmup"])
     return Chip(
         top=top,
         module=module,
@@ -143,6 +154,7 @@ def chip_of(manifest: Mapping[str, Any]) -> Chip:
         ),
         scan_outs=() if compaction else tuple(scan_outputs),
         channel_ins=channel_ins,
+        warmup=warmup,
         channel_bits=channel_bits,
         fanout=fanout,
         chain_lengths={int(c["index"]): int(c["length"]) for c in manifest["chains"]},
@@ -220,7 +232,7 @@ def cycles(
     for pattern_cycles in own:
         loads = [cycle for cycle in pattern_cycles if cycle.phase == "load"]
         for t, load in enumerate(loads):
-            if previous:
+            if previous and t < len(previous):
                 unload = previous[t]
                 load = replace(
                     load, expect=dict(unload.expect), unloading=unload.pattern
@@ -270,8 +282,8 @@ def _pattern_cycles(
         own.append(Cycle(index, "preamble", dict(shift), {}))
     shifts = _shift_length(chip, pattern, index)
     words = _channel_words(chip, pattern, index)
-    for t in range(shifts):
-        values = _shifting(chip, shift, pattern["load_seqs"], t)
+    for t in range(chip.warmup + shifts):
+        values = _shifting(chip, shift, pattern["load_seqs"], t - chip.warmup)
         values.update(
             {pin: seq[t] if t < len(seq) else 0 for pin, seq in words.items()}
         )

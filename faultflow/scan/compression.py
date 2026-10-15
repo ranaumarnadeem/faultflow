@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from faultflow.project.assemble import assemble_soc
+from faultflow.scan.errors import ScanError
 from faultflow.scan.ring_generator import (
     LfsrPolynomial,
     default_ring_width,
@@ -385,6 +386,72 @@ class ContinuousDecompressor:
         """The channel bus's bits: one word of them applied every shift."""
         return self.num_channels
 
+    def manifest_entry(self) -> dict[str, Any]:
+        """What the scan manifest's ``compression`` entry records of this decompressor:
+        all a later step needs to rebuild it (:meth:`from_manifest`) -- scan-compact
+        composing the whole chip, the ATPG's cross-check, warptap retargeting a
+        pattern. ``injectors`` is redundant with the ring and the channels, and
+        checked against them."""
+        return {
+            "architecture": "continuous",
+            "num_channels": self.num_channels,
+            "ring_width": self.polynomial.width,
+            "warmup": self.warmup,
+            "injectors": self.injectors,
+            "tap_source_net": "effective_state",
+            "scan_in_ports": list(self.scan_in_ports),
+            "phase_shifter_taps": [list(row) for row in self.phase_shifter_taps],
+            "polynomial": {
+                "width": self.polynomial.width,
+                "taps": sorted(self.polynomial.taps),
+            },
+            "channel_port": self.channel_port,
+            "scan_enable_port": self.scan_enable_port,
+            "clock_port": self.clock_port,
+        }
+
+    @classmethod
+    def from_manifest(cls, compression: dict[str, Any]) -> "ContinuousDecompressor":
+        """The decompressor scan-compress composed, from its manifest entry
+        (``manifest["compression"]``); an entry from a one-shot decompressor (no
+        ``architecture``) or one that doesn't fit the model is refused."""
+        if compression.get("architecture") != "continuous":
+            raise ScanError(
+                "the manifest's compression entry is not a continuous-flow "
+                "decompressor's (a one-shot one, made before): run scan-compress again"
+            )
+        for key in (
+            "num_channels",
+            "warmup",
+            "polynomial",
+            "phase_shifter_taps",
+            "scan_in_ports",
+            "scan_enable_port",
+            "clock_port",
+        ):
+            if key not in compression:
+                raise ScanError(f"the manifest's compression entry has no {key}")
+        polynomial = compression["polynomial"]
+        decompressor = cls(
+            [str(p) for p in compression["scan_in_ports"]],
+            LfsrPolynomial(
+                int(polynomial["width"]), frozenset(int(t) for t in polynomial["taps"])
+            ),
+            [[int(t) for t in row] for row in compression["phase_shifter_taps"]],
+            int(compression["num_channels"]),
+            int(compression["warmup"]),
+            channel_port=str(compression.get("channel_port", "tdi")),
+            scan_enable_port=str(compression["scan_enable_port"]),
+            clock_port=str(compression["clock_port"]),
+        )
+        stated = compression.get("injectors")
+        if stated is not None and [int(s) for s in stated] != decompressor.injectors:
+            raise ScanError(
+                f"the manifest's injectors {list(stated)} are not the stages "
+                f"{decompressor.injectors} the model injects the channels into"
+            )
+        return decompressor
+
     def check_ports(self, passthrough_names: list[str], core_module: str) -> None:
         _check_ports(self, passthrough_names, core_module)
 
@@ -595,6 +662,35 @@ def _compose(
     )
 
 
+def build_continuous_decompressor(
+    scan_in_ports: list[str],
+    num_channels: int,
+    *,
+    ring_width: int | None = None,
+    warmup: int | None = None,
+    channel_port: str = "tdi",
+    scan_enable_port: str = "scan_en",
+    clock_port: str = "clk",
+) -> ContinuousDecompressor:
+    """The continuous decompressor for these scan inputs and channels: a ring of
+    ``ring_width`` stages (a curated width, at least ``num_channels``; default
+    ring_generator.default_ring_width), a load ``warmup`` shifts longer than the
+    longest chain (default ring_generator.default_warmup), and the phase shifter
+    build_phase_shifter's for that ring and these chains -- the same for the same
+    inputs, so scan-compress and the ATPG each build it and agree."""
+    width = ring_width if ring_width is not None else default_ring_width(num_channels)
+    return ContinuousDecompressor(
+        list(scan_in_ports),
+        lookup_polynomial(width),
+        build_phase_shifter(width, len(scan_in_ports)),
+        num_channels,
+        warmup if warmup is not None else default_warmup(width, num_channels),
+        channel_port=channel_port,
+        scan_enable_port=scan_enable_port,
+        clock_port=clock_port,
+    )
+
+
 def insert_continuous_compression(
     core_json_path: Path,
     core_top: str,
@@ -619,13 +715,11 @@ def insert_continuous_compression(
     than the longest chain (default ring_generator.default_warmup), and the phase
     shifter build_phase_shifter's for that ring and these chains. Returns the
     netlist's path and the decompressor."""
-    width = ring_width if ring_width is not None else default_ring_width(num_channels)
-    decompressor = ContinuousDecompressor(
-        list(scan_in_ports),
-        lookup_polynomial(width),
-        build_phase_shifter(width, len(scan_in_ports)),
+    decompressor = build_continuous_decompressor(
+        scan_in_ports,
         num_channels,
-        warmup if warmup is not None else default_warmup(width, num_channels),
+        ring_width=ring_width,
+        warmup=warmup,
         channel_port=channel_port,
         scan_enable_port=scan_enable_port,
         clock_port=clock_port,
