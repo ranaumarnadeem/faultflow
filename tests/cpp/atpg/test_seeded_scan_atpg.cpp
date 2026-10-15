@@ -22,7 +22,7 @@ using namespace faultflow::atpg;
 
 // Scan ATPG through a compression decompressor: every scan cell (PPI) is loaded
 // with the XOR of some bits of the decompressor's seed
-// (faultflow/scan/ring_generator.py::care_bit_rows), so only the loads the seed
+// (faultflow/scan/ring_generator.py::continuous_seed_program), so only the loads the seed
 // space spans are applicable. Each test checks the seeded solver's verdict
 // against brute force over every seed and every real-PI value -- an oracle that
 // shares nothing with the CNF -- and every SAT vector against the golden and

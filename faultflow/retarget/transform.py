@@ -202,7 +202,7 @@ def retarget_pattern(
     `setup`: the SoC's in its place; `dropped`: block ports left out -- those the
     scan protocol drives, and outputs not compared."""
     where = f"block pattern {number}"
-    if pattern.load_care is not None or pattern.seed is not None:
+    if pattern.load_care is not None or pattern.channel_seqs is not None:
         raise RetargetError(f"{where} is a compressed load")
     if pattern.shift_length is not None:
         raise RetargetError(f"{where} shifts only some of the block's chains")

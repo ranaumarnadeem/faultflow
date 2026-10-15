@@ -127,10 +127,14 @@ output of unknown value reaches a scan flop, each exported pattern carries an
 non-scan flop settles during the test (a reset synchronizer, see `[scan]
 nonscan_cells`), each pattern carries `preamble_cycles`: the scan-clock pulses,
 scan enable off and the holds applied, to give before its load. With scan
-compression every pattern carries at least one: it arms the decompressor's reseed,
-which a load right after the previous unload wouldn't give. It also carries `seed`,
-what a tester holds on the compression channels for the whole pattern (seed bit k
-on channel bit k); `load_seqs` is the stream the decompressor makes of it. With
+compression every pattern carries at least one: it clears the decompressor's ring,
+which a load right after the previous unload wouldn't. It also carries
+`channel_seqs`, what a tester drives on the compression channels while the chains
+load: per channel (the k-th bit of the channel port), one bit per shift of the load,
+the `warmup` shifts that only fill the ring first, so `warmup` more than the longest
+chain; `load_seqs` is the stream the decompressor makes of it, from shift `warmup` on.
+A `patterns.json` from before the continuous decompressor carries `seed`, or one word
+held all the load, and has to be exported again. With
 `include_reset_faults`, a pattern may set a reset input active in its
 `capture_pi_values` to test the reset; it then carries `shift_pi_values`, the values
 those inputs hold everywhere but the capture (inactive: a scan flop's reset acts

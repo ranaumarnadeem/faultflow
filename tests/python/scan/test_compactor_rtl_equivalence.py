@@ -3,10 +3,10 @@ output must equal the real, gate-simulated per-chain unload data XOR-folded
 per CompactionMap.fanout -- driven through the real C++ simulation engine,
 comparing two REAL simulations against each other rather than checking real
 hardware against a hand-written Python model of scan-chain dynamics (unlike
-test_ring_generator_rtl_equivalence.py's decompressor equivalence test, which
-must trust care_bit_rows as a model of LFSR dynamics, this test only trusts
-the XOR-fold bookkeeping itself -- CompactionMap.fanout -- since both sides
-of the comparison are real simulated data). This is the behavioral
+test_continuous_decompressor_rtl.py's decompressor equivalence test, which
+must trust the ring model, this test only trusts the XOR-fold bookkeeping
+itself -- CompactionMap.fanout -- since both sides of the comparison are real
+simulated data). This is the behavioral
 counterpart to compaction_checks.py's purely structural check_compaction_structure
 (COMP002), which re-derives topology from netlist connectivity but never
 toggles a gate.

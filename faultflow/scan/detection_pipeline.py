@@ -10,7 +10,7 @@ from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field, replace
 from multiprocessing import get_context
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from faultflow.atpg import VectorSet
 from faultflow.config import (
@@ -68,16 +68,15 @@ from faultflow.scan.site_resolution import (
     mark_blackbox_unresolved,
 )
 from faultflow.scan.compaction import CompactionMap, build_compactor_fanout
-from faultflow.scan.compression import CompressionMap, build_broadcast_fanout
+from faultflow.scan.compression import (
+    ContinuousDecompressor,
+    build_continuous_decompressor,
+)
 from faultflow.scan.errors import ScanError
 from faultflow.scan.nonscan import NonscanSetup, jtag_sites, settled_sites
 from faultflow.scan.setup import SetupCycle, setup_request
 from faultflow.scan.shift_controls import reset_holds
-from faultflow.scan.ring_generator import (
-    bitmask_to_index_list,
-    care_bit_rows,
-    lookup_polynomial,
-)
+from faultflow.scan.ring_generator import SeedProgram, continuous_seed_program
 from faultflow.scan.verify import reduced_protocol_matches
 from faultflow.scan.x_mask import (
     XMask,
@@ -92,6 +91,10 @@ from faultflow.wrap.sides import decoupled
 from faultflow.wrap.wsp import wsp_sites
 
 log = logging.getLogger(__name__)
+
+# A random candidate: V1, the launch-on-shift scan-in bits by chain, and the free
+# bits the decompressor's channel words were drawn as (None without compression).
+_Candidate = tuple[dict[str, bool], dict[int, bool], list[bool] | None]
 
 
 @dataclass(frozen=True)
@@ -113,28 +116,28 @@ class ScanPipelineContext:
     # scannable async-reset/set FFs whose control pin is a primary input.
     reset_pi_holds: dict[str, bool] = field(default_factory=dict)
     # Scan compression (faultflow.scan.compression): None unless
-    # [compression] enabled = true. compression_map.phase_shifter_taps and
-    # compression_care_bit_rows are both reconstructed deterministically from
-    # cfg.compression.channels + the manifest's chain count -- pure functions
-    # of the same inputs insert_compression used, so no persisted manifest
-    # section is needed to rebuild them (see build_scan_pipeline_context).
-    # care_bit_rows is precomputed ONCE per campaign, not per-candidate, over
-    # max_chain_length + 1 shift cycles: the load, then the launch-on-shift
-    # shift.
-    compression_map: CompressionMap | None = None
-    compression_care_bit_rows: list[list[int]] | None = None
-    # The decompressor loads every scan cell from one seed per pattern: per
-    # PPI, the seed bits it XORs into that cell (chain c's position p loads at
-    # shift cycle max_chain_length-1-p); per chain head PPI, those of the bit
-    # a launch-on-shift shift brings in. Every scan solve is constrained by
-    # them (_seed_kwargs), so SAT only finds loads the decompressor can make.
+    # [compression] enabled = true. The decompressor is rebuilt from
+    # [compression] + the manifest's chain count -- the same pure function
+    # scan-compress called (build_continuous_decompressor) -- and checked against
+    # the manifest's own entry, so no more than that is needed to rebuild it (see
+    # build_scan_pipeline_context).
+    decompressor: ContinuousDecompressor | None = None
+    # A load as a program over its free bits, the channel word of every one of its
+    # warm-up + max_chain_length shifts (ring_generator.SeedProgram), built ONCE
+    # per campaign.
+    seed_program: SeedProgram | None = None
+    # Per PPI, the program variables whose XOR the decompressor loads into that
+    # cell (chain c's position p loads the scan-in of shift warm-up +
+    # max_chain_length-1-p); per chain head PPI, those of the bit a launch-on-shift
+    # shift brings in. Every scan solve is constrained by them (_seed_kwargs), so SAT
+    # only finds loads the decompressor can make.
     seeded_inputs: dict[str, list[int]] = field(default_factory=dict)
     seeded_heads: dict[str, list[int]] = field(default_factory=dict)
     # Scan compaction (faultflow.scan.compaction): None unless
     # [compaction] enabled = true. Reconstructed deterministically from
     # cfg.compaction.channels + the manifest's chain count -- the same
     # pure-function-of-inputs shape insert_compaction used, so no persisted
-    # manifest section is needed to rebuild it. Simpler than compression_map:
+    # manifest section is needed to rebuild it. Simpler than the decompressor:
     # no algebra to precompute ahead of time, just the fanout map itself.
     # Relies on manifest["scan_outputs"]'s order matching the order
     # insert_compaction used to build the real compactor's fanout -- true
@@ -198,6 +201,43 @@ def _scan_reset_pi_holds(
     return {port: bool(value) for port, value in reset_holds(module, cell_map).items()}
 
 
+def _configured_decompressor(
+    cfg: FaultflowConfig, manifest: dict[str, Any]
+) -> ContinuousDecompressor:
+    """The decompressor [compression] describes for the manifest's chains: the same
+    build_continuous_decompressor scan-compress called. A manifest that records one
+    (scan-compress ran) must record this one -- a chip composed with another is not
+    the chip these loads are for -- and a one-shot decompressor's entry says to run
+    scan-compress again."""
+    built = build_continuous_decompressor(
+        [str(p) for p in manifest.get("scan_inputs", [])],
+        cfg.compression.channels,
+        ring_width=cfg.compression.ring_width,
+        warmup=cfg.compression.warmup,
+        channel_port=cfg.compression.channel_port,
+    )
+    recorded = manifest.get("compression")
+    if isinstance(recorded, dict) and recorded.get("enabled"):
+        stated = ContinuousDecompressor.from_manifest(recorded)
+        if (
+            stated.num_channels,
+            stated.warmup,
+            stated.polynomial,
+            stated.phase_shifter_taps,
+        ) != (
+            built.num_channels,
+            built.warmup,
+            built.polynomial,
+            built.phase_shifter_taps,
+        ):
+            raise ScanError(
+                "the scan manifest's decompressor is not the one [compression] "
+                "describes (channels, ring, warm-up or chains differ): run "
+                "scan-compress again"
+            )
+    return built
+
+
 def build_scan_pipeline_context(
     cfg: FaultflowConfig,
     manifest: dict[str, Any],
@@ -237,23 +277,19 @@ def build_scan_pipeline_context(
         if port is None:
             raise RunnerError(f"cannot map scan clock net {clk_net} to a port")
         clock_ports.append(port)
-    compression_map: CompressionMap | None = None
-    compression_care_bit_rows: list[list[int]] | None = None
+    decompressor: ContinuousDecompressor | None = None
+    seed_program: SeedProgram | None = None
     seeded_inputs: dict[str, list[int]] = {}
     seeded_heads: dict[str, list[int]] = {}
     if cfg.compression.enabled:
         num_chains = len(manifest.get("scan_inputs", []))
-        polynomial = lookup_polynomial(cfg.compression.channels)
-        phase_shifter_taps = build_broadcast_fanout(
-            cfg.compression.channels, num_chains
-        )
-        compression_map = CompressionMap(
-            cfg.compression.channels, polynomial, phase_shifter_taps
-        )
+        decompressor = _configured_decompressor(cfg, manifest)
         max_chain_length = int(manifest.get("max_chain_length", 0))
-        compression_care_bit_rows = care_bit_rows(
-            polynomial, phase_shifter_taps, max_chain_length + 1
+        load_shifts = decompressor.warmup + max_chain_length
+        seed_program = continuous_seed_program(
+            decompressor.polynomial, decompressor.num_channels, load_shifts
         )
+        taps = decompressor.phase_shifter_taps
         for entry in pseudo_port_map.values():
             chain = int(entry["chain_id"])
             position = int(entry["position_in_chain"])
@@ -264,13 +300,11 @@ def build_scan_pipeline_context(
                     f"of at most {max_chain_length} cells"
                 )
             ppi = str(entry["ppi_port"])
-            seeded_inputs[ppi] = bitmask_to_index_list(
-                compression_care_bit_rows[max_chain_length - 1 - position][chain]
+            seeded_inputs[ppi] = seed_program.scan_in(
+                load_shifts - 1 - position, taps[chain]
             )
             if position == 0:
-                seeded_heads[ppi] = bitmask_to_index_list(
-                    compression_care_bit_rows[max_chain_length][chain]
-                )
+                seeded_heads[ppi] = seed_program.scan_in(load_shifts, taps[chain])
     compaction_map: CompactionMap | None = None
     if cfg.compaction.enabled:
         num_scan_out_chains = len(manifest.get("scan_outputs", []))
@@ -287,8 +321,8 @@ def build_scan_pipeline_context(
         q_stem_site_keys=frozenset(q_stems),
         q_stem_to_ppo=q_stem_to_ppo,
         reset_pi_holds=reset_pi_holds,
-        compression_map=compression_map,
-        compression_care_bit_rows=compression_care_bit_rows,
+        decompressor=decompressor,
+        seed_program=seed_program,
         seeded_inputs=seeded_inputs,
         seeded_heads=seeded_heads,
         compaction_map=compaction_map,
@@ -529,12 +563,13 @@ def _serialize(
         masked_outputs=ctx.x_mask.outputs,
     )
     preamble = ctx.nonscan.preamble if ctx.nonscan is not None else 0
-    if ctx.compression_map is not None:
-        # The decompressor reseeds on scan enable's rising edge, seen through a
-        # flop of the previous scan enable (compression.py): a pulse with it off
-        # before the load arms it. Back to back, a pattern's load follows the
-        # last one's unload, scan enable on, and a chip powers up with that flop
-        # unknown -- without the pulse the load continues the old sequence.
+    if ctx.decompressor is not None:
+        # The decompressor clears its ring on scan enable's rising edge, seen
+        # through a flop of the previous scan enable (compression.py): a clock
+        # with it off before the load arms it. Back to back, a pattern's load
+        # follows the last one's unload, scan enable on, and a chip powers up
+        # with that flop unknown -- without the pulse the load starts from the
+        # old ring.
         preamble = max(preamble, 1)
     # Testing the reset, a capture may set a reset input active (_process_scan_
     # candidate leaves it free); it stays inactive while the chains shift, where
@@ -548,12 +583,16 @@ def _serialize(
 def _seed_kwargs(
     scan_ctx: ScanPipelineContext, *, los: bool = False
 ) -> dict[str, object]:
-    """A scan solve's decompressor constraints (the solvers' seeded_inputs, and
-    launching on shift seeded_heads): none without compression."""
-    if scan_ctx.compression_map is None:
+    """A scan solve's decompressor constraints: the load as a program over its free
+    bits (the solvers' seed_width and seed_defs), each scan cell's scan-in as a short
+    XOR of its variables (seeded_inputs), and launching on shift the bit one more
+    shift brings in (seeded_heads). None without compression."""
+    program = scan_ctx.seed_program
+    if program is None:
         return {}
     kwargs: dict[str, object] = {
-        "seed_width": scan_ctx.compression_map.num_channels,
+        "seed_width": program.seed_width,
+        "seed_defs": program.defs,
         "seeded_inputs": scan_ctx.seeded_inputs,
     }
     if los:
@@ -561,49 +600,116 @@ def _seed_kwargs(
     return kwargs
 
 
-def _seeded_bit(row: int, seed: int) -> bool:
-    """The scan-in bit the decompressor gives for `seed`, where `row` is the
-    bit's care_bit_rows bitmask over the seed bits."""
-    return bin(row & seed).count("1") % 2 == 1
+def _variable_values(program: SeedProgram, free: Sequence[bool]) -> list[int]:
+    """Every variable of `program` (the free bits, then its definitions in order) for
+    these free bits."""
+    values = [int(bool(bit)) for bit in free]
+    for operands in program.defs:
+        value = 0
+        for operand in operands:
+            value ^= values[operand]
+        values.append(value)
+    return values
+
+
+def _xor_value(values: Sequence[int], variables: Sequence[int]) -> bool:
+    bit = 0
+    for variable in variables:
+        bit ^= values[variable]
+    return bool(bit)
+
+
+def _solve_free_bits(
+    program: SeedProgram, required: Sequence[tuple[list[int], bool]]
+) -> list[bool] | None:
+    """Free bits of `program` that make every (variables, value) of `required` -- the
+    XOR of those variables the value -- or None when none do: Gaussian elimination
+    over GF(2) with the equations as bitmasks of the free bits, the bits no equation
+    names 0. For a vector that has no free bits already (one replayed from the
+    database); the solves and random fill hand theirs on."""
+    masks = [1 << i for i in range(program.seed_width)]
+    for operands in program.defs:
+        mask = 0
+        for operand in operands:
+            mask ^= masks[operand]
+        masks.append(mask)
+    pivots: dict[int, tuple[int, int]] = {}
+    for variables, value in required:
+        mask = 0
+        for variable in variables:
+            mask ^= masks[variable]
+        rhs = int(value)
+        while mask:
+            low = mask & -mask
+            pivot = pivots.get(low)
+            if pivot is None:
+                pivots[low] = (mask, rhs)
+                break
+            mask ^= pivot[0]
+            rhs ^= pivot[1]
+        else:
+            if rhs:
+                return None
+    # Each pivot row's lowest bit is its key and every other bit is higher: from the
+    # highest key down, a row's other bits are already decided.
+    solution = 0
+    for low in sorted(pivots, reverse=True):
+        mask, rhs = pivots[low]
+        parity = ((mask ^ low) & solution).bit_count() & 1
+        if rhs ^ parity:
+            solution |= low
+    return [bool((solution >> i) & 1) for i in range(program.seed_width)]
 
 
 def _decompressed(
-    core: Any,
     scan_ctx: ScanPipelineContext,
     vector: dict[str, bool],
     pattern: ScanPattern,
     head_bits: dict[int, bool],
+    seed: Sequence[bool] | None = None,
 ) -> ScanPattern:
-    """`pattern` as the decompressor shifts it in. The seed is the one that
-    loads each scan cell with its value in `vector` -- and, launching on
-    shift, brings in `head_bits` (by chain) at the launch shift. Every chain's
-    scan-in at every load cycle is that seed's, the cycles whose bits pass
-    through a shorter chain included, and every position is care (load_care):
-    a tester applies only the seed, so this is exactly what the chip loads.
-    Raises ScanError when no seed gives these values: every compressed
-    candidate comes from a seed (the seeded SAT solve, _seeded_random_vectors),
-    so that would be a bug."""
-    assert scan_ctx.compression_map is not None
-    rows = scan_ctx.compression_care_bit_rows
-    assert rows is not None
-    max_chain_length = len(rows) - 1
-    names = sorted(scan_ctx.seeded_inputs)
-    fanout = [scan_ctx.seeded_inputs[name] for name in names]
-    values = [bool(vector[name]) for name in names]
-    for chain, bit in sorted(head_bits.items()):
-        fanout.append(bitmask_to_index_list(rows[max_chain_length][chain]))
-        values.append(bool(bit))
-    solved = core.solve_xor_broadcast(
-        scan_ctx.compression_map.num_channels, fanout, list(enumerate(values))
-    )
-    if not solved["ok"]:
+    """`pattern` as the decompressor shifts it in. The channel words are those that
+    load each scan cell with its value in `vector` -- and, launching on shift, bring
+    in `head_bits` (by chain) at the launch shift. `seed` is the free bits the SAT
+    solve or random fill chose for this vector; they are used when they make exactly
+    this load, otherwise (a vector replayed from the database, or changed since)
+    the words are solved for from the vector. Every chain's scan-in at every load
+    cycle is the words', the cycles whose bits pass through a shorter chain included,
+    and every position is care (load_care): a tester applies only the words, so this
+    is exactly what the chip loads. Raises ScanError when no words give these values:
+    every compressed candidate comes from words (the seeded SAT solve,
+    _seeded_random_vectors), so that would be a bug."""
+    decompressor = scan_ctx.decompressor
+    program = scan_ctx.seed_program
+    assert decompressor is not None and program is not None
+    max_chain_length = int(scan_ctx.manifest["max_chain_length"])
+    warmup = decompressor.warmup
+    load_shifts = warmup + max_chain_length
+    taps = decompressor.phase_shifter_taps
+    required: list[tuple[list[int], bool]] = [
+        (scan_ctx.seeded_inputs[name], bool(vector[name]))
+        for name in sorted(scan_ctx.seeded_inputs)
+    ]
+    required += [
+        (program.scan_in(load_shifts, taps[chain]), bool(bit))
+        for chain, bit in sorted(head_bits.items())
+    ]
+    free: list[bool] | None = None
+    if seed is not None and len(seed) == program.seed_width:
+        values = _variable_values(program, seed)
+        if all(_xor_value(values, variables) == bit for variables, bit in required):
+            free = [bool(bit) for bit in seed]
+    if free is None:
+        free = _solve_free_bits(program, required)
+    if free is None:
         raise ScanError(
-            "a compressed scan pattern loads values no decompressor seed gives"
+            "a compressed scan pattern loads values no decompressor channel words give"
         )
-    seed = sum(1 << k for k, bit in enumerate(solved["channels"]) if bit)
+    values = _variable_values(program, free)
     load_seqs = {
         chain: [
-            _seeded_bit(rows[cycle][chain], seed) for cycle in range(max_chain_length)
+            _xor_value(values, program.scan_in(warmup + cycle, taps[chain]))
+            for cycle in range(max_chain_length)
         ]
         for chain in pattern.load_seqs
     }
@@ -615,6 +721,7 @@ def _decompressed(
                 f"scan cell {entry['ppi_port']} is not loaded at the shift cycle "
                 "its decompressor row is for"
             )
+    channels = decompressor.num_channels
     return replace(
         pattern,
         load_seqs=load_seqs,
@@ -623,7 +730,10 @@ def _decompressed(
             for chain in sorted(load_seqs)
             for cycle in range(max_chain_length)
         ),
-        seed=seed,
+        channel_seqs={
+            k: [free[shift * channels + k] for shift in range(load_shifts)]
+            for k in range(channels)
+        },
     )
 
 
@@ -634,29 +744,38 @@ def _seeded_random_vectors(
     count: int,
     *,
     los: bool = False,
-) -> list[tuple[dict[str, bool], dict[int, bool]]]:
-    """Random patterns for a compressed design: random real inputs and a random
-    seed, each scan cell -- and, launching on shift, each chain's launch
-    scan-in bit (by chain) -- what the decompressor makes of the seed. Random
-    loads would almost never be a load it can make: one seed of [compression]
-    channels bits loads every cell."""
-    assert scan_ctx.compression_map is not None
-    rows = scan_ctx.compression_care_bit_rows
-    assert rows is not None
-    seed_names = [f"__seed[{k}]" for k in range(scan_ctx.compression_map.num_channels)]
+) -> list[_Candidate]:
+    """Random patterns for a compressed design: random real inputs and random channel
+    words (the free bits, returned with the vector), each scan cell -- and, launching
+    on shift, each chain's launch scan-in bit (by chain) -- what the decompressor
+    makes of them. Random loads would almost never be a load it can make: the
+    channels x shifts free bits of a pattern load every cell."""
+    decompressor = scan_ctx.decompressor
+    program = scan_ctx.seed_program
+    assert decompressor is not None and program is not None
+    load_shifts = decompressor.warmup + int(scan_ctx.manifest["max_chain_length"])
+    head_variables = {
+        chain: program.scan_in(load_shifts, taps)
+        for chain, taps in enumerate(decompressor.phase_shifter_taps)
+    }
+    seed_names = [f"__seed[{k}]" for k in range(program.seed_width)]
     free = [name for name in input_order if name not in scan_ctx.seeded_inputs]
-    drawn: list[tuple[dict[str, bool], dict[int, bool]]] = []
+    drawn: list[_Candidate] = []
     for raw in core.atpg_random_vectors(free + seed_names, count, ATPGRANDOM_SEED):
-        seed = sum(1 << k for k, name in enumerate(seed_names) if raw[name])
-        values = {name: bool(raw[name]) for name in free}
-        for ppi, bits in scan_ctx.seeded_inputs.items():
-            values[ppi] = sum((seed >> bit) & 1 for bit in bits) % 2 == 1
+        bits = [bool(raw[name]) for name in seed_names]
+        values = _variable_values(program, bits)
+        loaded = {name: bool(raw[name]) for name in free}
+        for ppi, variables in scan_ctx.seeded_inputs.items():
+            loaded[ppi] = _xor_value(values, variables)
         heads = (
-            {chain: _seeded_bit(row, seed) for chain, row in enumerate(rows[-1])}
+            {
+                chain: _xor_value(values, variables)
+                for chain, variables in head_variables.items()
+            }
             if los
             else {}
         )
-        drawn.append(({name: values[name] for name in input_order}, heads))
+        drawn.append(({name: loaded[name] for name in input_order}, heads, bits))
     return drawn
 
 
@@ -1189,6 +1308,7 @@ def _process_scan_candidate(
     los_head_scan_in: dict[int, bool] | None = None,
     candidate_key: str | None = None,
     active_clock_ports: list[str] | None = None,
+    seed: Sequence[bool] | None = None,
 ) -> tuple[bool, bool, ScanPattern | None]:
     """Return (accepted, protocol_no_progress, accepted_pattern).
 
@@ -1200,6 +1320,10 @@ def _process_scan_candidate(
     capture PPI = predecessor's launch PPI plus the per-chain head scan-in bit
     (`los_head_scan_in`). The reduced-view expectation, scan-pattern unload, and
     golden gate use the frame-1 (V2) materialization, and grading runs two captures.
+
+    `seed` (compressed designs): the free bits the candidate's solve or random fill
+    chose; the decompressor's channel words are taken from them when they make the
+    vector's load (_decompressed).
     """
     # Hold async set/reset PIs at their inactive level for the whole scan test.
     # The reduced view now MODELS the async control at capture (atpg_view inserts
@@ -1280,11 +1404,11 @@ def _process_scan_candidate(
         launch_pattern = ""
 
     scan_pattern = _serialize(scan_ctx, serialize_input)
-    if scan_ctx.compression_map is not None:
+    if scan_ctx.decompressor is not None:
         # What the chip shifts in: the gate, the protocol sims and the export
-        # all see the decompressor's whole stream for the candidate's seed.
+        # all see the decompressor's whole stream for the candidate's words.
         scan_pattern = _decompressed(
-            core, scan_ctx, vector, scan_pattern, head_bits if is_los else {}
+            scan_ctx, vector, scan_pattern, head_bits if is_los else {}, seed
         )
     if transition:
         # What a tester applies between the load and the capture: a launch pulse
@@ -2155,32 +2279,32 @@ def run_progressive_scan_atpg(
             terminal = "COMPLETE"
             break
 
-        # Each random candidate is (V1, LOS launch-shift scan-in bits by chain).
-        # Compressed, both come from a random decompressor seed; otherwise the
-        # head bits are 0.
-        random_batch: list[tuple[dict[str, bool], dict[int, bool]]] = []
+        # Each random candidate is (V1, LOS launch-shift scan-in bits by chain,
+        # the free bits they came from). Compressed, all come from random
+        # decompressor channel words; otherwise the head bits are 0.
+        random_batch: list[_Candidate] = []
         if not switched_to_sat:
             random_started = time.perf_counter()
             random_batch = (
                 _seeded_random_vectors(
                     core, input_order, scan_ctx, cfg.atpg.random_vectors, los=los
                 )
-                if scan_ctx.compression_map is not None
+                if scan_ctx.decompressor is not None
                 else [
-                    (vector, {})
+                    (vector, {}, None)
                     for vector in core.atpg_random_vectors(
                         input_order, cfg.atpg.random_vectors, ATPGRANDOM_SEED
                     )
                 ]
             )
             atpg_seconds += time.perf_counter() - random_started
-        new_random: list[tuple[dict[str, bool], dict[int, bool]]] = []
-        for vector, heads in random_batch:
+        new_random: list[_Candidate] = []
+        for vector, heads, seed in random_batch:
             key = random_key(vector, heads)
             if key in seen_patterns:
                 continue
             seen_patterns.add(key)
-            new_random.append((vector, heads))
+            new_random.append((vector, heads, seed))
         heartbeat = GradeHeartbeat(
             log,
             round_idx,
@@ -2189,7 +2313,7 @@ def run_progressive_scan_atpg(
         )
         random_denom = _coverage_denominator(effective_db_path, campaign_id)
         graded_random = 0
-        for offset, (vector, heads) in enumerate(new_random):
+        for offset, (vector, heads, seed) in enumerate(new_random):
             stats.generated_vectors += 1
             candidate_counter += 1
             vector_index = len(vectors) + 1
@@ -2220,6 +2344,7 @@ def run_progressive_scan_atpg(
                         launch_mode=launch_mode,
                         los_head_scan_in=heads if los else None,
                         candidate_key=random_key(vector, heads) if los else None,
+                        seed=seed,
                     )
                 )
             fault_sim_seconds += time.perf_counter() - sim_started
@@ -2252,7 +2377,7 @@ def run_progressive_scan_atpg(
         if not switched_to_sat:
             # Release the patterns of any random vectors we did not grade so SAT
             # can generate them for the remaining faults; then stay in SAT mode.
-            for _v, _h in new_random[graded_random:]:
+            for _v, _h, _ in new_random[graded_random:]:
                 seen_patterns.discard(random_key(_v, _h))
             switched_to_sat = True
             if cfg.atpg.random_only:
@@ -2467,6 +2592,7 @@ def run_progressive_scan_atpg(
                             launch_mode=launch_mode,
                             los_head_scan_in=los_head_scan_in_sat,
                             candidate_key=key if los else None,
+                            seed=solved.get("seed") or None,
                         )
                     )
                 fault_sim_seconds += time.perf_counter() - sim_started
@@ -2499,7 +2625,7 @@ def run_progressive_scan_atpg(
                 # needs a proof) makes the fault testable, only not through
                 # this decompressor -- compression_unresolved (Tessent's AU.EDT).
                 testable_free = False
-                if scan_ctx.compression_map is not None and not q_stem:
+                if scan_ctx.decompressor is not None and not q_stem:
                     solve_started = time.perf_counter()
                     testable_free = (
                         solve(fault_id, blocked, tier_timeout, seeded=False)["result"]
@@ -2723,9 +2849,9 @@ def _grade_launch_candidate(
             reduced_expectation.get(str(entry["ppo_port"]), False)
         )
     scan_pattern = _serialize(scan_ctx, serialize_input)
-    if scan_ctx.compression_map is not None:
+    if scan_ctx.decompressor is not None:
         scan_pattern = _decompressed(
-            core, scan_ctx, vector, scan_pattern, head_bits if is_los else {}
+            scan_ctx, vector, scan_pattern, head_bits if is_los else {}
         )
 
     sim_ids: list[int] = []

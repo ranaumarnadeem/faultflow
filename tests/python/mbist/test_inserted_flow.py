@@ -232,8 +232,9 @@ def test_a_control_tdr_bits_branch_into_its_synchronizer_is_jtags(
 @pytest.fixture(scope="module")
 def compressed(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Any]:
     """The same flow with scan compression: init, scan, scan-check, scan-compress,
-    sim --scan and ff.py jtag. The .ofs names the channels away from the TAP. An
-    8-bit seed loads the 81 cells of 16 chains: ATPG makes only loads it can."""
+    sim --scan and ff.py jtag. The .ofs names the channels away from the TAP. Eight
+    channels over a 16-stage ring load the 81 cells of 16 chains: ATPG makes only
+    loads it can."""
     from faultflow.cli import main
     from faultflow.mbist.insert import insert_command
     from faultflow.runner.runner import _load_core
@@ -292,43 +293,46 @@ def test_with_compression_the_sdc_names_the_core_and_jtag_still_grades(
 def test_with_compression_every_credit_holds_on_the_compressed_chip(
     compressed: tuple[Path, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every exported pattern is one decompressor seed's whole load -- warptap's
+    """Every exported pattern is one set of channel words' whole load -- warptap's
     strictest read solves it -- and every credited fault is detected in the full
-    protocol on the core and on the compressed chip itself, that seed on comp_si
-    and the synthesized decompressor loading the chains. What only a load the
-    decompressor can't make would test is compression_unresolved."""
-    from warptap.faultflow_compression import (
-        care_bit_rows,
-        polynomial_from_manifest,
-        solve_pattern_seed,
+    protocol on the core and on the compressed chip itself, those words on comp_si
+    every shift and the synthesized decompressor loading the chains. What only a
+    load the decompressor can't make would test is compression_unresolved."""
+    skip_unless_warptap("warptap.faultflow_continuous")
+    from warptap.faultflow_continuous import (
+        continuous_from_manifest,
+        solve_pattern_channels,
     )
 
     out, cfg = compressed
     monkeypatch.chdir(out)
     patterns = out / "patterns.json"
     manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
-    compression = manifest["compression"]
-    poly = polynomial_from_manifest(compression)
-    rows = care_bit_rows(
-        poly, compression["phase_shifter_taps"], int(manifest["max_chain_length"])
-    )
+    decompressor = continuous_from_manifest(manifest["compression"])
+    max_chain_length = int(manifest["max_chain_length"])
 
-    def seed_of(number: int, raw: dict[str, Any]) -> int:
+    def words_of(number: int, raw: dict[str, Any]) -> dict[int, list[bool]]:
         # Every load position a hard constraint (no load_care).
-        return int(solve_pattern_seed(raw["load_seqs"], rows, poly.width, number))
+        words: dict[int, list[bool]] = solve_pattern_channels(
+            raw["load_seqs"], decompressor, max_chain_length, number
+        )
+        return words
 
     exported = json.loads(patterns.read_text(encoding="utf-8"))
     assert exported
     for number, raw in enumerate(exported):
-        seed_of(number, raw)
+        words_of(number, raw)
     assert credit_not_reproduced(cfg, patterns) == []
-    assert compressed_credit_not_reproduced(cfg, patterns, seed_of) == {
+    assert compressed_credit_not_reproduced(cfg, patterns, words_of) == {
         "not_reproduced": [],
         "golden": [],
     }
     # Back to back on the composed chip's sky130 cells, from power-up, each
-    # pattern's own seed on comp_si: each pattern's pulse arms the reseed, and
-    # every unload and output matches.
+    # pattern's own words on comp_si: each pattern's pulse arms the ring's clear,
+    # and every unload and output matches.
     if shutil.which("iverilog") is not None and shutil.which("vvp") is not None:
         assert replay_on_cells(cfg, patterns, out / "replay") == []
-    assert _report(cfg, out)["summary"]["compression_unresolved"] > 0
+    # The continuous decompressor's 8 channels x 8 shifts load this chip's 81
+    # cells with every care bit the ATPG asks for; the one-shot decompressor's 8
+    # seed bits left 275 faults here only a load it couldn't make would test.
+    assert _report(cfg, out)["summary"]["compression_unresolved"] == 0

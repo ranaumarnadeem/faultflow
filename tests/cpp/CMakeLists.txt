@@ -8,7 +8,6 @@ add_executable(
   scan/test_scan_chain.cpp
   scan/test_scan_sequence.cpp
   scan/test_scan_multiclock_stagger.cpp
-  scan/test_scan_compression.cpp
   scan/test_scan_setup.cpp
   sim/test_bit_parallel.cpp
   sim/test_sequence_grade.cpp

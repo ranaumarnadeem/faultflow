@@ -85,15 +85,31 @@ def test_load_care_roundtrips_exactly_when_present() -> None:
     )
 
 
-def test_a_compressed_patterns_seed_roundtrips_and_others_carry_none() -> None:
+def test_per_cycle_channel_words_roundtrip_and_others_carry_none() -> None:
     p = ScanPattern(
         load_seqs={0: [True, False]},
         capture_pi_values={},
         expected_unload={0: [False, True]},
-        seed=0b10110001,
+        channel_seqs={0: [True, False, True], 3: [False, False, True]},
     )
     d = scan_pattern_to_dict(p)
-    assert d["seed"] == 0b10110001
-    assert scan_pattern_from_dict(json.loads(json.dumps(d))).seed == 0b10110001
-    assert "seed" not in scan_pattern_to_dict(_sample_pattern())
-    assert scan_pattern_from_dict(scan_pattern_to_dict(_sample_pattern())).seed is None
+    assert d["channel_seqs"] == {"0": [True, False, True], "3": [False, False, True]}
+    restored = scan_pattern_from_dict(json.loads(json.dumps(d)))
+    assert restored.channel_seqs == {0: [True, False, True], 3: [False, False, True]}
+    assert all(isinstance(channel, int) for channel in restored.channel_seqs or {})
+    assert "channel_seqs" not in scan_pattern_to_dict(_sample_pattern())
+    assert (
+        scan_pattern_from_dict(scan_pattern_to_dict(_sample_pattern())).channel_seqs
+        is None
+    )
+
+
+def test_a_seed_in_an_old_patterns_file_is_no_longer_a_field() -> None:
+    """The one-shot seed is gone: a patterns.json from before carries `seed` and no
+    channel_seqs, so it loads with no channel words (a compressed chip refuses it:
+    tester_program)."""
+    d = scan_pattern_to_dict(_sample_pattern())
+    d["seed"] = 0b10110001
+    restored = scan_pattern_from_dict(d)
+    assert not hasattr(restored, "seed")
+    assert restored.channel_seqs is None

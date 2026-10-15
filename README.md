@@ -18,7 +18,7 @@ Manufacturing test of digital chips depends on ATPG, and the established tools (
   CNF, escalating per-fault timeouts, parallel workers, sim-verified compaction.
 - **Stuck-at and transition faults** — transition as combinational broadside plus scan LOC and LOS.
 - **Full-scan insertion** with structural chain validation and scan ATPG on a reduced pseudo-PI/PO view; Sky130 scan-cell techmap, checked by `write_netlist -verify`.
-- **Scan compression and compaction** (`scan-compress`, `scan-compact`) — ring-generator decompressor on the scan inputs, XOR-tree space compactor on the scan outputs. SAT ATPG solves through the decompressor, so every compressed pattern is a load it can make; the composed chip is written as sky130 Verilog.
+- **Scan compression and compaction** (`scan-compress`, `scan-compact`) — continuous-flow ring-generator decompressor on the scan inputs, XOR-tree space compactor on the scan outputs. SAT ATPG solves through the decompressor, so every compressed pattern is a load it can make; the composed chip is written as sky130 Verilog.
 - **Pattern export** — JSON (`sim --scan --export-patterns`) and STIL (IEEE 1450, `write-patterns`), load and unload overlapped by default; every exported flow is replayed on the sky130 cell models in the test suite.
 - **DFT rule check** (`rule_check`) — structural clock, scan, multi-driver, combinational-loop and compression/compaction rules.
 - **Test-point insertion** — OpenTestability `add_tp` / `reject_tp` from the Tcl shell, with before/after coverage.

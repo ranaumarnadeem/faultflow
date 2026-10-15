@@ -1,8 +1,8 @@
 """Tests for check_compaction_structure, using hand-built fixtures shaped
-like real Yosys/abc output (see compaction_checks.py's module docstring and
-compression_checks.py's, which documents the empty-port_directions finding
-this mirrors): Sky130 cell types with an EMPTY `port_directions` dict, and a
-single-chain fanout row optimized to a pure net alias (no gate at all)."""
+like real Yosys/abc output (see compaction_checks.py's module docstring, which
+documents the empty-port_directions finding): Sky130 cell types with an EMPTY
+`port_directions` dict, and a single-chain fanout row optimized to a pure net
+alias (no gate at all)."""
 
 from __future__ import annotations
 

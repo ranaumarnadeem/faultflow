@@ -11,11 +11,12 @@ import pytest
 from faultflow.config import ConfigError, load_config
 from faultflow.jtag.command import JtagError, run_jtag
 from faultflow.scan.compaction import build_compactor_fanout, compactor_wrapper_verilog
-from faultflow.scan.compression import ring_generator_wrapper_verilog
-from faultflow.scan.ring_generator import LfsrPolynomial
+from faultflow.scan.compression import (
+    build_continuous_decompressor,
+    decompressor_wrapper_verilog,
+)
 
 pytestmark = pytest.mark.unit
-POLY = LfsrPolynomial(2, frozenset({1}))
 
 
 def _core() -> dict[str, Any]:
@@ -46,13 +47,11 @@ def _core() -> dict[str, Any]:
 
 def test_a_channel_bus_named_like_a_design_port_is_refused() -> None:
     scan_in, scan_out = ["scan_in_0", "scan_in_1"], ["scan_out_0", "scan_out_1"]
+    clashing = build_continuous_decompressor(scan_in, 2, ring_width=8)
     with pytest.raises(ValueError, match="channel port 'tdi' is a port of"):
-        ring_generator_wrapper_verilog(
-            _core(), "core_top", scan_in, POLY, [[0], [0, 1]], "wrap"
-        )
-    rtl = ring_generator_wrapper_verilog(
-        _core(), "core_top", scan_in, POLY, [[0], [0, 1]], "wrap", channel_port="cs"
-    )
+        decompressor_wrapper_verilog(_core(), "core_top", clashing, "wrap")
+    apart = build_continuous_decompressor(scan_in, 2, ring_width=8, channel_port="cs")
+    rtl = decompressor_wrapper_verilog(_core(), "core_top", apart, "wrap")
     assert "input [1:0] cs;" in rtl and "input tdi;" in rtl
     fanout = build_compactor_fanout(2, len(scan_out))
     with pytest.raises(ValueError, match="channel port 'tdo' is a port of"):

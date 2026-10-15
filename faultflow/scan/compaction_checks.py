@@ -2,22 +2,29 @@
 re-derives the compactor's XOR structure from the SYNTHESIZED netlist's own
 connectivity and diffs it against what the manifest declares -- the same
 "structural re-derivation, not SAT-based LEC" discipline as
-``check_scan_structure``/``check_compression_structure``.
+``check_scan_structure``.
 
 The compactor has NO register/feedback structure at all -- it's purely
 combinational, a single static XOR tree -- so, unlike the decompressor's
-structural check (which needs separate recognition for the phase-shifter's
-fan-out and the ring generator's own feedback-tap/reseed-mux cone), this
-check covers the compactor completely in one pass.
+structural check (``decompressor_check``, which simulates the ring symbolically),
+this check covers the compactor completely in one pass.
 
-Reuses the exact same GF(2)-linear-cone-walk primitives as
-``compression_checks.py`` (duplicated, not imported, to keep the
-decompression and compaction check modules independent, same convention as
-``compaction.py`` vs ``compression.py``) -- see that module's docstring for
-the full rationale behind the hardcoded ``_LINEAR_GATE_PINS`` table (real
-Sky130 library cells have an EMPTY ``port_directions`` dict in this
-project's synthesized JSON) and the net-name-not-cell-instance anchoring
-discipline.
+Confirmed by direct inspection of real Yosys/abc output (do not "fix" this file to
+trust any of these again without re-verifying against a real synthesized netlist):
+
+1. Cell INSTANCE NAMES are Yosys/abc-generated and unstable
+   (``$auto$ff.cc:337:slice$93``, ``$abc$130$auto$blifparse.cc:...``) -- never
+   usable as an identification anchor. NET NAMES the RTL explicitly declares do
+   survive synthesis as ``netnames`` entries, which is why this check anchors on
+   those, not cell instances.
+2. **Every real Sky130 library cell's ``port_directions`` dict in this project's
+   synthesized JSON is EMPTY** (``{}``). Input vs. output pin roles therefore
+   cannot be read from it for any real library cell: they come from the
+   hardcoded ``_LINEAR_GATE_PINS`` table below, exactly as the C++ core never
+   trusts Yosys JSON for cell semantics (CLAUDE.md: "Truth comes from the
+   ``gate_type`` + port mapping + ``gate_eval.cpp`` semantics code").
+3. A single-chain fanout row gets optimized to a pure net alias (no gate at
+   all) -- the walker's leaf check must run BEFORE looking for a driving cell.
 """
 
 from __future__ import annotations
@@ -93,8 +100,7 @@ def _linear_cone(
     """(coefficient bitmask over leaf_index's leaves, inverted) for net_id's
     driving cone. Raises ScanError on a non-linear gate, a fan-in count that
     doesn't match the gate's arity, or an undriven net that isn't a declared
-    leaf. Identical algorithm to compression_checks.py's helper of the same
-    name -- see that module for the full explanation of each check."""
+    leaf."""
     if net_id in leaf_index:
         return (1 << leaf_index[net_id], False)
     if net_id in cache:
@@ -142,7 +148,7 @@ def check_compaction_structure(
     side) and require it to match ``manifest["compaction"]["fanout"]`` exactly.
 
     A no-op (no errors, no warnings) when compaction is absent/disabled in
-    the manifest -- opt-in, matching ``check_compression_structure``.
+    the manifest -- opt-in, matching ``check_composed_decompressor``.
     """
     errors: list[str] = []
     warnings: list[str] = []

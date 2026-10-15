@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from faultflow.project.assemble import assemble_soc
-from faultflow.scan.compression import ContinuousDecompressor, Decompressor
+from faultflow.scan.compression import ContinuousDecompressor
 
 
 def _port_decl(name: str, direction: str, width: int) -> str:
@@ -38,14 +38,11 @@ def _port_decl(name: str, direction: str, width: int) -> str:
 def build_compactor_fanout(num_outputs: int, num_internal_bits: int) -> list[list[int]]:
     """``fanout[o]`` = sorted list of internal scan-chain-output indices
     XORed into compactor output bit ``o`` -- the observability-direction
-    mirror of ``faultflow.scan.compression.build_broadcast_fanout`` (one row
-    per FEW output bit here, instead of one row per MANY internal bit
-    there -- the size relationship is necessarily reversed for a compactor,
-    which is why this is a new function rather than a reuse of that one).
+    counterpart of the decompressor's phase shifter (one row per FEW output
+    bit here, instead of one row per MANY scan input there).
 
-    Deliberately simple, deterministic construction (same
-    placeholder-construction discipline as ``build_broadcast_fanout`` --
-    testable, structurally sound, not literature-tuned): chain ``c``
+    Deliberately simple, deterministic construction (testable, structurally
+    sound, not literature-tuned): chain ``c``
     (0-indexed) is assigned the ``(c % period) + 1``-th non-zero
     ``num_outputs``-bit value as its "column" (which output bits it
     contributes to), where ``period = 2**num_outputs - 1`` is the count of
@@ -86,7 +83,7 @@ def compactor_wrapper_verilog(
     wrapper_module: str,
     channel_port: str = "tdo",
     instance_name: str = "core_inst",
-    decompressor: Decompressor | ContinuousDecompressor | None = None,
+    decompressor: ContinuousDecompressor | None = None,
 ) -> str:
     """Emit compactor wrapper RTL: instantiate ``core_module`` by name (a
     real instantiation -- blackboxing happens later, in assemble.py's
@@ -112,7 +109,7 @@ def compactor_wrapper_verilog(
 
     ``instance_name`` MUST match whatever key the caller uses for this core
     in ``assemble_soc()``'s ``blocks``/``block_module`` dicts, exactly as in
-    ``compression.py``'s ``ring_generator_wrapper_verilog`` -- see that
+    ``compression.py``'s ``decompressor_wrapper_verilog`` -- see that
     function's docstring for the full rationale (unchanged here).
     """
     for row in fanout:
@@ -213,7 +210,7 @@ def insert_compaction(
     *,
     workdir: Path,
     channel_port: str = "tdo",
-    decompressor: Decompressor | ContinuousDecompressor | None = None,
+    decompressor: ContinuousDecompressor | None = None,
 ) -> tuple[Path, CompactionMap]:
     """Insert a static XOR-tree space compactor around a frozen, already
     scan-stitched core netlist, producing one flat composed netlist at
@@ -221,7 +218,7 @@ def insert_compaction(
     decompressor too, the whole chip.
 
     Reuses faultflow.project.assemble.assemble_soc() UNCHANGED, the exact
-    same reuse shape as faultflow.scan.compression.insert_compression: the
+    same reuse shape as faultflow.scan.compression.insert_continuous_compression: the
     core design plays the single "block" (blackboxed via block_stub_verilog
     so Yosys's optimizer never touches it, spliced back in post-synthesis
     via compose_soc), and the newly-generated compactor wrapper RTL plays the

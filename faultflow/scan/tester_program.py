@@ -11,9 +11,11 @@ these cycles, and the STIL writer writes them.
 The chip is the netlist a tester connects to: the scanned one, or with scan
 compression or compaction the one ``scan-compress`` or ``scan-compact`` composed
 (with both, the compacted netlist holds the decompressor too). A compressed
-pattern's seed is held on the compression channels and the decompressor's cells
-load the chains; a compacted unload is compared on the compactor's channels, each
-channel bit the XOR of the unload bits it reads. Scan clocks idle at 0."""
+pattern's channel words (``channel_seqs``) are driven on the compression channels,
+one per shift of the load, and the decompressor's cells load the chains; the
+channels are 0 in every other cycle. A compacted unload is compared on the
+compactor's channels, each channel bit the XOR of the unload bits it reads. Scan
+clocks idle at 0."""
 
 from __future__ import annotations
 
@@ -28,7 +30,7 @@ from faultflow.scan.setup import SetupCycle, setup_from_list
 # A pattern's phases, in the order its cycles come.
 PHASES = ("setup", "preamble", "load", "launch", "capture", "unload")
 
-# The scanned design's instance in a composed netlist (insert_compression,
+# The scanned design's instance in a composed netlist (insert_continuous_compression,
 # insert_compaction): its cells are named "core_inst__<cell>" there.
 CORE_INSTANCE = "core_inst"
 
@@ -67,13 +69,18 @@ class Chip:
     scan_ins: tuple[str, ...]
     # The pins unloading each chain; none with compaction.
     scan_outs: tuple[str, ...]
-    # With compression, the channel bits a seed is held on: seed bit k on the k-th.
-    seed_bits: tuple[str, ...]
+    # With compression, the channel bits its decompressor takes: channel k on the
+    # k-th.
+    channel_ins: tuple[str, ...]
     # With compaction, the channel bits, and the chains each reads (XORed).
     channel_bits: tuple[str, ...]
     fanout: tuple[tuple[int, ...], ...]
     chain_lengths: Mapping[int, int]
     max_chain_length: int
+    # With compression, the shifts a load takes beyond the longest chain's (the
+    # continuous decompressor's warm-up: the first scan-ins fall off the chains'
+    # far ends); the unload takes the longest chain's alone.
+    warmup: int = 0
 
     @property
     def inputs(self) -> list[str]:
@@ -124,10 +131,17 @@ def chip_of(manifest: Mapping[str, Any]) -> Chip:
             for row in compaction["fanout"]
         )
         channel_bits = _bus(str(compaction.get("channel_port", "tdo")), len(fanout))
-    seed_bits: tuple[str, ...] = ()
+    channel_ins: tuple[str, ...] = ()
+    warmup = 0
     if compression:
+        if compression.get("architecture") != "continuous":
+            raise ScanError(
+                "the manifest's compression entry is not a continuous-flow "
+                "decompressor's: run scan-compress again"
+            )
         port = str(compression.get("channel_port", "tdi"))
-        seed_bits = _bus(port, int(compression["num_channels"]))
+        channel_ins = _bus(port, int(compression["num_channels"]))
+        warmup = int(compression["warmup"])
     return Chip(
         top=top,
         module=module,
@@ -139,7 +153,8 @@ def chip_of(manifest: Mapping[str, Any]) -> Chip:
             () if compression else tuple(str(p) for p in manifest["scan_inputs"])
         ),
         scan_outs=() if compaction else tuple(scan_outputs),
-        seed_bits=seed_bits,
+        channel_ins=channel_ins,
+        warmup=warmup,
         channel_bits=channel_bits,
         fanout=fanout,
         chain_lengths={int(c["index"]): int(c["length"]) for c in manifest["chains"]},
@@ -217,7 +232,7 @@ def cycles(
     for pattern_cycles in own:
         loads = [cycle for cycle in pattern_cycles if cycle.phase == "load"]
         for t, load in enumerate(loads):
-            if previous:
+            if previous and t < len(previous):
                 unload = previous[t]
                 load = replace(
                     load, expect=dict(unload.expect), unloading=unload.pattern
@@ -255,7 +270,6 @@ def _pattern_cycles(
         {n: int(v) for n, v in pattern.get("shift_pi_values", {}).items() if n in shift}
     )
     for values in (capture, shift):
-        values.update(_seeded(chip, pattern, index))
         values.update(dict.fromkeys(chip.scan_ins, 0))
         values[chip.scan_enable] = 0
     own: list[Cycle] = _setup_cycles(
@@ -267,10 +281,13 @@ def _pattern_cycles(
     for _ in range(int(pattern.get("preamble_cycles", 0))):
         own.append(Cycle(index, "preamble", dict(shift), {}))
     shifts = _shift_length(chip, pattern, index)
-    for t in range(shifts):
-        own.append(
-            Cycle(index, "load", _shifting(chip, shift, pattern["load_seqs"], t), {})
+    words = _channel_words(chip, pattern, index)
+    for t in range(chip.warmup + shifts):
+        values = _shifting(chip, shift, pattern["load_seqs"], t - chip.warmup)
+        values.update(
+            {pin: seq[t] if t < len(seq) else 0 for pin, seq in words.items()}
         )
+        own.append(Cycle(index, "load", values, {}))
     launch = str(pattern.get("launch", ""))
     if launch == "loc":
         own.append(Cycle(index, "launch", dict(capture), {}))
@@ -293,7 +310,7 @@ def _setup_cycles(
 ) -> list[Cycle]:
     """Pattern `index`'s test setup program: in each cycle every input at the
     value the program gives it, 0 if none, and the clocks it pulses."""
-    if setup and (chip.seed_bits or chip.channel_bits):
+    if setup and (chip.channel_ins or chip.channel_bits):
         raise ScanError(
             f"pattern {index} has a test setup program, which a chip with scan "
             "compression or compaction can't take"
@@ -334,7 +351,7 @@ def _shift_length(chip: Chip, pattern: Mapping[str, Any], index: int) -> int:
     if raw is None:
         return chip.max_chain_length
     shifts = int(raw)
-    if chip.seed_bits:
+    if chip.channel_ins:
         raise ScanError(
             f"pattern {index} shifts only some chains (shift_length), which a "
             "compressed chip's decompressor can't"
@@ -347,17 +364,27 @@ def _shift_length(chip: Chip, pattern: Mapping[str, Any], index: int) -> int:
     return shifts
 
 
-def _seeded(chip: Chip, pattern: Mapping[str, Any], index: int) -> dict[str, int]:
-    """With compression, the pattern's seed on the channel bits."""
-    if not chip.seed_bits:
+def _channel_words(
+    chip: Chip, pattern: Mapping[str, Any], index: int
+) -> dict[str, list[int]]:
+    """With compression, what the pattern drives on each channel bit in each shift
+    of its load."""
+    if not chip.channel_ins:
         return {}
-    seed = pattern.get("seed")
-    if seed is None:
+    seqs = pattern.get("channel_seqs")
+    if seqs is None:
         raise ScanError(
-            f"pattern {index} has no seed: a compressed pattern is exported with "
-            "its decompressor seed (export the patterns again)"
+            f"pattern {index} has no channel_seqs: a compressed pattern is exported "
+            "with the words a tester drives on the decompressor's channels (export "
+            "the patterns again)"
         )
-    return {bit: (int(seed) >> k) & 1 for k, bit in enumerate(chip.seed_bits)}
+    words: dict[str, list[int]] = {}
+    for k, pin in enumerate(chip.channel_ins):
+        seq = seqs.get(str(k))
+        if seq is None:
+            raise ScanError(f"pattern {index}'s channel_seqs has no channel {k}")
+        words[pin] = [int(bit) for bit in seq]
+    return words
 
 
 def _shifting(
@@ -382,7 +409,7 @@ def _unloaded(chip: Chip, pattern: Mapping[str, Any], t: int) -> dict[str, int |
         mask = masks.get(str(chain))
         if mask is not None and t < len(mask) and not mask[t]:
             return None  # a flop that captured an unknown value
-        if chip.seed_bits and t >= chip.chain_lengths.get(chain, 0):
+        if chip.channel_ins and t >= chip.chain_lengths.get(chain, 0):
             return None  # what the decompressor shifts through a shorter chain
         bits = pattern["expected_unload"].get(str(chain), [])
         return int(bits[t]) if t < len(bits) else None

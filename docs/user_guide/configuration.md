@@ -317,8 +317,9 @@ Written by `ff.py autombist-generate` (see [External tools](../external_tools.md
 
 ## `[compression]` and `[compaction]`
 
-Scan test-pattern compression (`ff.py scan-compress`: a ring-generator and
-phase-shifter decompressor in front of the scan inputs) and response compaction
+Scan test-pattern compression (`ff.py scan-compress`: a continuous-flow decompressor, a
+ring generator that takes the channel bits on every shift and a phase shifter, in front of
+the scan inputs) and response compaction
 (`ff.py scan-compact`: an XOR-tree space compactor behind the scan outputs). Each
 wraps the scanned design, which becomes the instance `core_inst`, in
 `<top>_compressed.json` or `<top>_compacted.json`, and in `<top>_compressed.v` or
@@ -331,21 +332,27 @@ inserted, and `scan-compress` run afterwards builds it again around its new one.
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Insert it |
-| `channels` | `8` | External channels. Compression: an LFSR width, 8, 16, 32 or 64 |
+| `channels` | `8` | External channels. Compression: 1 to 64, and no more than `ring_width` |
+| `ring_width` | the smallest of 8, 16, 32, 64 at least twice `channels` (else 64) | `[compression]` only: the ring generator's stages, one of 8, 16, 32 or 64 at least as wide as `channels` |
+| `warmup` | enough for a channel bit to reach every ring stage: `ceil(ring_width / channels)`, at least 1 | `[compression]` only: the shifts a load takes beyond the longest chain's. The first only fill the ring; their scan-in bits fall off the chains' far ends |
 | `scan_enable`, `clock` | the design's | `[compression]` only: the scan enable and clock the decompressor uses |
 | `channel_port` | `tdi` / `tdo` | The name of the channel bus. It can't be a port the design already has, and `ff.py jtag` refuses a TAP pin's name. The `.ofs` `mbist-insert -c` writes for a chip with a TAP sets `comp_si` and `comp_so` unless yours sets them |
 
-The decompressor loads every scan cell from one seed of `channels` bits per
-pattern (a channel value at the start of the load, then the ring generator runs),
-so a compressed design can apply only the loads that seed space spans. `sim --scan`
-generates only those: SAT solves with each scan cell tied to its seed bits
-(launching on shift, each chain's launch-shift bit too), random fill draws random
-seeds, and every pattern is graded and exported as the seed's whole scan-in stream
-(`load_care` names every position). A fault some test detects but no load the
-decompressor makes is `compression_unresolved`: undetected, in the denominator,
-never redundant. Only more channels (a wider seed) widen what it can load; how the
-cells are split into chains doesn't. A campaign graded before this can't be resumed:
-re-run with `--clean`.
+The decompressor takes a word of `channels` bits on every shift of a load, so a load
+is `channels` x (`warmup` + the longest chain's length) free bits and a compressed design
+can apply only the loads that space spans. The ring is cleared when scan enable rises
+(after a clock with it low: every pattern's `preamble_cycles` gives one), so each
+pattern's load is the same function of its words wherever the previous one left the chip.
+`sim --scan` generates only loads of that space: SAT solves with each scan cell tied to
+the ring stages it reads (launching on shift, each chain's launch-shift bit too), random
+fill draws random channel words, and every pattern is graded and exported as the words'
+whole scan-in stream (`load_care` names every position; `channel_seqs` holds the words). A
+fault some test detects but no load the decompressor makes is `compression_unresolved`:
+undetected, in the denominator, never redundant. More channels, a longer chain or a longer
+`warmup` widen what it can load; how the cells are split into chains changes the chain
+length, and so the space. A `scan-compress` from before (a one-shot decompressor, which
+took one seed per pattern) is refused: run it again. A campaign graded before this can't
+be resumed: re-run with `--clean`.
 
 ## `[jtag]`
 

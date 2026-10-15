@@ -1003,8 +1003,8 @@ def test_q_stem_unsat_sets_protocol_unresolved_not_redundant(
 
 def _with_compression(scan_ctx: ScanPipelineContext) -> ScanPipelineContext:
     """The same context with 8-channel compression on, built the way a real
-    campaign builds it -- the decompressor's seed rows included. These tests
-    exercise the round loop's handling of it; the rows themselves are tested
+    campaign builds it -- the decompressor's seed program included. These tests
+    exercise the round loop's handling of it; the program itself is tested
     in test_seeded_compression.py."""
     cfg = dataclasses.replace(
         scan_ctx.cfg, compression=CompressionConfig(enabled=True, channels=8)
@@ -1082,8 +1082,9 @@ def test_compressed_campaign_solves_through_the_decompressor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
 ) -> None:
     """With [compression] every scan solve carries the decompressor's seed
-    constraints -- one row of seed bits per scan cell -- so a SAT vector is a
-    load it can make. Without compression no solve does."""
+    constraints -- the load as a program over its free bits, and per scan cell
+    the variables it XORs -- so a SAT vector is a load it can make. Without
+    compression no solve does."""
     import faultflow.runner.runner as runner_mod
     from faultflow.db.campaign import ensure_campaign
 
@@ -1119,8 +1120,11 @@ def test_compressed_campaign_solves_through_the_decompressor(
         if scan_ctx is plain_ctx:
             assert not any("seeded_inputs" in kwargs for kwargs in calls)
         else:
+            program = compressed_ctx.seed_program
+            assert program is not None
             for kwargs in calls:
-                assert kwargs["seed_width"] == 8
+                assert kwargs["seed_width"] == program.seed_width
+                assert kwargs["seed_defs"] == program.defs
                 assert kwargs["seeded_inputs"] == compressed_ctx.seeded_inputs
 
 

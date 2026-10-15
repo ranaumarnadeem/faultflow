@@ -14,12 +14,22 @@ from typing import Callable
 
 import pytest
 
-from continuous_chip import LIBERTY, TOP, cell_map, compose, scanned_core, top_module
+from continuous_chip import (
+    CELL_MAP,
+    COMPOSED_TOP,
+    LIBERTY,
+    TOP,
+    cell_map,
+    compose,
+    scanned_core,
+    top_module,
+)
 from faultflow.scan.compaction import insert_compaction
 from faultflow.scan.compression import ContinuousDecompressor
 from faultflow.scan.decompressor_check import (
     Value,
     _anf,
+    check_composed_decompressor,
     check_continuous_decompressor,
 )
 
@@ -159,3 +169,39 @@ def test_a_non_linear_gate_fails(tmp_path: Path, require_cpp_core: None) -> None
         ),
     )
     assert any("isn't linear" in e for e in errors), errors
+
+
+@pytest.mark.integration
+def test_the_manifest_level_check_reads_the_chip_the_entry_records(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+    chain_lengths = [3, 2, 3, 1]
+    composed, decompressor = compose(tmp_path, chain_lengths, 3)
+    entry = {
+        **decompressor.manifest_entry(),
+        "enabled": True,
+        "composed_json": str(composed),
+        "composed_top": COMPOSED_TOP,
+    }
+    manifest = {
+        "top": TOP,
+        "max_chain_length": max(chain_lengths),
+        "compression": entry,
+    }
+    assert check_composed_decompressor(manifest, CELL_MAP).passed
+
+    # An entry for other taps than the chip has is a failure.
+    taps = entry["phase_shifter_taps"]
+    swapped = {**entry, "phase_shifter_taps": [taps[1], taps[0], *taps[2:]]}
+    wrong = check_composed_decompressor({**manifest, "compression": swapped}, CELL_MAP)
+    assert not wrong.passed and "isn't the model's" in wrong.errors[0]
+
+    # Nothing to check without compression; a one-shot entry says to run it again.
+    assert check_composed_decompressor({"top": TOP}, CELL_MAP).passed
+    off = {**manifest, "compression": {"enabled": False}}
+    assert check_composed_decompressor(off, CELL_MAP).passed
+    old = {k: v for k, v in entry.items() if k != "architecture"}
+    result = check_composed_decompressor({**manifest, "compression": old}, CELL_MAP)
+    assert not result.passed and "scan-compress" in result.errors[0]

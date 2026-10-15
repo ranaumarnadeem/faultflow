@@ -16,8 +16,8 @@ enum class SatSolveResult : uint8_t {
 };
 
 // A (pseudo-)PI a scan-compression decompressor drives: its value is the XOR of
-// these bits of the decompressor's seed (faultflow/scan/ring_generator.py::
-// care_bit_rows). No bits: the value is 0.
+// these variables of the decompressor's seed program (faultflow/scan/
+// ring_generator.py::continuous_seed_program). No bits: the value is 0.
 struct SeededInput {
   uint32_t compiled = 0;  // CompiledNetIndex of the PI
   std::vector<int> seed_bits;

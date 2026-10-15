@@ -186,4 +186,6 @@ def test_graybox_patterns_take_the_chips_chain_numbers() -> None:
     assert chip["launch_scan_in"] == {"2": True}
     assert chip["shift_length"] == 2 and chip["capture_pi_values"] == {"a": True}
     with pytest.raises(WrapError, match="compressed"):
-        chip_patterns([{**pattern, "seed": 3}], {0: 1, 1: 2}, 2)
+        chip_patterns(
+            [{**pattern, "channel_seqs": {"0": [True, False]}}], {0: 1, 1: 2}, 2
+        )

@@ -6,7 +6,11 @@ from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
 
-from faultflow.scan.ring_generator import lookup_polynomial
+from faultflow.scan.ring_generator import (
+    default_ring_width,
+    default_warmup,
+    lookup_polynomial,
+)
 
 FAULTFLOW_WORKSPACE = ".faultflow"
 
@@ -167,12 +171,26 @@ def _compression_config(parser: ConfigParser) -> "CompressionConfig":
         scan_enable=parser.get("compression", "scan_enable", fallback=""),
         clock=parser.get("compression", "clock", fallback=""),
         channel_port=_channel_port(parser, "compression", "tdi"),
+        ring_width=_optional_int(parser, "compression", "ring_width"),
+        warmup=_optional_int(parser, "compression", "warmup"),
     )
     if cfg.enabled:
-        try:
-            lookup_polynomial(cfg.channels)
-        except ValueError as exc:
-            raise ConfigError(f"[compression] channels: {exc}") from exc
+        if not 1 <= cfg.channels <= 64:
+            raise ConfigError(
+                f"[compression] channels must be 1 to 64, got {cfg.channels}"
+            )
+        if cfg.ring_width is not None:
+            try:
+                lookup_polynomial(cfg.ring_width)
+            except ValueError as exc:
+                raise ConfigError(f"[compression] ring_width: {exc}") from exc
+            if cfg.ring_width < cfg.channels:
+                raise ConfigError(
+                    f"[compression] ring_width {cfg.ring_width} is narrower than "
+                    f"its {cfg.channels} channels"
+                )
+        if cfg.warmup is not None and cfg.warmup < 1:
+            raise ConfigError("[compression] warmup must be at least 1")
     return cfg
 
 
@@ -336,11 +354,15 @@ class ScanConfig:
 
 @dataclass(frozen=True)
 class CompressionConfig:
-    """Scan test-pattern compression (sequential ring-generator + phase-shifter
-    decompressor, ``faultflow.scan.compression``). ``channels`` is the LFSR
-    register width -- must be one of the curated widths in
-    ``faultflow.scan.ring_generator.PRIMITIVE_POLYNOMIALS`` (validated at
-    config-load time, not deferred to insertion). ``scan_enable``/``clock``
+    """Scan test-pattern compression (the continuous-flow decompressor: a ring
+    generator that takes ``channels`` channel bits on every shift, and a phase
+    shifter, ``faultflow.scan.compression``). ``channels`` is the width of the
+    channel input bus, 1 to 64; ``ring_width`` the ring's stages, one of the curated
+    widths in ``faultflow.scan.ring_generator.PRIMITIVE_POLYNOMIALS`` at least as
+    wide as the channels (default: the smallest at least twice the channels);
+    ``warmup`` the shifts a load takes beyond the longest chain's (default: enough
+    for a channel bit to reach every ring stage). All are validated at config-load
+    time, not deferred to insertion. ``scan_enable``/``clock``
     empty means "reuse the design's existing scan-enable/clock port names"
     (``ScanConfig.scan_enable`` / the design's declared ``ClockSpec.port``).
     ``channel_port`` names the external channel input bus; it can't be a port of
@@ -352,6 +374,22 @@ class CompressionConfig:
     scan_enable: str = ""
     clock: str = ""
     channel_port: str = "tdi"
+    ring_width: int | None = None
+    warmup: int | None = None
+
+    @property
+    def effective_ring_width(self) -> int:
+        """The ring's stages: ``ring_width``, else the default for the channels."""
+        if self.ring_width is not None:
+            return self.ring_width
+        return default_ring_width(self.channels)
+
+    @property
+    def effective_warmup(self) -> int:
+        """The warm-up shifts: ``warmup``, else the default for the ring."""
+        if self.warmup is not None:
+            return self.warmup
+        return default_warmup(self.effective_ring_width, self.channels)
 
 
 @dataclass(frozen=True)

@@ -33,11 +33,11 @@ Implemented today:
 - **Blackbox instances** (`[blackbox]`): memories and macros modeled as test
   boundaries, or, in scan, as opaque cells whose unknown outputs are masked.
 - **Scan test-pattern compression and response compaction** (`scan-compress` /
-  `scan-compact`): a ring-generator and phase-shifter decompressor in front of the scan
-  inputs and a static XOR-tree space compactor behind the scan outputs, each
-  structurally self-checked. SAT ATPG solves through the decompressor, so every
-  compressed pattern is a load it can make, and the composed chip is written as sky130
-  Verilog.
+  `scan-compact`): a continuous-flow decompressor (a ring generator that takes the channel
+  bits on every shift, and a phase shifter) in front of the scan inputs and a static
+  XOR-tree space compactor behind the scan outputs, each structurally self-checked. SAT
+  ATPG solves through the decompressor, so every compressed pattern is a load it can
+  make, and the composed chip is written as sky130 Verilog.
 - **Scan pattern export**: JSON (`sim --scan --export-patterns`) and STIL (IEEE 1450,
   `write-patterns`), with each load overlapping the previous unload by default. Every
   exported flow is replayed on the sky130 cell models in the test suite.
@@ -65,8 +65,6 @@ No further core-simulation-engine features are planned. faultflow's scope is now
 complete for flip-flop-only synchronous designs with no tristate — see Scope boundaries
 below for what's permanently excluded and why. DFT items still open:
 
-- A continuous-flow decompressor (channel data injected on every shift cycle) in place
-  of today's one seed per pattern.
 - Scan insertion of flip-flops whose D input synthesis tied to a constant.
 - Cells missing from the cell map treated as unknown in every flow when
   `unsupported_cells = blackbox`.

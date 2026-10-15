@@ -1,12 +1,10 @@
-"""Sequential ring-generator (LFSR) + phase-shifter model for scan-pattern
-compression.
+"""Ring-generator (LFSR) + phase-shifter model for scan-pattern compression.
 
-Single source of truth for the LFSR's structure, shared by BOTH the RTL
-generator (``compression.py::ring_generator_wrapper_verilog``) and the GF(2)
-seed-solving math (``care_bit_rows``, consumed by the ``solve_xor_broadcast``
-binding) -- so the synthesized hardware and the Python model used to solve for
-compressible seeds can never drift out of sync. See the compression plan for
-the full architecture.
+Single source of truth for the ring's structure, shared by the RTL generator
+(``compression.py::continuous_decompressor_verilog``), the check of the synthesized
+netlist (``decompressor_check``) and the load-as-a-program the SAT solves take
+(``continuous_seed_program``) -- so the synthesized hardware and the models used to
+solve for compressible loads can never drift out of sync.
 
 This models the decades-old, never-patented academic mechanism: an
 internal-XOR (Galois-form) LFSR ("ring generator") whose state evolves once
@@ -22,8 +20,9 @@ date). Not implemented from, or modeled on, any patent's claim language.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Sequence
 
 
 @dataclass(frozen=True)
@@ -88,9 +87,9 @@ def _step(rows: list[int], poly: LfsrPolynomial) -> list[int]:
     """Advance one shift cycle.
 
     Works identically whether ``rows[i]`` holds a raw 0/1 bit (real LFSR
-    state) or a GF(2) coefficient bitmask over seed bits (symbolic row, for
-    ``care_bit_rows``) -- the XOR recurrence is linear, so both uses share this
-    one function; no separate matrix-power machinery is needed.
+    state) or a GF(2) coefficient bitmask over the free bits (symbolic row, for
+    ``continuous_ring_states``) -- the XOR recurrence is linear, so both uses share
+    this one function; no separate matrix-power machinery is needed.
     """
     fb = rows[poly.width - 1]
     new = [0] * poly.width
@@ -98,27 +97,6 @@ def _step(rows: list[int], poly: LfsrPolynomial) -> list[int]:
     for i in range(1, poly.width):
         new[i] = rows[i - 1] ^ (fb if i in poly.taps else 0)
     return new
-
-
-def care_bit_rows(
-    poly: LfsrPolynomial, phase_shifter_taps: list[list[int]], max_chain_length: int
-) -> list[list[int]]:
-    """``out[t][c]`` = GF(2) coefficient bitmask (over the K seed/channel bits)
-    for scan chain ``c``'s ``scan_in`` value at shift cycle ``t``.
-
-    ``rows[i]`` starts as ``1 << i`` (state(0) == seed, identity map) and is
-    advanced via ``_step`` once per cycle; each cycle's phase-shifter output
-    for chain ``c`` is the XOR of ``rows[k]`` for every register bit ``k`` in
-    ``phase_shifter_taps[c]``. This row becomes one ``CareBit``'s effective
-    coefficient row for ``solve_xor_broadcast`` -- reused completely
-    unmodified (see ``src/core/scan/compression.{hpp,cpp}``).
-    """
-    rows = [1 << i for i in range(poly.width)]
-    out: list[list[int]] = []
-    for _ in range(max_chain_length):
-        out.append([_xor_reduce(rows[k] for k in taps) for taps in phase_shifter_taps])
-        rows = _step(rows, poly)
-    return out
 
 
 def _xor_reduce(values: Iterable[int]) -> int:
@@ -222,9 +200,8 @@ def continuous_scan_in_bits(
 
 
 def bitmask_to_index_list(mask: int) -> list[int]:
-    """Convert a GF(2) coefficient bitmask (as produced by ``care_bit_rows``)
-    into the sorted list-of-indices ``fanout`` row shape
-    ``solve_xor_broadcast`` (``src/core/scan/compression.hpp``) expects."""
+    """The sorted indices of the set bits of a GF(2) coefficient bitmask (such as
+    a row of ``continuous_scan_in_rows``)."""
     indices = []
     i = 0
     while mask:
@@ -233,3 +210,67 @@ def bitmask_to_index_list(mask: int) -> list[int]:
         mask >>= 1
         i += 1
     return indices
+
+
+@dataclass(frozen=True)
+class SeedProgram:
+    """A continuous-flow load as a straight-line program over its free bits: variable
+    ``i`` below ``seed_width`` is channel bit ``i % num_channels`` of the word applied
+    at shift ``i // num_channels``; variable ``seed_width + j`` is the XOR of the
+    earlier variables ``defs[j]``. ``states[t][k]`` is the variable holding ring stage
+    ``k`` at shift ``t`` (None: the stage is 0 there), so a scan-in is the XOR of a few
+    of them (:meth:`scan_in`) however many shifts the load takes -- where the flat row
+    of ``continuous_scan_in_rows`` grows with them. It is what the SAT solves take as
+    their seed definitions."""
+
+    seed_width: int
+    defs: list[list[int]]
+    states: list[list[int | None]]
+
+    def scan_in(self, shift: int, taps: Sequence[int]) -> list[int]:
+        """The variables whose XOR is the phase shifter's output over ``taps`` at
+        ``shift``: sorted, none for a constant 0."""
+        return _xor_of([self.states[shift][k] for k in taps])
+
+
+def _xor_of(variables: Iterable[int | None]) -> list[int]:
+    """The variables an XOR of ``variables`` leaves: those named an odd number of
+    times, sorted (a zero, None, drops out)."""
+    counts = Counter(v for v in variables if v is not None)
+    return sorted(v for v, n in counts.items() if n % 2)
+
+
+def continuous_seed_program(
+    poly: LfsrPolynomial, num_channels: int, shifts: int
+) -> SeedProgram:
+    """The ``shifts``-shift load of the continuous decompressor as a SeedProgram, with
+    the ring's state at each of the ``shifts + 1`` shifts that read it (the last is the
+    launch-on-shift shift's). Same model as continuous_ring_states: cleared at shift 0,
+    each shift the ring steps and each channel bit is XORed into its injector stage."""
+    width = poly.width
+    injectors = injector_stages(width, num_channels)
+    injected = {stage: c for c, stage in enumerate(injectors)}
+    seed_width = num_channels * shifts
+    defs: list[list[int]] = []
+    state: list[int | None] = [None] * width
+    states = [list(state)]
+    for t in range(shifts):
+        feedback = state[width - 1]
+        new: list[int | None] = []
+        for i in range(width):
+            terms = [feedback if i == 0 else state[i - 1]]
+            if i != 0 and i in poly.taps:
+                terms.append(feedback)
+            if i in injected:
+                terms.append(t * num_channels + injected[i])
+            variables = _xor_of(terms)
+            if not variables:
+                new.append(None)
+            elif len(variables) == 1:
+                new.append(variables[0])
+            else:
+                new.append(seed_width + len(defs))
+                defs.append(variables)
+        state = new
+        states.append(list(state))
+    return SeedProgram(seed_width, defs, states)
