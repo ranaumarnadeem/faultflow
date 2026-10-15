@@ -73,7 +73,7 @@ class _Groups:
 
 
 def _groups(chip: Chip) -> _Groups:
-    si = list(chip.scan_ins or chip.seed_bits)
+    si = list(chip.scan_ins or chip.channel_ins)
     so = list(chip.scan_outs or chip.channel_bits)
     clk = list(chip.clocks)
     taken = set(si) | set(clk) | {chip.scan_enable}

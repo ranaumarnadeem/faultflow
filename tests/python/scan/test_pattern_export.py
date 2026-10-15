@@ -85,6 +85,25 @@ def test_load_care_roundtrips_exactly_when_present() -> None:
     )
 
 
+def test_per_cycle_channel_words_roundtrip_and_others_carry_none() -> None:
+    p = ScanPattern(
+        load_seqs={0: [True, False]},
+        capture_pi_values={},
+        expected_unload={0: [False, True]},
+        channel_seqs={0: [True, False, True], 3: [False, False, True]},
+    )
+    d = scan_pattern_to_dict(p)
+    assert d["channel_seqs"] == {"0": [True, False, True], "3": [False, False, True]}
+    restored = scan_pattern_from_dict(json.loads(json.dumps(d)))
+    assert restored.channel_seqs == {0: [True, False, True], 3: [False, False, True]}
+    assert all(isinstance(channel, int) for channel in restored.channel_seqs or {})
+    assert "channel_seqs" not in scan_pattern_to_dict(_sample_pattern())
+    assert (
+        scan_pattern_from_dict(scan_pattern_to_dict(_sample_pattern())).channel_seqs
+        is None
+    )
+
+
 def test_a_compressed_patterns_seed_roundtrips_and_others_carry_none() -> None:
     p = ScanPattern(
         load_seqs={0: [True, False]},

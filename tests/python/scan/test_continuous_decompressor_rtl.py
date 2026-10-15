@@ -148,7 +148,7 @@ def test_on_the_sky130_cells_it_loads_the_same(tmp_path: Path) -> None:
         scan_enable="scan_en",
         scan_ins=(),
         scan_outs=outs,
-        seed_bits=(),
+        channel_ins=(),
         channel_bits=(),
         fanout=(),
         chain_lengths=dict(enumerate(chain_lengths)),

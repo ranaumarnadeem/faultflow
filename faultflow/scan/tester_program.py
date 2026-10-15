@@ -67,8 +67,9 @@ class Chip:
     scan_ins: tuple[str, ...]
     # The pins unloading each chain; none with compaction.
     scan_outs: tuple[str, ...]
-    # With compression, the channel bits a seed is held on: seed bit k on the k-th.
-    seed_bits: tuple[str, ...]
+    # With compression, the channel bits its decompressor takes: channel k on the
+    # k-th.
+    channel_ins: tuple[str, ...]
     # With compaction, the channel bits, and the chains each reads (XORed).
     channel_bits: tuple[str, ...]
     fanout: tuple[tuple[int, ...], ...]
@@ -124,10 +125,10 @@ def chip_of(manifest: Mapping[str, Any]) -> Chip:
             for row in compaction["fanout"]
         )
         channel_bits = _bus(str(compaction.get("channel_port", "tdo")), len(fanout))
-    seed_bits: tuple[str, ...] = ()
+    channel_ins: tuple[str, ...] = ()
     if compression:
         port = str(compression.get("channel_port", "tdi"))
-        seed_bits = _bus(port, int(compression["num_channels"]))
+        channel_ins = _bus(port, int(compression["num_channels"]))
     return Chip(
         top=top,
         module=module,
@@ -139,7 +140,7 @@ def chip_of(manifest: Mapping[str, Any]) -> Chip:
             () if compression else tuple(str(p) for p in manifest["scan_inputs"])
         ),
         scan_outs=() if compaction else tuple(scan_outputs),
-        seed_bits=seed_bits,
+        channel_ins=channel_ins,
         channel_bits=channel_bits,
         fanout=fanout,
         chain_lengths={int(c["index"]): int(c["length"]) for c in manifest["chains"]},
@@ -293,7 +294,7 @@ def _setup_cycles(
 ) -> list[Cycle]:
     """Pattern `index`'s test setup program: in each cycle every input at the
     value the program gives it, 0 if none, and the clocks it pulses."""
-    if setup and (chip.seed_bits or chip.channel_bits):
+    if setup and (chip.channel_ins or chip.channel_bits):
         raise ScanError(
             f"pattern {index} has a test setup program, which a chip with scan "
             "compression or compaction can't take"
@@ -334,7 +335,7 @@ def _shift_length(chip: Chip, pattern: Mapping[str, Any], index: int) -> int:
     if raw is None:
         return chip.max_chain_length
     shifts = int(raw)
-    if chip.seed_bits:
+    if chip.channel_ins:
         raise ScanError(
             f"pattern {index} shifts only some chains (shift_length), which a "
             "compressed chip's decompressor can't"
@@ -349,7 +350,7 @@ def _shift_length(chip: Chip, pattern: Mapping[str, Any], index: int) -> int:
 
 def _seeded(chip: Chip, pattern: Mapping[str, Any], index: int) -> dict[str, int]:
     """With compression, the pattern's seed on the channel bits."""
-    if not chip.seed_bits:
+    if not chip.channel_ins:
         return {}
     seed = pattern.get("seed")
     if seed is None:
@@ -357,7 +358,7 @@ def _seeded(chip: Chip, pattern: Mapping[str, Any], index: int) -> dict[str, int
             f"pattern {index} has no seed: a compressed pattern is exported with "
             "its decompressor seed (export the patterns again)"
         )
-    return {bit: (int(seed) >> k) & 1 for k, bit in enumerate(chip.seed_bits)}
+    return {bit: (int(seed) >> k) & 1 for k, bit in enumerate(chip.channel_ins)}
 
 
 def _shifting(
@@ -382,7 +383,7 @@ def _unloaded(chip: Chip, pattern: Mapping[str, Any], t: int) -> dict[str, int |
         mask = masks.get(str(chain))
         if mask is not None and t < len(mask) and not mask[t]:
             return None  # a flop that captured an unknown value
-        if chip.seed_bits and t >= chip.chain_lengths.get(chain, 0):
+        if chip.channel_ins and t >= chip.chain_lengths.get(chain, 0):
             return None  # what the decompressor shifts through a shorter chain
         bits = pattern["expected_unload"].get(str(chain), [])
         return int(bits[t]) if t < len(bits) else None

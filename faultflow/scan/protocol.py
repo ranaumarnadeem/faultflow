@@ -181,6 +181,12 @@ class ScanPattern:
     # a tester holds on the compression channels, bit k on channel bit k
     # (detection_pipeline._decompressed). None without compression.
     seed: int | None = None
+    # With scan compression, what a tester drives on the decompressor's channels
+    # while the chains load: per channel (the k-th bit of the channel port), one
+    # bit per shift of the load (detection_pipeline._decompressed). A one-shot
+    # decompressor takes its seed at the first shift, so its channel holds one
+    # value all the load. None without compression.
+    channel_seqs: dict[int, list[bool]] | None = None
     # How many shifts its load and its unload take, when it loads only some chains
     # (an IEEE 1500 wrapper's EXTEST: its wrapper chains): their longest. The
     # other chains shift as many bits, and nothing of theirs is compared. None:

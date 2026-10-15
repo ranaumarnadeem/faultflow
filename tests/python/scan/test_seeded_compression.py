@@ -239,6 +239,13 @@ def test_decompressed_pattern_is_its_seeds_whole_stream(
     assert seed is not None
     assert pattern.capture_pi_values == loaded.capture_pi_values
     assert pattern.expected_unload == loaded.expected_unload
+    # What a tester drives: the one-shot decompressor takes its seed once, so
+    # channel k holds seed bit k through the whole load.
+    assert ctx.compression_map is not None
+    assert pattern.channel_seqs == {
+        k: [bool((seed >> k) & 1)] * max_len
+        for k in range(ctx.compression_map.num_channels)
+    }
 
 
 @pytest.mark.unit
