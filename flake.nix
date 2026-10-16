@@ -8,10 +8,11 @@
     # tests build and grade, writes the IEEE 1500 wrapper's ICL and builds the
     # integrity program ff.py wsp grades with, and retargets compressed scan
     # patterns through the continuous decompressor. Pinned to the commit they were
-    # written against (branch continuous-decompressor, on top of mbist-jtag);
+    # written against (v0.0.5, warptap's dev: the 1500 wrapper and the continuous
+    # decompressor);
     # stdlib-only, so its source on PYTHONPATH is enough.
     warptap = {
-      url = "github:ranaumarnadeem/warptap/afada005cda07ea6bdd531e549fe1d732bf1da2a";
+      url = "github:ranaumarnadeem/warptap/7853bfe199ea66de1583173c147a8ddf758635bc";
       flake = false;
     };
   };
