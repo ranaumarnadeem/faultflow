@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from faultflow.pdk.synth import LibraryArg
 from faultflow.project.assemble import assemble_soc
 from faultflow.scan.errors import ScanError
 from faultflow.scan.ring_generator import (
@@ -366,7 +367,7 @@ def _compose(
     wrapper_top: str,
     core_json_path: Path,
     core_top: str,
-    liberty: Path,
+    liberty: LibraryArg,
     output_json: Path,
     workdir: Path,
     instance_name: str,
@@ -421,7 +422,7 @@ def insert_continuous_compression(
     core_top: str,
     scan_in_ports: list[str],
     num_channels: int,
-    liberty: Path,
+    liberty: LibraryArg,
     output_json: Path,
     *,
     workdir: Path,

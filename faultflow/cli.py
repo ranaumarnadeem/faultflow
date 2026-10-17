@@ -253,15 +253,40 @@ def _parser() -> argparse.ArgumentParser:
     autombist_p.add_argument(
         "--liberty",
         type=Path,
-        required=True,
-        help="Liberty file for synthesis + the written .ofs",
+        default=None,
+        help="Liberty file for synthesis + the written .ofs (or --pdk and "
+        "--std-cell-library)",
     )
     autombist_p.add_argument(
         "--cell-lib",
         dest="cell_lib",
         type=Path,
-        required=True,
+        default=None,
         help="Cell-map JSON for the written .ofs",
+    )
+    autombist_p.add_argument(
+        "--pdk", default="", help="The PDK the design is on, e.g. sky130A"
+    )
+    autombist_p.add_argument(
+        "--std-cell-library",
+        dest="std_cell_library",
+        default="",
+        help="The PDK's standard-cell library synthesis maps onto, e.g. "
+        "sky130_fd_sc_hd ([design] std_cell_library)",
+    )
+    autombist_p.add_argument(
+        "--extra-libraries",
+        dest="extra_libraries",
+        default="",
+        help="Comma-separated further libraries of the PDK whose cells the design "
+        "instantiates ([design] extra_libraries)",
+    )
+    autombist_p.add_argument(
+        "--pdk-root",
+        dest="pdk_root",
+        type=Path,
+        default=None,
+        help="Where the PDK is installed ([design] pdk_root)",
     )
     autombist_p.add_argument(
         "--test-access",
@@ -842,7 +867,10 @@ def _scan_tap(args: object) -> bool:
 def _handle_autombist_generate(args: object) -> int:
     import shlex
 
-    from faultflow.integrations.autombist import run_autombist_generate
+    from faultflow.integrations.autombist import (
+        generate_libraries,
+        run_autombist_generate,
+    )
 
     config = Path(getattr(args, "config"))
     if not config.exists():
@@ -852,12 +880,25 @@ def _handle_autombist_generate(args: object) -> int:
     if scan_tap and not test_access:
         raise ConfigError("--scan-tap needs --test-access")
     cmd = tuple(shlex.split(str(getattr(args, "autombist_cmd"))))
+    libraries = generate_libraries(
+        liberty=getattr(args, "liberty"),
+        cell_lib=getattr(args, "cell_lib"),
+        pdk=str(getattr(args, "pdk")),
+        std_cell_library=str(getattr(args, "std_cell_library")),
+        extra_libraries=[
+            n.strip()
+            for n in str(getattr(args, "extra_libraries")).split(",")
+            if n.strip()
+        ],
+        pdk_root=getattr(args, "pdk_root"),
+    )
     result = run_autombist_generate(
         config,
         Path(getattr(args, "out")),
         autombist_cmd=cmd,
-        liberty=Path(getattr(args, "liberty")),
-        cell_lib=Path(getattr(args, "cell_lib")),
+        liberty=libraries.synth,
+        cell_lib=libraries.cell_lib,
+        design=libraries.design,
         test_access=test_access,
         scan_tap=scan_tap,
         algo=getattr(args, "algo", None),

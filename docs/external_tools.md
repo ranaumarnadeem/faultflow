@@ -97,6 +97,12 @@ composed netlist and a `.ofs` for it: `[blackbox] instances` names the memories,
 `[autombist] manifest` names the manifest. The Tcl shell's `autombist_generate` does the
 same and loads the design into the session.
 
+Instead of `--liberty` and `--cell-lib`, a PDK's library can be named as an `.ofs`
+names it: `--pdk sky130A --std-cell-library sky130_fd_sc_hd`, with
+`--extra-libraries` for further libraries whose cells the design instantiates and
+`--pdk-root` (Tcl: `-pdk`, `-std_cell_library`, `-extra_libraries`, `-pdk_root`). The
+design is synthesized on it, and the `.ofs` names the same keys.
+
 A memory's outputs are unknown to a scan test: every scan-flop capture and primary output
 they reach is masked (`[blackbox] output_value`), and a fault only a memory pin could
 reveal counts as `blackbox_unresolved`.

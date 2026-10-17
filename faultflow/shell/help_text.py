@@ -190,7 +190,9 @@ COMMAND_HELP = {
     "autombist_generate": CommandHelp(
         "Project",
         "autombist_generate -config PATH -out PATH [-autombist_cmd CMD] "
-        "[-algo NAME] -liberty PATH -cell_lib PATH [-test_access [-scan_tap]]",
+        "[-algo NAME] (-liberty PATH -cell_lib PATH | -pdk NAME "
+        "-std_cell_library NAME [-extra_libraries LIB,...] [-pdk_root PATH]) "
+        "[-test_access [-scan_tap]]",
         "Generate a FaultFlow synthesis from an autoMBIST manifest",
         "Runs `autombist generate --emit-manifest` (or the command given by "
         "-autombist_cmd, e.g. 'python3 -m autombist.cli'; -algo passes its "
@@ -208,7 +210,9 @@ COMMAND_HELP = {
         "out of scan, held in reset (trst_n and tck at 0), leaving one clock "
         "and one chain (add_scan -chains 1); `ff.py jtag` grades their faults "
         "through TCK. -scan_tap makes them scan flops instead, on a clock of "
-        "their own (add_scan -chains 2), graded by scan ATPG.",
+        "their own (add_scan -chains 2), graded by scan ATPG. The libraries are "
+        "a Liberty and a cell map, or a PDK's standard-cell library (and extra "
+        "libraries whose cells the design instantiates), as [design] names them.",
         "autoMBIST installed and reachable via -autombist_cmd (or on PATH); "
         "for -test_access, warptap importable by autoMBIST.",
         "autombist_generate -config mbist.yml -out build -liberty "

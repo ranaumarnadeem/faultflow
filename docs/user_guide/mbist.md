@@ -90,7 +90,7 @@ The written RTL is elaborated again before `mbist-insert` returns: Yosys's `chec
 report nothing the original design didn't. A module on the path to a configured memory
 that is instantiated more than once gets its own copy, `<module>__mbist_<path>`; no
 name FaultFlow creates may collide with a module of your design or a cell of your
-liberty.
+libraries.
 
 ### The shell
 
@@ -130,7 +130,11 @@ scans apart.
 
 ## Synthesis and the scan flow
 
-With `-c chip.ofs`, `mbist-insert` synthesizes the result with that `.ofs`'s liberty.
+With `-c chip.ofs`, `mbist-insert` synthesizes the result on that `.ofs`'s libraries:
+its `[design] liberty`, or the `pdk`, `std_cell_library` and `extra_libraries` it
+names. Your design may instantiate cells of them (a level shifter, a library flop):
+they are read as cells when the design is elaborated and synthesized, kept as they
+are, and scanned with a scan flop of their own library.
 The DFT is never optimized together with your logic: each controller and repair block,
 then each shell, then the TAP and the network, is synthesized alone and spliced in.
 

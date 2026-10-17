@@ -946,6 +946,20 @@ def scan_clock_domains(
     return counts
 
 
+def scan_domain_count(
+    netlist_json: Path,
+    cell_map_json: Path,
+    top: str,
+    nonscan_cells: Sequence[str] = (),
+) -> int:
+    """How many scan domains -- clock domains, each split by cell library
+    ([design] extra_libraries) -- stitching gives chains of their own: the
+    fewest chains it takes."""
+    _, module = _top_module(_load_json(netlist_json), top)
+    eligible, _ = _collect_ffs(module, _load_json(cell_map_json), nonscan_cells)
+    return len({_domain(ff) for ff in eligible})
+
+
 def plan_scan_json(
     netlist_json: Path,
     cell_map_json: Path,

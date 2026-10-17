@@ -62,6 +62,7 @@ from faultflow.scan.compression import (
 )
 from faultflow.scan.decompressor_check import check_composed_decompressor
 from faultflow.scan.techmap import scan_techmap_config
+from faultflow.pdk.synth import SynthLibrary
 from faultflow.scan.compaction import insert_compaction
 from faultflow.scan.compaction_checks import check_compaction_structure
 from faultflow.scan.instrument_guard import (
@@ -975,7 +976,7 @@ class Runner:
                 core_top,
                 scan_in_ports,
                 self.cfg.compression.channels,
-                self.cfg.liberty,
+                SynthLibrary.from_config(self.cfg),
                 output_json,
                 workdir=workdir,
                 ring_width=self.cfg.compression.ring_width,
@@ -1132,7 +1133,7 @@ class Runner:
                 core_top,
                 scan_out_ports,
                 channels,
-                liberty,
+                SynthLibrary.from_config(self.cfg),
                 output_json,
                 workdir=workdir,
                 channel_port=channel_port,

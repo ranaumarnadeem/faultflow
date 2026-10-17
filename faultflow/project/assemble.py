@@ -39,6 +39,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from faultflow.pdk.synth import DELETE_LIBERTY_CELLS, LibraryArg, SynthLibrary
+
 _TOP_ATTRS = ("1", "00000000000000000000000000000001", 1, True)
 
 
@@ -641,7 +643,7 @@ def _splice_netnames(
 def assemble_soc(
     soc_rtl: Path,
     soc_top: str,
-    liberty: Path,
+    liberty: LibraryArg,
     blocks: dict[str, Path],
     block_module: dict[str, str],
     output_json: Path,
@@ -655,15 +657,18 @@ def assemble_soc(
     frozen JSON, producing one flat, single-top Yosys-JSON netlist at `output_json`.
 
     ``block_names``/``tag_blocks``/``remaps`` are forwarded to `compose_soc`
-    unchanged -- see its docstring.
+    unchanged -- see its docstring. ``liberty`` is the design's libraries
+    (faultflow.pdk.synth), or a Liberty path: the glue may instantiate their cells.
     """
+    library = SynthLibrary.of(liberty)
     yosys = shutil.which("yosys")
     if yosys is None:
         raise AssembleError("SoC assembly requires yosys on PATH")
     if not soc_rtl.exists():
         raise AssembleError(f"missing SoC glue RTL: {soc_rtl}")
-    if not liberty.exists():
-        raise AssembleError(f"missing liberty file: {liberty}")
+    for path in (library.liberty, *library.cell_files):
+        if not path.exists():
+            raise AssembleError(f"missing liberty file: {path}")
 
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -693,6 +698,7 @@ def assemble_soc(
 
     lib_reads = " ".join(_quote(p) for p in stub_paths)
     script_lines = [
+        *library.read_lines(),
         f"read_verilog {_quote(soc_rtl)}",
     ]
     if stub_paths:
@@ -705,8 +711,8 @@ def assemble_soc(
             "opt_expr",
             "opt_clean",
             f"synth -top {soc_top}",
-            f"dfflibmap -liberty {_quote(liberty)}",
-            f"abc -liberty {_quote(liberty)}",
+            *library.map_lines(),
+            DELETE_LIBERTY_CELLS,
             "clean",
             f"write_json {_quote(glue_json_path)}",
         ]

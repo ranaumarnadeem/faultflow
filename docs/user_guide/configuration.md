@@ -127,6 +127,11 @@ with flops in each. A flop whose library has no scan flop of its shape stays out
 scan (`no_library_scan_cell`). The cells FaultFlow adds itself (the wrapper, the
 decompressor, the compactor) are `std_cell_library`'s.
 
+Every synthesis FaultFlow runs reads the libraries this way: the design's, the SoC
+glue's (`ff.py project`), mbist-insert's (with `-c`, from that `.ofs`'s `[design]`
+libraries) and the decompressor's and compactor's, each mapping only onto
+`std_cell_library` and never onto a cell its map doesn't model.
+
 ## `[fault_model]`
 
 | Key | Allowed values | Default | Meaning |

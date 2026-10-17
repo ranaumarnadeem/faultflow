@@ -76,6 +76,7 @@ from faultflow.mbist.shell import (
 from faultflow.mbist.spec import DesignSources, MbistSpec, MemorySpec, load_mbist_spec
 from faultflow.mbist.synth import shell_leaves
 from faultflow.mbist.yosys import elaborate
+from faultflow.pdk.synth import SynthLibrary
 
 # Cells a design written back by Yosys can't carry faithfully, or that FaultFlow
 # can't model (tri-state).
@@ -448,12 +449,14 @@ def mbist_insert(
     *,
     out: Path,
     taken: Iterable[str] = (),
+    cells: Sequence[Path] = (),
 ) -> InsertResult:
     """Insert the collars of the insertion file's memories into the design
     under `top`, writing into `out`: `<top>_mbist.v`, `<top>_mbist.sdc`,
     `manifest.json`, `insertion.json` and, with JTAG, `<top>_mbist.icl` and
     `<top>_mbist.bsd`. `taken` names cells (a liberty's, say) no module
-    mbist-insert creates may be named after."""
+    mbist-insert creates may be named after; `cells` are the Liberty files of
+    the libraries whose cells the design instantiates."""
     spec = load_mbist_spec(spec_path)
     if not spec.memories:
         raise InsertError("the insertion file configures no memory")
@@ -463,7 +466,7 @@ def mbist_insert(
     work = out / "work"
 
     groups = _groups(spec)
-    design = elaborate(spec.design, top, workdir=work / "design")
+    design = elaborate(spec.design, top, workdir=work / "design", cells=cells)
     _refuse_unsupported(design.netlist)
     modules: Modules = design.netlist["modules"]
     taken_names = set(taken)
@@ -584,7 +587,7 @@ def mbist_insert(
         script_path=work / "write_verilog.ys",
         error_message="Yosys could not write the inserted design",
     )
-    _recheck(spec.design, rtl, top, design.problems, copies, work / "recheck")
+    _recheck(spec.design, rtl, top, design.problems, copies, work / "recheck", cells)
 
     icl = bsdl = pdl = vectors = None
     if jtag is not None and spec.jtag is not None:
@@ -739,16 +742,28 @@ def _read_back(manifest: Path, jtag: JtagInsertion | None) -> None:
         )
 
 
-def ofs_liberty(ofs: Path) -> Path | None:
-    """The liberty an .ofs names in [design] (resolved like config.py's paths,
-    against the current directory), if any."""
-    import configparser
+def design_synth_library(base: Any) -> tuple[SynthLibrary, Path]:
+    """What the design an .ofs (`base`, parsed) describes synthesizes onto, and
+    its cell map: its [design] libraries as load_config resolves them -- a PDK's
+    (pdk, std_cell_library, extra_libraries) or the files named -- the shipped
+    Sky130 HD's found in the repo when the current directory isn't it."""
+    from faultflow.config import ConfigError, design_libraries
 
-    parser = configparser.ConfigParser()
-    if not parser.read(ofs, encoding="utf-8"):
-        raise InsertError(f"cannot read {ofs}")
-    value = parser.get("design", "liberty", fallback="").strip()
-    return Path(value) if value else None
+    repo = Path(__file__).resolve().parents[2]
+
+    def found(path: Path) -> Path:
+        return path if path.is_absolute() or path.exists() else repo / path
+
+    try:
+        libraries = design_libraries(base)
+    except ConfigError as exc:
+        raise InsertError(str(exc)) from exc
+    library = SynthLibrary(
+        found(libraries.liberty),
+        tuple(found(p) for p in libraries.liberty_files),
+        libraries.dont_use,
+    )
+    return library, found(libraries.cell_lib)
 
 
 def insert_command(
@@ -776,6 +791,7 @@ def insert_command(
         )
     tap_nonscan = loaded.jtag is not None and not scan_tap
     taken: frozenset[str] = frozenset()
+    cells: tuple[Path, ...] = ()
     base = None
     if ofs is not None:
         base = read_base(ofs)
@@ -786,10 +802,10 @@ def insert_command(
                 tap_nonscan=tap_nonscan,
                 tap_ports=TAP_PORTS if loaded.jtag is not None else (),
             )
-        liberty = ofs_liberty(ofs)
-        if liberty is not None:
-            taken = liberty_cells(liberty)
-    result = mbist_insert(spec, top, out=out, taken=taken)
+        library, _ = design_synth_library(base)
+        cells = library.cell_files
+        taken = frozenset().union(*(liberty_cells(p) for p in cells))
+    result = mbist_insert(spec, top, out=out, taken=taken, cells=cells)
     lines = [
         f"inserted {len(result.memories)} memories into {top}: {result.rtl}",
         f"manifest: {result.manifest}",
@@ -844,27 +860,18 @@ def _synthesize_for_flow(
 ) -> Path:
     """Synthesize the inserted design and write its .ofs: `<out>/<top>_mbist.ofs`,
     its outputs under `<out>/output`."""
-    from faultflow.config import SKY130_CELL_LIB, SKY130_LIBERTY
     from faultflow.integrations.autombist import _clock_domains, access_nonscan_settings
     from faultflow.mbist.ofs import nonscan_globs, scan_holds, write_inserted_ofs
     from faultflow.mbist.synth import synthesize_inserted
 
     assert spec.reset is not None and result.manifest is not None
-    repo = Path(__file__).resolve().parents[2]
-
-    def design_path(key: str, default: Path) -> Path:
-        value = base.get("design", key, fallback="").strip()
-        path = Path(value) if value else default
-        return path if path.is_absolute() or path.exists() else repo / path
-
-    liberty = design_path("liberty", SKY130_LIBERTY)
-    cell_lib = design_path("cell_lib", SKY130_CELL_LIB)
+    library, cell_lib = design_synth_library(base)
     chip = synthesize_inserted(
         result.rtl,
         result.top,
         {m.instance: (m.shell, m.collar) for m in result.memories},
         libs=spec.design.libs,
-        liberty=liberty,
+        liberty=library,
         workdir=out / "synth",
         top_leaves=None if result.jtag is None else result.jtag.instances(),
     )
@@ -899,6 +906,7 @@ def _recheck(
     baseline: Sequence[CheckProblem],
     copies: dict[str, str],
     workdir: Path,
+    cells: Sequence[Path] = (),
 ) -> None:
     """Elaborate the written design again; it may have no `check` problem the
     original didn't (a problem in a module copy counts as its original's)."""
@@ -911,6 +919,7 @@ def _recheck(
         ),
         top,
         workdir=workdir,
+        cells=cells,
     )
     known = {p.message for p in baseline}
     new = []

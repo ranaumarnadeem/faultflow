@@ -32,6 +32,7 @@ from faultflow.integrations.autombist import (
     parse_check_problems,
 )
 from faultflow.mbist.netlist import InsertError, _is_blackbox
+from faultflow.pdk.synth import DELETE_LIBERTY_CELLS, LibraryArg, SynthLibrary
 from faultflow.project.assemble import compose_soc
 
 Modules = dict[str, dict[str, Any]]
@@ -62,7 +63,7 @@ def _synthesize(
     libs: Sequence[Path],
     top: str,
     blackboxes: Sequence[str],
-    liberty: Path,
+    liberty: LibraryArg,
     out: Path,
 ) -> dict[str, Any]:
     """`top` from `rtl`, every module in `blackboxes` kept a blackbox, through
@@ -82,13 +83,19 @@ def _synthesize(
     return data
 
 
-def _elaborated(rtl: Path, libs: Sequence[Path], top: str, out: Path) -> Modules:
+def _elaborated(
+    rtl: Path, libs: Sequence[Path], top: str, liberty: LibraryArg, out: Path
+) -> Modules:
+    """The design's modules, elaborated: the library cells it instantiates
+    resolved, and not among them."""
     out.parent.mkdir(parents=True, exist_ok=True)
     _run_yosys(
         [
+            *SynthLibrary.of(liberty).read_lines(),
             *_reads(rtl, libs),
             f"hierarchy -check -top {top}",
             "proc",
+            DELETE_LIBERTY_CELLS,
             f"write_json {_quote(out)}",
         ],
         log_path=out.with_suffix(".log"),
@@ -122,7 +129,7 @@ def _cells_of(glue: dict[str, Any], top: str) -> dict[str, dict[str, Any]]:
 
 
 def _check(
-    netlist: Path, top: str, liberty: Path, libs: Sequence[Path] = ()
+    netlist: Path, top: str, liberty: LibraryArg, libs: Sequence[Path] = ()
 ) -> tuple[str, ...]:
     """The messages Yosys check reports for `netlist`. `libs` declare the
     blackboxes the netlist instantiates but doesn't define: a netlist Yosys
@@ -130,7 +137,7 @@ def _check(
     log = netlist.with_suffix(".check.log")
     _run_yosys(
         [
-            f"read_liberty -lib {_quote(liberty)}",
+            *SynthLibrary.of(liberty).read_lines(),
             *(
                 ["read_verilog -lib " + " ".join(_quote(p) for p in libs)]
                 if libs
@@ -153,7 +160,7 @@ def synthesize_inserted(
     shells: dict[str, tuple[str, str]],
     *,
     libs: Sequence[Path],
-    liberty: Path,
+    liberty: LibraryArg,
     workdir: Path,
     top_leaves: Mapping[str, str] | None = None,
 ) -> SynthesizedChip:
@@ -161,9 +168,9 @@ def synthesize_inserted(
     and nested. `shells` maps every shell instance path to its (shell module,
     collar module); `top_leaves` every other DFT instance of the top (the JTAG
     network's: JtagInsertion.instances()) to its module; `libs` are the
-    design's macro stubs."""
+    design's macro stubs, `liberty` its libraries (faultflow.pdk.synth)."""
     top_leaves = dict(top_leaves or {})
-    modules = _elaborated(rtl, libs, top, workdir / "elaborated.json")
+    modules = _elaborated(rtl, libs, top, liberty, workdir / "elaborated.json")
     standalone: dict[str, Path] = {}
     frozen: dict[str, str] = {}
 

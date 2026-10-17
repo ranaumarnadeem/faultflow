@@ -25,6 +25,7 @@ from typing import Any, Callable
 
 from faultflow.config import FaultflowConfig
 from faultflow.control_trace import Netlist
+from faultflow.pdk.synth import SynthLibrary
 from faultflow.project.assemble import assemble_soc
 from faultflow.project.chip import chip_manifest
 from faultflow.project.manifest import BlockSpec, ProjectError, SocProject
@@ -122,7 +123,7 @@ def build_soc(project: SocProject, base: FaultflowConfig, out: Path) -> SocBuild
     assemble_soc(
         soc_rtl=project.soc.rtl,
         soc_top=project.soc.top,
-        liberty=base.liberty,
+        liberty=SynthLibrary.from_config(base),
         blocks=paths,
         block_module=modules,
         output_json=composed,

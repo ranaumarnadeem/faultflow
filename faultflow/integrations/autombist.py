@@ -52,8 +52,9 @@ from pathlib import Path
 from typing import Any
 
 from faultflow.config import ConfigError, JtagConfig
+from faultflow.pdk.synth import DELETE_LIBERTY_CELLS, LibraryArg, SynthLibrary
 from faultflow.project.assemble import AssembleError, block_stub_verilog, compose_soc
-from faultflow.scan.stitch import scan_clock_domains
+from faultflow.scan.stitch import scan_clock_domains, scan_domain_count
 
 MANIFEST_FORMAT = "autombist_instance_manifest"
 
@@ -583,17 +584,20 @@ def _quote(path: Path) -> str:
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _synth_lines(top: str, liberty: Path, output_json: Path) -> list[str]:
-    """The locked synthesis sequence, from `hierarchy` to `write_json`, that
-    every block and glue run shares once its sources are read."""
+def _synth_lines(top: str, liberty: LibraryArg, output_json: Path) -> list[str]:
+    """The locked synthesis sequence, from reading the library's cells to
+    `write_json`, that every block and glue run shares once its sources are read
+    (faultflow.pdk.synth: `liberty` a SynthLibrary, or a Liberty path)."""
+    library = SynthLibrary.of(liberty)
     return [
+        *library.read_lines(),
         f"hierarchy -check -top {top}",
         "proc",
         "flatten",
         f"synth -top {top}",
-        f"dfflibmap -liberty {_quote(liberty)}",
-        f"abc -liberty {_quote(liberty)}",
+        *library.map_lines(),
         "delete t:$scopeinfo",
+        DELETE_LIBERTY_CELLS,
         "clean",
         f"write_json {_quote(output_json)}",
     ]
@@ -674,7 +678,7 @@ def _check_composed_netlist_drivers(
     manifest: AutombistManifest,
     composed_json_path: Path,
     *,
-    liberty: Path,
+    liberty: LibraryArg,
     workdir: Path,
     baseline: frozenset[str] = frozenset(),
 ) -> None:
@@ -707,7 +711,7 @@ def _check_composed_netlist_drivers(
             for inst in manifest.instances
             if inst.hierarchy_hint == "blackbox"
         ]
-    script_lines = [f"read_liberty -lib {_quote(liberty)}"]
+    script_lines = SynthLibrary.of(liberty).read_lines()
     if memory_sources:
         script_lines.append(
             "read_verilog -lib " + " ".join(_quote(p) for p in memory_sources)
@@ -738,7 +742,7 @@ def _check_composed_netlist_drivers(
         )
 
 
-def synthesize_block(block: Block, *, liberty: Path, workdir: Path) -> Path:
+def synthesize_block(block: Block, *, liberty: LibraryArg, workdir: Path) -> Path:
     """Synthesize one Block standalone, producing <workdir>/blocks/<module>.json.
 
     One Yosys run per Block (not per instance) -- `block.instance_paths` may
@@ -767,7 +771,7 @@ def synthesize_glue(
     blocks: tuple[Block, ...],
     block_json_paths: dict[str, Path],
     *,
-    liberty: Path,
+    liberty: LibraryArg,
     workdir: Path,
 ) -> Path:
     """Synthesize the wrapper glue (each block + each memory as a blackbox),
@@ -885,7 +889,7 @@ def synthesize_wrapped_block(
     access: AutombistTestAccess,
     module: str,
     *,
-    liberty: Path,
+    liberty: LibraryArg,
     workdir: Path,
     stem: str,
 ) -> Path:
@@ -906,7 +910,7 @@ def synthesize_wrapped_glue(
     access: AutombistTestAccess,
     modules: Sequence[str],
     *,
-    liberty: Path,
+    liberty: LibraryArg,
     workdir: Path,
 ) -> Path:
     """Synthesize the wrapped top with every module in `modules` blackboxed,
@@ -950,6 +954,56 @@ def synthesize_wrapped_glue(
     return output_json
 
 
+@dataclass(frozen=True)
+class GenerateLibraries:
+    """The libraries autombist-generate synthesizes on, the cell map of them,
+    and the [design] keys naming them in the .ofs it writes."""
+
+    synth: SynthLibrary
+    cell_lib: Path
+    design: tuple[tuple[str, str], ...]
+
+
+def generate_libraries(
+    *,
+    liberty: Path | None = None,
+    cell_lib: Path | None = None,
+    pdk: str = "",
+    std_cell_library: str = "",
+    extra_libraries: Sequence[str] = (),
+    pdk_root: Path | None = None,
+) -> GenerateLibraries:
+    """autombist-generate's libraries, as an .ofs's [design] names them: a
+    Liberty and a cell map, or a PDK's standard-cell library (and extra
+    libraries) resolved as load_config does (config.design_libraries)."""
+    import configparser
+
+    from faultflow.config import design_libraries
+
+    if not std_cell_library and (liberty is None or cell_lib is None):
+        raise ConfigError(
+            "autombist-generate needs a Liberty and a cell map (--liberty, "
+            "--cell-lib), or a PDK's library (--pdk, --std-cell-library)"
+        )
+    keys = [
+        ("pdk", pdk),
+        ("std_cell_library", std_cell_library),
+        ("extra_libraries", ", ".join(extra_libraries)),
+        ("pdk_root", str(Path(pdk_root).resolve()) if pdk_root else ""),
+        ("liberty", str(Path(liberty).resolve()) if liberty else ""),
+        ("cell_lib", str(Path(cell_lib).resolve()) if cell_lib else ""),
+    ]
+    design = tuple((key, value) for key, value in keys if value)
+    parser = configparser.ConfigParser()
+    parser.read_dict({"design": dict(design)})
+    libraries = design_libraries(parser)
+    return GenerateLibraries(
+        SynthLibrary(libraries.liberty, libraries.liberty_files, libraries.dont_use),
+        libraries.cell_lib,
+        design,
+    )
+
+
 def write_ofs(
     path: Path,
     *,
@@ -964,8 +1018,11 @@ def write_ofs(
     nonscan_cells: tuple[str, ...] = (),
     scan_holds: tuple[tuple[str, int], ...] = (),
     scan_test_access: bool = False,
+    design: Sequence[tuple[str, str]] = (),
 ) -> Path:
-    """Write a fresh `.ofs` for the composed netlist. `.ofs` paths resolve
+    """Write a fresh `.ofs` for the composed netlist. Its libraries are
+    `design`'s [design] keys (GenerateLibraries.design), else `cell_lib` and
+    `liberty`. `.ofs` paths resolve
     against the CWD, not the .ofs file's own directory (`config.py::_path`) --
     every path here is written absolute (`.resolve()`d) to be safe regardless
     of the caller's cwd. Deliberately no `top =` line: no `.ofs` in this
@@ -980,8 +1037,14 @@ def write_ofs(
     lines = [
         "[design]",
         f"netlist = {netlist.resolve()}",
-        f"cell_lib = {cell_lib.resolve()}",
-        f"liberty = {liberty.resolve()}",
+        *(
+            [f"{key} = {value}" for key, value in design]
+            if design
+            else [
+                f"cell_lib = {cell_lib.resolve()}",
+                f"liberty = {liberty.resolve()}",
+            ]
+        ),
         "",
         "[blackbox]",
         f"instances = {', '.join(blackbox_instances)}",
@@ -1009,9 +1072,10 @@ def _clock_domains(
     netlist: Path, top: str, cell_lib: Path, nonscan_cells: Sequence[str] = ()
 ) -> tuple[tuple[str, ...], int]:
     """The input ports clocking the netlist's scan flops -- all but those
-    `nonscan_cells` names -- in clock-net order, and how many clock domains
-    those flops form. A domain clocked from inside the design has no port to
-    name; scan insertion reports it."""
+    `nonscan_cells` names -- in clock-net order, and how many scan domains those
+    flops form (clock domains, each split by cell library): the fewest chains. A
+    domain clocked from inside the design has no port to name; scan insertion
+    reports it."""
     domains = scan_clock_domains(netlist, cell_lib, top, nonscan_cells)
     ports = json.loads(netlist.read_text(encoding="utf-8"))["modules"][top]["ports"]
     by_net = {
@@ -1020,7 +1084,7 @@ def _clock_domains(
         if port.get("direction") == "input" and len(port.get("bits", [])) == 1
     }
     names = tuple(by_net[net] for net in sorted(domains) if net in by_net)
-    return names, max(1, len(domains))
+    return names, max(1, scan_domain_count(netlist, cell_lib, top, nonscan_cells))
 
 
 def literal_glob(text: str) -> str:
@@ -1091,7 +1155,7 @@ class _Composition:
 
 
 def _compose_base(
-    manifest: AutombistManifest, *, liberty: Path, workdir: Path
+    manifest: AutombistManifest, *, liberty: LibraryArg, workdir: Path
 ) -> _Composition:
     """The design as `autombist generate` wrote it: blocks from `instances`."""
     blocks = plan_blocks(manifest)
@@ -1135,7 +1199,7 @@ def _compose_base(
 
 
 def _compose_wrapped(
-    access: AutombistTestAccess, *, liberty: Path, workdir: Path
+    access: AutombistTestAccess, *, liberty: LibraryArg, workdir: Path
 ) -> _Composition:
     """The JTAG-wrapped design, built from its `test_access` block alone."""
     if not access.output_verilog.is_file():
@@ -1179,9 +1243,10 @@ def synthesize_from_manifest(
     manifest: AutombistManifest,
     *,
     out: Path,
-    liberty: Path,
+    liberty: LibraryArg,
     cell_lib: Path,
     scan_tap: bool = False,
+    design: Sequence[tuple[str, str]] = (),
 ) -> AutombistSynthesisResult:
     """Steps 2-6: plan_blocks -> synthesize each block -> synthesize glue ->
     compose_soc -> write .ofs. No autoMBIST subprocess invocation -- this is
@@ -1229,7 +1294,7 @@ def synthesize_from_manifest(
         netlist=composed_json_path,
         top=composition.top,
         cell_lib=cell_lib,
-        liberty=liberty,
+        liberty=SynthLibrary.of(liberty).liberty,
         blackbox_instances=composition.blackbox_instances,
         clock_ports=clock_ports,
         scan_chains=scan_chains,
@@ -1237,6 +1302,7 @@ def synthesize_from_manifest(
         nonscan_cells=nonscan_cells,
         scan_holds=scan_holds,
         scan_test_access=scan_tap,
+        design=design,
     )
 
     instance_counts: dict[str, int] = {}
@@ -1264,11 +1330,12 @@ def run_autombist_generate(
     out: Path,
     *,
     autombist_cmd: Sequence[str] = ("autombist",),
-    liberty: Path,
+    liberty: LibraryArg,
     cell_lib: Path,
     test_access: bool = False,
     scan_tap: bool = False,
     algo: str | None = None,
+    design: Sequence[tuple[str, str]] = (),
 ) -> AutombistSynthesisResult:
     """Steps 1-6 in full: invoke autoMBIST -> load its manifest ->
     synthesize_from_manifest. This is what the CLI and Tcl handlers call.
@@ -1294,4 +1361,5 @@ def run_autombist_generate(
         liberty=liberty,
         cell_lib=cell_lib,
         scan_tap=scan_tap,
+        design=design,
     )

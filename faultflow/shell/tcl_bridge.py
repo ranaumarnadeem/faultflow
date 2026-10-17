@@ -618,7 +618,11 @@ proc {name} {{args}} {{
     def _autombist_generate(self, args: list[str]) -> Any:
         import shlex
 
-        from faultflow.integrations.autombist import run_autombist_generate
+        from faultflow.config import ConfigError
+        from faultflow.integrations.autombist import (
+            generate_libraries,
+            run_autombist_generate,
+        )
 
         flag_to_key = {
             "-config": "config",
@@ -627,6 +631,10 @@ proc {name} {{args}} {{
             "-algo": "algo",
             "-liberty": "liberty",
             "-cell_lib": "cell_lib",
+            "-pdk": "pdk",
+            "-std_cell_library": "std_cell_library",
+            "-extra_libraries": "extra_libraries",
+            "-pdk_root": "pdk_root",
         }
         kwargs: dict[str, str] = {}
         test_access = False
@@ -661,7 +669,16 @@ proc {name} {{args}} {{
                 )
             kwargs[flag_to_key[flag]] = args[idx + 1]
             idx += 2
-        for required in ("config", "out", "liberty", "cell_lib"):
+        if "std_cell_library" not in kwargs and not (
+            "liberty" in kwargs and "cell_lib" in kwargs
+        ):
+            raise ShellError(
+                "autombist_generate: -liberty and -cell_lib are required, or -pdk "
+                "and -std_cell_library",
+                "CONFIG",
+                "MISSING_ARG",
+            )
+        for required in ("config", "out"):
             if required not in kwargs:
                 raise ShellError(
                     f"autombist_generate: -{required} is required",
@@ -683,12 +700,30 @@ proc {name} {{args}} {{
             )
 
         cmd = tuple(shlex.split(kwargs.pop("autombist_cmd", "autombist")))
+        try:
+            libraries = generate_libraries(
+                liberty=Path(kwargs["liberty"]) if "liberty" in kwargs else None,
+                cell_lib=Path(kwargs["cell_lib"]) if "cell_lib" in kwargs else None,
+                pdk=kwargs.get("pdk", ""),
+                std_cell_library=kwargs.get("std_cell_library", ""),
+                extra_libraries=[
+                    n.strip()
+                    for n in kwargs.get("extra_libraries", "").split(",")
+                    if n.strip()
+                ],
+                pdk_root=Path(kwargs["pdk_root"]) if "pdk_root" in kwargs else None,
+            )
+        except ConfigError as exc:
+            raise ShellError(
+                f"autombist_generate: {exc}", "CONFIG", "MISSING_ARG"
+            ) from exc
         result = run_autombist_generate(
             Path(kwargs["config"]),
             Path(kwargs["out"]),
             autombist_cmd=cmd,
-            liberty=Path(kwargs["liberty"]),
-            cell_lib=Path(kwargs["cell_lib"]),
+            liberty=libraries.synth,
+            cell_lib=libraries.cell_lib,
+            design=libraries.design,
             test_access=test_access,
             scan_tap=scan_tap,
             algo=kwargs.get("algo"),
