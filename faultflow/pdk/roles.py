@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import itertools
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
 
@@ -28,6 +28,10 @@ class PdkError(RuntimeError):
 class RoleCell:
     cell: str
     pins: Mapping[str, str]  # logical pin -> the cell's pin ("out" / "q": the output)
+    # The cell's pins held at a constant ("0" / "1"): a flop role filled by a flop
+    # with more controls than it needs (IHP SG13G2 has reset flops only) holds the
+    # rest inactive.
+    ties: Mapping[str, str] = field(default_factory=dict)
 
 
 _COMB: dict[str, tuple[tuple[str, ...], Callable[..., bool], str, str]] = {
@@ -155,6 +159,9 @@ class LibraryRoles:
         return None
 
     def _ff(self, role: str) -> RoleCell | None:
+        """The role's flop: one of exactly its shape, else (none in the library) one
+        with more controls -- a clear, preset or enable the role has no use for --
+        each held inactive (``ties``)."""
         trigger, scan, control, short = _FF[role]
         fits = []
         for pattern, entry in self._entries("FF"):
@@ -162,29 +169,36 @@ class LibraryRoles:
             outputs = entry.get("outputs") or {}
             if ff.get("trigger") != trigger or bool(ff.get("scan")) != scan:
                 continue
-            if "enable" in ff:
-                continue
-            controls = {k for k in ("clear", "preset") if k in ff}
-            if controls != ({control} if control else set()):
-                continue
-            if control and ff[control].get("level") != "LOW":
+            if control and (control not in ff or ff[control].get("level") != "LOW"):
                 continue
             if scan and ff["scan"].get("enable_polarity", "HIGH") != "HIGH":
                 continue
             if ff.get("output") not in outputs:
                 continue
+            ties = {}
+            for extra in ("clear", "preset"):
+                if extra in ff and extra != control:
+                    # Inactive: high for an active-low control.
+                    low = ff[extra].get("level") == "LOW"
+                    ties[str(ff[extra]["pin"])] = "1" if low else "0"
+            if "enable" in ff:
+                high = ff["enable"].get("level", "HIGH") == "HIGH"
+                ties[str(ff["enable"]["pin"])] = "1" if high else "0"
             fits.append(
                 (
+                    bool(ties),
                     _short(pattern) != short,
                     not _sized(pattern, entry),
                     "QN" in outputs,
+                    len(ties),
                     pattern,
                     entry,
+                    ties,
                 )
             )
         if not fits:
             return None
-        *_, pattern, entry = sorted(fits, key=lambda f: f[:4])[0]
+        *_, pattern, entry, ties = sorted(fits, key=lambda f: f[:6])[0]
         ff = entry["ff"]
         pins = {"clk": str(ff["clock"]), "d": str(ff["data"])}
         if scan:
@@ -195,7 +209,7 @@ class LibraryRoles:
         if control == "preset":
             pins["set_n"] = str(ff["preset"]["pin"])
         pins["q"] = str(entry["outputs"][ff["output"]])
-        return RoleCell(_concrete(pattern, entry), pins)
+        return RoleCell(_concrete(pattern, entry), pins, ties)
 
 
 def library_roles(
@@ -280,10 +294,12 @@ def role_cell(
         "attributes": attrs,
         "port_directions": {
             **{pins[name]: "input" for name in inputs},
+            **{pin: "input" for pin in found.ties},
             **{pins[name]: "output" for name in outputs},
         },
         "connections": {
-            pins[name]: [net] for name, net in {**inputs, **outputs}.items()
+            **{pins[name]: [net] for name, net in {**inputs, **outputs}.items()},
+            **{pin: [value] for pin, value in found.ties.items()},
         },
     }
 

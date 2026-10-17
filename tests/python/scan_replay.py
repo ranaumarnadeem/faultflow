@@ -94,9 +94,16 @@ def bench(
     return "\n".join(lines) + "\n"
 
 
-def run(chip: Chip, testbench: str, work: Path, blackboxes: set[str]) -> list[str]:
-    """Compile `testbench` with the chip's netlist, the cell models and a stub per
-    blackbox; run it; its output lines."""
+def run(
+    chip: Chip,
+    testbench: str,
+    work: Path,
+    blackboxes: set[str],
+    models: Path = MODELS,
+) -> list[str]:
+    """Compile `testbench` with the chip's netlist, the cell models (`models`: the
+    design library's, Sky130 HD's by default) and a stub per blackbox; run it; its
+    output lines."""
     if chip.netlist is None:
         raise ValueError(
             "the chip's sky130 netlist wasn't written ([scan] run_techmap)"
@@ -120,7 +127,7 @@ def run(chip: Chip, testbench: str, work: Path, blackboxes: set[str]) -> list[st
             str(tb),
             str(chip.netlist.resolve()),
             str(stub_file),
-            str(MODELS),
+            str(models),
         ],
         check=True,
         capture_output=True,
@@ -158,6 +165,12 @@ def differences(program: list[Cycle], lines: list[str]) -> list[str]:
     return differ
 
 
+def _models(cfg: Any) -> Path:
+    """The cell models of the design's library (its [simulation] verilog_models)."""
+    models = Path(getattr(cfg, "verilog_models", None) or MODELS)
+    return models if models.is_absolute() else ROOT / models
+
+
 def replay_on_cells(
     cfg: Any,
     patterns_path: Path,
@@ -180,7 +193,7 @@ def replay_on_cells(
         program = cycles(chip, patterns, overlap=overlap)
         where = work / ("overlapped" if overlap else "alone")
         testbench = bench(chip, program, unknown_inputs)
-        lines = run(chip, testbench, where, set(cfg.blackbox_instances))
+        lines = run(chip, testbench, where, set(cfg.blackbox_instances), _models(cfg))
         mode = "overlapped: " if overlap else ""
         problems += [mode + p for p in differences(program, lines)]
         problems += [mode + p for p in stil_problems(manifest, chip, program, where)]

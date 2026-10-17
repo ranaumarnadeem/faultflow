@@ -12,8 +12,28 @@ Two cell maps ship with the tool:
 Select one with `[design] cell_lib` (or `use_lib_cells sky130|osu035` in the shell).
 
 Any other library's map is generated from its Liberty: `ff.py cell-map`, or
-`[design] pdk` and `std_cell_library` for a PDK in the open_pdks layout (every
-Sky130 library: hd, hdll, hs, ms, ls, lp, hvl). See *Generated cell maps* below.
+`[design] pdk` and `std_cell_library` for a PDK in the open_pdks layout. See
+*Generated cell maps* below.
+
+## Supported PDKs
+
+Each library below is tested end to end: every gate and flop its map models is
+simulated against the library's own Liberty, and a design is synthesized onto it, scan
+inserted, ATPG'd, compressed and compacted, and the exported patterns replayed on the
+library's own Verilog cell models.
+
+| PDK (`pdk`) | Libraries (`std_cell_library`) | Not modelled |
+|---|---|---|
+| `sky130A` / `sky130B` | `sky130_fd_sc_hd` (shipped map), `_hdll`, `_hs`, `_ms`, `_ls`, `_lp`, `_hvl` | latches, clock gates, tristates; HD's `fahcin` / `fahcon` |
+| `gf180mcuA`..`D` | `gf180mcu_fd_sc_mcu7t5v0`, `gf180mcu_fd_sc_mcu9t5v0` | latches, clock gates, tristates, `oai33`, `oai222` |
+| `ihp-sg13g2` | `sg13g2_stdcell` | latches, clock gates, tristates |
+| — | OSU035 (shipped map, no scan flop: generic scan) | |
+
+Install them with [ciel](https://github.com/fossi-foundation/ciel) (`--pdk-family
+sky130`, `gf180mcu` or `ihp-sg13`). GF180MCU's other libraries (`osu_sc_*`,
+`as_sc_*`, `ocd_sc_*`) map too but have no scan flop. A library short of a cell a
+flow needs is refused by that flow, naming the cell's role: GF180MCU's fd_sc has no
+`and2b` for the IEEE 1500 wrapper, IHP no negative-edge flop for its WSP.
 
 ## The cell-map format
 
@@ -136,14 +156,23 @@ still reads only the map.
   the pattern would match another cell.
 
 Every generated map is checked end to end in the test suite: each gate and flop it
-models, in every Sky130 library installed, simulated through the core against its own
+models, in every library installed, simulated through the core against its own
 Liberty function or `ff` group.
 
 FaultFlow's own cells (scan flops, the wrapper's boundary cells and WSP, the gates scan
 stitching adds) come from the library by role (`faultflow/pdk/roles.py`): a role is a
 logical function -- a non-inverting `mux2`, an `and2b`, a flop with an active-low
 reset, a scan flop -- and the library's cell for it is found and checked with the same
-oracle. A flow that needs a role the library lacks says which.
+oracle. A flop role the library has no cell of exactly its shape for takes a flop with
+more controls, holding the rest inactive: IHP SG13G2 has reset flops only, so its
+plain scan flop is `sg13g2_sdfrbpq` with `RESET_B` tied high. Likewise a flop
+synthesis tied off a reset of (on a library without a plain flop) scans as a plain
+one. A flow that needs a role the library lacks says which.
+
+The library's Verilog models are joined into one file for iverilog, its primitives
+first. Two open_pdks defects are mended there: `sky130_fd_sc_lp.v` wraps 111 base
+cells it never defines (each is given its `_1` variant's model, renamed), and some
+versions of `sky130_fd_sc_hd.v` end a guard with a bare word after `` `endif ``.
 
 ## Adding cells
 

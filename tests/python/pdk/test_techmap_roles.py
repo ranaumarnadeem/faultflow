@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from faultflow.cell_map import load_cell_map, lookup_cell
+
 from faultflow.pdk.command import cell_map_command
 from faultflow.scan.techmap import (
     ScanTechmapConfig,
@@ -47,5 +49,6 @@ def test_each_librarys_techmap_names_its_own_cells(
         return
     text = render_scan_techmap(cfg)
     assert "sky130_fd_sc_hd__" not in text
+    entries = load_cell_map(out)
     for cell in (cfg.library_cell, cfg.and_cell, cfg.or_cell, cfg.inv_cell):
-        assert cell.startswith(lib + "__") and cell in text
+        assert lookup_cell(cell, entries) is not None and cell in text, cell

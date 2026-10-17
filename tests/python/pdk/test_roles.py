@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from faultflow.cell_map import lookup_cell
 from faultflow.pdk.command import cell_map_command
 from faultflow.pdk.roles import PdkError, library_roles
 
@@ -84,20 +85,24 @@ def test_sky130_hd_roles_are_the_cells_faultflow_has_always_used(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("lib,liberty", LIBRARIES, ids=[lib for lib, _ in LIBRARIES])
-def test_every_sky130_library_has_its_own_cell_for_every_role(
+def test_every_library_has_its_own_cell_for_every_role(
     lib: str, liberty: Path, tmp_path: Path, require_cpp_core: None
 ) -> None:
-    """hvl has no scan flop with an active-low set: the role is refused, by name."""
+    """A role the library can't fill -- hvl has no scan flop with an active-low set,
+    GF180MCU's fd_sc no and2b -- is refused, by name."""
     out = tmp_path / f"{lib}.json"
     cell_map_command(liberty, out)
-    roles = library_roles(_map(out))
+    cell_map = _map(out)
+    entries = list(cell_map.items())
+    roles = library_roles(cell_map, name=lib)
     for role in roles.names():
         try:
             got = roles[role]
         except PdkError as exc:
             assert role in str(exc) and lib in str(exc)
             continue
-        assert got.cell.startswith(lib + "__"), (role, got.cell)
+        entry = lookup_cell(got.cell, entries)
+        assert entry is not None and not got.cell.startswith("$"), (role, got.cell)
 
 
 @pytest.mark.unit
@@ -183,3 +188,66 @@ def test_hd_pins_are_hds_roles(require_cpp_core: None) -> None:
 
     roles = default_roles()
     assert {role: dict(roles[role].pins) for role in HD_PINS} == HD_PINS
+
+
+@pytest.mark.unit
+def test_a_flop_role_the_library_has_no_exact_cell_for_holds_a_richer_flops_controls(
+    require_cpp_core: None,
+) -> None:
+    """A library of reset flops only (IHP SG13G2): its plain flop and scan flop are
+    the reset ones, their reset held inactive, in a role cell and in the techmap; a
+    flop of exactly the role's shape is still preferred."""
+    from faultflow.pdk.roles import role_cell
+    from faultflow.scan.techmap import ScanTechmapConfig, render_scan_techmap
+
+    gates = {
+        f"acme_{name}_*": {
+            "node_type": "GATE",
+            "gate_type": gate,
+            "inputs": pins,
+            "outputs": {"Y": "Y"},
+        }
+        for name, gate, pins in (
+            ("and2", "AND2", ["A", "B"]),
+            ("or2", "OR2", ["A", "B"]),
+            ("inv", "INV", ["A"]),
+        )
+    }
+    reset = {"pin": "RESET_B", "level": "LOW", "value": 0}
+    plain = {"trigger": "POSEDGE", "clock": "CLK", "data": "D", "output": "Q"}
+    cm = {
+        **gates,
+        "acme_dfrbpq_*": {
+            "node_type": "FF",
+            "outputs": {"Q": "Q"},
+            "ff": {**plain, "clear": reset},
+        },
+        "acme_sdfrbpq_*": {
+            "node_type": "FF",
+            "outputs": {"Q": "Q"},
+            "ff": {
+                **plain,
+                "clear": reset,
+                "scan": {"in": "SCD", "enable": "SCE", "enable_polarity": "HIGH"},
+            },
+        },
+    }
+    roles = library_roles(cm, name="acme")
+    ff = roles["ff"]
+    assert (ff.cell, dict(ff.ties)) == ("acme_dfrbpq_1", {"RESET_B": "1"})
+    assert dict(roles["ff_reset"].ties) == {}
+    assert dict(roles["scan_ff"].ties) == {"RESET_B": "1"}
+    cell = role_cell(roles, "ff", {}, {"clk": 2, "d": 3}, {"q": 4})
+    assert cell["connections"] == {"CLK": [2], "D": [3], "RESET_B": ["1"], "Q": [4]}
+    assert cell["port_directions"]["RESET_B"] == "input"
+    techmap = render_scan_techmap(ScanTechmapConfig.from_roles(roles))
+    no_reset, with_reset = techmap.split("module faultflow_scanff_r_sky130_map")[:2]
+    assert ".RESET_B(1'b1)" in no_reset and ".RESET_B(RESET_B)" in with_reset
+    # A plain flop, once there is one, is the ff role's.
+    cm["acme_dfxtp_*"] = {
+        "node_type": "FF",
+        "outputs": {"Q": "Q"},
+        "ff": plain,
+    }
+    plain_ff = library_roles(cm, name="acme")["ff"]
+    assert (plain_ff.cell, dict(plain_ff.ties)) == ("acme_dfxtp_1", {})

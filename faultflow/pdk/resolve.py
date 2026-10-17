@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,30 +56,54 @@ def cache_dir(explicit: Path | str | None = None) -> Path:
     return (Path(base) if base else Path.home() / ".cache") / "faultflow" / "pdk"
 
 
+def ciel_family(pdk: str) -> str:
+    """The ciel PDK family a PDK variant installs with: sky130A -> sky130,
+    gf180mcuD -> gf180mcu, ihp-sg13g2 -> ihp-sg13."""
+    for family, variant in (
+        ("sky130", r"sky130[A-Z]"),
+        ("gf180mcu", r"gf180mcu[A-Z]"),
+        ("ihp-sg13", r"ihp-sg13\w+"),
+    ):
+        if re.fullmatch(variant, pdk):
+            return family
+    return pdk
+
+
+def _corners(lib_dir: Path, library: str) -> dict[str, Path]:
+    """A library's Liberty files by corner: ``<library>__<corner>.lib`` (Sky130,
+    GF180MCU) or ``<library>_<corner>.lib`` (IHP SG13G2)."""
+    found: dict[str, Path] = {}
+    for path in sorted(lib_dir.glob(f"{library}_*.lib")):
+        rest = path.stem[len(library) :]
+        if rest.startswith("__"):
+            found[rest[2:]] = path
+        elif "__" not in rest:
+            found.setdefault(rest[1:], path)
+    return found
+
+
 def _corner(lib_dir: Path, library: str, corner: str | None) -> Path:
+    found = _corners(lib_dir, library)
     if corner:
-        path = lib_dir / f"{library}__{corner}.lib"
-        if not path.exists():
-            have = sorted(
-                p.stem.split("__", 1)[-1] for p in lib_dir.glob(f"{library}__*.lib")
-            )
+        if corner not in found:
             raise PdkError(
-                f"{library} has no corner {corner} (it has: {', '.join(have)})"
+                f"{library} has no corner {corner} (it has: {', '.join(sorted(found))})"
             )
-        return path
-    found = sorted(lib_dir.glob(f"{library}__*.lib"))
+        return found[corner]
     if not found:
         raise PdkError(f"{lib_dir} has no Liberty file for {library}")
-    for nominal in NOMINAL_CORNERS:
-        path = lib_dir / f"{library}__{nominal}.lib"
-        if path.exists():
-            return path
+    # The supply the library is named for (GF180MCU's mcu7t5v0, osu_sc_gp9t3v3).
+    supply = re.search(r"(\d)v(\d)(?!.*\dv\d)", library)
+    named = [f"tt_025C_{supply[1]}v{supply[2]}0"] if supply else []
+    for nominal in (*named, *NOMINAL_CORNERS):
+        if nominal in found:
+            return found[nominal]
     # Else a typical corner at 25 C, else any typical, else the first.
-    for prefer in ("tt_025C_", "tt_"):
-        typical = [p for p in found if p.stem.split("__", 1)[-1].startswith(prefer)]
+    for prefer in ("tt_025C_", "tt_", "typ_"):
+        typical = [found[c] for c in sorted(found) if c.startswith(prefer)]
         if typical:
             return typical[0]
-    return found[0]
+    return found[sorted(found)[0]]
 
 
 def _sha(path: Path) -> str:
@@ -87,6 +112,47 @@ def _sha(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()[:16]
+
+
+_MODULE = re.compile(r"^\s*module\s+(\w+)\s*\((.*?)^\s*endmodule", re.M | re.S)
+_BASE = re.compile(r"^\s*(\w+)\s+base\s*\(", re.M)
+_DRIVE = r"_(?:\d+|lp\d*|m)"
+_BARE_ENDIF = re.compile(r"^(\s*`endif)[ \t]+(?!//)(\w.*)$", re.M)
+
+
+def _missing_base_models(text: str) -> str:
+    """The base cells a library's sized cells wrap (``<cell>_1`` instantiating
+    ``<cell> base (...)``) that its models never define -- open_pdks'
+    sky130_fd_sc_lp lacks 111 -- each a copy of a sized variant's own model,
+    renamed: drive strengths share the cell's function. Empty where every base is
+    defined."""
+    modules: dict[str, list[str]] = {}
+    for name, body in _MODULE.findall(text):
+        modules.setdefault(name, []).append(body)
+    added = []
+    for base in sorted(set(_BASE.findall(text)) - set(modules)):
+        variants = sorted(
+            (
+                name
+                for name, bodies in modules.items()
+                if re.fullmatch(re.escape(base) + _DRIVE, name)
+                and not any(_BASE.search(b) for b in bodies)
+            ),
+            key=lambda name: (not name.endswith("_1"), name),
+        )
+        if not variants:
+            continue  # iverilog will name it: nothing here models it
+        guard = variants[0].upper()
+        start = text.find(f"`ifndef {guard}_V\n")
+        close = f"`endif  // {guard}_V"
+        end = text.find(close, start)
+        if start < 0 or end < 0:
+            continue
+        section = text[start : end + len(close)]
+        section = section.replace(f"{guard}_", f"{base.upper()}_BASE_")
+        section = re.sub(rf"\b{re.escape(variants[0])}\b", base, section)
+        added.append(f"// {base}: the model of {variants[0]}\n{section}\n")
+    return "".join(added)
 
 
 def resolve_library(
@@ -101,7 +167,7 @@ def resolve_library(
     if not (base / "lib").is_dir():
         raise PdkError(
             f"the PDK root {pdk_root(root)} has no {pdk} library {library}: install it "
-            f"(ciel fetch --pdk-family {pdk.rstrip('AB')} -l all <version>, then ciel "
+            f"(ciel fetch --pdk-family {ciel_family(pdk)} -l all <version>, then ciel "
             "enable) or set [design] pdk_root"
         )
     liberty = _corner(base / "lib", library, corner)
@@ -119,14 +185,28 @@ def resolve_library(
         tmp_map.replace(cell_map)
     models = out / f"{library}-{pdk}-models.v"
     verilog = base / "verilog"
-    sources = [verilog / "primitives.v", verilog / f"{library}.v"]
-    if not sources[1].exists():
+    cells = verilog / f"{library}.v"
+    if not cells.exists():
         raise PdkError(f"{verilog} has no {library}.v (the cells' Verilog models)")
+    # The primitives the cells use, first: Sky130's and GF180MCU's primitives.v,
+    # IHP's sg13g2_udp.v. The blackbox (empty) models are left out.
+    sources = [
+        *(
+            v
+            for v in sorted(verilog.glob("*.v"))
+            if v != cells and "blackbox" not in v.name
+        ),
+        cells,
+    ]
     text = "".join(
         f"// {src}\n" + src.read_text(encoding="utf-8", errors="replace") + "\n"
         for src in sources
         if src.exists()
     )
+    # A bare word after `endif (sky130_fd_sc_hd__lpflow_bleeder in some open_pdks
+    # versions) is a syntax error to iverilog: a comment.
+    text = _BARE_ENDIF.sub(r"\1 // \2", text)
+    text += _missing_base_models(text)
     if (
         not models.exists()
         or models.read_text(encoding="utf-8", errors="replace") != text

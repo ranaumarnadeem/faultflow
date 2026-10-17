@@ -40,6 +40,11 @@ class ScanTechmapConfig:
     and_pins: tuple[str, str, str] = ("A", "B", "X")
     or_pins: tuple[str, str, str] = ("A", "B", "X")
     inv_pins: tuple[str, str] = ("A", "Y")
+    # Each scan cell's pins held at a constant: the controls a scan flop with more of
+    # them than its role needs holds inactive (faultflow.pdk.roles.RoleCell.ties).
+    library_ties: tuple[tuple[str, str], ...] = ()
+    reset_ties: tuple[tuple[str, str], ...] = ()
+    set_ties: tuple[tuple[str, str], ...] = ()
 
     @classmethod
     def from_roles(cls, roles: "LibraryRoles") -> "ScanTechmapConfig":
@@ -51,11 +56,14 @@ class ScanTechmapConfig:
         scan = roles["scan_ff"]
         pins = dict(scan.pins)
         optional: dict[str, dict[str, str] | None] = {}
+        ties: dict[str, tuple[tuple[str, str], ...]] = {}
         for role in ("scan_ff_reset", "scan_ff_set"):
             try:
                 optional[role] = dict(roles[role].pins) | {"cell": roles[role].cell}
+                ties[role] = tuple(sorted(roles[role].ties.items()))
             except PdkError:
                 optional[role] = None
+                ties[role] = ()
         for role, found in optional.items():
             if found is not None and any(
                 found[k] != pins[k] for k in ("clk", "d", "si", "se", "q")
@@ -83,6 +91,9 @@ class ScanTechmapConfig:
             and_pins=(and2.pins["a"], and2.pins["b"], and2.pins["out"]),
             or_pins=(or2.pins["a"], or2.pins["b"], or2.pins["out"]),
             inv_pins=(inv.pins["a"], inv.pins["out"]),
+            library_ties=tuple(sorted(scan.ties.items())),
+            reset_ties=ties["scan_ff_reset"],
+            set_ties=ties["scan_ff_set"],
         )
 
 
@@ -94,10 +105,12 @@ def _render_module(
     *,
     extra_port: str | None = None,
     extra_pin: str | None = None,
+    ties: tuple[tuple[str, str], ...] = (),
 ) -> str:
     escaped = celltype.replace("\\", "\\\\")
     extra_in = f"    input {extra_port},\n" if extra_port else ""
     extra_conn = f"        .{extra_pin}({extra_port}),\n" if extra_port else ""
+    extra_conn += "".join(f"        .{pin}(1'b{value}),\n" for pin, value in ties)
     return (
         f'(* techmap_celltype = "{escaped}" *)\n'
         f"module {module_name} (\n"
@@ -175,6 +188,7 @@ def render_scan_techmap(config: ScanTechmapConfig | None = None) -> str:
         "faultflow_scanff_sky130_map",
         cfg.library_cell,
         cfg,
+        ties=cfg.library_ties,
     )
     if cfg.reset_cell:
         text += "\n" + _render_module(
@@ -184,6 +198,7 @@ def render_scan_techmap(config: ScanTechmapConfig | None = None) -> str:
             cfg,
             extra_port="RESET_B",
             extra_pin=cfg.reset_pin,
+            ties=cfg.reset_ties,
         )
     if cfg.set_cell:
         text += "\n" + _render_module(
@@ -193,6 +208,7 @@ def render_scan_techmap(config: ScanTechmapConfig | None = None) -> str:
             cfg,
             extra_port="SET_B",
             extra_pin=cfg.set_pin,
+            ties=cfg.set_ties,
         )
     return text + gate_maps
 

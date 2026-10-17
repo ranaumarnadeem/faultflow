@@ -7,7 +7,6 @@ reference -- as tests/python/test_cell_liberty.py does for the combinational cel
 from __future__ import annotations
 
 import json
-import os
 import random
 from pathlib import Path
 from typing import Any
@@ -18,40 +17,30 @@ from faultflow.pdk.boolexpr import parse_expr
 from faultflow.pdk.command import cell_map_command
 from faultflow.pdk.liberty import Group, parse_liberty
 
+from .installed import installed, pdk_root_with
+
 ROOT = Path(__file__).resolve().parents[3]
 HD_LIB = ROOT / "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib"
 HD_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 STEPS = 10
 
 
-def _ciel_lib(lib: str, corner: str) -> Path | None:
-    """The library's Liberty at ``corner`` in the ciel/open_pdks tree, or any corner of
-    it (cell functions don't change with the corner; sky130_fd_sc_lp has no tt)."""
-    root = Path(os.environ.get("PDK_ROOT", Path.home() / ".ciel"))
-    dirs = sorted(root.glob(f"*/libs.ref/{lib}/lib")) + sorted(
-        root.glob(f"ciel/sky130/versions/*/sky130A/libs.ref/{lib}/lib")
-    )
-    for d in dirs:
-        exact = d / f"{lib}__{corner}.lib"
-        if exact.exists():
-            return exact
-        found = sorted(d.glob(f"{lib}__*.lib"))
-        if found:
-            return found[0]
-    return None
+def _installed_lib(pdk: str, lib: str) -> Path | None:
+    """The library's Liberty at its nominal corner (faultflow.pdk.resolve's choice;
+    cell functions don't change with the corner), if its PDK is installed."""
+    from faultflow.pdk.resolve import _corner
+
+    root = pdk_root_with(pdk, lib)
+    if root is None:
+        return None
+    return _corner(root / pdk / "libs.ref" / lib / "lib", lib, None)
 
 
+# The shipped HD Liberty, then every other library of every installed PDK.
 LIBRARIES = [("sky130_fd_sc_hd", HD_LIB)] + [
     (lib, path)
-    for lib, corner in [
-        ("sky130_fd_sc_hdll", "tt_025C_1v80"),
-        ("sky130_fd_sc_hs", "tt_025C_1v80"),
-        ("sky130_fd_sc_ms", "tt_025C_1v80"),
-        ("sky130_fd_sc_ls", "tt_025C_1v80"),
-        ("sky130_fd_sc_lp", "tt_025C_1v80"),
-        ("sky130_fd_sc_hvl", "tt_025C_3v30"),
-    ]
-    if (path := _ciel_lib(lib, corner)) is not None
+    for pdk, lib in installed()
+    if lib != "sky130_fd_sc_hd" and (path := _installed_lib(pdk, lib)) is not None
 ]
 
 

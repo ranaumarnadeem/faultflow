@@ -20,8 +20,8 @@ trust any of these again without re-verifying against a real synthesized netlist
 2. **Every real Sky130 library cell's ``port_directions`` dict in this project's
    synthesized JSON is EMPTY** (``{}``). Input vs. output pin roles therefore
    cannot be read from it for any real library cell: they come from the
-   hardcoded ``_LINEAR_GATE_PINS`` table below, exactly as the C++ core never
-   trusts Yosys JSON for cell semantics (CLAUDE.md: "Truth comes from the
+   design's cell map (its XOR / XNOR / INV / BUF entries), exactly as the C++
+   core never trusts Yosys JSON for cell semantics (CLAUDE.md: "Truth comes from the
    ``gate_type`` + port mapping + ``gate_eval.cpp`` semantics code").
 3. A single-chain fanout row gets optimized to a pure net alias (no gate at
    all) -- the walker's leaf check must run BEFORE looking for a driving cell.
@@ -33,26 +33,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from faultflow.cell_map import load_cell_map, lookup_cell
 from faultflow.scan.errors import ScanError
 from faultflow.scan.ring_generator import bitmask_to_index_list
 from faultflow.scan.stitch import _load_json, _top_module
 
-_LINEAR_GATE_PINS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "sky130_fd_sc_hd__xor2_": ("X", ("A", "B")),
-    "sky130_fd_sc_hd__xnor2_": ("Y", ("A", "B")),
-    "sky130_fd_sc_hd__xor3_": ("X", ("A", "B", "C")),
-    "sky130_fd_sc_hd__xnor3_": ("Y", ("A", "B", "C")),
-    "sky130_fd_sc_hd__inv_": ("Y", ("A",)),
-    "sky130_fd_sc_hd__clkinv_": ("Y", ("A",)),
-    "sky130_fd_sc_hd__buf_": ("X", ("A",)),
-    "sky130_fd_sc_hd__clkbuf_": ("X", ("A",)),
+# The linear gate types, and whether each inverts.
+_LINEAR_GATE_TYPES = {
+    "XOR2": False,
+    "XOR3": False,
+    "BUF": False,
+    "XNOR2": True,
+    "XNOR3": True,
+    "INV": True,
 }
-_INVERTING_PREFIXES = (
-    "sky130_fd_sc_hd__xnor2_",
-    "sky130_fd_sc_hd__xnor3_",
-    "sky130_fd_sc_hd__inv_",
-    "sky130_fd_sc_hd__clkinv_",
+_DEFAULT_CELL_MAP = (
+    Path(__file__).resolve().parents[2] / "cells/sky130/sky130_fd_sc_hd.json"
 )
+
+# A linear cell's (output pin, input pins, inverting).
+_LinearSpec = tuple[str, tuple[str, ...], bool]
 
 
 @dataclass(frozen=True)
@@ -65,11 +65,29 @@ class CompactionStructuralCheckResult:
         return not self.errors
 
 
-def _linear_pins(ctype: str) -> tuple[str, tuple[str, ...]] | None:
-    for prefix, spec in _LINEAR_GATE_PINS.items():
-        if ctype.startswith(prefix):
-            return spec
-    return None
+class _LinearCells:
+    """The library's linear cells, by the cell map: a cell's gate type, input pins
+    (in order) and output pin come from its entry, as the C++ core takes them."""
+
+    def __init__(self, entries: list[tuple[str, dict[str, Any]]]) -> None:
+        self._entries = entries
+        self._specs: dict[str, _LinearSpec | None] = {}
+
+    def __call__(self, ctype: str) -> _LinearSpec | None:
+        if ctype not in self._specs:
+            self._specs[ctype] = self._spec(ctype)
+        return self._specs[ctype]
+
+    def _spec(self, ctype: str) -> _LinearSpec | None:
+        entry = lookup_cell(ctype, self._entries)
+        if entry is None or entry.get("node_type") != "GATE":
+            return None
+        inverting = _LINEAR_GATE_TYPES.get(str(entry.get("gate_type")))
+        outputs = entry.get("outputs")
+        if inverting is None or not isinstance(outputs, dict) or len(outputs) != 1:
+            return None
+        out_pin = str(next(iter(outputs.values())))
+        return (out_pin, tuple(str(p) for p in entry.get("inputs", [])), inverting)
 
 
 def _build_net_index(module: dict[str, Any]) -> dict[int, list[tuple[str, str, dict]]]:
@@ -96,6 +114,7 @@ def _linear_cone(
     net_index: dict[int, list[tuple[str, str, dict]]],
     leaf_index: dict[int, int],
     cache: dict[int, tuple[int, bool]],
+    linear: _LinearCells,
 ) -> tuple[int, bool]:
     """(coefficient bitmask over leaf_index's leaves, inverted) for net_id's
     driving cone. Raises ScanError on a non-linear gate, a fan-in count that
@@ -106,10 +125,10 @@ def _linear_cone(
     if net_id in cache:
         return cache[net_id]
     for name, ctype, conns in net_index.get(net_id, []):
-        spec = _linear_pins(ctype)
+        spec = linear(ctype)
         if spec is None:
             continue
-        out_pin, in_pins = spec
+        out_pin, in_pins, inverting = spec
         if net_id not in conns.get(out_pin, []):
             continue
         input_nets = [
@@ -123,14 +142,16 @@ def _linear_cone(
         mask = 0
         combined_inv = False
         for input_net in input_nets:
-            in_mask, in_inv = _linear_cone(input_net, net_index, leaf_index, cache)
+            in_mask, in_inv = _linear_cone(
+                input_net, net_index, leaf_index, cache, linear
+            )
             mask ^= in_mask
             combined_inv = combined_inv != in_inv
-        inverted = combined_inv != ctype.startswith(_INVERTING_PREFIXES)
+        inverted = combined_inv != inverting
         cache[net_id] = (mask, inverted)
         return (mask, inverted)
     for name, ctype, _conns in net_index.get(net_id, []):
-        if _linear_pins(ctype) is None:
+        if linear(ctype) is None:
             raise ScanError(
                 f"non-linear gate {ctype!r} (instance {name}) in "
                 f"compactor cone feeding net {net_id}"
@@ -140,6 +161,7 @@ def _linear_cone(
 
 def check_compaction_structure(
     manifest: dict[str, Any],
+    cell_map_json: Path | None = None,
 ) -> CompactionStructuralCheckResult:
     """Re-derive each compactor output bit's XOR fanout from the synthesized,
     COMPOSED netlist (``manifest["compaction"]["composed_json"]`` -- never
@@ -149,6 +171,8 @@ def check_compaction_structure(
 
     A no-op (no errors, no warnings) when compaction is absent/disabled in
     the manifest -- opt-in, matching ``check_composed_decompressor``.
+    The linear cells are the ones ``cell_map_json`` (the design's cell map,
+    Sky130 HD's by default) maps to XOR, XNOR, INV and BUF gates.
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -197,11 +221,12 @@ def check_compaction_structure(
 
         net_index = _build_net_index(module)
         cache: dict[int, tuple[int, bool]] = {}
+        linear = _LinearCells(load_cell_map(cell_map_json or _DEFAULT_CELL_MAP))
 
         for o, expected_row in zip(range(num_outputs), fanout):
             try:
                 mask, inverted = _linear_cone(
-                    int(channel_bits[o]), net_index, leaf_index, cache
+                    int(channel_bits[o]), net_index, leaf_index, cache, linear
                 )
             except ScanError as exc:
                 errors.append(f"{channel_port}[{o}]: {exc}")

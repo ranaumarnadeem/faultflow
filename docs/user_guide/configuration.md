@@ -70,7 +70,7 @@ run_techmap = true
 | Key | Default | Meaning |
 |---|---|---|
 | `netlist` | `design.json` | Input Yosys JSON or Verilog netlist |
-| `pdk`, `std_cell_library` | — | The PDK and its standard-cell library the design is on, e.g. `sky130A` and `sky130_fd_sc_hs` (any of `sky130_fd_sc_hd`, `_hdll`, `_hs`, `_ms`, `_ls`, `_lp`, `_hvl`). The Liberty, the Verilog models and the cell map then come from the PDK (see below) unless `liberty`, `verilog_models` or `cell_lib` name them |
+| `pdk`, `std_cell_library` | — | The PDK and its standard-cell library the design is on, e.g. `sky130A` and `sky130_fd_sc_hs` (any Sky130 library: `sky130_fd_sc_hd`, `_hdll`, `_hs`, `_ms`, `_ls`, `_lp`, `_hvl`), `gf180mcuD` and `gf180mcu_fd_sc_mcu7t5v0` (or `_mcu9t5v0`), or `ihp-sg13g2` and `sg13g2_stdcell`. The Liberty, the Verilog models and the cell map then come from the PDK (see below) unless `liberty`, `verilog_models` or `cell_lib` name them |
 | `pdk_root` | `$PDK_ROOT`, else `~/.ciel` | Where the PDK is installed, in the open_pdks layout (`<root>/<pdk>/libs.ref/<library>/...`), as ciel installs it |
 | `corner` | the nominal one | The Liberty corner synthesis maps to (`tt_025C_1v80`, ...); the cell functions don't depend on it |
 | `dont_use` | — | Comma-separated cells (globs) synthesis must not use, beside those the library's cell map doesn't model |
@@ -98,7 +98,7 @@ flops, the IEEE 1500 wrapper and its WSP, the gates stitching folds an enable in
 are the library's too. Install a PDK with ciel, e.g.
 
 ```bash
-ciel fetch --pdk-family sky130 -l all <open_pdks version>
+ciel fetch --pdk-family sky130 -l all <open_pdks version>    # or gf180mcu, ihp-sg13
 ```
 
 then `ciel enable` it, or point `pdk_root` at its version directory.

@@ -1151,7 +1151,7 @@ class Runner:
             "with_decompressor": decompressor is not None,
         }
         manifest["compaction"] = compaction_entry
-        structural = check_compaction_structure(manifest)
+        structural = check_compaction_structure(manifest, Path(self.cfg.cell_lib))
         errors = list(structural.errors)
         if isinstance(compression, dict) and decompressor is not None:
             # The decompressor in the whole chip, checked as scan-compress checks

@@ -280,6 +280,24 @@ def _async_control(ff_meta: dict[str, Any]) -> tuple[str, str | None]:
     return "none", None
 
 
+def _async_held_inactive(ff_meta: dict[str, Any], conns: dict[str, Any]) -> bool:
+    """Whether an FF's single async control is tied to the constant that keeps it
+    inactive: synthesis onto a library without a plain flop (IHP SG13G2, Sky130
+    hdll and lp) maps one to a reset flop with its reset tied off. Such a flop is a
+    plain one."""
+    kind, pin = _async_control(ff_meta)
+    if kind == "none" or pin is None:
+        return False
+    value = conns.get(pin)
+    if not isinstance(value, list) or len(value) != 1 or value[0] not in ("0", "1"):
+        return False
+    spec = ff_meta.get("clear" if kind == "reset" else "preset")
+    if spec is None:
+        spec = ff_meta.get(kind)
+    level = spec.get("level", "LOW") if isinstance(spec, dict) else "LOW"
+    return value[0] == ("1" if level == "LOW" else "0")
+
+
 def _enable_control(ff_meta: dict[str, Any]) -> tuple[str | None, str]:
     """The clock-enable of an FF as (pin, level): reads the cell-map `ff:`
     enable metadata ({"pin": "DE", "level": "HIGH"|"LOW"}, e.g. sky130
@@ -372,7 +390,7 @@ def _reason_for_ff(
     # cell, so it stays ineligible; the control pin must be a single net.
     if has_clear and has_preset:
         return "has_async_reset_set"
-    if has_clear or has_preset:
+    if (has_clear or has_preset) and not _async_held_inactive(ff_meta, conns):
         _, pin = _async_control(ff_meta)
         if pin is None or _maybe_one_bit(conns.get(pin)) is None:
             return "unsupported_ff_shape"
@@ -477,6 +495,8 @@ def _collect_ffs(
         if clk_pin is None or d_pin is None or q_pin is None:
             raise ScanError(f"{instance}: internal FF metadata validation failed")
         async_kind, async_pin = _async_control(ff_meta)
+        if _async_held_inactive(ff_meta, conns):
+            async_kind, async_pin = "none", None  # a plain flop (see above)
         async_net = (
             _one_bit(conns.get(async_pin), f"{instance}.{async_pin}")
             if async_kind != "none" and async_pin is not None
