@@ -24,6 +24,24 @@ class PdkError(RuntimeError):
     """A library that can't give FaultFlow a cell it needs."""
 
 
+# The cell-map field naming the extra library an entry is from
+# (faultflow.pdk.resolve.combine_libraries); the primary library's entries have none.
+LIBRARY_KEY = "library"
+
+
+def library_maps(cell_map: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """A combined cell map split by library: ``""`` -> the primary library's
+    entries and FaultFlow's own; each extra library's name -> its entries, as its
+    own map has them (untagged)."""
+    split: dict[str, dict[str, Any]] = {"": {}}
+    for key, entry in cell_map.items():
+        name = entry.get(LIBRARY_KEY, "") if isinstance(entry, Mapping) else ""
+        if name:
+            entry = {k: v for k, v in entry.items() if k != LIBRARY_KEY}
+        split.setdefault(str(name), {})[key] = entry
+    return split
+
+
 @dataclass(frozen=True)
 class RoleCell:
     cell: str
@@ -83,8 +101,10 @@ def _sized(pattern: str, entry: Mapping[str, Any]) -> bool:
 def _library_name(cell_map: Mapping[str, Any]) -> str:
     prefixes = {
         k.split("__")[0]
-        for k in cell_map
-        if "__" in k and not k.startswith(("$", "\\"))
+        for k, e in cell_map.items()
+        if "__" in k
+        and not k.startswith(("$", "\\"))
+        and not (isinstance(e, Mapping) and e.get(LIBRARY_KEY))
     }
     return sorted(prefixes)[0] if len(prefixes) == 1 else "the library"
 
@@ -119,6 +139,7 @@ class LibraryRoles:
             if isinstance(e, Mapping)
             and not k.startswith(("$", "\\"))
             and not e.get("unsupported")
+            and not e.get(LIBRARY_KEY)  # an extra library's (resolve)
             and e.get("node_type") == node_type
         ]
 

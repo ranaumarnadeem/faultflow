@@ -136,7 +136,11 @@ TRANSIENT_NAMES = {
 }
 
 
-YOSYS_TEMPLATE = """read_verilog -sv {verilog}
+# Every library's Liberty is read as cell modules first, so a design may instantiate
+# library cells (any of its libraries', [design] extra_libraries) and gate-level
+# Verilog synthesizes as it is; the cell modules are deleted before the netlists are
+# written, which are then as without them. Flops and logic map onto `liberty` alone.
+YOSYS_TEMPLATE = """{read_libraries}read_verilog -sv {verilog}
 hierarchy -check -top {top}
 proc
 flatten
@@ -146,6 +150,7 @@ synth -top {top}
 dfflibmap -liberty {liberty}{dont_use}
 abc -liberty {liberty}{dont_use}
 delete t:$scopeinfo
+delete =A:faultflow_liberty_cell
 clean
 write_json {json}
 write_verilog {gate_verilog}
@@ -449,6 +454,10 @@ class Runner:
     def _rendered_yosys_script(self, source: Path | None = None) -> str:
         src = source or self._existing_verilog_source()
         return YOSYS_TEMPLATE.format(
+            read_libraries="".join(
+                f"read_liberty -lib -setattr faultflow_liberty_cell {path}\n"
+                for path in self.cfg.synthesis_libraries
+            ),
             verilog=src if src is not None else self.cfg.netlist,
             top=self.cfg.top,
             liberty=self.cfg.liberty or "",

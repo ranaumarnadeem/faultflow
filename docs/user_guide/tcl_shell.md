@@ -65,7 +65,7 @@ shown by `help`. Run `help <command>` for the live version of this reference, or
 |---|---|
 | `read_netlist PATH -top MODULE` | Load Verilog or Yosys JSON (Verilog is synthesized later by `synth`). No design may already be loaded. |
 | `load_json PATH -top MODULE` | Load an already-synthesized Yosys JSON directly, skipping `synth` (rejects Verilog). Mainly for resuming from a previously synthesized netlist. |
-| `use_lib_cells PROFILE` | Select the PDK profile: `sky130` or `osu035` |
+| `use_lib_cells PROFILE` | Select the PDK profile: `sky130`, `osu035`, or `<pdk>/<library>` of an installed PDK, with `+<library>` for each further library the design instantiates cells of (`sky130A/sky130_fd_sc_hd+sky130_fd_sc_hvl`) |
 | `synth` | Synthesize loaded Verilog with Yosys. On already-synthesized JSON, validates and returns `already_synthesized`. |
 | `add_clock PORT [-off 0\|1]` | Declare a clock domain; `-off` sets the inactive level (`0`=posedge/active-high default, `1`=negedge). Re-declaring a port replaces its entry. |
 | `report_clocks` | List declared clock domains (port + off-state) |
@@ -212,26 +212,34 @@ See [Flow recipes](examples.md) for a walkthrough of the two most common flows.
 
 ## The Yosys synthesis script
 
-faultflow's other "scripting" surface is the **locked Yosys synthesis template**,
-[`faultflow/templates/yosys_synth.tcl.j2`](https://github.com/ranaumarnadeem/faultflow/blob/main/faultflow/templates/yosys_synth.tcl.j2).
-It is a Jinja2 template rendered per run into
+faultflow's other "scripting" surface is the **locked Yosys synthesis script**,
+`YOSYS_TEMPLATE` in `faultflow/runner/runner.py`. It is rendered per run into
 `output/<top>/.faultflow/generated_scripts/yosys_synth.tcl` and executed with
 `yosys -s`:
 
 ```tcl
-read_verilog -sv {{ verilog }}
-hierarchy -check -top {{ top }}
+read_liberty -lib -setattr faultflow_liberty_cell <each library's Liberty>
+read_verilog -sv <verilog>
+hierarchy -check -top <top>
 proc
 flatten
 opt_expr
 opt_clean
-synth -top {{ top }}
-dfflibmap -liberty {{ liberty }}
-abc -liberty {{ liberty }}
+synth -top <top>
+dfflibmap -liberty <liberty> -dont_use <cell> ...
+abc -liberty <liberty> -dont_use <cell> ...
+delete t:$scopeinfo
+delete =A:faultflow_liberty_cell
 clean
-write_json {{ output_json }}
-write_verilog {{ output_verilog }}
+write_json <top>.json
+write_verilog <top>_gate.v
 ```
+
+The Liberty files are read as cells first, so the design may instantiate library cells
+(of `[design] extra_libraries` too) and a gate-level netlist synthesizes as it is; the
+cell modules are deleted again before the netlists are written. The design's own
+logic and flops map onto `[design] liberty` alone, never onto a cell its map doesn't
+model (`-dont_use`).
 
 One synthesis run emits both `write_json` (consumed by the C++ core) and
 `write_verilog` (used by the optional iverilog verification gate). The script is

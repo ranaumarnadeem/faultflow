@@ -49,9 +49,10 @@ COMMAND_HELP = {
         "Select the runtime cell semantics and technology files: a shipped profile "
         "(sky130, osu035), or a standard-cell library of a PDK installed in the "
         "open_pdks layout, e.g. sky130A/sky130_fd_sc_hs (its cell map generated from "
-        "its Liberty).",
-        "sky130, osu035, or <pdk>/<library> (from [design] pdk_root, $PDK_ROOT or "
-        "~/.ciel).",
+        "its Liberty). +<library> adds a further library of the PDK whose cells the "
+        "design instantiates: sky130A/sky130_fd_sc_hd+sky130_fd_sc_hvl.",
+        "sky130, osu035, or <pdk>/<library>[+<library>...] (from [design] pdk_root, "
+        "$PDK_ROOT or ~/.ciel).",
         "use_lib_cells sky130",
     ),
     "synth": CommandHelp(

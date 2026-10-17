@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from faultflow.pdk.cell_map_gen import generate_cell_map
-from faultflow.pdk.liberty import LibertyError, parse_liberty
+from faultflow.pdk.liberty import Group, LibertyError, parse_liberty
 
 # FaultFlow's own cells (the scan flop it stitches, its observe and capture buffers) are
 # in every map; they're taken from a shipped map's "$"-named entries.
@@ -23,23 +23,36 @@ def internal_cells(source: Path) -> dict[str, Any]:
     return {k: v for k, v in cm.items() if k.lstrip("\\").startswith("$")}
 
 
+def _parse(liberty: Path) -> Group:
+    try:
+        text = liberty.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise LibertyError(f"cannot read {liberty}: {exc}") from exc
+    return parse_liberty(text)
+
+
 def cell_map_command(
     liberty: Path,
     out: Path,
     *,
     report: Path | None = None,
     internal_from: Path = DEFAULT_INTERNAL_FROM,
+    companions: Sequence[Path] = (),
 ) -> str:
+    """The map of ``liberty``'s cells, and of the cells only its ``companions``
+    (more Liberty files of the library, at the same corner) characterize."""
     from faultflow.runner.runner import _load_core
 
     core = _load_core()
     if core is None:
         raise LibertyError("ff.py cell-map needs the C++ core (its gate evaluation)")
-    try:
-        text = Path(liberty).read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        raise LibertyError(f"cannot read {liberty}: {exc}") from exc
-    library = parse_liberty(text)
+    library = _parse(Path(liberty))
+    known = {str(c.args[0]) for c in library.all("cell") if c.args}
+    for companion in companions:
+        for cell in _parse(Path(companion)).all("cell"):
+            if cell.args and str(cell.args[0]) not in known:
+                known.add(str(cell.args[0]))
+                library.groups.append(cell)
     result = generate_cell_map(
         library, core, internal_cells=internal_cells(internal_from)
     )

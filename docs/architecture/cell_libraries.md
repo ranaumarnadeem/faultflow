@@ -35,6 +35,11 @@ sky130`, `gf180mcu` or `ihp-sg13`). GF180MCU's other libraries (`osu_sc_*`,
 flow needs is refused by that flow, naming the cell's role: GF180MCU's fd_sc has no
 `and2b` for the IEEE 1500 wrapper, IHP no negative-edge flop for its WSP.
 
+A design may also use cells of several libraries of one PDK, e.g. Sky130 hd logic
+with hvl level shifters and flops (`[design] extra_libraries`): each flop is scanned
+with its own library's scan flop, on chains of its own library; this is tested end to
+end, the compressed and compacted chip replayed on both libraries' models.
+
 ## The cell-map format
 
 A cell map is a JSON object whose keys are **drive-strength glob patterns** (prefix
@@ -168,6 +173,19 @@ more controls, holding the rest inactive: IHP SG13G2 has reset flops only, so it
 plain scan flop is `sg13g2_sdfrbpq` with `RESET_B` tied high. Likewise a flop
 synthesis tied off a reset of (on a library without a plain flop) scans as a plain
 one. A flow that needs a role the library lacks says which.
+
+A library's Liberty at a corner is its main file and the companion files of that corner
+(`<corner>_<suffix>`) that characterize cells the main one lacks: Sky130 hvl's eight
+level shifters are only in its dual-supply `tt_025C_3v30_lv1v80`, and map as `BUF`,
+or `AND2` of `A` and `SLEEP_B` for the isolating ones.
+
+A design on several libraries of one PDK (`[design] extra_libraries`) has one cell
+map: the primary library's, then each extra library's entries, tagged
+`"library": "<name>"` (`faultflow/pdk/resolve.py: combine_libraries`). Roles are the
+primary library's alone. Scan stitching records an extra library's flop in its
+generic scan cell's `FAULTFLOW_LIBRARY` parameter, and the scan techmap then has a
+module per library and cell type, each mapping only its own library's cells
+(`_TECHMAP_FAIL_`); with one library the techmap is as before.
 
 The library's Verilog models are joined into one file for iverilog, its primitives
 first. Two open_pdks defects are mended there: `sky130_fd_sc_lp.v` wraps 111 base

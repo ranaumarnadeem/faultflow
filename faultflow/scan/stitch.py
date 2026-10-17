@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from faultflow.pdk.roles import LIBRARY_KEY
 from faultflow.scan.errors import ScanError
 
 SCAN_CELL_TYPE = "$scanff_faultflow"
@@ -68,7 +69,14 @@ INELIGIBLE_REASONS = {
     "unsupported_ff_shape",
     "multiple_clock_nets",
     "nonscan_policy",  # matched by [scan] nonscan_cells: left out of scan on purpose
+    # An extra library's flop ([design] extra_libraries) with no scan flop of its
+    # shape in its own library: scanned by another library's, it would change domain.
+    "no_library_scan_cell",
 }
+
+# The parameter a generic scan cell (and its enable's gates) carries when the flop it
+# replaces is an extra library's: the scan techmap maps it onto that library's cells.
+LIBRARY_PARAMETER = "FAULTFLOW_LIBRARY"
 
 
 @dataclass(frozen=True)
@@ -154,6 +162,9 @@ class _EligibleFF:
     enable_net: int = -1
     enable_level: str = "HIGH"
     enable_const: bool | None = None
+    # The extra library the flop is from ([design] extra_libraries), "" for the
+    # primary: its scan cell is that library's, its chain only that library's.
+    library: str = ""
 
 
 def _truthy_attr(value: object) -> bool:
@@ -433,6 +444,7 @@ def _collect_ffs(
 
     eligible: list[_EligibleFF] = []
     ineligible: list[IneligibleFF] = []
+    library_cells = _LibraryScanCells(cell_map)
     # How many connections each net bit has, across every cell pin and top port: a
     # flop's inverted output is in use when its net has another.
     bit_uses: Counter[Any] = Counter()
@@ -508,6 +520,12 @@ def _collect_ffs(
             enable_net = enable_net_resolved if enable_net_resolved is not None else -1
         else:
             enable_net, enable_const = -1, None
+        library = str(entry.get(LIBRARY_KEY, ""))
+        if library and not library_cells.has(library, async_kind, enable_net != -1):
+            ineligible.append(
+                IneligibleFF(str(instance), cell_type, "no_library_scan_cell")
+            )
+            continue
         eligible.append(
             _EligibleFF(
                 instance=str(instance),
@@ -523,9 +541,35 @@ def _collect_ffs(
                 enable_net=enable_net,
                 enable_level=enable_level,
                 enable_const=enable_const,
+                library=library,
             )
         )
     return eligible, ineligible
+
+
+class _LibraryScanCells:
+    """Which scan flops (and enable gates) each extra library of a combined cell
+    map has: what its scan techmap maps onto (faultflow.scan.techmap), found when
+    first asked."""
+
+    def __init__(self, cell_map: dict[str, Any]) -> None:
+        self.cell_map = cell_map
+        self.techmaps: dict[str, Any] = {}
+
+    def has(self, library: str, async_kind: str, enable: bool) -> bool:
+        from faultflow.pdk.roles import library_maps
+        from faultflow.scan.techmap import extra_scan_techmap  # techmap imports us
+
+        if library not in self.techmaps:
+            own = library_maps(self.cell_map).get(library, {})
+            self.techmaps[library] = extra_scan_techmap(own, library)
+        cfg = self.techmaps[library]
+        if cfg is None:
+            return False
+        cell = {"none": cfg.library_cell, "reset": cfg.reset_cell, "set": cfg.set_cell}
+        return bool(cell[async_kind]) and (
+            not enable or bool(cfg.and_cell and cfg.or_cell and cfg.inv_cell)
+        )
 
 
 def scan_port_names(
@@ -554,13 +598,19 @@ def balanced_chain_lengths(ff_count: int, chain_count: int) -> list[int]:
     return [base + (1 if index < extra else 0) for index in range(chain_count)]
 
 
+def _domain(ff: _EligibleFF) -> tuple[int, str]:
+    """A flop's scan domain: its clock, and its library -- a chain never spans two
+    clocks, nor (each its own supply, Sky130 hd and hvl) two libraries."""
+    return (ff.clock_net, ff.library)
+
+
 def _domain_sizes(eligible: list[_EligibleFF]) -> list[int]:
-    """FF count per clock domain, in clock-net order: the order _build_plan
-    packs the domains into chains."""
-    counts: dict[int, int] = {}
+    """FF count per scan domain, in (clock net, library) order: the order
+    _build_plan packs the domains into chains."""
+    counts: dict[tuple[int, str], int] = {}
     for ff in eligible:
-        counts[ff.clock_net] = counts.get(ff.clock_net, 0) + 1
-    return [counts[net] for net in sorted(counts)]
+        counts[_domain(ff)] = counts.get(_domain(ff), 0) + 1
+    return [counts[domain] for domain in sorted(counts)]
 
 
 def _chains_per_domain(domain_sizes: list[int], chain_count: int) -> list[int]:
@@ -643,17 +693,22 @@ def _build_plan(
             raise ScanError(f"no eligible FF cells found to stitch; reasons: {reasons}")
         raise ScanError("no eligible FF cells found to stitch")
     unique_clock_nets = sorted({ff.clock_net for ff in eligible})
-    # Sort FFs by (clock_net, instance) so all FFs of each domain are adjacent;
+    # Sort FFs by (domain, instance) so all FFs of each domain are adjacent;
     # chain_lengths then lets chain boundaries fall between domains, never
     # across them.
-    eligible = sorted(eligible, key=lambda ff: (ff.clock_net, ff.instance))
+    eligible = sorted(eligible, key=lambda ff: (*_domain(ff), ff.instance))
     domain_sizes = _domain_sizes(eligible)
 
     chain_count = _chain_count_from_options(domain_sizes, scan_chains, max_chain_length)
-    if chain_count < len(unique_clock_nets):
+    domains = len(domain_sizes)
+    if chain_count < domains:
+        if domains == len(unique_clock_nets):
+            kinds = "clock domains"
+        else:
+            kinds = "scan domains: clock domains, each split by cell library"
         raise ScanError(
-            f"scan_chains ({chain_count}) must be >= number of clock domains "
-            f"({len(unique_clock_nets)}) so each domain gets at least one chain"
+            f"scan_chains ({chain_count}) must be >= number of {kinds} "
+            f"({domains}) so each domain gets at least one chain"
         )
     lengths = chain_lengths(domain_sizes, chain_count)
     if max_chain_length is not None:
@@ -683,6 +738,8 @@ def _build_plan(
                 f"({sorted(chain_clock_nets)}); increase scan_chains so each "
                 f"domain occupies complete chains"
             )
+        if len({ff.library for ff in chain_ffs}) > 1:
+            raise ScanError(f"chain {chain_index} spans two cell libraries")
         for chain_position, ff in enumerate(chain_ffs):
             record = ScanCellRecord(
                 instance=ff.instance,
@@ -959,6 +1016,7 @@ def _add_enable_hold_mux(
     enable_net: int,
     enable_level: str,
     next_id: int,
+    library: str = "",
 ) -> tuple[int, int]:
     """Synthesize muxed_d = (enable active) ? D : Q ahead of a scan-replacement
     FF's D pin, since the generic scan cell has no enable pin of its own (see
@@ -967,8 +1025,31 @@ def _add_enable_hold_mux(
     atpg_view.py's async-control mux uses -- rather than a Sky130 mux2 cell,
     to keep this on the most foundational, extensively-tested gate types.
 
+    The gates are the flop's library's: an extra library's carry its name
+    (LIBRARY_PARAMETER), as its scan cell does.
+
     Returns (muxed_d_net, next_id).
     """
+    muxed_d, next_id = _hold_mux_gates(
+        cells, instance, d_net, q_net, enable_net, enable_level, next_id
+    )
+    if library:
+        for gate in ("inv", "d", "q", "or"):
+            cells[f"$ffenmux_{gate}_{instance}"]["parameters"] = {
+                LIBRARY_PARAMETER: library
+            }
+    return muxed_d, next_id
+
+
+def _hold_mux_gates(
+    cells: dict[str, Any],
+    instance: str,
+    d_net: int,
+    q_net: int,
+    enable_net: int,
+    enable_level: str,
+    next_id: int,
+) -> tuple[int, int]:
     not_enable_net = next_id
     next_id += 1
     _add_internal_buf1_cell(
@@ -1096,6 +1177,7 @@ def stitch_scan_json(
                 ff.enable_net,
                 ff.enable_level,
                 mux_next_id,
+                ff.library,
             )
         elif ff.enable_const is not None:
             # Enable tied to a compile-time constant -- no mux needed: always
@@ -1124,10 +1206,13 @@ def stitch_scan_json(
             connections["SET_B"] = [ff.async_net]
         else:
             cell_type = YOSYS_SCAN_CELL_TYPE
+        parameters = dict(ff.cell.get("parameters", {}))
+        if ff.library:
+            parameters[LIBRARY_PARAMETER] = ff.library
         cells[record.instance] = {
             "hide_name": ff.cell.get("hide_name", 0),
             "type": cell_type,
-            "parameters": dict(ff.cell.get("parameters", {})),
+            "parameters": parameters,
             "attributes": attrs,
             "port_directions": port_directions,
             "connections": connections,
