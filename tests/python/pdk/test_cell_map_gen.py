@@ -109,6 +109,31 @@ def test_drive_strengths_share_a_pattern_unless_another_family_would_match_it(
     assert cm["demo__iso_tap_*"]["gate_type"] == "AND2"
 
 
+def test_a_single_output_xor_is_never_an_adders_sum(core: Any) -> None:
+    """An adder's sum is an XOR too, but the compiler lowers an adder by its output
+    pins' names: a one-output cell must get XOR2 / XOR3."""
+    text = _lib(
+        _comb("demo__xor2_lp", ["A", "B"], {"X": "(A&!B) | (!A&B)"}),
+        _comb("demo__xor3_lp", ["A", "B", "C"], {"X": "(A^B)^C"}),
+        _comb("demo__xor2_1", ["A", "B"], {"X": "A^B"}),
+    )
+    cm = _generate(text).cell_map
+    assert cm["demo__xor2_*"]["gate_type"] == "XOR2"
+    assert cm["demo__xor3_*"]["gate_type"] == "XOR3"
+
+
+def test_low_power_drive_suffixes_are_drive_strengths(core: Any) -> None:
+    """sky130_fd_sc_lp names drive variants _lp, _lp2 and _m beside _1, _2, ..."""
+    text = _lib(
+        _comb("demo__nand2_1", ["A", "B"], {"Y": "!(A&B)"}),
+        _comb("demo__nand2_lp", ["A", "B"], {"Y": "!(A&B)"}),
+        _comb("demo__nand2_lp2", ["A", "B"], {"Y": "!(A&B)"}),
+        _comb("demo__nand2_m", ["A", "B"], {"Y": "!(A&B)"}),
+    )
+    cm = _generate(text).cell_map
+    assert [k for k in cm if "nand2" in k] == ["demo__nand2_*"]
+
+
 def test_a_full_adder_is_one_entry_with_both_outputs(core: Any) -> None:
     text = _lib(
         _comb(

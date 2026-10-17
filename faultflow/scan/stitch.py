@@ -5,6 +5,7 @@ import dataclasses
 import fnmatch
 import itertools
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -414,6 +415,16 @@ def _collect_ffs(
 
     eligible: list[_EligibleFF] = []
     ineligible: list[IneligibleFF] = []
+    # How many connections each net bit has, across every cell pin and top port: a
+    # flop's inverted output is in use when its net has another.
+    bit_uses: Counter[Any] = Counter()
+    for other in cells.values():
+        if isinstance(other, dict):
+            for bits in (other.get("connections") or {}).values():
+                bit_uses.update(b for b in bits if isinstance(b, int))
+    for port in (module.get("ports") or {}).values():
+        if isinstance(port, dict):
+            bit_uses.update(b for b in port.get("bits", []) if isinstance(b, int))
     for instance, cell in sorted(cells.items()):
         if not isinstance(cell, dict):
             raise ScanError(f"{instance}: cell entry is malformed")
@@ -445,6 +456,15 @@ def _collect_ffs(
                 IneligibleFF(str(instance), cell_type, "unsupported_ff_shape")
             )
             continue
+        qn_pin = (entry.get("outputs") or {}).get("QN")
+        if qn_pin is not None:
+            qn_bits = (cell.get("connections") or {}).get(qn_pin) or []
+            if any(isinstance(b, int) and bit_uses[b] > 1 for b in qn_bits):
+                # Stitching replaces the flop by a scan flop driving Q alone.
+                ineligible.append(
+                    IneligibleFF(str(instance), cell_type, "inverted_output_used")
+                )
+                continue
         reason = _reason_for_ff(str(instance), cell, ff_meta)
         if reason is not None:
             ineligible.append(IneligibleFF(str(instance), cell_type, reason))

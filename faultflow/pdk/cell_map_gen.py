@@ -27,8 +27,12 @@ from faultflow.pdk.boolexpr import Expr, parse_expr, truth_table
 from faultflow.pdk.liberty import Group, LibertyError
 
 MAX_INPUTS = 6
-# Gate types a combinational match never picks: the constants (a tie cell is listed).
-_NOT_SINGLE = {"CONST0", "CONST1"}
+# Gate types a one-output match never picks: the constants (a tie cell is listed), and
+# an adder's sum (the compiler lowers an adder by its output pins; a one-output XOR is
+# XOR2 / XOR3).
+_NOT_SINGLE = {"CONST0", "CONST1", "ADDF", "ADDH"}
+# A drive strength: _1, _4, ..., and sky130_fd_sc_lp's _lp, _lp2 and _m.
+_DRIVE = re.compile(r"_(\d+|lp\d*|m)$")
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,8 @@ class _Oracle:
                 self.by_arity.setdefault(arity, []).append((name, table))
         self.and2 = self._table("AND2")[1]
         self.addf_co = self._table("ADDF_CO")[1]
+        # An adder's sum, for the adder recipe only.
+        self.sums = {name: self._table(name)[1] for name in ("ADDF", "ADDH")}
 
     def _table(self, name: str) -> tuple[int, int]:
         n = MAX_INPUTS
@@ -107,7 +113,7 @@ def _permuted_matches(
 
 
 def _base(name: str) -> str:
-    return re.sub(r"_\d+$", "", name)
+    return _DRIVE.sub("", name)
 
 
 def _short(name: str) -> str:
@@ -233,9 +239,7 @@ class _Generator:
         if n not in recipes:
             return None
         gate, co_table = recipes[n]
-        s_table = dict(self.oracle.by_arity.get(n, [])).get(gate)
-        if s_table is None:
-            return None
+        s_table = self.oracle.sums[gate]
         for s_pin, co_pin in itertools.permutations(functions, 2):
             s_perms = _permuted_matches(
                 s_table, truth_table(functions[s_pin], order), n
@@ -453,7 +457,7 @@ def generate_cell_map(
             for other in names
             if other not in members
         )
-        sized = all(re.search(r"_\d+$", m) for m in members)
+        sized = all(_DRIVE.search(m) for m in members)
         if same and sized and not clash:
             keyed[pattern] = entries[members[0]]
         else:

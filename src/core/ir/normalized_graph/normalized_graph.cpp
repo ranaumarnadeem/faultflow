@@ -313,6 +313,9 @@ NormalizedGraph NormalizedGraph::from_parsed(
     node.gate_type =
         entry->node_type == NodeType::FF ? GateType::DFF : entry->gate_type;
 
+    if (entry->node_type == NodeType::GATE) {
+      node.input_order = entry->inputs;
+    }
     for (const auto& in_pin : entry->inputs) {
       auto it = cell.conns.find(in_pin);
       if (it != cell.conns.end() && !it->second.empty()) {
@@ -329,8 +332,16 @@ NormalizedGraph NormalizedGraph::from_parsed(
                          "mismatch for this gate type");
       }
     }
+    int qn_net = -1;
     for (const auto& [logical, lib_pin] : entry->outputs) {
       auto it = cell.conns.find(lib_pin);
+      if (entry->node_type == NodeType::FF && logical == "QN") {
+        // A flop's inverted output: driven by an inverter reading Q, below.
+        if (it != cell.conns.end() && !it->second.empty()) {
+          qn_net = it->second.front();
+        }
+        continue;
+      }
       if (it != cell.conns.end() && !it->second.empty()) {
         const int out_net = it->second.front();
         node.output_pins[logical] = out_net;
@@ -353,7 +364,27 @@ NormalizedGraph NormalizedGraph::from_parsed(
       node.level = 0;
     }
 
+    const int q_net = node.type == NodeType::FF ? node.ff_config.output_net : -1;
+    const std::string node_instance = node.instance;
     ng.nodes[node.id] = std::move(node);
+    if (qn_net >= 0) {
+      // A flop's inverted output (the cell map's outputs.QN, Sky130's Q_N) is an
+      // inverter reading Q, so the net has a driver, a value and fault sites like any
+      // other -- a SimNode keeps one output.
+      NormNode inv;
+      inv.id = next_node_id++;
+      inv.instance = node_instance + "$qn";
+      inv.type = NodeType::GATE;
+      inv.gate_type = GateType::INV;
+      inv.input_pins["A"] = q_net;
+      inv.input_order = {"A"};
+      inv.output_pins["Y"] = qn_net;
+      if (ng.nets[qn_net].driver >= 0) {
+        throw ParseError("Multiple drivers on net " + std::to_string(qn_net));
+      }
+      ng.nets[qn_net].driver = inv.id;
+      ng.nodes[inv.id] = std::move(inv);
+    }
   }
 
   // PI source pseudo-nodes (INPUT)
