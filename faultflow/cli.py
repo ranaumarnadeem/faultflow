@@ -287,6 +287,22 @@ def _parser() -> argparse.ArgumentParser:
         help="Deprecated, a no-op: the TAP and the network are non-scan by default",
     )
 
+    cell_map = sub.add_parser(
+        "cell-map",
+        help="Write a library's cell map from its Liberty (any PDK): each cell's "
+        "function matched to a gate type, flops read from their ff/test_cell groups, "
+        "every other cell listed",
+    )
+    cell_map.add_argument("--liberty", type=Path, required=True, help="Liberty file")
+    cell_map.add_argument(
+        "-o", "--out", type=Path, required=True, help="The cell map JSON to write"
+    )
+    cell_map.add_argument(
+        "--report",
+        type=Path,
+        help="Also write the cells the map does not model, and why, as JSON",
+    )
+
     list_mem = sub.add_parser(
         "list-memories",
         help="List a design's memory instances and how each pin is connected, "
@@ -606,6 +622,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "autombist-generate":
             return _handle_autombist_generate(args)
+        if args.command == "cell-map":
+            from faultflow.pdk.command import cell_map_command
+
+            print(cell_map_command(args.liberty, args.out, report=args.report))
+            return 0
         if args.command == "list-memories":
             from faultflow.mbist.memories import list_memories
 

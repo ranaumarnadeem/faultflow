@@ -75,4 +75,7 @@ GateType lookup_gate_type(const CellMap& map, const std::string& raw);
 // ParseError on a name it doesn't know.
 GateType gate_type_from_name(const std::string& name);
 
+// Every gate_type name a cell map may give, sorted.
+std::vector<std::string> gate_type_names();
+
 }  // namespace faultflow

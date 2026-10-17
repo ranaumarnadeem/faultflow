@@ -1151,6 +1151,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
       },
       py::arg("gate_type"), py::arg("inputs"),
       "One gate's output, by its cell-map gate_type name (gate_eval.cpp).");
+  m.def("gate_type_names", &faultflow::gate_type_names,
+        "Every gate_type name a cell map may give, sorted.");
   m.def("fault_free_outputs", &faultflow::fault_free_outputs, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("vectors"), py::arg("input_order"),
         py::arg("output_order"), py::arg("unsupported_policy") = "fail",

@@ -539,6 +539,22 @@ config file so subsequent `init` / `sim` / etc. runs pick it up.
 | `-c`, `--config PATH` | no | `config.ofs` | Config file to edit |
 | `--off {0,1}` | no | `0` | Clock's inactive level (`0`=active-high/posedge, `1`=negedge) |
 
+## `cell-map`
+
+```bash
+python3 ff.py cell-map --liberty LIB.lib -o MAP.json [--report REPORT.json]
+```
+
+Write the cell map of a standard-cell library from its Liberty, for any PDK: each
+combinational cell's `function` matched to one of the engine's gate types by exhaustive
+truth table (the C++ core's own gate evaluation is the oracle), each flop read from its
+`ff` group and, for a scan flop, its `test_cell`. Every other cell is listed, with why,
+rather than guessed: latches (out of scope), clock-gating cells (not yet modelled),
+tristates, tie and physical cells, and functions no gate type has. FaultFlow's own
+internal cells (the scan flop it stitches, its observe buffers) are carried into the
+map. Drive strengths share a `<name>_*` pattern unless it would match another cell. Point
+`[design] cell_lib` at the map. `--report` writes the listed cells as JSON.
+
 ## `list-memories`
 
 ```bash
