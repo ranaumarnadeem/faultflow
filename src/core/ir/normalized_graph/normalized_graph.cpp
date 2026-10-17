@@ -306,6 +306,34 @@ NormalizedGraph NormalizedGraph::from_parsed(
       throw UnsupportedCellError(cell.type);
     }
 
+    if (entry->node_type == NodeType::CONST && !entry->constants.empty()) {
+      // A tie cell with several outputs (Sky130's conb): a constant node per
+      // output, each its own constant.
+      for (const auto& [logical, lib_pin] : entry->outputs) {
+        auto it = cell.conns.find(lib_pin);
+        if (it == cell.conns.end() || it->second.empty()) {
+          continue;
+        }
+        const auto value = entry->constants.find(logical);
+        if (value == entry->constants.end()) {
+          throw ParseError("tie cell " + cell.type + " has no constant for " + logical);
+        }
+        NormNode tie;
+        tie.id = next_node_id++;
+        tie.instance = inst;
+        tie.type = NodeType::CONST;
+        tie.gate_type = value->second ? GateType::CONST1 : GateType::CONST0;
+        const int out_net = it->second.front();
+        tie.output_pins[logical] = out_net;
+        if (ng.nets[out_net].driver >= 0) {
+          throw ParseError("Multiple drivers on net " + std::to_string(out_net));
+        }
+        ng.nets[out_net].driver = tie.id;
+        ng.nodes[tie.id] = std::move(tie);
+      }
+      continue;
+    }
+
     NormNode node;
     node.id = next_node_id++;
     node.instance = inst;

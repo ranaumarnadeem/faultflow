@@ -16,10 +16,12 @@ from faultflow.db import (
     latest_campaign_id,
     summary,
 )
-from faultflow.project.profiles import profile_for_cell_map
+from faultflow.project.profiles import profile_for_config
 from faultflow.reporter.unified import write_unified_report
 from faultflow.runner import Runner
 from faultflow.scan import run_scan_techmap, write_scan_techmap
+from faultflow.scan.cell_map import resolve_scan_cell_map
+from faultflow.scan.techmap import scan_techmap_config
 from faultflow.scan.yosys import _quote
 from faultflow.service.models import (
     AtpgResult,
@@ -500,14 +502,16 @@ class FlowService:
             manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
             source = Path(str(manifest["generic_json"]))
             if techmap:
-                profile = profile_for_cell_map(cfg.cell_lib)
+                profile = profile_for_config(cfg)
                 if not profile.supports_physical_scan:
                     raise RuntimeError(
                         f"{profile.name} has no physical scan-cell binding"
                     )
                 destination = output or cfg.output_dir / f"{cfg.top}_scan.v"
                 techmap_v = cfg.generated_scripts_dir / "faultflow_scanff_map.v"
-                write_scan_techmap(techmap_v)
+                write_scan_techmap(
+                    techmap_v, scan_techmap_config(resolve_scan_cell_map(cfg))
+                )
                 temporary = destination.with_suffix(destination.suffix + ".tmp")
                 run_scan_techmap(
                     generic_json=source,

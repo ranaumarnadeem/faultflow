@@ -11,6 +11,10 @@ Two cell maps ship with the tool:
 
 Select one with `[design] cell_lib` (or `use_lib_cells sky130|osu035` in the shell).
 
+Any other library's map is generated from its Liberty: `ff.py cell-map`, or
+`[design] pdk` and `std_cell_library` for a PDK in the open_pdks layout (every
+Sky130 library: hd, hdll, hs, ms, ls, lp, hvl). See *Generated cell maps* below.
+
 ## The cell-map format
 
 A cell map is a JSON object whose keys are **drive-strength glob patterns** (prefix
@@ -108,6 +112,38 @@ encountered depends on `[simulation] unsupported_cells`:
 
 Tristate (`TBUF`) and latch cells are currently a hard error by policy; see the
 [Roadmap](../roadmap.md).
+
+## Generated cell maps
+
+`faultflow/pdk/cell_map_gen.py` writes a library's map from its Liberty; the C++ core
+still reads only the map.
+
+- A combinational cell's `function` is matched to one of the engine's gate types by
+  exhaustive truth table over every order of its input pins, the core's own gate
+  evaluation the oracle. The match fixes `inputs`, and the compiler wires a gate's
+  inputs to `in0`, `in1`, ... in that order (whatever its pins are named). Full and
+  half adders are one entry with both outputs.
+- A flop comes from its `ff` group (`clocked_on`, `next_state`, `clear`, `preset` and
+  `clear_preset_var1`, the value with both active) and, for a scan flop, its
+  `test_cell` (the `test_scan_in` / `test_scan_enable` pins). `next_state` must be
+  the engine's model -- scan mux, then an enable that holds the state, then the data
+  pin -- checked by truth table. A second, inverted output (`Q_N`) is
+  `outputs.QN`: the engine drives it with an inverter reading `Q`.
+- Every other cell is listed, with why, never guessed: latches and clock-gating cells
+  (`unsupported`), tristates (`TBUF`), tie and physical cells, and functions no gate
+  type has.
+- Drive strengths share a `<name>_*` pattern, whose `variants` name the cells, unless
+  the pattern would match another cell.
+
+Every generated map is checked end to end in the test suite: each gate and flop it
+models, in every Sky130 library installed, simulated through the core against its own
+Liberty function or `ff` group.
+
+FaultFlow's own cells (scan flops, the wrapper's boundary cells and WSP, the gates scan
+stitching adds) come from the library by role (`faultflow/pdk/roles.py`): a role is a
+logical function -- a non-inverting `mux2`, an `and2b`, a flop with an active-low
+reset, a scan flop -- and the library's cell for it is found and checked with the same
+oracle. A flow that needs a role the library lacks says which.
 
 ## Adding cells
 

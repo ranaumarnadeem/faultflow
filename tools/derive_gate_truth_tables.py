@@ -190,10 +190,10 @@ def find_entry(cellmap: dict, gate: str):
 
 def concrete_liberty_names(pattern: str) -> list[str]:
     base = pattern.replace("*", "")
-    # sky130 drive strengths and OSU X-strengths
-    return [base + s for s in ("1", "2", "4", "6", "8", "X1", "X2", "X4")] + [
-        pattern.replace("_*", "")
-    ]
+    # sky130 drive strengths (lpflow_isobufsrckapwr comes as _16 alone) and OSU
+    # X-strengths
+    strengths = ("1", "2", "4", "6", "8", "0", "3", "12", "16", "X1", "X2", "X4")
+    return [base + s for s in strengths] + [pattern.replace("_*", "")]
 
 
 def extract_liberty_functions(

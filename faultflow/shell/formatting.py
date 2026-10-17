@@ -109,7 +109,7 @@ def _format_primary(result: Mapping[str, object], session: ProjectSession) -> st
             f"Source: {session.source or message or 'unknown'}",
         ]
         lines.append(
-            "Next: use_lib_cells <sky130|osu035>"
+            "Next: use_lib_cells <sky130|osu035|pdk/library>"
             if session.profile is None
             else "Next: synth"
         )
@@ -204,7 +204,7 @@ def format_error(message: str, code: Sequence[str]) -> str:
         ),
         "PROFILE_REQUIRED": (
             "No technology profile is selected.",
-            "use_lib_cells <sky130|osu035>",
+            "use_lib_cells <sky130|osu035|pdk/library>",
         ),
         "SYNTH_REQUIRED": ("The design is not synthesized.", "synth"),
         "SCAN_REQUIRED": (

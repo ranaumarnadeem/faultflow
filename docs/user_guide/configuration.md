@@ -70,6 +70,10 @@ run_techmap = true
 | Key | Default | Meaning |
 |---|---|---|
 | `netlist` | `design.json` | Input Yosys JSON or Verilog netlist |
+| `pdk`, `std_cell_library` | — | The PDK and its standard-cell library the design is on, e.g. `sky130A` and `sky130_fd_sc_hs` (any of `sky130_fd_sc_hd`, `_hdll`, `_hs`, `_ms`, `_ls`, `_lp`, `_hvl`). The Liberty, the Verilog models and the cell map then come from the PDK (see below) unless `liberty`, `verilog_models` or `cell_lib` name them |
+| `pdk_root` | `$PDK_ROOT`, else `~/.ciel` | Where the PDK is installed, in the open_pdks layout (`<root>/<pdk>/libs.ref/<library>/...`), as ciel installs it |
+| `corner` | the nominal one | The Liberty corner synthesis maps to (`tt_025C_1v80`, ...); the cell functions don't depend on it |
+| `dont_use` | — | Comma-separated cells (globs) synthesis must not use, beside those the library's cell map doesn't model |
 | `cell_lib` | `cells/sky130/sky130_fd_sc_hd.json` | JSON cell map consumed by the C++ core |
 | `liberty` | Sky130 HD `.lib` | Liberty file — used by **Yosys only** |
 | `verilog_models` | — | Behavioral cell models for the iverilog gate (falls back to `[simulation] verilog_models`) |
@@ -82,6 +86,22 @@ are: **Sky130 HD** — `cell_lib = cells/sky130/sky130_fd_sc_hd.json`,
 `liberty = cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib`; and **OSU035** —
 `cell_lib = cells/osu/osu035.json`, `liberty = cells/osu/osu035_stdcells.lib`.
 ```
+
+With `pdk` and `std_cell_library` the pair is made for you. FaultFlow reads the
+library's Liberty at the corner, generates its cell map from it (as `ff.py cell-map`
+does; cached in `$XDG_CACHE_HOME/faultflow/pdk`, by the Liberty's hash) and joins its
+`primitives.v` and cell models into one file for iverilog. Synthesis (`dfflibmap`,
+`abc`) is told not to use any cell the map doesn't model -- latches, tristates,
+clock-gating cells, functions the engine has no gate type for -- so a synthesized
+netlist only holds cells FaultFlow simulates. The cells FaultFlow adds itself (scan
+flops, the IEEE 1500 wrapper and its WSP, the gates stitching folds an enable into)
+are the library's too. Install a PDK with ciel, e.g.
+
+```bash
+ciel fetch --pdk-family sky130 -l all <open_pdks version>
+```
+
+then `ciel enable` it, or point `pdk_root` at its version directory.
 
 ## `[fault_model]`
 

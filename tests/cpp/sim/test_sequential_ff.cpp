@@ -100,8 +100,9 @@ TEST_CASE("GoldenRefSim applies async active-low controls",
   TestVector conflict_vec;
   conflict_vec.initial_ff_state[0] = true;
   conflict_vec.cycles = {cycle({{2, false}, {3, true}, {4, false}, {5, false}})};
-  REQUIRE_FALSE(
-      sampled_q(sim.simulate_sequence_fault_free(cg, conflict_vec), 6));
+  // Both active: the cell's Liberty clear_preset_var1 ("H"), the cell map's
+  // clear_preset_conflict_value 1.
+  REQUIRE(sampled_q(sim.simulate_sequence_fault_free(cg, conflict_vec), 6));
 }
 
 TEST_CASE("Bit-parallel sequential sim matches GoldenRefSim for D-pin fault",

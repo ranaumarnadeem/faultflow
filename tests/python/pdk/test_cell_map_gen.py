@@ -134,6 +134,25 @@ def test_low_power_drive_suffixes_are_drive_strengths(core: Any) -> None:
     assert [k for k in cm if "nand2" in k] == ["demo__nand2_*"]
 
 
+def test_tie_cells_are_constants(core: Any) -> None:
+    """A tie cell drives constants: one output (a tiehi) is a CONST entry; Sky130's
+    conb, HI and LO, one CONST entry whose ``constants`` say which is which."""
+    text = _lib(
+        _comb("demo__conb_1", [], {"HI": "1", "LO": "0"}),
+        _comb("demo__tiehi_1", [], {"Y": "1"}),
+    )
+    cm = _generate(text).cell_map
+    assert cm["demo__conb_*"] == {
+        "node_type": "CONST",
+        "inputs": [],
+        "outputs": {"HI": "HI", "LO": "LO"},
+        "constants": {"HI": 1, "LO": 0},
+        "variants": ["demo__conb_1"],
+    }
+    assert cm["demo__tiehi_*"]["gate_type"] == "CONST1"
+    assert cm["demo__tiehi_*"]["outputs"] == {"Y": "Y"}
+
+
 def test_a_full_adder_is_one_entry_with_both_outputs(core: Any) -> None:
     text = _lib(
         _comb(
@@ -265,9 +284,10 @@ def test_cells_the_engine_does_not_model_are_listed_explicitly(core: Any) -> Non
         "demo__muxb4to1_1",
         _pin("D") + _pin("S") + _pin("Z", "output", three_state="(!S)"),
     )
+    probe = _comb("demo__probe_p_8", ["A"], {"X": "A"})
     decap = _cell("demo__decap_4", "")
     odd = _comb("demo__odd_1", ["A", "B", "C", "D"], {"Y": "!(A&B&C) ^ D"})
-    result = _generate(_lib(latch, icg, tbuf, muxb, decap, odd))
+    result = _generate(_lib(latch, icg, tbuf, muxb, probe, decap, odd))
     cm = result.cell_map
     assert cm["demo__dlxtp_*"]["unsupported"] is True
     assert "latch" in cm["demo__dlxtp_*"]["reason"]
@@ -284,6 +304,9 @@ def test_cells_the_engine_does_not_model_are_listed_explicitly(core: Any) -> Non
     assert listed["demo__odd_1"] == "no_gate_type"
     assert listed["demo__dlxtp_1"] == "latch"
     assert listed["demo__decap_4"] == "physical"
+    # A probe buffer is physical by policy, whatever its function.
+    assert listed["demo__probe_p_8"] == "physical"
+    assert cm["demo__probe_p_*"]["unsupported"] is True
 
 
 def test_internal_cells_are_carried_over(core: Any) -> None:
@@ -347,8 +370,35 @@ def test_the_hd_map_regenerated_agrees_with_the_shipped_one(core: Any) -> None:
             assert new["outputs"] == old["outputs"], name
             assert _expand(new, core, pins) == _expand(old, core, pins), name
         else:
-            old_ff = dict(old["ff"])
+            # The conflict value (clear and preset both active) is the Liberty's
+            # clear_preset_var1; the hand-made entries leave it at its default.
+            old_ff = {
+                k: v for k, v in old["ff"].items() if k != "clear_preset_conflict_value"
+            }
             new_ff = {
                 k: v for k, v in new["ff"].items() if k != "clear_preset_conflict_value"
             }
             assert new_ff == old_ff, name
+
+
+@pytest.mark.unit
+def test_every_cell_of_the_hd_liberty_has_a_shipped_entry() -> None:
+    """Policy 1: a cell the shipped HD map does not model is an explicit entry, never
+    absent. Looked up as the C++ core does: the first key in order, a trailing ``*``
+    a prefix match."""
+    shipped = json.loads(HD_MAP.read_text(encoding="utf-8"))
+    names = [
+        c.args[0] for c in parse_liberty(HD_LIB.read_text(encoding="utf-8")).all("cell")
+    ]
+
+    def lookup(name: str) -> dict[str, Any] | None:
+        for key, entry in shipped.items():
+            if (key.endswith("*") and name.startswith(key[:-1])) or key == name:
+                return dict(entry)
+        return None
+
+    absent = [n for n in names if lookup(n) is None]
+    assert absent == []
+    entries = {n: lookup(n) or {} for n in names}
+    modelled = [n for n, entry in entries.items() if not entry.get("unsupported")]
+    assert len(modelled) >= 391

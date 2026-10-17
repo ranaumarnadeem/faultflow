@@ -27,6 +27,10 @@ from faultflow.pdk.boolexpr import Expr, parse_expr, truth_table
 from faultflow.pdk.liberty import Group, LibertyError
 
 MAX_INPUTS = 6
+# Cells listed as physical whatever their Liberty function: Sky130's probe buffers
+# (CLAUDE.md, Policy 1: physical, filler, tap, decap, diode and probe cells are
+# explicit unsupported entries).
+PHYSICAL_GLOBS = ("*__probe_*", "*__probec_*")
 # Gate types a one-output match never picks: the constants (a tie cell is listed), and
 # an adder's sum (the compiler lowers an adder by its output pins; a one-output XOR is
 # XOR2 / XOR3).
@@ -192,8 +196,26 @@ class _Generator:
                 functions[pin] = parse_expr(group.attrs["function"])
             except LibertyError as exc:
                 return self.listed(name, "no_gate_type", f"no gate type: {exc}")
+        if functions and all(not f.variables() for f in functions.values()):
+            # A tie cell: one output is a CONST entry; several (Sky130's conb, HI
+            # and LO) one whose constants say which is which.
+            values = {pin: int(f.eval({})) for pin, f in functions.items()}
+            if len(values) == 1:
+                ((pin, value),) = values.items()
+                return {
+                    "node_type": "CONST",
+                    "gate_type": "CONST1" if value else "CONST0",
+                    "inputs": [],
+                    "outputs": {pin: pin},
+                }
+            return {
+                "node_type": "CONST",
+                "inputs": [],
+                "outputs": {pin: pin for pin in values},
+                "constants": values,
+            }
         if any(not f.variables() for f in functions.values()):
-            return self.listed(name, "tie", "tie cell (constant output)")
+            return self.listed(name, "tie", "a constant and a logic output together")
         used = sorted(set().union(*(f.variables() for f in functions.values())))
         if not set(used) <= set(inputs):
             return self.listed(
@@ -395,6 +417,8 @@ class _Generator:
     # ---------------------------------------------------------------- cells
     def entry(self, cell: Group) -> dict[str, Any]:
         name = str(cell.args[0])
+        if any(fnmatch.fnmatchcase(name, glob) for glob in PHYSICAL_GLOBS):
+            return self.listed(name, "physical", "probe cell (physical, by policy)")
         if "clock_gating_integrated_cell" in cell.attrs:
             return self.listed(name, "icg", "clock-gating cell (deferred)")
         if cell.find("latch") is not None:
@@ -459,7 +483,12 @@ def generate_cell_map(
         )
         sized = all(_DRIVE.search(m) for m in members)
         if same and sized and not clash:
-            keyed[pattern] = entries[members[0]]
+            entry = dict(entries[members[0]])
+            if entry.get("node_type") in ("GATE", "FF", "CONST"):
+                # The concrete cells the pattern stands for: what FaultFlow
+                # instantiates when it adds one (faultflow.pdk.roles).
+                entry["variants"] = list(members)
+            keyed[pattern] = entry
         else:
             for m in members:
                 keyed[m] = entries[m]

@@ -194,6 +194,16 @@ CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node)
   if (node.contains("ff")) {
     entry.ff = parse_ff_metadata(node.at("ff"));
   }
+  if (node.contains("constants")) {
+    for (auto it = node.at("constants").begin(); it != node.at("constants").end();
+         ++it) {
+      const int value = it.value().get<int>();
+      if (value != 0 && value != 1) {
+        throw ParseError("a tie cell's constant must be 0 or 1: " + pattern);
+      }
+      entry.constants[it.key()] = value;
+    }
+  }
   if (node.contains("delay")) {
     entry.delay = node.at("delay").get<double>();
   }

@@ -40,6 +40,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from faultflow.control_trace import Netlist
+from faultflow.pdk.roles import LibraryRoles, cell_pin, default_roles, role_cell
 from faultflow.wrap.cell import CELL_ATTR
 from faultflow.wrap.errors import WrapError
 from faultflow.wrap.wsp_model import WIR_BITS
@@ -47,14 +48,9 @@ from faultflow.wrap.wsp_model import WIR_BITS
 WSP_ATTR = "faultflow_wsp"  # the cell's part of the WSP
 WSP_RECORD_ATTR = "faultflow_wrapper_wsp"  # on the module: the WSP's ports and nets
 
-MUX = "sky130_fd_sc_hd__mux2_1"
-AND2 = "sky130_fd_sc_hd__and2_1"
-AND2B = "sky130_fd_sc_hd__and2b_1"
-OR2 = "sky130_fd_sc_hd__or2_1"
-XOR2 = "sky130_fd_sc_hd__xor2_1"
-SHIFT_FLOP = "sky130_fd_sc_hd__dfxtp_1"
-UPDATE_FLOP = "sky130_fd_sc_hd__dfrtn_1"
-WBY_FLOP = "sky130_fd_sc_hd__dfrtp_1"
+# The WSP's cells are the library's, by role (faultflow.pdk.roles): and2, and2b, or2,
+# xor2, a non-inverting mux2; the WIR's shift stage a plain flop, WBY a reset flop,
+# the WIR's update stage a reset flop on WRCK's falling edge.
 
 
 @dataclass(frozen=True)
@@ -103,22 +99,14 @@ class WspNets:
 
 
 def _cell(
-    kind: str,
+    roles: LibraryRoles,
+    cell_role: str,
     role: str,
     inputs: Mapping[str, int | str],
     outputs: Mapping[str, int],
 ) -> dict[str, Any]:
-    return {
-        "hide_name": 0,
-        "type": kind,
-        "parameters": {},
-        "attributes": {WSP_ATTR: role},
-        "port_directions": {
-            **{pin: "input" for pin in inputs},
-            **{pin: "output" for pin in outputs},
-        },
-        "connections": {pin: [net] for pin, net in {**inputs, **outputs}.items()},
-    }
+    """The library's ``cell_role`` cell, part ``role`` of the WSP."""
+    return role_cell(roles, cell_role, {WSP_ATTR: role}, inputs, outputs)
 
 
 def add_wsp(
@@ -127,10 +115,13 @@ def add_wsp(
     add_output: Callable[[str, int], None],
     net: Callable[[str], int],
     ports: WspPorts = WspPorts(),
+    roles: LibraryRoles | None = None,
 ) -> WspNets:
-    """Add the WSP, the WIR, WBY and the decode to a module's ``cells``: its inputs
-    with ``add_input`` (each one's net), WSO with ``add_output``, every other net
-    with ``net`` (a fresh one, named)."""
+    """Add the WSP, the WIR, WBY and the decode to a module's ``cells``, of the
+    library ``roles`` gives (Sky130 HD by default): its inputs with ``add_input``
+    (each one's net), WSO with ``add_output``, every other net with ``net`` (a fresh
+    one, named)."""
+    roles = roles or default_roles()
 
     def add(name: str, cell: dict[str, Any]) -> None:
         if name in cells:
@@ -141,65 +132,74 @@ def add_wsp(
         add_input(name) for name in ports.inputs()
     )
 
-    def gate(name: str, kind: str, role: str, out: str, **pins: int | str) -> int:
+    def gate(name: str, kind: str, role: str, **pins: int | str) -> int:
         found = net(f"__wspn_{name}")
-        add(f"__wsp_{name}", _cell(kind, role, pins, {out: found}))
+        add(f"__wsp_{name}", _cell(roles, kind, role, pins, {"out": found}))
         return found
 
-    shift_en = gate("shift_en", AND2, "wir", "X", A=selectwir, B=shiftwr)
-    update_en = gate("update_en", AND2, "wir", "X", A=selectwir, B=updatewr)
+    shift_en = gate("shift_en", "and2", "wir", a=selectwir, b=shiftwr)
+    update_en = gate("update_en", "and2", "wir", a=selectwir, b=updatewr)
     shift_q = [net(f"__wspn_wir_s{k}") for k in range(WIR_BITS)]
     update_q = [net(f"__wspn_wir_u{k}") for k in range(WIR_BITS)]
     for k in range(WIR_BITS):
         before = wsi if k == 0 else shift_q[k - 1]
-        d = gate(f"wir_sd{k}", MUX, "wir", "X", A0=shift_q[k], A1=before, S=shift_en)
+        d = gate(f"wir_sd{k}", "mux2", "wir", a0=shift_q[k], a1=before, s=shift_en)
         add(
             f"__wsp_wir_s{k}",
-            _cell(SHIFT_FLOP, "wir", {"CLK": wrck, "D": d}, {"Q": shift_q[k]}),
+            _cell(roles, "ff", "wir", {"clk": wrck, "d": d}, {"q": shift_q[k]}),
         )
         d = gate(
-            f"wir_ud{k}", MUX, "wir", "X", A0=update_q[k], A1=shift_q[k], S=update_en
+            f"wir_ud{k}", "mux2", "wir", a0=update_q[k], a1=shift_q[k], s=update_en
         )
         add(
             f"__wsp_wir_u{k}",
             _cell(
-                UPDATE_FLOP,
+                roles,
+                "ff_reset_negedge",
                 "wir",
-                {"CLK_N": wrck, "D": d, "RESET_B": wrstn},
-                {"Q": update_q[k]},
+                {"clk": wrck, "d": d, "reset_n": wrstn},
+                {"q": update_q[k]},
             ),
         )
     u0, u1, u2 = update_q
     # Selected with the WIR deselected: the WBR's (or WBY's) shift and capture.
-    dr_shift = gate("dr_shift", AND2B, "decode", "X", A_N=selectwir, B=shiftwr)
-    dr_capture = gate("dr_capture", AND2B, "decode", "X", A_N=selectwir, B=capturewr)
+    dr_shift = gate("dr_shift", "and2b", "decode", a_n=selectwir, b=shiftwr)
+    dr_capture = gate("dr_capture", "and2b", "decode", a_n=selectwir, b=capturewr)
     wby_q = net("__wspn_wby")
-    kept = gate("wby_keep", AND2B, "wby", "X", A_N=dr_capture, B=wby_q)
-    wby_d = gate("wby_d", MUX, "wby", "X", A0=kept, A1=wsi, S=dr_shift)
+    kept = gate("wby_keep", "and2b", "wby", a_n=dr_capture, b=wby_q)
+    wby_d = gate("wby_d", "mux2", "wby", a0=kept, a1=wsi, s=dr_shift)
     add(
         "__wsp_wby",
         _cell(
-            WBY_FLOP, "wby", {"CLK": wrck, "D": wby_d, "RESET_B": wrstn}, {"Q": wby_q}
+            roles,
+            "ff_reset",
+            "wby",
+            {"clk": wrck, "d": wby_d, "reset_n": wrstn},
+            {"q": wby_q},
         ),
     )
     # 001 WS_EXTEST and 011 WP_EXTEST; 010 WP_INTEST and 100 WS_INTEST; the serial
     # ones, 001 and 100.
-    extest = gate("extest", AND2B, "decode", "X", A_N=u2, B=u0)
-    u12 = gate("u12", XOR2, "decode", "X", A=u1, B=u2)
-    intest = gate("intest", AND2B, "decode", "X", A_N=u0, B=u12)
-    u02 = gate("u02", XOR2, "decode", "X", A=u0, B=u2)
-    serial = gate("serial", AND2B, "decode", "X", A_N=u1, B=u02)
-    serial_capture = gate("serial_capture", AND2, "decode", "X", A=serial, B=dr_capture)
-    serial_hold = gate(
-        "serial_hold", AND2B, "decode", "X", A_N=serial_capture, B=serial
-    )
-    in_hold = gate("in_hold", OR2, "decode", "X", A=intest, B=serial_hold)
-    out_hold = gate("out_hold", OR2, "decode", "X", A=extest, B=serial_hold)
-    serial_shift = gate("serial_shift", AND2, "decode", "X", A=serial, B=dr_shift)
+    extest = gate("extest", "and2b", "decode", a_n=u2, b=u0)
+    u12 = gate("u12", "xor2", "decode", a=u1, b=u2)
+    intest = gate("intest", "and2b", "decode", a_n=u0, b=u12)
+    u02 = gate("u02", "xor2", "decode", a=u0, b=u2)
+    serial = gate("serial", "and2b", "decode", a_n=u1, b=u02)
+    serial_capture = gate("serial_capture", "and2", "decode", a=serial, b=dr_capture)
+    serial_hold = gate("serial_hold", "and2b", "decode", a_n=serial_capture, b=serial)
+    in_hold = gate("in_hold", "or2", "decode", a=intest, b=serial_hold)
+    out_hold = gate("out_hold", "or2", "decode", a=extest, b=serial_hold)
+    serial_shift = gate("serial_shift", "and2", "decode", a=serial, b=dr_shift)
     wso = net("__wspn_wso")
     add(
         "__wsp_wso",
-        _cell(MUX, "wso", {"A0": wby_q, "A1": shift_q[-1], "S": selectwir}, {"X": wso}),
+        _cell(
+            roles,
+            "mux2",
+            "wso",
+            {"a0": wby_q, "a1": shift_q[-1], "s": selectwir},
+            {"out": wso},
+        ),
     )
     add_output(ports.wso, wso)
     return WspNets(
@@ -306,13 +306,16 @@ def link_wsp(
     module: dict[str, Any],
     chains: Sequence[Mapping[str, Any]],
     scan_enable: str,
+    roles: LibraryRoles | None = None,
 ) -> None:
     """Give a scanned wrapped module's serial instructions their path (see the module
     docstring): ``chains`` are the scan manifest's, the wrapper's with kind
-    "wrapper" and their cells in order. A module without a WSP is left alone."""
+    "wrapper" and their cells in order; the cells added are of the library ``roles``
+    gives (Sky130 HD by default). A module without a WSP is left alone."""
     found = wsp_of(module)
     if found is None:
         return
+    roles = roles or default_roles()
     _, nets = found
     cells: dict[str, Any] = module["cells"]
     wrapper = [c for c in chains if c.get("kind") == "wrapper"]
@@ -343,10 +346,11 @@ def link_wsp(
     add(
         "__wsp_wbr_se",
         _cell(
-            OR2,
+            roles,
+            "or2",
             "scan",
-            {"A": se_bits[0], "B": nets.serial_shift},
-            {"X": wrapper_se},
+            {"a": se_bits[0], "b": nets.serial_shift},
+            {"out": wrapper_se},
         ),
     )
     before = nets.wsi
@@ -360,10 +364,11 @@ def link_wsp(
         add(
             f"__wsp_head_{chain['index']}",
             _cell(
-                MUX,
+                roles,
+                "mux2",
                 "scan",
-                {"A0": own, "A1": before, "S": nets.serial},
-                {"X": head_net},
+                {"a0": own, "a1": before, "s": nets.serial},
+                {"out": head_net},
             ),
         )
         head["SDI"] = [head_net]
@@ -374,10 +379,12 @@ def link_wsp(
     add(
         "__wsp_wbr_out",
         _cell(
-            MUX,
+            roles,
+            "mux2",
             "wso",
-            {"A0": nets.wby, "A1": before, "S": nets.serial},
-            {"X": wbr_out},
+            {"a0": nets.wby, "a1": before, "s": nets.serial},
+            {"out": wbr_out},
         ),
     )
-    cells[nets.wso_mux]["connections"]["A0"] = [wbr_out]
+    wso_mux = cells[nets.wso_mux]
+    wso_mux["connections"][cell_pin(wso_mux, "a0", "A0")] = [wbr_out]

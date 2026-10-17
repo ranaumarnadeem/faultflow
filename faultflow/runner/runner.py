@@ -61,6 +61,7 @@ from faultflow.scan.compression import (
     insert_continuous_compression,
 )
 from faultflow.scan.decompressor_check import check_composed_decompressor
+from faultflow.scan.techmap import scan_techmap_config
 from faultflow.scan.compaction import insert_compaction
 from faultflow.scan.compaction_checks import check_compaction_structure
 from faultflow.scan.instrument_guard import (
@@ -142,8 +143,8 @@ flatten
 opt_expr
 opt_clean
 synth -top {top}
-dfflibmap -liberty {liberty}
-abc -liberty {liberty}
+dfflibmap -liberty {liberty}{dont_use}
+abc -liberty {liberty}{dont_use}
 delete t:$scopeinfo
 clean
 write_json {json}
@@ -451,6 +452,8 @@ class Runner:
             verilog=src if src is not None else self.cfg.netlist,
             top=self.cfg.top,
             liberty=self.cfg.liberty or "",
+            # Cells the library's map doesn't model (faultflow.pdk.resolve).
+            dont_use="".join(f" -dont_use {cell}" for cell in self.cfg.dont_use),
             json=self.cfg.intermediate_dir / f"{self.cfg.top}.json",
             gate_verilog=self.cfg.intermediate_dir / f"{self.cfg.top}_gate.v",
         )
@@ -590,18 +593,8 @@ class Runner:
         self.cfg.ensure_workspace()
         source = self._find_verilog_source()
         json_path = self.cfg.intermediate_dir / f"{self.cfg.top}.json"
-        gate_v = self.cfg.intermediate_dir / f"{self.cfg.top}_gate.v"
         script = self.cfg.generated_scripts_dir / "yosys_synth.tcl"
-        script.write_text(
-            YOSYS_TEMPLATE.format(
-                verilog=source,
-                top=self.cfg.top,
-                liberty=self.cfg.liberty,
-                json=json_path,
-                gate_verilog=gate_v,
-            ),
-            encoding="utf-8",
-        )
+        script.write_text(self._rendered_yosys_script(source), encoding="utf-8")
         proc = subprocess.run(
             ["yosys", "-s", str(script)],
             text=True,
@@ -738,7 +731,9 @@ class Runner:
                 globs=manifest_instrument_globs(self.cfg.autombist_manifest),
                 allow=self.cfg.scan.scan_test_access,
             )
-            write_scan_techmap(techmap_v)
+            write_scan_techmap(
+                techmap_v, scan_techmap_config(resolve_scan_cell_map(self.cfg))
+            )
             techmapped: Path | None = None
             if do_techmap:
                 t_tech = time.perf_counter()
@@ -861,7 +856,9 @@ class Runner:
             raise RunnerError("generic scan JSON hash does not match manifest")
         techmap_v = Path(str(manifest["techmap_verilog"]))
         sky130_v = self.cfg.scan_verilog_path
-        write_scan_techmap(techmap_v)
+        write_scan_techmap(
+            techmap_v, scan_techmap_config(resolve_scan_cell_map(self.cfg))
+        )
         try:
             t0 = time.perf_counter()
             log.info("techmap  running (top=%s) ...", str(manifest["top"]))
@@ -1417,7 +1414,9 @@ class Runner:
         if not self.cfg.scan.run_techmap:
             return None
         techmap_v = Path(str(manifest["techmap_verilog"]))
-        write_scan_techmap(techmap_v)
+        write_scan_techmap(
+            techmap_v, scan_techmap_config(resolve_scan_cell_map(self.cfg))
+        )
         t0 = time.perf_counter()
         try:
             verilog = run_scan_techmap(

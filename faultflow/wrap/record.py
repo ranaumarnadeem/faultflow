@@ -13,7 +13,15 @@ from dataclasses import asdict
 
 from faultflow.scan.setup import SetupCycle
 from faultflow.wrap.block import CLOCK_ATTR, CONTROL_ATTR, EXTEST_ATTR, INTEST_ATTR
-from faultflow.wrap.cell import CELL_ATTR, INDEX_ATTR, INPUT, ROLE_ATTR, SIDE_ATTR
+from faultflow.pdk.roles import cell_pin
+from faultflow.wrap.cell import (
+    CELL_ATTR,
+    HD_RECORD_PINS,
+    INDEX_ATTR,
+    INPUT,
+    ROLE_ATTR,
+    SIDE_ATTR,
+)
 from faultflow.wrap.errors import WrapError
 from faultflow.wrap.wsp import wsp_of
 from faultflow.wrap.wsp_model import OPCODES
@@ -74,9 +82,16 @@ def wrapper_record(
             raise WrapError(f"the boundary cell on {group['label']} is incomplete")
         if group["ff"] not in position:
             raise WrapError(f"the boundary cell on {group['label']} isn't on a chain")
-        connections = module["cells"]
-        cfi = connections[group["mux"]]["connections"]["A0"][0]
-        out = connections[group["gate"]]["connections"]["X"][0]
+        mux = module["cells"][group["mux"]]
+        gate = module["cells"][group["gate"]]
+        pins = {
+            name: cell_pin(
+                mux if name.startswith("mux_") else gate, name.split("_", 1)[1], hd
+            )
+            for name, hd in HD_RECORD_PINS.items()
+        }
+        cfi = mux["connections"][pins["mux_a0"]][0]
+        out = gate["connections"][pins["gate_out"]][0]
         port, bit = _split(group["label"])
         chain_index, place = position[group["ff"]]
         sys_net, core_net = (cfi, out) if group["side"] == INPUT else (out, cfi)
@@ -89,6 +104,8 @@ def wrapper_record(
                 "core_net": core_net,
                 "chain": chain_index,
                 "position": place,
+                # Another library's pin names, for the code reading the record.
+                **({"pins": pins} if pins != HD_RECORD_PINS else {}),
             }
         )
     record: dict[str, Any] = {"version": VERSION, "control": str(control)}

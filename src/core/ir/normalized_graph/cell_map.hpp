@@ -39,6 +39,9 @@ struct CellMapEntry {
   std::vector<std::string> inputs;
   std::map<std::string, std::string> outputs;
   CellFFMetadata ff;
+  // A tie cell with several outputs (Sky130's conb: HI and LO): each logical
+  // output's constant. Empty for a one-output CONST entry (its gate_type says).
+  std::map<std::string, int> constants;
   bool unsupported = false;
   // Optional metadata-only nominal cell delay (e.g. ns). Read ONLY for
   // transition at-speed-relevance annotation/reporting — NEVER consumed by

@@ -30,6 +30,7 @@ from typing import Any, Mapping
 
 from faultflow.control_trace import Netlist, Trace, port_bits
 from faultflow.project.manifest import ProjectError
+from faultflow.wrap.cell import HD_RECORD_PINS
 from faultflow.wrap.record import MODES
 from faultflow.wrap.wsp import WSP_ATTR
 
@@ -118,7 +119,12 @@ def soc_wrapper(
             # A cell reading the pin: an input cell's mux selects on INTEST and
             # its gate makes it safe on EXTEST; an output cell's, the reverse.
             selects = (first["side"] == "input") == (role == "intest")
-            reader, pin = (first["mux"], "S") if selects else (first["gate"], "A_N")
+            first_pins = {**HD_RECORD_PINS, **first.get("pins", {})}
+            reader, pin = (
+                (first["mux"], first_pins["mux_s"])
+                if selects
+                else (first["gate"], first_pins["gate_a_n"])
+            )
             trace = (
                 netlist.trace(net, f"{instance}__{reader}", pin)
                 if isinstance(net, int)

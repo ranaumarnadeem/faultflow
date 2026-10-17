@@ -1015,7 +1015,8 @@ def stitch_scan_json(
     gets its serial instructions' path through those chains
     (faultflow.wrap.wsp.link_wsp)."""
     from faultflow.wrap.errors import WrapError  # wrap imports scan
-    from faultflow.wrap.wsp import link_wsp
+    from faultflow.pdk.roles import library_roles
+    from faultflow.wrap.wsp import link_wsp, wsp_of
 
     data = _load_json(netlist_json)
     cell_map = _load_json(cell_map_json)
@@ -1126,6 +1127,8 @@ def stitch_scan_json(
                 for chain in plan.chains
             ],
             plan.scan_enable,
+            # The cells it adds are the design's library's (faultflow.pdk.roles).
+            library_roles(cell_map) if wsp_of(stitched_module) is not None else None,
         )
     except WrapError as exc:
         raise ScanError(str(exc)) from exc

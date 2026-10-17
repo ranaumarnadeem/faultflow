@@ -5,6 +5,7 @@ import re
 from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from faultflow.scan.ring_generator import (
     default_ring_width,
@@ -530,6 +531,14 @@ class FaultflowConfig:
     autombist_manifest: Path | None = None
     jtag: JtagConfig = JtagConfig()
     wsp: WspConfig = WspConfig()
+    # [design] pdk / std_cell_library: the PDK and standard-cell library the design
+    # is on (faultflow.pdk.resolve); empty for the shipped Sky130 HD map.
+    pdk: str = ""
+    std_cell_library: str = ""
+    pdk_root: Path | None = None
+    # Cells synthesis must not use: those the library's generated cell map doesn't
+    # model, and [design] dont_use's globs.
+    dont_use: tuple[str, ...] = ()
 
     @property
     def blackbox_x_instances(self) -> tuple[str, ...]:
@@ -975,11 +984,39 @@ def _parse_blackbox_output_values(
     return tuple((inst, overrides.get(inst, default or "x")) for inst in instances)
 
 
-def _verilog_models(parser: ConfigParser) -> Path:
+def _verilog_models(parser: ConfigParser) -> Path | None:
+    """[simulation] (or [design]) verilog_models, or None."""
     value = parser.get("simulation", "verilog_models", fallback="").strip()
     if not value:
         value = parser.get("design", "verilog_models", fallback="").strip()
-    return Path(value) if value else SKY130_VERILOG_MODELS
+    return Path(value) if value else None
+
+
+def _library(parser: ConfigParser) -> tuple[str, str, Any]:
+    """[design] pdk and std_cell_library, and the library they name (resolved from
+    the PDK root, faultflow.pdk.resolve), or ("", "", None)."""
+    pdk = parser.get("design", "pdk", fallback="").strip()
+    library = parser.get("design", "std_cell_library", fallback="").strip()
+    if not library:
+        return pdk, "", None
+    if not pdk:
+        raise ConfigError(
+            "[design] std_cell_library needs [design] pdk (the PDK it is in, e.g. "
+            "sky130A)"
+        )
+    from faultflow.pdk.resolve import resolve_library
+    from faultflow.pdk.roles import PdkError
+
+    try:
+        resolved = resolve_library(
+            pdk,
+            library,
+            corner=parser.get("design", "corner", fallback="").strip() or None,
+            root=_optional_path(parser, "design", "pdk_root"),
+        )
+    except PdkError as exc:
+        raise ConfigError(str(exc)) from exc
+    return pdk, library, resolved
 
 
 def load_config(path: str | Path, top: str) -> FaultflowConfig:
@@ -1062,13 +1099,22 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             "puts the IEEE 1500 wrapper of sky130 cells on (ff.py wrap)"
         )
 
+    pdk, std_cell_library, resolved = _library(parser)
+    user_dont_use = tuple(
+        item.strip()
+        for item in parser.get("design", "dont_use", fallback="").split(",")
+        if item.strip()
+    )
     return FaultflowConfig(
         path=cfg_path,
         top=top,
         netlist=_path(parser, "design", "netlist", "design.json"),
-        cell_lib=_path(parser, "design", "cell_lib", str(SKY130_CELL_LIB)),
-        liberty=_optional_path(parser, "design", "liberty") or SKY130_LIBERTY,
-        verilog_models=_verilog_models(parser),
+        cell_lib=_optional_path(parser, "design", "cell_lib")
+        or (resolved.cell_map if resolved else SKY130_CELL_LIB),
+        liberty=_optional_path(parser, "design", "liberty")
+        or (resolved.liberty if resolved else SKY130_LIBERTY),
+        verilog_models=_verilog_models(parser)
+        or (resolved.verilog_models if resolved else SKY130_VERILOG_MODELS),
         yosys_ver=parser.get("design", "yosys_ver", fallback=""),
         fault_model=FaultModelConfig(
             model=fault_model,
@@ -1135,6 +1181,10 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         jtag=_parse_jtag(parser),
         wsp=_parse_wsp(parser),
         output_root=_optional_path(parser, "design", "output_root") or Path("output"),
+        pdk=pdk,
+        std_cell_library=std_cell_library,
+        pdk_root=_optional_path(parser, "design", "pdk_root"),
+        dont_use=(resolved.dont_use if resolved else ()) + user_dont_use,
     )
 
 

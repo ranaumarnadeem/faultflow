@@ -20,6 +20,7 @@ from faultflow.pdk.liberty import Group, parse_liberty
 
 ROOT = Path(__file__).resolve().parents[3]
 HD_LIB = ROOT / "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib"
+HD_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 STEPS = 10
 
 
@@ -129,11 +130,22 @@ def _clock_pin(cell: Group) -> tuple[str, bool]:
 def test_every_modelled_flop_is_its_liberty_model(
     lib: str, liberty: Path, tmp_path: Path, require_cpp_core: None
 ) -> None:
+    map_path = tmp_path / f"{lib}.json"
+    cell_map_command(liberty, map_path)
+    _check_flops(lib, liberty, map_path, tmp_path)
+
+
+@pytest.mark.integration
+def test_every_flop_the_shipped_hd_map_models_is_its_liberty_model(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    _check_flops("sky130_fd_sc_hd", HD_LIB, HD_MAP, tmp_path)
+
+
+def _check_flops(lib: str, liberty: Path, map_path: Path, tmp_path: Path) -> None:
     from faultflow.runner.runner import _load_core
 
     core: Any = _load_core()
-    map_path = tmp_path / f"{lib}.json"
-    cell_map_command(liberty, map_path)
     cell_map = json.loads(map_path.read_text(encoding="utf-8"))
     library = parse_liberty(liberty.read_text(encoding="utf-8", errors="replace"))
     families = _families(library, cell_map)

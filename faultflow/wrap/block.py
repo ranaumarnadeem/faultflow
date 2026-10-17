@@ -24,6 +24,7 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from faultflow.pdk.roles import library_roles
 from faultflow.wrap.cell import INPUT, OUTPUT, CellNets, add_cell
 from faultflow.wrap.classify import Decision, classify, clock_ports
 from faultflow.wrap.errors import WrapError
@@ -134,6 +135,8 @@ def wrap_block(
     cells: dict[str, Any] = module.setdefault("cells", {})
     netnames: dict[str, Any] = module.setdefault("netnames", {})
     decisions = classify(module, cell_map, options.exclude)
+    # The wrapper's cells are the design's library's (faultflow.pdk.roles).
+    roles = library_roles(cell_map)
     if options.control not in ("pins", "wsp"):
         raise WrapError(f"the wrapper's control is pins or wsp, not {options.control}")
     wsp = options.control == "wsp"
@@ -181,7 +184,7 @@ def wrap_block(
     original = list(cells)
     # The nets each side's cells read: (hold, safe).
     if wsp:
-        found_wsp = add_wsp(cells, add_input, add_output, net, options.wsp)
+        found_wsp = add_wsp(cells, add_input, add_output, net, options.wsp, roles)
         controls = {
             INPUT: (found_wsp.in_hold, found_wsp.in_safe),
             OUTPUT: (found_wsp.out_hold, found_wsp.out_safe),
@@ -214,7 +217,7 @@ def wrap_block(
             clock=clock_net,
         )
         index = len(wrapped_cells)
-        instances = add_cell(cells, side, label, index, nets)
+        instances = add_cell(cells, side, label, index, nets, roles)
         wrapped_cells.append(WrappedCell(label, side, index, instances, nets))
 
     chosen = [d.bit for d in decisions if d.wrapped]
