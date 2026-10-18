@@ -265,6 +265,27 @@ void wire_inputs(SimNode& sn, GateType gt,
   }
 }
 
+// A gate's inputs, wired to in0, in1, ... in its cell-map entry's order -- the
+// contract a cell map states ("inputs" is ordered), whatever its pins are named. A
+// node without that order (none the cell map gave) is wired by pin name.
+void wire_node_inputs(SimNode& sn, GateType gt, const NormNode& node,
+                      std::map<int, int>& y2c, std::vector<int>& c2y) {
+  if (node.input_order.empty()) {
+    wire_inputs(sn, gt, node.input_pins, y2c, c2y);
+    return;
+  }
+  uint32_t* slots[] = {&sn.in0, &sn.in1, &sn.in2, &sn.in3, &sn.in4, &sn.in5};
+  if (node.input_order.size() > 6) {
+    throw std::runtime_error("gate " + node.instance + " has more than six inputs");
+  }
+  for (size_t k = 0; k < node.input_order.size(); ++k) {
+    const auto it = node.input_pins.find(node.input_order[k]);
+    if (it != node.input_pins.end()) {
+      *slots[k] = map_net(it->second, y2c, c2y);
+    }
+  }
+}
+
 struct FanoutEdge {
   size_t node_idx = 0;
   int slot = 0;
@@ -561,7 +582,7 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
           sn.type =
               (gt == GateType::ADDF_S) ? GateType::ADDF_CO : GateType::ADDH_CO;
         }
-        wire_inputs(sn, sn.type, node->input_pins, y2c, c2y);
+        wire_node_inputs(sn, sn.type, *node, y2c, c2y);
         sn.out = map_net(out_net, y2c, c2y);
         node_levels.push_back(node->level);
         cg.nodes.push_back(sn);
@@ -574,7 +595,7 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
       (void)pin;
       SimNode sn;
       sn.type = gt;
-      wire_inputs(sn, gt, node->input_pins, y2c, c2y);
+      wire_node_inputs(sn, gt, *node, y2c, c2y);
       sn.out = map_net(out_net, y2c, c2y);
       node_levels.push_back(node->level);
       cg.nodes.push_back(sn);

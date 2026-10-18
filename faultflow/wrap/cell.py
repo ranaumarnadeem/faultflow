@@ -26,16 +26,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from faultflow.pdk.roles import LibraryRoles, default_roles, role_cell
 from faultflow.wrap.errors import WrapError
 
 INPUT = "input"
 OUTPUT = "output"
 SIDES = (INPUT, OUTPUT)
 
-MUX_CELL = "sky130_fd_sc_hd__mux2_1"
-GATE_CELL = "sky130_fd_sc_hd__and2b_1"
-FLOP_CELL = "sky130_fd_sc_hd__dfxtp_1"
+# A boundary cell is three library cells, by role (faultflow.pdk.roles): a
+# non-inverting mux2, an and2b and a plain flop.
 ROLES = ("mux", "gate", "ff")
+# The pins of a boundary cell's mux and gate the wrapper record names (see
+# faultflow.wrap.record): Sky130 HD's, which a record leaves out.
+HD_RECORD_PINS = {
+    "mux_a0": "A0",
+    "mux_a1": "A1",
+    "mux_s": "S",
+    "gate_a_n": "A_N",
+    "gate_b": "B",
+    "gate_out": "X",
+}
 
 # Attributes every cell of a boundary cell carries.
 CELL_ATTR = "faultflow_wrapper_cell"  # the boundary cell: "port" or "port[bit]"
@@ -78,30 +88,18 @@ def instance_names(side: str, label: str) -> dict[str, str]:
     return {role: f"{stem}_{role}" for role in ROLES}
 
 
-def _cell(
-    kind: str,
-    attributes: dict[str, str],
-    inputs: dict[str, int | str],
-    outputs: dict[str, int],
-) -> dict[str, Any]:
-    return {
-        "hide_name": 0,
-        "type": kind,
-        "parameters": {},
-        "attributes": attributes,
-        "port_directions": {
-            **{pin: "input" for pin in inputs},
-            **{pin: "output" for pin in outputs},
-        },
-        "connections": {pin: [net] for pin, net in {**inputs, **outputs}.items()},
-    }
-
-
 def add_cell(
-    cells: dict[str, Any], side: str, label: str, index: int, nets: CellNets
+    cells: dict[str, Any],
+    side: str,
+    label: str,
+    index: int,
+    nets: CellNets,
+    roles: LibraryRoles | None = None,
 ) -> dict[str, str]:
-    """Add the boundary cell on port bit ``label`` to a module's ``cells``: its mux,
-    gate and flop instance names, by role."""
+    """Add the boundary cell on port bit ``label`` to a module's ``cells``, of the
+    library ``roles`` gives (Sky130 HD by default): its mux, gate and flop instance
+    names, by role."""
+    roles = roles or default_roles()
     if side not in SIDES:
         raise WrapError(f"a boundary cell's side is {INPUT!r} or {OUTPUT!r}")
     names = instance_names(side, label)
@@ -109,22 +107,25 @@ def add_cell(
     if taken:
         raise WrapError(f"the boundary cell on {label} would reuse {taken[0]}")
     common = {CELL_ATTR: label, SIDE_ATTR: side, INDEX_ATTR: str(index)}
-    cells[names["mux"]] = _cell(
-        MUX_CELL,
+    cells[names["mux"]] = role_cell(
+        roles,
+        "mux2",
         {**common, ROLE_ATTR: "mux"},
-        {"A0": nets.cfi, "A1": nets.q, "S": nets.hold},
-        {"X": nets.cfo},
+        {"a0": nets.cfi, "a1": nets.q, "s": nets.hold},
+        {"out": nets.cfo},
     )
-    cells[names["gate"]] = _cell(
-        GATE_CELL,
+    cells[names["gate"]] = role_cell(
+        roles,
+        "and2b",
         {**common, ROLE_ATTR: "gate"},
-        {"A_N": nets.safe, "B": nets.cfo},
-        {"X": nets.out},
+        {"a_n": nets.safe, "b": nets.cfo},
+        {"out": nets.out},
     )
-    cells[names["ff"]] = _cell(
-        FLOP_CELL,
+    cells[names["ff"]] = role_cell(
+        roles,
+        "ff",
         {**common, ROLE_ATTR: "ff"},
-        {"CLK": nets.clock, "D": nets.cfo},
-        {"Q": nets.q},
+        {"clk": nets.clock, "d": nets.cfo},
+        {"q": nets.q},
     )
     return names

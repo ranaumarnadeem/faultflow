@@ -148,8 +148,14 @@ class ProjectSession:
         self.checkpoint()
         return OperationResult("read_netlist", top, f"loaded {path}")
 
+    def _pdk_root(self) -> Path | None:
+        """The PDK root a ``<pdk>/<library>`` profile resolves from: the session's
+        config's [design] pdk_root, else $PDK_ROOT or ~/.ciel."""
+        baseline = self.baseline_config
+        return baseline.pdk_root if baseline is not None else None
+
     def use_lib_cells(self, name: str) -> OperationResult:
-        profile = get_profile(name)
+        profile = get_profile(name, pdk_root=self._pdk_root())
         self.profile = profile
         if self.top is not None:
             self.scan_checked = False
@@ -415,6 +421,8 @@ class ProjectSession:
                 cell_lib=self.profile.cell_map,
                 liberty=self.profile.liberty,
                 verilog_models=self.profile.verilog_models,
+                liberty_files=self.profile.liberty_files,
+                extra_libraries=self.profile.extra_libraries,
                 output_root=self.output_root,
                 clocks=tuple(self.declared_clocks),
                 blackbox_instances=tuple(self.declared_blackbox),
@@ -429,6 +437,8 @@ class ProjectSession:
                 cell_lib=self.profile.cell_map,
                 liberty=self.profile.liberty,
                 verilog_models=self.profile.verilog_models,
+                liberty_files=self.profile.liberty_files,
+                extra_libraries=self.profile.extra_libraries,
                 yosys_ver="",
                 fault_model=FaultModelConfig(),
                 simulation=SimulationConfig(),
@@ -1031,7 +1041,7 @@ class ProjectSession:
         source = Path(str(data["source"]))
         if not source.exists():
             raise ShellError(f"netlist not found: {source}", "INPUT", "FILE_NOT_FOUND")
-        profile = get_profile(str(data["profile"]))
+        profile = get_profile(str(data["profile"]), pdk_root=self._pdk_root())
         self.top = top
         self.source = source
         self.source_kind = str(data["source_kind"])

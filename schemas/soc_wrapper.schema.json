@@ -158,6 +158,7 @@
         "ff": {"type": "string", "minLength": 1},
         "port": {"type": "string", "minLength": 1},
         "bit": {"type": "integer", "minimum": 0},
+        "pins": {"type": "object", "additionalProperties": {"type": "string"}},
         "sys_net": {"$ref": "https://faultflow.local/schemas/wrapper.schema.json#/$defs/net"},
         "core_net": {"$ref": "https://faultflow.local/schemas/wrapper.schema.json#/$defs/net"},
         "chain": {"type": "integer", "minimum": 0},

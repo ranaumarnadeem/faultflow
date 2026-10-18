@@ -743,7 +743,8 @@
       "SET_B"
     ],
     "outputs": {
-      "Q": "Q"
+      "Q": "Q",
+      "QN": "Q_N"
     },
     "ff": {
       "clock": "CLK",
@@ -759,7 +760,8 @@
         "pin": "SET_B",
         "level": "LOW",
         "value": 1
-      }
+      },
+      "clear_preset_conflict_value": 1
     }
   },
   "sky130_fd_sc_hd__dfbbn_*": {
@@ -771,7 +773,8 @@
       "SET_B"
     ],
     "outputs": {
-      "Q": "Q"
+      "Q": "Q",
+      "QN": "Q_N"
     },
     "ff": {
       "clock": "CLK_N",
@@ -787,7 +790,8 @@
         "pin": "SET_B",
         "level": "LOW",
         "value": 1
-      }
+      },
+      "clear_preset_conflict_value": 1
     }
   },
   "sky130_fd_sc_hd__dlrtp_*": {
@@ -1053,16 +1057,7 @@
   "sky130_fd_sc_hd__filltie_*": {
     "unsupported": true
   },
-  "sky130_fd_sc_hd__decap_*": {
-    "unsupported": true
-  },
   "sky130_fd_sc_hd__tap_*": {
-    "unsupported": true
-  },
-  "sky130_fd_sc_hd__diode_*": {
-    "unsupported": true
-  },
-  "sky130_fd_sc_hd__conb_*": {
     "unsupported": true
   },
   "sky130_fd_sc_hd__pwrgdin_*": {
@@ -1072,9 +1067,6 @@
     "unsupported": true
   },
   "sky130_fd_sc_hd__vph_*": {
-    "unsupported": true
-  },
-  "sky130_fd_sc_hd__probe_*": {
     "unsupported": true
   },
   "sky130_fd_sc_hd__esd_*": {
@@ -1609,5 +1601,629 @@
       "preset": {"pin": "SET_B", "level": "LOW", "value": 1},
       "scan": {"in": "SDI", "enable": "SE", "enable_polarity": "HIGH"}
     }
+  },
+  "sky130_fd_sc_hd__conb_*": {
+    "node_type": "CONST",
+    "inputs": [],
+    "outputs": {
+      "HI": "HI",
+      "LO": "LO"
+    },
+    "constants": {
+      "HI": 1,
+      "LO": 0
+    },
+    "variants": [
+      "sky130_fd_sc_hd__conb_1"
+    ]
+  },
+  "sky130_fd_sc_hd__decap_*": {
+    "unsupported": true,
+    "reason": "physical cell (no logic output)"
+  },
+  "sky130_fd_sc_hd__dfrbp_*": {
+    "node_type": "FF",
+    "inputs": [
+      "CLK",
+      "D",
+      "RESET_B"
+    ],
+    "outputs": {
+      "Q": "Q",
+      "QN": "Q_N"
+    },
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "clear": {
+        "pin": "RESET_B",
+        "level": "LOW",
+        "value": 0
+      }
+    },
+    "variants": [
+      "sky130_fd_sc_hd__dfrbp_1",
+      "sky130_fd_sc_hd__dfrbp_2"
+    ]
+  },
+  "sky130_fd_sc_hd__dfsbp_*": {
+    "node_type": "FF",
+    "inputs": [
+      "CLK",
+      "D",
+      "SET_B"
+    ],
+    "outputs": {
+      "Q": "Q",
+      "QN": "Q_N"
+    },
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "preset": {
+        "pin": "SET_B",
+        "level": "LOW",
+        "value": 1
+      }
+    },
+    "variants": [
+      "sky130_fd_sc_hd__dfsbp_1",
+      "sky130_fd_sc_hd__dfsbp_2"
+    ]
+  },
+  "sky130_fd_sc_hd__dfxbp_*": {
+    "node_type": "FF",
+    "inputs": [
+      "CLK",
+      "D"
+    ],
+    "outputs": {
+      "Q": "Q",
+      "QN": "Q_N"
+    },
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE"
+    },
+    "variants": [
+      "sky130_fd_sc_hd__dfxbp_1",
+      "sky130_fd_sc_hd__dfxbp_2"
+    ]
+  },
+  "sky130_fd_sc_hd__diode_*": {
+    "unsupported": true,
+    "reason": "physical cell (no logic output)"
+  },
+  "sky130_fd_sc_hd__dlclkp_*": {
+    "unsupported": true,
+    "reason": "clock-gating cell (deferred)"
+  },
+  "sky130_fd_sc_hd__dlrbn_*": {
+    "unsupported": true,
+    "reason": "latch (out of scope: no X-state)"
+  },
+  "sky130_fd_sc_hd__dlrbp_*": {
+    "unsupported": true,
+    "reason": "latch (out of scope: no X-state)"
+  },
+  "sky130_fd_sc_hd__dlrtn_*": {
+    "unsupported": true,
+    "reason": "latch (out of scope: no X-state)"
+  },
+  "sky130_fd_sc_hd__dlxbn_*": {
+    "unsupported": true,
+    "reason": "latch (out of scope: no X-state)"
+  },
+  "sky130_fd_sc_hd__dlxbp_*": {
+    "unsupported": true,
+    "reason": "latch (out of scope: no X-state)"
+  },
+  "sky130_fd_sc_hd__dlxtn_*": {
+    "unsupported": true,
+    "reason": "latch (out of scope: no X-state)"
+  },
+  "sky130_fd_sc_hd__dlxtp_*": {
+    "unsupported": true,
+    "reason": "latch (out of scope: no X-state)"
+  },
+  "sky130_fd_sc_hd__edfxbp_*": {
+    "node_type": "FF",
+    "inputs": [
+      "CLK",
+      "D",
+      "DE"
+    ],
+    "outputs": {
+      "Q": "Q",
+      "QN": "Q_N"
+    },
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "enable": {
+        "pin": "DE",
+        "level": "HIGH"
+      }
+    },
+    "variants": [
+      "sky130_fd_sc_hd__edfxbp_1"
+    ]
+  },
+  "sky130_fd_sc_hd__einvn_*": {
+    "node_type": "TBUF",
+    "reason": "tristate output"
+  },
+  "sky130_fd_sc_hd__einvp_*": {
+    "node_type": "TBUF",
+    "reason": "tristate output"
+  },
+  "sky130_fd_sc_hd__fah_*": {
+    "node_type": "GATE",
+    "gate_type": "ADDF",
+    "inputs": [
+      "A",
+      "B",
+      "CI"
+    ],
+    "outputs": {
+      "S": "SUM",
+      "CO": "COUT"
+    },
+    "variants": [
+      "sky130_fd_sc_hd__fah_1"
+    ]
+  },
+  "sky130_fd_sc_hd__fahcin_*": {
+    "unsupported": true,
+    "reason": "no gate type: 2 outputs ['COUT', 'SUM']"
+  },
+  "sky130_fd_sc_hd__fahcon_*": {
+    "unsupported": true,
+    "reason": "no gate type: 2 outputs ['COUT_N', 'SUM']"
+  },
+  "sky130_fd_sc_hd__lpflow_bleeder_*": {
+    "unsupported": true,
+    "reason": "physical cell (no logic output)"
+  },
+  "sky130_fd_sc_hd__lpflow_clkbufkapwr_*": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": [
+      "A"
+    ],
+    "outputs": {
+      "X": "X"
+    },
+    "variants": [
+      "sky130_fd_sc_hd__lpflow_clkbufkapwr_1",
+      "sky130_fd_sc_hd__lpflow_clkbufkapwr_16",
+      "sky130_fd_sc_hd__lpflow_clkbufkapwr_2",
+      "sky130_fd_sc_hd__lpflow_clkbufkapwr_4",
+      "sky130_fd_sc_hd__lpflow_clkbufkapwr_8"
+    ]
+  },
+  "sky130_fd_sc_hd__lpflow_clkinvkapwr_*": {
+    "node_type": "GATE",
+    "gate_type": "INV",
+    "inputs": [
+      "A"
+    ],
+    "outputs": {
+      "Y": "Y"
+    },
+    "variants": [
+      "sky130_fd_sc_hd__lpflow_clkinvkapwr_1",
+      "sky130_fd_sc_hd__lpflow_clkinvkapwr_16",
+      "sky130_fd_sc_hd__lpflow_clkinvkapwr_2",
+      "sky130_fd_sc_hd__lpflow_clkinvkapwr_4",
+      "sky130_fd_sc_hd__lpflow_clkinvkapwr_8"
+    ]
+  },
+  "sky130_fd_sc_hd__lpflow_decapkapwr_*": {
+    "unsupported": true,
+    "reason": "physical cell (no logic output)"
+  },
+  "sky130_fd_sc_hd__lpflow_inputiso0n_*": {
+    "node_type": "GATE",
+    "gate_type": "AND2",
+    "inputs": [
+      "A",
+      "SLEEP_B"
+    ],
+    "outputs": {
+      "X": "X"
+    },
+    "variants": [
+      "sky130_fd_sc_hd__lpflow_inputiso0n_1"
+    ]
+  },
+  "sky130_fd_sc_hd__lpflow_inputiso0p_*": {
+    "node_type": "GATE",
+    "gate_type": "AND2B",
+    "inputs": [
+      "A",
+      "SLEEP"
+    ],
+    "outputs": {
+      "X": "X"
+    },
+    "variants": [
+      "sky130_fd_sc_hd__lpflow_inputiso0p_1"
+    ]
+  },
+  "sky130_fd_sc_hd__lpflow_inputiso1n_*": {
+    "node_type": "GATE",
+    "gate_type": "NAND2B",
+    "inputs": [
+      "A",
+      "SLEEP_B"
+    ],
+    "outputs": {
+      "X": "X"
+    },
+    "variants": [
+      "sky130_fd_sc_hd__lpflow_inputiso1n_1"
+    ]
+  },
+  "sky130_fd_sc_hd__lpflow_inputisolatch_*": {
+    "unsupported": true,
+    "reason": "latch (out of scope: no X-state)"
+  },
+  "sky130_fd_sc_hd__lpflow_isobufsrckapwr_*": {
+    "node_type": "GATE",
+    "gate_type": "AND2B",
+    "inputs": [
+      "A",
+      "SLEEP"
+    ],
+    "outputs": {
+      "X": "X"
+    },
+    "variants": [
+      "sky130_fd_sc_hd__lpflow_isobufsrckapwr_16"
+    ]
+  },
+  "sky130_fd_sc_hd__lpflow_lsbuf_lh_hl_isowell_tap_*": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": [
+      "A"
+    ],
+    "outputs": {
+      "X": "X"
+    },
+    "variants": [
+      "sky130_fd_sc_hd__lpflow_lsbuf_lh_hl_isowell_tap_1",
+      "sky130_fd_sc_hd__lpflow_lsbuf_lh_hl_isowell_tap_2",
+      "sky130_fd_sc_hd__lpflow_lsbuf_lh_hl_isowell_tap_4"
+    ]
+  },
+  "sky130_fd_sc_hd__lpflow_lsbuf_lh_isowell_4": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": [
+      "A"
+    ],
+    "outputs": {
+      "X": "X"
+    }
+  },
+  "sky130_fd_sc_hd__lpflow_lsbuf_lh_isowell_tap_*": {
+    "node_type": "GATE",
+    "gate_type": "BUF",
+    "inputs": [
+      "A"
+    ],
+    "outputs": {
+      "X": "X"
+    },
+    "variants": [
+      "sky130_fd_sc_hd__lpflow_lsbuf_lh_isowell_tap_1",
+      "sky130_fd_sc_hd__lpflow_lsbuf_lh_isowell_tap_2",
+      "sky130_fd_sc_hd__lpflow_lsbuf_lh_isowell_tap_4"
+    ]
+  },
+  "sky130_fd_sc_hd__macro_sparecell": {
+    "node_type": "CONST",
+    "gate_type": "CONST0",
+    "inputs": [],
+    "outputs": {
+      "LO": "LO"
+    }
+  },
+  "sky130_fd_sc_hd__probe_p_*": {
+    "unsupported": true,
+    "reason": "probe cell (physical, by policy)"
+  },
+  "sky130_fd_sc_hd__probec_p_*": {
+    "unsupported": true,
+    "reason": "probe cell (physical, by policy)"
+  },
+  "sky130_fd_sc_hd__sdfbbn_*": {
+    "node_type": "FF",
+    "inputs": [
+      "CLK_N",
+      "D",
+      "SCD",
+      "SCE",
+      "RESET_B",
+      "SET_B"
+    ],
+    "outputs": {
+      "Q": "Q",
+      "QN": "Q_N"
+    },
+    "ff": {
+      "clock": "CLK_N",
+      "data": "D",
+      "output": "Q",
+      "trigger": "NEGEDGE",
+      "clear": {
+        "pin": "RESET_B",
+        "level": "LOW",
+        "value": 0
+      },
+      "preset": {
+        "pin": "SET_B",
+        "level": "LOW",
+        "value": 1
+      },
+      "scan": {
+        "in": "SCD",
+        "enable": "SCE",
+        "enable_polarity": "HIGH"
+      },
+      "clear_preset_conflict_value": 1
+    },
+    "variants": [
+      "sky130_fd_sc_hd__sdfbbn_1",
+      "sky130_fd_sc_hd__sdfbbn_2"
+    ]
+  },
+  "sky130_fd_sc_hd__sdfbbp_*": {
+    "node_type": "FF",
+    "inputs": [
+      "CLK",
+      "D",
+      "SCD",
+      "SCE",
+      "RESET_B",
+      "SET_B"
+    ],
+    "outputs": {
+      "Q": "Q",
+      "QN": "Q_N"
+    },
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "clear": {
+        "pin": "RESET_B",
+        "level": "LOW",
+        "value": 0
+      },
+      "preset": {
+        "pin": "SET_B",
+        "level": "LOW",
+        "value": 1
+      },
+      "scan": {
+        "in": "SCD",
+        "enable": "SCE",
+        "enable_polarity": "HIGH"
+      },
+      "clear_preset_conflict_value": 1
+    },
+    "variants": [
+      "sky130_fd_sc_hd__sdfbbp_1"
+    ]
+  },
+  "sky130_fd_sc_hd__sdfrbp_*": {
+    "node_type": "FF",
+    "inputs": [
+      "CLK",
+      "D",
+      "SCD",
+      "SCE",
+      "RESET_B"
+    ],
+    "outputs": {
+      "Q": "Q",
+      "QN": "Q_N"
+    },
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "clear": {
+        "pin": "RESET_B",
+        "level": "LOW",
+        "value": 0
+      },
+      "scan": {
+        "in": "SCD",
+        "enable": "SCE",
+        "enable_polarity": "HIGH"
+      }
+    },
+    "variants": [
+      "sky130_fd_sc_hd__sdfrbp_1",
+      "sky130_fd_sc_hd__sdfrbp_2"
+    ]
+  },
+  "sky130_fd_sc_hd__sdfrtn_*": {
+    "node_type": "FF",
+    "inputs": [
+      "CLK_N",
+      "D",
+      "SCD",
+      "SCE",
+      "RESET_B"
+    ],
+    "outputs": {
+      "Q": "Q"
+    },
+    "ff": {
+      "clock": "CLK_N",
+      "data": "D",
+      "output": "Q",
+      "trigger": "NEGEDGE",
+      "clear": {
+        "pin": "RESET_B",
+        "level": "LOW",
+        "value": 0
+      },
+      "scan": {
+        "in": "SCD",
+        "enable": "SCE",
+        "enable_polarity": "HIGH"
+      }
+    },
+    "variants": [
+      "sky130_fd_sc_hd__sdfrtn_1"
+    ]
+  },
+  "sky130_fd_sc_hd__sdfsbp_*": {
+    "node_type": "FF",
+    "inputs": [
+      "CLK",
+      "D",
+      "SCD",
+      "SCE",
+      "SET_B"
+    ],
+    "outputs": {
+      "Q": "Q",
+      "QN": "Q_N"
+    },
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "preset": {
+        "pin": "SET_B",
+        "level": "LOW",
+        "value": 1
+      },
+      "scan": {
+        "in": "SCD",
+        "enable": "SCE",
+        "enable_polarity": "HIGH"
+      }
+    },
+    "variants": [
+      "sky130_fd_sc_hd__sdfsbp_1",
+      "sky130_fd_sc_hd__sdfsbp_2"
+    ]
+  },
+  "sky130_fd_sc_hd__sdfxbp_*": {
+    "node_type": "FF",
+    "inputs": [
+      "CLK",
+      "D",
+      "SCD",
+      "SCE"
+    ],
+    "outputs": {
+      "Q": "Q",
+      "QN": "Q_N"
+    },
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "scan": {
+        "in": "SCD",
+        "enable": "SCE",
+        "enable_polarity": "HIGH"
+      }
+    },
+    "variants": [
+      "sky130_fd_sc_hd__sdfxbp_1",
+      "sky130_fd_sc_hd__sdfxbp_2"
+    ]
+  },
+  "sky130_fd_sc_hd__sdlclkp_*": {
+    "unsupported": true,
+    "reason": "clock-gating cell (deferred)"
+  },
+  "sky130_fd_sc_hd__sedfxbp_*": {
+    "node_type": "FF",
+    "inputs": [
+      "CLK",
+      "D",
+      "DE",
+      "SCD",
+      "SCE"
+    ],
+    "outputs": {
+      "Q": "Q",
+      "QN": "Q_N"
+    },
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "enable": {
+        "pin": "DE",
+        "level": "HIGH"
+      },
+      "scan": {
+        "in": "SCD",
+        "enable": "SCE",
+        "enable_polarity": "HIGH"
+      }
+    },
+    "variants": [
+      "sky130_fd_sc_hd__sedfxbp_1",
+      "sky130_fd_sc_hd__sedfxbp_2"
+    ]
+  },
+  "sky130_fd_sc_hd__sedfxtp_*": {
+    "node_type": "FF",
+    "inputs": [
+      "CLK",
+      "D",
+      "DE",
+      "SCD",
+      "SCE"
+    ],
+    "outputs": {
+      "Q": "Q"
+    },
+    "ff": {
+      "clock": "CLK",
+      "data": "D",
+      "output": "Q",
+      "trigger": "POSEDGE",
+      "enable": {
+        "pin": "DE",
+        "level": "HIGH"
+      },
+      "scan": {
+        "in": "SCD",
+        "enable": "SCE",
+        "enable_polarity": "HIGH"
+      }
+    },
+    "variants": [
+      "sky130_fd_sc_hd__sedfxtp_1",
+      "sky130_fd_sc_hd__sedfxtp_2",
+      "sky130_fd_sc_hd__sedfxtp_4"
+    ]
   }
 }

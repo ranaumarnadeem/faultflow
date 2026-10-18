@@ -45,9 +45,14 @@ COMMAND_HELP = {
     "use_lib_cells": CommandHelp(
         "Project",
         "use_lib_cells PROFILE",
-        "Select sky130 or osu035",
-        "Select the registered runtime cell semantics and technology files.",
-        "A registered PDK profile.",
+        "Select sky130, osu035 or <pdk>/<library>",
+        "Select the runtime cell semantics and technology files: a shipped profile "
+        "(sky130, osu035), or a standard-cell library of a PDK installed in the "
+        "open_pdks layout, e.g. sky130A/sky130_fd_sc_hs (its cell map generated from "
+        "its Liberty). +<library> adds a further library of the PDK whose cells the "
+        "design instantiates: sky130A/sky130_fd_sc_hd+sky130_fd_sc_hvl.",
+        "sky130, osu035, or <pdk>/<library>[+<library>...] (from [design] pdk_root, "
+        "$PDK_ROOT or ~/.ciel).",
         "use_lib_cells sky130",
     ),
     "synth": CommandHelp(
@@ -185,7 +190,9 @@ COMMAND_HELP = {
     "autombist_generate": CommandHelp(
         "Project",
         "autombist_generate -config PATH -out PATH [-autombist_cmd CMD] "
-        "[-algo NAME] -liberty PATH -cell_lib PATH [-test_access [-scan_tap]]",
+        "[-algo NAME] (-liberty PATH -cell_lib PATH | -pdk NAME "
+        "-std_cell_library NAME [-extra_libraries LIB,...] [-pdk_root PATH]) "
+        "[-test_access [-scan_tap]]",
         "Generate a FaultFlow synthesis from an autoMBIST manifest",
         "Runs `autombist generate --emit-manifest` (or the command given by "
         "-autombist_cmd, e.g. 'python3 -m autombist.cli'; -algo passes its "
@@ -203,7 +210,9 @@ COMMAND_HELP = {
         "out of scan, held in reset (trst_n and tck at 0), leaving one clock "
         "and one chain (add_scan -chains 1); `ff.py jtag` grades their faults "
         "through TCK. -scan_tap makes them scan flops instead, on a clock of "
-        "their own (add_scan -chains 2), graded by scan ATPG.",
+        "their own (add_scan -chains 2), graded by scan ATPG. The libraries are "
+        "a Liberty and a cell map, or a PDK's standard-cell library (and extra "
+        "libraries whose cells the design instantiates), as [design] names them.",
         "autoMBIST installed and reachable via -autombist_cmd (or on PATH); "
         "for -test_access, warptap importable by autoMBIST.",
         "autombist_generate -config mbist.yml -out build -liberty "

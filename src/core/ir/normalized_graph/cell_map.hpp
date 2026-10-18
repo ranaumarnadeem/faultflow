@@ -39,6 +39,9 @@ struct CellMapEntry {
   std::vector<std::string> inputs;
   std::map<std::string, std::string> outputs;
   CellFFMetadata ff;
+  // A tie cell with several outputs (Sky130's conb: HI and LO): each logical
+  // output's constant. Empty for a one-output CONST entry (its gate_type says).
+  std::map<std::string, int> constants;
   bool unsupported = false;
   // Optional metadata-only nominal cell delay (e.g. ns). Read ONLY for
   // transition at-speed-relevance annotation/reporting — NEVER consumed by
@@ -74,5 +77,8 @@ GateType lookup_gate_type(const CellMap& map, const std::string& raw);
 // The GateType a cell map's "gate_type" names ("AND2B", "O21AI", ...); throws
 // ParseError on a name it doesn't know.
 GateType gate_type_from_name(const std::string& name);
+
+// Every gate_type name a cell map may give, sorted.
+std::vector<std::string> gate_type_names();
 
 }  // namespace faultflow

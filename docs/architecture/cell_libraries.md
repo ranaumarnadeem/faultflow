@@ -11,6 +11,35 @@ Two cell maps ship with the tool:
 
 Select one with `[design] cell_lib` (or `use_lib_cells sky130|osu035` in the shell).
 
+Any other library's map is generated from its Liberty: `ff.py cell-map`, or
+`[design] pdk` and `std_cell_library` for a PDK in the open_pdks layout. See
+*Generated cell maps* below.
+
+## Supported PDKs
+
+Each library below is tested end to end: every gate and flop its map models is
+simulated against the library's own Liberty, and a design is synthesized onto it, scan
+inserted, ATPG'd, compressed and compacted, and the exported patterns replayed on the
+library's own Verilog cell models.
+
+| PDK (`pdk`) | Libraries (`std_cell_library`) | Not modelled |
+|---|---|---|
+| `sky130A` / `sky130B` | `sky130_fd_sc_hd` (shipped map), `_hdll`, `_hs`, `_ms`, `_ls`, `_lp`, `_hvl` | latches, clock gates, tristates; HD's `fahcin` / `fahcon` |
+| `gf180mcuA`..`D` | `gf180mcu_fd_sc_mcu7t5v0`, `gf180mcu_fd_sc_mcu9t5v0` | latches, clock gates, tristates, `oai33`, `oai222` |
+| `ihp-sg13g2` | `sg13g2_stdcell` | latches, clock gates, tristates |
+| — | OSU035 (shipped map, no scan flop: generic scan) | |
+
+Install them with [ciel](https://github.com/fossi-foundation/ciel) (`--pdk-family
+sky130`, `gf180mcu` or `ihp-sg13`). GF180MCU's other libraries (`osu_sc_*`,
+`as_sc_*`, `ocd_sc_*`) map too but have no scan flop. A library short of a cell a
+flow needs is refused by that flow, naming the cell's role: GF180MCU's fd_sc has no
+`and2b` for the IEEE 1500 wrapper, IHP no negative-edge flop for its WSP.
+
+A design may also use cells of several libraries of one PDK, e.g. Sky130 hd logic
+with hvl level shifters and flops (`[design] extra_libraries`): each flop is scanned
+with its own library's scan flop, on chains of its own library; this is tested end to
+end, the compressed and compacted chip replayed on both libraries' models.
+
 ## The cell-map format
 
 A cell map is a JSON object whose keys are **drive-strength glob patterns** (prefix
@@ -108,6 +137,60 @@ encountered depends on `[simulation] unsupported_cells`:
 
 Tristate (`TBUF`) and latch cells are currently a hard error by policy; see the
 [Roadmap](../roadmap.md).
+
+## Generated cell maps
+
+`faultflow/pdk/cell_map_gen.py` writes a library's map from its Liberty; the C++ core
+still reads only the map.
+
+- A combinational cell's `function` is matched to one of the engine's gate types by
+  exhaustive truth table over every order of its input pins, the core's own gate
+  evaluation the oracle. The match fixes `inputs`, and the compiler wires a gate's
+  inputs to `in0`, `in1`, ... in that order (whatever its pins are named). Full and
+  half adders are one entry with both outputs.
+- A flop comes from its `ff` group (`clocked_on`, `next_state`, `clear`, `preset` and
+  `clear_preset_var1`, the value with both active) and, for a scan flop, its
+  `test_cell` (the `test_scan_in` / `test_scan_enable` pins). `next_state` must be
+  the engine's model -- scan mux, then an enable that holds the state, then the data
+  pin -- checked by truth table. A second, inverted output (`Q_N`) is
+  `outputs.QN`: the engine drives it with an inverter reading `Q`.
+- Every other cell is listed, with why, never guessed: latches and clock-gating cells
+  (`unsupported`), tristates (`TBUF`), tie and physical cells, and functions no gate
+  type has.
+- Drive strengths share a `<name>_*` pattern, whose `variants` name the cells, unless
+  the pattern would match another cell.
+
+Every generated map is checked end to end in the test suite: each gate and flop it
+models, in every library installed, simulated through the core against its own
+Liberty function or `ff` group.
+
+FaultFlow's own cells (scan flops, the wrapper's boundary cells and WSP, the gates scan
+stitching adds) come from the library by role (`faultflow/pdk/roles.py`): a role is a
+logical function -- a non-inverting `mux2`, an `and2b`, a flop with an active-low
+reset, a scan flop -- and the library's cell for it is found and checked with the same
+oracle. A flop role the library has no cell of exactly its shape for takes a flop with
+more controls, holding the rest inactive: IHP SG13G2 has reset flops only, so its
+plain scan flop is `sg13g2_sdfrbpq` with `RESET_B` tied high. Likewise a flop
+synthesis tied off a reset of (on a library without a plain flop) scans as a plain
+one. A flow that needs a role the library lacks says which.
+
+A library's Liberty at a corner is its main file and the companion files of that corner
+(`<corner>_<suffix>`) that characterize cells the main one lacks: Sky130 hvl's eight
+level shifters are only in its dual-supply `tt_025C_3v30_lv1v80`, and map as `BUF`,
+or `AND2` of `A` and `SLEEP_B` for the isolating ones.
+
+A design on several libraries of one PDK (`[design] extra_libraries`) has one cell
+map: the primary library's, then each extra library's entries, tagged
+`"library": "<name>"` (`faultflow/pdk/resolve.py: combine_libraries`). Roles are the
+primary library's alone. Scan stitching records an extra library's flop in its
+generic scan cell's `FAULTFLOW_LIBRARY` parameter, and the scan techmap then has a
+module per library and cell type, each mapping only its own library's cells
+(`_TECHMAP_FAIL_`); with one library the techmap is as before.
+
+The library's Verilog models are joined into one file for iverilog, its primitives
+first. Two open_pdks defects are mended there: `sky130_fd_sc_lp.v` wraps 111 base
+cells it never defines (each is given its `_1` variant's model, renamed), and some
+versions of `sky130_fd_sc_hd.v` end a guard with a bare word after `` `endif ``.
 
 ## Adding cells
 

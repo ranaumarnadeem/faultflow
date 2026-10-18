@@ -1477,3 +1477,69 @@ def test_assemble_soc_end_to_end(tmp_path: Path, require_cpp_core: None) -> None
         ["y"],
     )
     assert len(outputs) == len(vectors)
+
+
+@pytest.mark.integration
+def test_the_soc_glue_may_instantiate_library_cells_and_maps_off_dont_use(
+    tmp_path: Path,
+) -> None:
+    """The glue is synthesized with the design's libraries read as cells
+    (faultflow.pdk.synth): a cell it instantiates is kept, and its own logic
+    maps around the cells the library's map doesn't model."""
+    if shutil.which("yosys") is None:
+        pytest.skip("yosys is not available")
+    from faultflow.pdk.synth import SynthLibrary
+
+    block = {
+        "modules": {
+            "blk": {
+                "attributes": {"top": "00000000000000000000000000000001"},
+                "ports": {
+                    "a": {"direction": "input", "bits": [2]},
+                    "y": {"direction": "output", "bits": [3]},
+                },
+                "cells": {
+                    "u_inv": {
+                        "hide_name": 0,
+                        "type": "sky130_fd_sc_hd__inv_1",
+                        "parameters": {},
+                        "attributes": {},
+                        "port_directions": {"A": "input", "Y": "output"},
+                        "connections": {"A": [2], "Y": [3]},
+                    }
+                },
+                "netnames": {},
+            }
+        }
+    }
+    block_path = tmp_path / "blk.json"
+    block_path.write_text(json.dumps(block), encoding="utf-8")
+    soc_rtl = tmp_path / "soc.v"
+    soc_rtl.write_text(
+        "module soc(input a, input b, output y, output z);\n"
+        "  wire w;\n"
+        "  blk u_blk(.a(a), .y(w));\n"
+        "  sky130_fd_sc_hd__nand2_1 u_hand (.A(w), .B(b), .Y(y));\n"
+        "  assign z = a & b;\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+    liberty = ROOT / "cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib"
+    output_json = tmp_path / "soc.json"
+    assemble_soc(
+        soc_rtl=soc_rtl,
+        soc_top="soc",
+        liberty=SynthLibrary(liberty, dont_use=("sky130_fd_sc_hd__and2_*",)),
+        blocks={"u_blk": block_path},
+        block_module={"u_blk": "blk"},
+        output_json=output_json,
+        workdir=tmp_path / "work",
+    )
+    composed = json.loads(output_json.read_text(encoding="utf-8"))
+    assert set(composed["modules"]) == {"soc"}
+    cells = composed["modules"]["soc"]["cells"]
+    assert cells["u_hand"]["type"] == "sky130_fd_sc_hd__nand2_1"
+    types = {cell["type"] for cell in cells.values()}
+    assert "sky130_fd_sc_hd__inv_1" in types  # the block's, spliced in
+    assert all(t.startswith("sky130_fd_sc_hd__") for t in types), types
+    assert not any(t.startswith("sky130_fd_sc_hd__and2_") for t in types), types

@@ -21,7 +21,7 @@ bool pattern_match(const std::string& pattern, const std::string& name) {
   return pattern == name;
 }
 
-GateType parse_gate_type(const std::string& s) {
+const std::map<std::string, GateType>& gate_name_table() {
   static const std::map<std::string, GateType> kMap = {
       {"INV", GateType::INV},       {"BUF", GateType::BUF},
       {"AND2", GateType::AND2},     {"AND2B", GateType::AND2B},
@@ -75,6 +75,11 @@ GateType parse_gate_type(const std::string& s) {
       {"OR2B", GateType::OR2B},      {"OR4BB", GateType::OR4BB},
       {"AND4BB", GateType::AND4BB},  {"A2BB2O", GateType::A2BB2O},
   };
+  return kMap;
+}
+
+GateType parse_gate_type(const std::string& s) {
+  const auto& kMap = gate_name_table();
   auto it = kMap.find(s);
   if (it == kMap.end()) {
     throw ParseError("Unknown gate_type in cell map: " + s);
@@ -189,6 +194,16 @@ CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node)
   if (node.contains("ff")) {
     entry.ff = parse_ff_metadata(node.at("ff"));
   }
+  if (node.contains("constants")) {
+    for (auto it = node.at("constants").begin(); it != node.at("constants").end();
+         ++it) {
+      const int value = it.value().get<int>();
+      if (value != 0 && value != 1) {
+        throw ParseError("a tie cell's constant must be 0 or 1: " + pattern);
+      }
+      entry.constants[it.key()] = value;
+    }
+  }
   if (node.contains("delay")) {
     entry.delay = node.at("delay").get<double>();
   }
@@ -202,6 +217,15 @@ CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node)
 
 GateType gate_type_from_name(const std::string& name) {
   return parse_gate_type(name);
+}
+
+std::vector<std::string> gate_type_names() {
+  std::vector<std::string> names;
+  for (const auto& [name, type] : gate_name_table()) {
+    (void)type;
+    names.push_back(name);
+  }
+  return names;
 }
 
 std::string normalize_cell_name(const std::string& raw) {

@@ -35,6 +35,10 @@ struct NormNode {
   NodeType type = NodeType::GATE;
   GateType gate_type = GateType::BUF;
   std::map<std::string, int> input_pins;
+  // A gate's input pins in its cell-map entry's order: the compiler wires them to
+  // in0, in1, ... in this order. Empty for a node the cell map didn't give (the
+  // compiler then wires by pin name).
+  std::vector<std::string> input_order;
   std::map<std::string, int> output_pins;
   int level = 0;
   FFConfig ff_config;

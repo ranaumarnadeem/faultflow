@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from faultflow.pdk.synth import LibraryArg
 from faultflow.project.assemble import assemble_soc
 from faultflow.scan.compression import ContinuousDecompressor
 
@@ -205,7 +206,7 @@ def insert_compaction(
     core_top: str,
     scan_out_ports: list[str],
     num_outputs: int,
-    liberty: Path,
+    liberty: LibraryArg,
     output_json: Path,
     *,
     workdir: Path,

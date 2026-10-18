@@ -25,6 +25,7 @@ from typing import Any, Callable
 
 from faultflow.config import FaultflowConfig
 from faultflow.control_trace import Netlist
+from faultflow.pdk.synth import SynthLibrary
 from faultflow.project.assemble import assemble_soc
 from faultflow.project.chip import chip_manifest
 from faultflow.project.manifest import BlockSpec, ProjectError, SocProject
@@ -32,7 +33,7 @@ from faultflow.project.soc_wrapper import soc_wrapper
 from faultflow.retarget import retarget_patterns
 from faultflow.scan.cell_map import resolve_scan_cell_map
 from faultflow.scan.reports import hash_file
-from faultflow.scan.techmap import write_scan_techmap
+from faultflow.scan.techmap import scan_techmap_config, write_scan_techmap
 from faultflow.scan.yosys import run_scan_techmap
 from faultflow.wrap.record import mode_holds, serial_nets
 
@@ -122,7 +123,7 @@ def build_soc(project: SocProject, base: FaultflowConfig, out: Path) -> SocBuild
     assemble_soc(
         soc_rtl=project.soc.rtl,
         soc_top=project.soc.top,
-        liberty=base.liberty,
+        liberty=SynthLibrary.from_config(base),
         blocks=paths,
         block_module=modules,
         output_json=composed,
@@ -176,7 +177,10 @@ def build_soc(project: SocProject, base: FaultflowConfig, out: Path) -> SocBuild
         remaps,
         manifest["chains"],
     )
-    techmap = write_scan_techmap(cfg.generated_scripts_dir / "faultflow_scanff_map.v")
+    techmap = write_scan_techmap(
+        cfg.generated_scripts_dir / "faultflow_scanff_map.v",
+        scan_techmap_config(resolve_scan_cell_map(cfg)),
+    )
     verilog = run_scan_techmap(
         generic_json=composed,
         techmap_verilog=techmap,

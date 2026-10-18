@@ -61,6 +61,8 @@ from faultflow.scan.compression import (
     insert_continuous_compression,
 )
 from faultflow.scan.decompressor_check import check_composed_decompressor
+from faultflow.scan.techmap import scan_techmap_config
+from faultflow.pdk.synth import SynthLibrary
 from faultflow.scan.compaction import insert_compaction
 from faultflow.scan.compaction_checks import check_compaction_structure
 from faultflow.scan.instrument_guard import (
@@ -135,16 +137,21 @@ TRANSIENT_NAMES = {
 }
 
 
-YOSYS_TEMPLATE = """read_verilog -sv {verilog}
+# Every library's Liberty is read as cell modules first, so a design may instantiate
+# library cells (any of its libraries', [design] extra_libraries) and gate-level
+# Verilog synthesizes as it is; the cell modules are deleted before the netlists are
+# written, which are then as without them. Flops and logic map onto `liberty` alone.
+YOSYS_TEMPLATE = """{read_libraries}read_verilog -sv {verilog}
 hierarchy -check -top {top}
 proc
 flatten
 opt_expr
 opt_clean
 synth -top {top}
-dfflibmap -liberty {liberty}
-abc -liberty {liberty}
+dfflibmap -liberty {liberty}{dont_use}
+abc -liberty {liberty}{dont_use}
 delete t:$scopeinfo
+delete =A:faultflow_liberty_cell
 clean
 write_json {json}
 write_verilog {gate_verilog}
@@ -448,9 +455,15 @@ class Runner:
     def _rendered_yosys_script(self, source: Path | None = None) -> str:
         src = source or self._existing_verilog_source()
         return YOSYS_TEMPLATE.format(
+            read_libraries="".join(
+                f"read_liberty -lib -setattr faultflow_liberty_cell {path}\n"
+                for path in self.cfg.synthesis_libraries
+            ),
             verilog=src if src is not None else self.cfg.netlist,
             top=self.cfg.top,
             liberty=self.cfg.liberty or "",
+            # Cells the library's map doesn't model (faultflow.pdk.resolve).
+            dont_use="".join(f" -dont_use {cell}" for cell in self.cfg.dont_use),
             json=self.cfg.intermediate_dir / f"{self.cfg.top}.json",
             gate_verilog=self.cfg.intermediate_dir / f"{self.cfg.top}_gate.v",
         )
@@ -590,18 +603,8 @@ class Runner:
         self.cfg.ensure_workspace()
         source = self._find_verilog_source()
         json_path = self.cfg.intermediate_dir / f"{self.cfg.top}.json"
-        gate_v = self.cfg.intermediate_dir / f"{self.cfg.top}_gate.v"
         script = self.cfg.generated_scripts_dir / "yosys_synth.tcl"
-        script.write_text(
-            YOSYS_TEMPLATE.format(
-                verilog=source,
-                top=self.cfg.top,
-                liberty=self.cfg.liberty,
-                json=json_path,
-                gate_verilog=gate_v,
-            ),
-            encoding="utf-8",
-        )
+        script.write_text(self._rendered_yosys_script(source), encoding="utf-8")
         proc = subprocess.run(
             ["yosys", "-s", str(script)],
             text=True,
@@ -738,7 +741,9 @@ class Runner:
                 globs=manifest_instrument_globs(self.cfg.autombist_manifest),
                 allow=self.cfg.scan.scan_test_access,
             )
-            write_scan_techmap(techmap_v)
+            write_scan_techmap(
+                techmap_v, scan_techmap_config(resolve_scan_cell_map(self.cfg))
+            )
             techmapped: Path | None = None
             if do_techmap:
                 t_tech = time.perf_counter()
@@ -861,7 +866,9 @@ class Runner:
             raise RunnerError("generic scan JSON hash does not match manifest")
         techmap_v = Path(str(manifest["techmap_verilog"]))
         sky130_v = self.cfg.scan_verilog_path
-        write_scan_techmap(techmap_v)
+        write_scan_techmap(
+            techmap_v, scan_techmap_config(resolve_scan_cell_map(self.cfg))
+        )
         try:
             t0 = time.perf_counter()
             log.info("techmap  running (top=%s) ...", str(manifest["top"]))
@@ -969,7 +976,7 @@ class Runner:
                 core_top,
                 scan_in_ports,
                 self.cfg.compression.channels,
-                self.cfg.liberty,
+                SynthLibrary.from_config(self.cfg),
                 output_json,
                 workdir=workdir,
                 ring_width=self.cfg.compression.ring_width,
@@ -1126,7 +1133,7 @@ class Runner:
                 core_top,
                 scan_out_ports,
                 channels,
-                liberty,
+                SynthLibrary.from_config(self.cfg),
                 output_json,
                 workdir=workdir,
                 channel_port=channel_port,
@@ -1154,7 +1161,7 @@ class Runner:
             "with_decompressor": decompressor is not None,
         }
         manifest["compaction"] = compaction_entry
-        structural = check_compaction_structure(manifest)
+        structural = check_compaction_structure(manifest, Path(self.cfg.cell_lib))
         errors = list(structural.errors)
         if isinstance(compression, dict) and decompressor is not None:
             # The decompressor in the whole chip, checked as scan-compress checks
@@ -1417,7 +1424,9 @@ class Runner:
         if not self.cfg.scan.run_techmap:
             return None
         techmap_v = Path(str(manifest["techmap_verilog"]))
-        write_scan_techmap(techmap_v)
+        write_scan_techmap(
+            techmap_v, scan_techmap_config(resolve_scan_cell_map(self.cfg))
+        )
         t0 = time.perf_counter()
         try:
             verilog = run_scan_techmap(

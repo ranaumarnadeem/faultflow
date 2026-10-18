@@ -5,6 +5,7 @@ import re
 from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from faultflow.scan.ring_generator import (
     default_ring_width,
@@ -530,6 +531,29 @@ class FaultflowConfig:
     autombist_manifest: Path | None = None
     jtag: JtagConfig = JtagConfig()
     wsp: WspConfig = WspConfig()
+    # [design] pdk / std_cell_library: the PDK and standard-cell library the design
+    # is on (faultflow.pdk.resolve); empty for the shipped Sky130 HD map.
+    pdk: str = ""
+    std_cell_library: str = ""
+    pdk_root: Path | None = None
+    # Cells synthesis must not use: those the library's generated cell map doesn't
+    # model, and [design] dont_use's globs.
+    dont_use: tuple[str, ...] = ()
+    # [design] extra_libraries: more libraries of the PDK the design instantiates
+    # cells of (Sky130 hvl's level shifters and flops beside hd), each at its
+    # nominal corner. Synthesis maps onto std_cell_library alone; cell_lib and
+    # verilog_models cover them all (faultflow.pdk.resolve.combine_libraries).
+    extra_libraries: tuple[str, ...] = ()
+    # Every Liberty file of the design's libraries, which synthesis reads as cell
+    # libraries (for the cells the design instantiates): empty for just `liberty`.
+    liberty_files: tuple[Path, ...] = ()
+
+    @property
+    def synthesis_libraries(self) -> tuple[Path, ...]:
+        """The Liberty files synthesis reads as cell libraries."""
+        if self.liberty_files:
+            return self.liberty_files
+        return (self.liberty,) if self.liberty is not None else ()
 
     @property
     def blackbox_x_instances(self) -> tuple[str, ...]:
@@ -975,11 +999,52 @@ def _parse_blackbox_output_values(
     return tuple((inst, overrides.get(inst, default or "x")) for inst in instances)
 
 
-def _verilog_models(parser: ConfigParser) -> Path:
+def _verilog_models(parser: ConfigParser) -> Path | None:
+    """[simulation] (or [design]) verilog_models, or None."""
     value = parser.get("simulation", "verilog_models", fallback="").strip()
     if not value:
         value = parser.get("design", "verilog_models", fallback="").strip()
-    return Path(value) if value else SKY130_VERILOG_MODELS
+    return Path(value) if value else None
+
+
+def _library(parser: ConfigParser) -> tuple[str, str, Any, list[Any]]:
+    """[design] pdk and std_cell_library, the library they name (resolved from the
+    PDK root, faultflow.pdk.resolve) and [design] extra_libraries', or
+    ("", "", None, [])."""
+    pdk = parser.get("design", "pdk", fallback="").strip()
+    library = parser.get("design", "std_cell_library", fallback="").strip()
+    extra_names = [
+        name.strip()
+        for name in parser.get("design", "extra_libraries", fallback="").split(",")
+        if name.strip()
+    ]
+    if not library:
+        if extra_names:
+            raise ConfigError(
+                "[design] extra_libraries needs [design] pdk and std_cell_library "
+                "(the library synthesis maps onto)"
+            )
+        return pdk, "", None, []
+    if not pdk:
+        raise ConfigError(
+            "[design] std_cell_library needs [design] pdk (the PDK it is in, e.g. "
+            "sky130A)"
+        )
+    from faultflow.pdk.resolve import resolve_library
+    from faultflow.pdk.roles import PdkError
+
+    root = _optional_path(parser, "design", "pdk_root")
+    try:
+        resolved = resolve_library(
+            pdk,
+            library,
+            corner=parser.get("design", "corner", fallback="").strip() or None,
+            root=root,
+        )
+        extras = [resolve_library(pdk, name, root=root) for name in extra_names]
+    except PdkError as exc:
+        raise ConfigError(str(exc)) from exc
+    return pdk, library, resolved, extras
 
 
 def load_config(path: str | Path, top: str) -> FaultflowConfig:
@@ -1062,13 +1127,14 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             "puts the IEEE 1500 wrapper of sky130 cells on (ff.py wrap)"
         )
 
+    libraries = design_libraries(parser)
     return FaultflowConfig(
         path=cfg_path,
         top=top,
         netlist=_path(parser, "design", "netlist", "design.json"),
-        cell_lib=_path(parser, "design", "cell_lib", str(SKY130_CELL_LIB)),
-        liberty=_optional_path(parser, "design", "liberty") or SKY130_LIBERTY,
-        verilog_models=_verilog_models(parser),
+        cell_lib=libraries.cell_lib,
+        liberty=libraries.liberty,
+        verilog_models=libraries.verilog_models,
         yosys_ver=parser.get("design", "yosys_ver", fallback=""),
         fault_model=FaultModelConfig(
             model=fault_model,
@@ -1135,6 +1201,67 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         jtag=_parse_jtag(parser),
         wsp=_parse_wsp(parser),
         output_root=_optional_path(parser, "design", "output_root") or Path("output"),
+        pdk=libraries.pdk,
+        std_cell_library=libraries.std_cell_library,
+        pdk_root=_optional_path(parser, "design", "pdk_root"),
+        dont_use=libraries.dont_use,
+        extra_libraries=libraries.extra_libraries,
+        liberty_files=libraries.liberty_files,
+    )
+
+
+@dataclass(frozen=True)
+class DesignLibraries:
+    """The cell libraries an .ofs's [design] names, resolved (FaultflowConfig's
+    fields of the same names)."""
+
+    pdk: str
+    std_cell_library: str
+    extra_libraries: tuple[str, ...]
+    cell_lib: Path
+    liberty: Path
+    verilog_models: Path
+    liberty_files: tuple[Path, ...]
+    dont_use: tuple[str, ...]
+
+
+def design_libraries(parser: ConfigParser) -> DesignLibraries:
+    """The libraries of a parsed .ofs: [design] pdk, std_cell_library and
+    extra_libraries resolved from the PDK, unless cell_lib, liberty or
+    verilog_models name the files; the shipped Sky130 HD without them."""
+    pdk, std_cell_library, resolved, extras = _library(parser)
+    library_map = resolved.cell_map if resolved else SKY130_CELL_LIB
+    library_models = resolved.verilog_models if resolved else SKY130_VERILOG_MODELS
+    user_liberty = _optional_path(parser, "design", "liberty")
+    liberty_files: tuple[Path, ...] = ()
+    if resolved and not user_liberty:
+        liberty_files = resolved.liberty_files
+    if extras:
+        from faultflow.pdk.resolve import combine_libraries
+        from faultflow.pdk.roles import PdkError
+
+        try:
+            library_map, library_models = combine_libraries(resolved, extras)
+        except PdkError as exc:
+            raise ConfigError(str(exc)) from exc
+        liberty_files = (
+            *(liberty_files or (user_liberty,)),
+            *(path for extra in extras for path in extra.liberty_files),
+        )
+    user_dont_use = tuple(
+        item.strip()
+        for item in parser.get("design", "dont_use", fallback="").split(",")
+        if item.strip()
+    )
+    return DesignLibraries(
+        pdk=pdk,
+        std_cell_library=std_cell_library,
+        extra_libraries=tuple(extra.library for extra in extras),
+        cell_lib=_optional_path(parser, "design", "cell_lib") or library_map,
+        liberty=user_liberty or (resolved.liberty if resolved else SKY130_LIBERTY),
+        verilog_models=_verilog_models(parser) or library_models,
+        liberty_files=tuple(p for p in liberty_files if p is not None),
+        dont_use=(resolved.dont_use if resolved else ()) + user_dont_use,
     )
 
 

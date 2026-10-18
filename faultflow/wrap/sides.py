@@ -32,7 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-from faultflow.wrap.cell import INPUT
+from faultflow.wrap.cell import HD_RECORD_PINS, INPUT
 from faultflow.wrap.graybox import CORE_TYPE
 from faultflow.wrap.record import mode_nets
 
@@ -116,12 +116,13 @@ def sides_of(
         sys_net = cell["sys_net"]
         if isinstance(sys_net, int):
             nets.add(sys_net)
+        pins = {**HD_RECORD_PINS, **cell.get("pins", {})}
         if cell["side"] == INPUT:
             if isinstance(sys_net, int):
-                branches.add((sys_net, str(cell["mux"]), "A0"))
+                branches.add((sys_net, str(cell["mux"]), pins["mux_a0"]))
         else:
-            branches.add((None, str(cell["mux"]), "A1"))
-            branches.add((None, str(cell["gate"]), "B"))
+            branches.add((None, str(cell["mux"]), pins["mux_a1"]))
+            branches.add((None, str(cell["gate"]), pins["gate_b"]))
     glue_cells: frozenset[str] = frozenset()
     glue_stems: frozenset[int] = frozenset()
     if "blocks" in wrapper:

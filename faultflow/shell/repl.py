@@ -7,7 +7,7 @@ from configparser import ConfigParser
 from pathlib import Path
 
 from faultflow.config import ConfigError, load_config
-from faultflow.project.profiles import profile_for_cell_map
+from faultflow.project.profiles import profile_for_config
 from faultflow.shell.external import ExternalCommandResult, run_external
 from faultflow.shell.formatting import format_error, format_prompt, format_result
 from faultflow.shell.lineedit import enable_line_editing
@@ -51,7 +51,7 @@ def _session_from_config(config_path: Path | None, output_root: Path) -> Project
     if not top:
         raise ConfigError("shell config requires [design] top")
     cfg = load_config(config_path, top)
-    profile = profile_for_cell_map(cfg.cell_lib)
+    profile = profile_for_config(cfg)
     session = ProjectSession(
         output_root=output_root,
         baseline_config=cfg,

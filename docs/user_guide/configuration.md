@@ -70,6 +70,11 @@ run_techmap = true
 | Key | Default | Meaning |
 |---|---|---|
 | `netlist` | `design.json` | Input Yosys JSON or Verilog netlist |
+| `pdk`, `std_cell_library` | — | The PDK and its standard-cell library the design is on, e.g. `sky130A` and `sky130_fd_sc_hs` (any Sky130 library: `sky130_fd_sc_hd`, `_hdll`, `_hs`, `_ms`, `_ls`, `_lp`, `_hvl`), `gf180mcuD` and `gf180mcu_fd_sc_mcu7t5v0` (or `_mcu9t5v0`), or `ihp-sg13g2` and `sg13g2_stdcell`. The Liberty, the Verilog models and the cell map then come from the PDK (see below) unless `liberty`, `verilog_models` or `cell_lib` name them |
+| `pdk_root` | `$PDK_ROOT`, else `~/.ciel` | Where the PDK is installed, in the open_pdks layout (`<root>/<pdk>/libs.ref/<library>/...`), as ciel installs it |
+| `corner` | the nominal one | The Liberty corner synthesis maps to (`tt_025C_1v80`, ...); the cell functions don't depend on it |
+| `extra_libraries` | — | Comma-separated further libraries of the same PDK whose cells the design instantiates, e.g. `sky130_fd_sc_hvl` beside `sky130_fd_sc_hd` (see below). Each is read at its own nominal corner |
+| `dont_use` | — | Comma-separated cells (globs) synthesis must not use, beside those the library's cell map doesn't model |
 | `cell_lib` | `cells/sky130/sky130_fd_sc_hd.json` | JSON cell map consumed by the C++ core |
 | `liberty` | Sky130 HD `.lib` | Liberty file — used by **Yosys only** |
 | `verilog_models` | — | Behavioral cell models for the iverilog gate (falls back to `[simulation] verilog_models`) |
@@ -82,6 +87,50 @@ are: **Sky130 HD** — `cell_lib = cells/sky130/sky130_fd_sc_hd.json`,
 `liberty = cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib`; and **OSU035** —
 `cell_lib = cells/osu/osu035.json`, `liberty = cells/osu/osu035_stdcells.lib`.
 ```
+
+With `pdk` and `std_cell_library` the pair is made for you. FaultFlow reads the
+library's Liberty at the corner, generates its cell map from it (as `ff.py cell-map`
+does; cached in `$XDG_CACHE_HOME/faultflow/pdk`, by the Liberty's hash) and joins its
+`primitives.v` and cell models into one file for iverilog. Synthesis (`dfflibmap`,
+`abc`) is told not to use any cell the map doesn't model -- latches, tristates,
+clock-gating cells, functions the engine has no gate type for -- so a synthesized
+netlist only holds cells FaultFlow simulates. The cells FaultFlow adds itself (scan
+flops, the IEEE 1500 wrapper and its WSP, the gates stitching folds an enable into)
+are the library's too. Install a PDK with ciel, e.g.
+
+```bash
+ciel fetch --pdk-family sky130 -l all <open_pdks version>    # or gf180mcu, ihp-sg13
+```
+
+then `ciel enable` it, or point `pdk_root` at its version directory.
+
+A netlist may instantiate library cells by hand, and a gate-level Verilog netlist
+synthesizes as it is: synthesis reads every library's Liberty as cells before the
+design. `extra_libraries` adds the cells of more libraries of the PDK, as a Caravel user
+project instantiates hvl level shifters, isolation cells and 3.3 V flops beside its hd
+logic:
+
+```ini
+[design]
+pdk = sky130A
+std_cell_library = sky130_fd_sc_hd
+extra_libraries = sky130_fd_sc_hvl
+```
+
+Synthesis still maps the design's own logic and flops onto `std_cell_library` alone;
+the extra libraries' cells are those the design names. One cell map and one models
+file cover all the libraries (a cell two of them both name is refused). Scan
+insertion scans each flop with a scan flop of its own library (hvl's `sdfxtp`,
+`sdfrtp`, `sdfstp`, its own gates for an enable), on chains of that library alone, so
+`[scan] chains` must be at least the number of clock domains times the libraries
+with flops in each. A flop whose library has no scan flop of its shape stays out of
+scan (`no_library_scan_cell`). The cells FaultFlow adds itself (the wrapper, the
+decompressor, the compactor) are `std_cell_library`'s.
+
+Every synthesis FaultFlow runs reads the libraries this way: the design's, the SoC
+glue's (`ff.py project`), mbist-insert's (with `-c`, from that `.ofs`'s `[design]`
+libraries) and the decompressor's and compactor's, each mapping only onto
+`std_cell_library` and never onto a cell its map doesn't model.
 
 ## `[fault_model]`
 
