@@ -29,7 +29,7 @@ from typing import Any
 from faultflow.pdk.roles import LIBRARY_KEY, PdkError
 
 # Bump when the generator's output changes, so a cached map is made again.
-GENERATOR_VERSION = "3"
+GENERATOR_VERSION = "4"
 # The nominal corners of the PDKs in this layout, tried first when none is named:
 # Sky130's 1.8 V cells and its 3.3 V hvl, GF180MCU's 5 V and 3.3 V, IHP SG13G2's.
 NOMINAL_CORNERS = (

@@ -5,6 +5,7 @@ add_executable(
   sim/test_sky130_gate_eval.cpp
   sim/test_golden_ref.cpp
   sim/test_sequential_ff.cpp
+  sim/test_icg.cpp
   scan/test_scan_chain.cpp
   scan/test_scan_sequence.cpp
   scan/test_scan_multiclock_stagger.cpp

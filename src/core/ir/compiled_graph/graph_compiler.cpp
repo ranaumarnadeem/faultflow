@@ -346,6 +346,15 @@ void split_fanout_branches(CompiledSimGraph& cg, const NormalizedGraph& ng,
   }
 
   cg.net_sites.assign(net_count, NetSiteInfo{});
+  // A branch into flops' clock pins is evaluated after every gate: a clock a gate
+  // drives -- an integrated clock gate's -- is settled before it, and the flops
+  // read it only at their update, after the evaluation. (A branch one level before
+  // its consumer, the rule below, puts a branch into a flop -- level 0 -- before
+  // everything; a clock from an input is the same value either way.)
+  const int after_all =
+      node_levels.empty()
+          ? 0
+          : *std::max_element(node_levels.begin(), node_levels.end()) + 1;
 
   for (uint32_t stem = 0; stem < net_count; ++stem) {
     if (fanout_edges[stem].size() <= 1) {
@@ -412,7 +421,11 @@ void split_fanout_branches(CompiledSimGraph& cg, const NormalizedGraph& ng,
       buf.type = GateType::BUF;
       buf.in0 = stem;
       buf.out = branch;
-      node_levels.push_back(std::max(0, consumer_level - 1));
+      const bool clock_pins = std::all_of(
+          group.edges.begin(), group.edges.end(), [&](const FanoutEdge& edge) {
+            return edge.slot == 1 && cg.nodes[edge.node_idx].type == GateType::DFF;
+          });
+      node_levels.push_back(clock_pins ? after_all : std::max(0, consumer_level - 1));
       cg.nodes.push_back(buf);
 
       for (const FanoutEdge& edge : group.edges) {

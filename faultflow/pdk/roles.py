@@ -70,7 +70,13 @@ _FF: dict[str, tuple[str, bool, str | None, str]] = {
     "scan_ff_reset": ("POSEDGE", True, "clear", "sdfrtp"),
     "scan_ff_set": ("POSEDGE", True, "preset", "sdfstp"),
 }
-ROLES = tuple(_FF) + tuple(_COMB)
+_ICG: dict[str, tuple[str, str]] = {
+    # role: (edge, preferred name) -- a clock gate with a test enable, which scan
+    # stitching puts in place of one without (faultflow.scan.clock_gates).
+    "icg": ("POSEDGE", "sdlclkp"),
+    "icg_negedge": ("NEGEDGE", "icgtn"),
+}
+ROLES = tuple(_FF) + tuple(_COMB) + tuple(_ICG)
 # The widest gate a combinational role is looked for in with inputs tied off.
 _MAX_TIED_INPUTS = 4
 
@@ -127,6 +133,8 @@ class LibraryRoles:
                 found = self._comb(role)
             elif role in _FF:
                 found = self._ff(role)
+            elif role in _ICG:
+                found = self._icg(role)
             else:
                 raise KeyError(role)
             if found is None:
@@ -225,6 +233,27 @@ class LibraryRoles:
                         return RoleCell(_concrete(pattern, entry), pins, ties)
         return None
 
+    def _icg(self, role: str) -> RoleCell | None:
+        """The role's clock gate: of its edge, with a test enable."""
+        edge, short = _ICG[role]
+        fits = [
+            (_short(pattern) != short, not _sized(pattern, entry), pattern, entry)
+            for pattern, entry in self._entries("ICG")
+            if (entry.get("icg") or {}).get("edge", "POSEDGE") == edge
+            and (entry.get("icg") or {}).get("test")
+        ]
+        if not fits:
+            return None
+        *_, pattern, entry = sorted(fits, key=lambda f: f[:3])[0]
+        icg = entry["icg"]
+        pins = {
+            "clk": str(icg["clock"]),
+            "en": str(icg["enable"]),
+            "te": str(icg["test"]),
+            "gclk": str(icg["output"]),
+        }
+        return RoleCell(_concrete(pattern, entry), pins)
+
     def _ff(self, role: str) -> RoleCell | None:
         """The role's flop: one of exactly its shape, else (none in the library) one
         with more controls -- a clear, preset or enable the role has no use for --
@@ -322,6 +351,7 @@ HD_PINS: dict[str, dict[str, str]] = {
         "set_n": "SET_B",
         "q": "Q",
     },
+    "icg": {"clk": "CLK", "en": "GATE", "te": "SCE", "gclk": "GCLK"},
 }
 
 _DEFAULT: list[LibraryRoles] = []

@@ -116,7 +116,15 @@ void BitParallelSim::evaluate_combinational(SimState& state,
       ins[3] = gather_input(nv, sn.in3);
       ins[4] = gather_input(nv, sn.in4);
       ins[5] = gather_input(nv, sn.in5);
-      nv[sn.out] = eval_gate(sn.type, ins);
+      if (is_icg(sn.type)) {
+        if (state.latches.size() < nv.size()) {
+          state.latches.resize(nv.size(), 0ULL);
+        }
+        nv[sn.out] =
+            eval_icg(sn.type, ins[0], ins[1] | ins[2], state.latches[sn.out]);
+      } else {
+        nv[sn.out] = eval_gate(sn.type, ins);
+      }
       if (fp[sn.out]) inject_faults(nv, batch, sn.out);
     }
   };

@@ -33,12 +33,25 @@ struct CellFFMetadata {
   bool has_scan = false;
 };
 
+// An integrated clock gate's pins (node_type ICG): the gated clock is the clock
+// while the latched enable (enable | test) is set -- edge POSEDGE: CLK & L, NEGEDGE
+// (a falling-edge clock's): CLK | ~L. `test` is empty for a gate without one.
+struct CellICGMetadata {
+  std::string clock;
+  std::string enable;
+  std::string test;
+  std::string output;
+  TriggerType edge = TriggerType::POSEDGE;
+  bool present = false;
+};
+
 struct CellMapEntry {
   NodeType node_type = NodeType::GATE;
   GateType gate_type = GateType::BUF;
   std::vector<std::string> inputs;
   std::map<std::string, std::string> outputs;
   CellFFMetadata ff;
+  CellICGMetadata icg;
   // A tie cell with several outputs (Sky130's conb: HI and LO): each logical
   // output's constant. Empty for a one-output CONST entry (its gate_type says).
   std::map<std::string, int> constants;

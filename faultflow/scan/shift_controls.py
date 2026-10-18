@@ -31,9 +31,10 @@ from faultflow.scan.stitch import SCAN_CELL_TYPES
 
 @dataclass(frozen=True)
 class ShiftViolation:
-    instance: str  # the scan flop
-    pin: str  # its clear or preset pin
+    instance: str  # the scan flop, or a clock gate (clock_gate)
+    pin: str  # its clear or preset pin, or the gate's test enable (or enable)
     reason: str
+    clock_gate: bool = False
 
     def __str__(self) -> str:
         return f"{self.pin} of {self.instance}: {self.reason}"
@@ -159,11 +160,29 @@ def shift_control_violations(
             else:
                 continue
             found.append(ShiftViolation(instance, control.pin, reason))
+    # Every clock gate a scan flop is gated by is open while the chains shift: its
+    # test enable or its enable held at 1 (faultflow.scan.clock_gates).
+    for name, pins in sorted((manifest.get("clock_gates") or {}).items()):
+        if name not in netlist.cells:
+            continue
+        opening = [str(pins[k]) for k in ("test_pin", "enable_pin") if pins.get(k)]
+        forced = [netlist.forced(name, pin, values, known) for pin in opening]
+        if any(f is not None and f.value == 1 for f in forced):
+            continue
+        pin = opening[0]
+        net = one_net(netlist.cells[name]["connections"].get(pin))
+        sources = _unheld(netlist, net, values, known, scan) or [
+            "logic the check can't show held"
+        ]
+        found.append(
+            ShiftViolation(
+                name, pin, "not held open: it depends on " + ", ".join(sources), True
+            )
+        )
     return found
 
 
-def shift_control_message(violations: Sequence[ShiftViolation]) -> str:
-    """scan-check's error: the flops grouped by pin and reason, three named each."""
+def _grouped(violations: Sequence[ShiftViolation]) -> str:
     groups: dict[tuple[str, str], list[str]] = {}
     for violation in violations:
         groups.setdefault((violation.pin, violation.reason), []).append(
@@ -175,13 +194,33 @@ def shift_control_message(violations: Sequence[ShiftViolation]) -> str:
         if len(names) > 3:
             shown += f" and {len(names) - 3} more"
         parts.append(f"{pin} of {shown}: {reason}")
-    return (
-        "scan flops whose clear or preset isn't held inactive during shift -- "
-        + "; ".join(parts)
-        + ". A real scan flop's clear and preset act while the chains shift, but "
-        "FaultFlow's simulation turns them off, so these patterns wouldn't unload "
-        "what FaultFlow expects. Hold the input that keeps it inactive ([scan] "
-        "hold), list the flops that drive it in [scan] nonscan_cells if a scan "
-        "clock settles them (a reset synchronizer), or gate it in the RTL with scan "
-        "enable or a held test-mode input; [scan] shift_controls = warn accepts them"
-    )
+    return "; ".join(parts)
+
+
+def shift_control_message(violations: Sequence[ShiftViolation]) -> str:
+    """scan-check's error: the flops grouped by pin and reason, three named each;
+    then the clock gates."""
+    flops = [v for v in violations if not v.clock_gate]
+    gates = [v for v in violations if v.clock_gate]
+    messages = []
+    if flops:
+        messages.append(
+            "scan flops whose clear or preset isn't held inactive during shift -- "
+            + _grouped(flops)
+            + ". A real scan flop's clear and preset act while the chains shift, "
+            "but FaultFlow's simulation turns them off, so these patterns wouldn't "
+            "unload what FaultFlow expects. Hold the input that keeps it inactive "
+            "([scan] hold), list the flops that drive it in [scan] nonscan_cells if "
+            "a scan clock settles them (a reset synchronizer), or gate it in the RTL "
+            "with scan enable or a held test-mode input; [scan] shift_controls = "
+            "warn accepts them"
+        )
+    if gates:
+        messages.append(
+            "clock gates of scan flops that aren't held open during shift -- "
+            + _grouped(gates)
+            + ". Their flops wouldn't shift. Drive the gate's test enable from the "
+            "scan enable (scan insertion does for one it finds tied off) or hold "
+            "its enable ([scan] hold); [scan] shift_controls = warn accepts them"
+        )
+    return "\n".join(messages)

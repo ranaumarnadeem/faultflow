@@ -101,7 +101,7 @@ def test_every_library_has_its_own_cell_for_every_role(
             got = roles[role]
         except PdkError as exc:
             assert role in str(exc) and lib in str(exc)
-            assert role.startswith(("ff", "scan_ff")), role  # never a gate role
+            assert role.startswith(("ff", "scan_ff", "icg")), role  # never a gate role
             continue
         entry = lookup_cell(got.cell, entries)
         assert entry is not None and not got.cell.startswith("$"), (role, got.cell)
@@ -122,6 +122,19 @@ def test_a_role_the_library_cannot_fill_is_refused_by_name(
     roles = library_roles(cm, name="acme")
     with pytest.raises(PdkError, match="acme.*mux2"):
         roles["mux2"]
+
+
+@pytest.mark.unit
+def test_the_clock_gate_roles_are_a_gate_with_a_test_enable_of_each_edge(
+    require_cpp_core: None,
+) -> None:
+    from faultflow.pdk.roles import default_roles
+
+    icg = default_roles()["icg"]
+    assert icg.cell == "sky130_fd_sc_hd__sdlclkp_1"
+    assert dict(icg.pins) == {"clk": "CLK", "en": "GATE", "te": "SCE", "gclk": "GCLK"}
+    with pytest.raises(PdkError, match="icg_negedge"):
+        default_roles()["icg_negedge"]  # HD has no falling-edge clock gate
 
 
 @pytest.mark.unit

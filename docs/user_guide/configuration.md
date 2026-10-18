@@ -93,7 +93,7 @@ library's Liberty at the corner, generates its cell map from it (as `ff.py cell-
 does; cached in `$XDG_CACHE_HOME/faultflow/pdk`, by the Liberty's hash) and joins its
 `primitives.v` and cell models into one file for iverilog. Synthesis (`dfflibmap`,
 `abc`) is told not to use any cell the map doesn't model -- latches, tristates,
-clock-gating cells, functions the engine has no gate type for -- so a synthesized
+functions the engine has no gate type for -- so a synthesized
 netlist only holds cells FaultFlow simulates. The cells FaultFlow adds itself (scan
 flops, the IEEE 1500 wrapper and its WSP, the gates stitching folds an enable into)
 are the library's too. Install a PDK with ciel, e.g.

@@ -26,9 +26,9 @@ GF180MCU mbist-insert with JTAG.
 
 | PDK (`pdk`) | Libraries (`std_cell_library`) | Not modelled |
 |---|---|---|
-| `sky130A` / `sky130B` | `sky130_fd_sc_hd` (shipped map), `_hdll`, `_hs`, `_ms`, `_ls`, `_lp`, `_hvl` | latches, clock gates, tristates; `fahcin` / `fahcon` |
-| `gf180mcuA`..`D` | `gf180mcu_fd_sc_mcu7t5v0`, `gf180mcu_fd_sc_mcu9t5v0` | latches, clock gates, tristates |
-| `ihp-sg13g2` | `sg13g2_stdcell` | latches, clock gates, tristates |
+| `sky130A` / `sky130B` | `sky130_fd_sc_hd` (shipped map), `_hdll`, `_hs`, `_ms`, `_ls`, `_lp`, `_hvl` | latches, tristates; `fahcin` / `fahcon` |
+| `gf180mcuA`..`D` | `gf180mcu_fd_sc_mcu7t5v0`, `gf180mcu_fd_sc_mcu9t5v0` | latches, tristates |
+| `ihp-sg13g2` | `sg13g2_stdcell` | latches, tristates |
 | — | OSU035 (shipped map, no scan flop: generic scan) | |
 
 Install them with [ciel](https://github.com/fossi-foundation/ciel) (`--pdk-family
@@ -159,9 +159,12 @@ still reads only the map.
   the engine's model -- scan mux, then an enable that holds the state, then the data
   pin -- checked by truth table. A second, inverted output (`Q_N`) is
   `outputs.QN`: the engine drives it with an inverter reading `Q`.
-- Every other cell is listed, with why, never guessed: latches and clock-gating cells
-  (`unsupported`), tristates (`TBUF`), tie and physical cells, and functions no gate
-  type has.
+- An integrated clock gate (`clock_gating_integrated_cell`: `latch_posedge` or
+  `latch_negedge`, `_precontrol` with a test enable) is an `ICG` entry, its pins
+  from their `clock_gate_{clock,enable,test,out}_pin` attributes: Sky130's
+  `dlclkp`/`sdlclkp`, GF180MCU's `icgtp`/`icgtn`, IHP's `lgcp`/`slgcp`.
+- Every other cell is listed, with why, never guessed: latches (`unsupported`),
+  tristates (`TBUF`), tie and physical cells, and functions no gate type has.
 - Drive strengths share a `<name>_*` pattern, whose `variants` name the cells, unless
   the pattern would match another cell.
 
@@ -180,6 +183,28 @@ takes a wider gate with inputs tied off: GF180MCU and Sky130 hvl have no `and2b`
 (`!a_n & b`), and their `mux2` with `A1` tied low is one. Likewise a flop
 synthesis tied off a reset of (on a library without a plain flop) scans as a plain
 one. A flow that needs a role the library lacks says which.
+
+### Clock gates
+
+A clock gate is simulated as its cell is built, with no X: a latch of `EN | TE`,
+transparent while the clock is off (low for a `latch_posedge` gate, high for a
+`latch_negedge` one), and the gated clock out of it -- `CLK & L`, or `CLK | ~L`.
+The latch is always known: every clock-off phase loads it, and a scan test starts
+with the clocks off. The flops behind a gate see its clock's edges, so a gate closed
+in capture holds them, and an enable that changes while the clock is high (the flops
+it clocks just updated) never glitches the clock.
+
+Scan insertion scans a gated flop on its *root* clock -- the clock the gate, or a
+chain of gates, reads -- and keeps its pin on the gate's clock. Every gate must be
+open while the chains shift: a gate whose test enable is tied off (or unconnected)
+gets the scan enable on it, and a gate without one becomes its library's gate with
+one (role `icg`, or `icg_negedge`), its test enable on the scan enable; a flop
+behind a gate its library has no such gate for stays out of scan
+(`clock_gate_without_test`). A test enable the design drives is left alone, and
+`scan-check` refuses a gate it can't show held open in shift. In the ATPG view a
+gated flop captures `enable ? D : Q`, the gate evaluating to its enable (`GateType`
+`ICG_EN`, `ICG_EN_CHAIN` behind another gate), so the enable logic is graded; the
+scan enable is 0 in every capture.
 
 A library's Liberty at a corner is its main file and the companion files of that corner
 (`<corner>_<suffix>`) that characterize cells the main one lacks: Sky130 hvl's eight

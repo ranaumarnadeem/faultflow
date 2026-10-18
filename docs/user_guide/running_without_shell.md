@@ -549,7 +549,7 @@ Write the cell map of a standard-cell library from its Liberty, for any PDK: eac
 combinational cell's `function` matched to one of the engine's gate types by exhaustive
 truth table (the C++ core's own gate evaluation is the oracle), each flop read from its
 `ff` group and, for a scan flop, its `test_cell`. Every other cell is listed, with why,
-rather than guessed: latches (out of scope), clock-gating cells (not yet modelled),
+rather than guessed: latches (out of scope),
 tristates, tie and physical cells, and functions no gate type has. FaultFlow's own
 internal cells (the scan flop it stitches, its observe buffers) are carried into the
 map. Drive strengths share a `<name>_*` pattern unless it would match another cell. Point

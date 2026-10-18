@@ -419,7 +419,12 @@ def test_the_primary_librarys_roles_ignore_the_extra_librarys_cells(
     roles = library_roles(_two_library_map(extra_scan=True))
     assert roles.name == "sky130_fd_sc_hd"
     for role in roles.names():
-        assert roles[role].cell.startswith("sky130_fd_sc_hd__"), role
+        try:
+            cell = roles[role].cell
+        except PdkError:
+            assert role == "icg_negedge", role  # HD has no falling-edge clock gate
+            continue
+        assert cell.startswith("sky130_fd_sc_hd__"), role
 
 
 @pytest.mark.integration

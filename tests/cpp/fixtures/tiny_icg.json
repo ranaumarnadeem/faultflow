@@ -1,0 +1,48 @@
+{
+  "creator": "faultflow fixture: a sky130 sdlclkp clock gate clocking one dfxtp",
+  "modules": {
+    "tiny_icg": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "CLK": {"direction": "input", "bits": [2]},
+        "EN": {"direction": "input", "bits": [3]},
+        "TE": {"direction": "input", "bits": [4]},
+        "D": {"direction": "input", "bits": [5]},
+        "Q": {"direction": "output", "bits": [6]}
+      },
+      "cells": {
+        "u_icg": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__sdlclkp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "CLK": "input",
+            "GATE": "input",
+            "SCE": "input",
+            "GCLK": "output"
+          },
+          "connections": {"CLK": [2], "GATE": [3], "SCE": [4], "GCLK": [7]}
+        },
+        "u_ff": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+          "connections": {"CLK": [7], "D": [5], "Q": [6]}
+        }
+      },
+      "netnames": {
+        "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+        "EN": {"hide_name": 0, "bits": [3], "attributes": {}},
+        "TE": {"hide_name": 0, "bits": [4], "attributes": {}},
+        "D": {"hide_name": 0, "bits": [5], "attributes": {}},
+        "Q": {"hide_name": 0, "bits": [6], "attributes": {}},
+        "GCLK": {"hide_name": 0, "bits": [7], "attributes": {}}
+      }
+    }
+  }
+}

@@ -78,6 +78,9 @@ NONSCAN_OBSERVE_PORT_PREFIX = "__nsobs_"
 # src/core/ir/normalized_graph/normalized_graph.hpp, which drops them from
 # every simulator's and SAT miter's observable set.
 UNOBSERVED_NETS_ATTR = "faultflow_unobserved_nets"
+# A clock gate's cell attribute in the view (_mark_clock_gates): it evaluates to its
+# enable. Mirrors kIcgEnableAttr in src/core/ir/normalized_graph/normalized_graph.hpp.
+ICG_ENABLE_ATTR = "faultflow_icg_enable"
 
 
 def _ppi_name(instance: str) -> str:
@@ -527,6 +530,72 @@ def _ctrl_mux(
         index,
     )
     return mux_out, next_id
+
+
+def _gate_hold_mux(
+    cells: dict[str, Any],
+    *,
+    instance: str,
+    data_in: int,
+    hold: int,
+    enable: int,
+    next_id: int,
+    index: "_BitIndex | None" = None,
+) -> tuple[int, int]:
+    """Model ``enable ? data_in : hold`` -- a gated flop's capture, ``enable`` its
+    clock gate's (the gate's output net, its enable in the view). Returns
+    (mux_out_net, next_id)."""
+    not_enable, d_on, q_on, out = next_id, next_id + 1, next_id + 2, next_id + 3
+    _add_internal_buf_cell(
+        cells, f"$ffgateinv_{instance}", CAPTURE_INV_CELL, enable, not_enable, index
+    )
+    _add_internal_gate2_cell(
+        cells, f"$ffgated_{instance}", CAPTURE_AND_CELL, data_in, enable, d_on, index
+    )
+    _add_internal_gate2_cell(
+        cells, f"$ffgateq_{instance}", CAPTURE_AND_CELL, hold, not_enable, q_on, index
+    )
+    _add_internal_gate2_cell(
+        cells, f"$ffgateor_{instance}", CAPTURE_OR_CELL, d_on, q_on, out, index
+    )
+    return out, next_id + 4
+
+
+def _mark_clock_gates(module: dict[str, Any], manifest: dict[str, Any]) -> None:
+    """Each clock gate scan flops are gated by evaluates, in the view, to its
+    enable: ``root`` (enable or test enable), or ``chain`` -- clocked by another
+    such gate, that gate's enable ANDed in (kIcgEnableAttr in the core)."""
+    gates = manifest.get("clock_gates") or {}
+    if not gates:
+        return
+    cells = module.get("cells", {})
+    scan_enable = module.get("ports", {}).get(str(manifest.get("scan_enable"))) or {}
+    scan_enable_bits = set(_all_int_bits(scan_enable.get("bits")))
+    outputs: set[int] = set()
+    for name, pins in gates.items():
+        cell = cells.get(name)
+        if isinstance(cell, dict):
+            outputs.update(
+                _all_int_bits(cell.get("connections", {}).get(pins["output_pin"]))
+            )
+    for name, pins in gates.items():
+        cell = cells.get(name)
+        if not isinstance(cell, dict):
+            continue
+        conns = cell.setdefault("connections", {})
+        clock = _all_int_bits(conns.get(pins["clock_pin"]))
+        chained = bool(clock) and clock[0] in outputs
+        attrs = cell.setdefault("attributes", {})
+        attrs[ICG_ENABLE_ATTR] = "chain" if chained else "root"
+        if not chained:
+            # A root gate's clock is no input of the view, as a flop's isn't: the
+            # protocol pulses it (its pin's faults are clock faults).
+            conns[pins["clock_pin"]] = ["0"]
+        test = pins.get("test_pin")
+        if test and set(_all_int_bits(conns.get(test))) & scan_enable_bits:
+            # The scan enable is 0 in every capture (and no input of the view):
+            # the gate is open on its enable alone.
+            conns[test] = ["0"]
 
 
 def _resolve_d_observe_boundary(
@@ -995,6 +1064,19 @@ def build_scan_atpg_view(
                     index=bit_index,
                 )
             )
+            # A gated flop captures only while its clock gate is open: the PPO is
+            # `enable ? D : Q`, the enable the gate's output in the view (marked
+            # below, faultflow.scan.clock_gates), so its enable logic is graded.
+            if record.get("clock_gates"):
+                observe_input, next_id = _gate_hold_mux(
+                    cells,
+                    instance=instance,
+                    data_in=observe_input,
+                    hold=ppi_bit,
+                    enable=int(record["pin_clock_net"]),
+                    next_id=next_id,
+                    index=bit_index,
+                )
             # Model the async control on the capture path too, so the PPO (the
             # unloaded captured value) reflects `control_active ? value : D`.
             # Reuses the FF's one control branch net, so a control-line fault
@@ -1056,6 +1138,7 @@ def build_scan_atpg_view(
             "boundary": boundary,
         }
 
+    _mark_clock_gates(module, manifest)
     clock_nets_list = manifest_clock_net_ids(manifest)
     _drop_dangling_scan_ports(module, manifest, clock_nets_list)
     _model_blackboxes_opaque(module, blackbox_instances)

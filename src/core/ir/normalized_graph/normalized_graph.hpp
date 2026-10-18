@@ -49,6 +49,10 @@ struct NormNode {
 // lists the capture points a blackbox output's unknown value reaches
 // (faultflow/scan/x_mask.py).
 inline constexpr char kUnobservedNetsAttr[] = "faultflow_unobserved_nets";
+// A clock gate's cell attribute in a scan ATPG view (faultflow.scan.atpg_view):
+// "root" or "chain" -- the gate evaluates to its enable (GateType ICG_EN /
+// ICG_EN_CHAIN), which its flops' captures hold on, not to a clock.
+inline constexpr char kIcgEnableAttr[] = "faultflow_icg_enable";
 
 struct NormalizedGraph {
   std::map<int, NormNode> nodes;

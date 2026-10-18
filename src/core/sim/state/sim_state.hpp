@@ -18,6 +18,10 @@ struct SimState {
   // on the >99.9% of nodes with no fault, instead of calling inject_faults (which
   // linearly scans all <=63 faults) on every node. One per SimState => per-thread.
   std::vector<char> fault_present;
+  // Each integrated clock gate's latch, by its output net (eval_icg); sized on
+  // first use, so a graph without clock gates never allocates it. All 0 at the
+  // start: every clock-off evaluation then loads it.
+  std::vector<uint64_t> latches;
 
   void init(int net_count, int frame_count = 1, int ff_count = 0) {
     frames.assign(frame_count, std::vector<uint64_t>(net_count, 0ULL));
@@ -26,9 +30,13 @@ struct SimState {
     initial_ff_state.assign(ff_count, 0ULL);
     prev_values.assign(net_count, 0ULL);
     fault_present.assign(net_count, 0);
+    latches.clear();
   }
 
-  void reset_ff_states() { ff_states = initial_ff_state; }
+  void reset_ff_states() {
+    ff_states = initial_ff_state;
+    latches.clear();
+  }
 
   std::vector<uint64_t>& current_values() { return frames[current_frame]; }
   const std::vector<uint64_t>& current_values() const {
