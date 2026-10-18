@@ -207,34 +207,6 @@ def _detected(db: Any) -> set[int]:
 
 
 @pytest.mark.integration
-def test_ff_py_wsp_grades_with_warptaps_program_and_loses_nothing_the_builder_found(
-    tmp_path: Any, flow_tools: None
-) -> None:
-    """The acceptance bar of replacing the builder: on the same campaign, the faults
-    warptap's program detects include every one the builder's detects. The ICL the
-    program was built from is written beside the report."""
-    import dataclasses
-
-    from faultflow.config import WspConfig
-    from faultflow.wrap.wsp_grade import run_wsp
-    from wrap_flow import TOP, run_mode
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.chdir(tmp_path)
-        cfg, _ = run_mode(tmp_path, "intest", wrap="control = wsp\n")
-        warptap = run_wsp(cfg, force=True)
-        by_warptap = _detected(cfg.db_path)
-        assert (cfg.intermediate_dir / f"{TOP}_wsp.icl").exists()
-        builder = run_wsp(
-            dataclasses.replace(cfg, wsp=WspConfig(builder="faultflow")), force=True
-        )
-        by_builder = _detected(cfg.db_path)
-    assert "warptap" in warptap.message(TOP) and "faultflow" in builder.message(TOP)
-    assert by_builder <= by_warptap, sorted(by_builder - by_warptap)
-    assert warptap.detected >= builder.detected > 0
-
-
-@pytest.mark.integration
 def test_the_program_ff_py_wsp_played_exports_and_plays_back_as_the_same_grade(
     tmp_path: Any, flow_tools: None
 ) -> None:

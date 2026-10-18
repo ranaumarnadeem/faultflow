@@ -112,6 +112,20 @@ enum class GateType {
   OR4BB,    // in0 | in1 | ~in2 | ~in3   [A, B, C_N, D_N]
   AND4BB,   // ~in0 & ~in1 & in2 & in3   [A_N, B_N, C, D — first two bubbled]
   A2BB2O,   // (~in0 & ~in1) | (in2 & in3)  [A1_N, A2_N bubbled; B1, B2 normal]
+  // Cells of the generated libraries' maps (faultflow/pdk/cell_map_gen.py).
+  A222O,    // (in0&in1)|(in2&in3)|(in4&in5)       sky130 hs/ms/ls a222o
+  O33AI,    // ~((in0|in1|in2)&(in3|in4|in5))      gf180mcu oai33
+  O222AI,   // ~((in0|in1)&(in2|in3)&(in4|in5))    gf180mcu oai222
+  // Integrated clock gates (node_type ICG in a cell map, not gate_type names):
+  // in0 the clock, in1 the enable, in2 the test enable. Stateful: a latch L of
+  // in1|in2, transparent while the clock is off, and the gated clock out of it --
+  // see eval_icg. Stateless evaluation (CNF, eval_gate) is the latch transparent.
+  ICG_POS,  // GCLK = CLK & L,  L transparent while CLK is low   (latch_posedge)
+  ICG_NEG,  // GCLK = CLK | ~L, L transparent while CLK is high  (latch_negedge)
+  // A clock gate in a scan ATPG view (its cell's kIcgEnableAttr): its output is
+  // whether it lets its flops capture -- what their capture holds on.
+  ICG_EN,        // in1 | in2: the root gate of its clock
+  ICG_EN_CHAIN,  // in0 & (in1 | in2): in0 the enable of the gate before it
 };
 
 enum class NodeType { GATE, FF, LATCH, CONST, TBUF, ICG };

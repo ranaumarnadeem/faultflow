@@ -248,6 +248,15 @@ TEST_CASE("CNF truth tables wave 6 5-6 input AND-OR/OR-AND compounds",
   check_cnf_table(GateType::A222OI, 6, [](const auto& in) {
     return !((in[0] && in[1]) || (in[2] && in[3]) || (in[4] && in[5]));
   });
+  check_cnf_table(GateType::A222O, 6, [](const auto& in) {
+    return (in[0] && in[1]) || (in[2] && in[3]) || (in[4] && in[5]);
+  });
+  check_cnf_table(GateType::O33AI, 6, [](const auto& in) {
+    return !((in[0] || in[1] || in[2]) && (in[3] || in[4] || in[5]));
+  });
+  check_cnf_table(GateType::O222AI, 6, [](const auto& in) {
+    return !((in[0] || in[1]) && (in[2] || in[3]) && (in[4] || in[5]));
+  });
   check_cnf_table(GateType::A311O, 5, [](const auto& in) {
     return (in[0] && in[1] && in[2]) || in[3] || in[4];
   });

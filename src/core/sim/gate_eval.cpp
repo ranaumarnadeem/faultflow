@@ -208,6 +208,21 @@ uint64_t eval_bitwise(GateType type, const std::vector<uint64_t>& inputs) {
       return ~in0 & ~in1 & in2 & in3;
     case GateType::A2BB2O:
       return (~in0 & ~in1) | (in2 & in3);
+    case GateType::A222O:
+      return (in0 & in1) | (in2 & in3) | (pick(inputs, 4) & pick(inputs, 5));
+    case GateType::O33AI:
+      return ~((in0 | in1 | in2) & (in3 | pick(inputs, 4) | pick(inputs, 5)));
+    case GateType::O222AI:
+      return ~((in0 | in1) & (in2 | in3) & (pick(inputs, 4) | pick(inputs, 5)));
+    // A clock gate without its state: the latch transparent (see eval_icg).
+    case GateType::ICG_POS:
+      return in0 & (in1 | in2);
+    case GateType::ICG_NEG:
+      return in0 | ~(in1 | in2);
+    case GateType::ICG_EN:
+      return in1 | in2;
+    case GateType::ICG_EN_CHAIN:
+      return in0 & (in1 | in2);
     default:
       throw ParseError("Unsupported gate type in eval_gate");
   }

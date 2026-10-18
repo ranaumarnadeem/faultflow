@@ -25,7 +25,7 @@ def hash_file(path: Path) -> str:
 
 
 def _cell_row(cell: Any) -> dict[str, object]:
-    return {
+    row: dict[str, object] = {
         "instance": cell.instance,
         "original_type": cell.original_type,
         "chain_index": cell.chain_index,
@@ -36,6 +36,11 @@ def _cell_row(cell: Any) -> dict[str, object]:
         "scan_enable_net": cell.scan_enable_net,
         "q_net": cell.q_net,
     }
+    if getattr(cell, "clock_gates", ()):
+        # A gated flop: clock_net is its root clock, this its pin's.
+        row["pin_clock_net"] = cell.pin_clock_net
+        row["clock_gates"] = list(cell.clock_gates)
+    return row
 
 
 def _list(value: object) -> list[object]:
@@ -99,6 +104,12 @@ def manifest_from_result(
             for ff in result.ineligible_ffs
         ],
         "latest_check": check_result,
+        # The clock gates scan flops are gated by (faultflow.scan.clock_gates).
+        **(
+            {"clock_gates": dict(result.clock_gates)}
+            if getattr(result, "clock_gates", None)
+            else {}
+        ),
     }
 
 

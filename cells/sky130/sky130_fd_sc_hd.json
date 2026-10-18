@@ -1701,8 +1701,25 @@
     "reason": "physical cell (no logic output)"
   },
   "sky130_fd_sc_hd__dlclkp_*": {
-    "unsupported": true,
-    "reason": "clock-gating cell (deferred)"
+    "node_type": "ICG",
+    "inputs": [
+      "CLK",
+      "GATE"
+    ],
+    "outputs": {
+      "GCLK": "GCLK"
+    },
+    "icg": {
+      "clock": "CLK",
+      "enable": "GATE",
+      "output": "GCLK",
+      "edge": "POSEDGE"
+    },
+    "variants": [
+      "sky130_fd_sc_hd__dlclkp_1",
+      "sky130_fd_sc_hd__dlclkp_2",
+      "sky130_fd_sc_hd__dlclkp_4"
+    ]
   },
   "sky130_fd_sc_hd__dlrbn_*": {
     "unsupported": true,
@@ -2157,8 +2174,27 @@
     ]
   },
   "sky130_fd_sc_hd__sdlclkp_*": {
-    "unsupported": true,
-    "reason": "clock-gating cell (deferred)"
+    "node_type": "ICG",
+    "inputs": [
+      "CLK",
+      "GATE",
+      "SCE"
+    ],
+    "outputs": {
+      "GCLK": "GCLK"
+    },
+    "icg": {
+      "clock": "CLK",
+      "enable": "GATE",
+      "test": "SCE",
+      "output": "GCLK",
+      "edge": "POSEDGE"
+    },
+    "variants": [
+      "sky130_fd_sc_hd__sdlclkp_1",
+      "sky130_fd_sc_hd__sdlclkp_2",
+      "sky130_fd_sc_hd__sdlclkp_4"
+    ]
   },
   "sky130_fd_sc_hd__sedfxbp_*": {
     "node_type": "FF",

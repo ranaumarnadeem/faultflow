@@ -480,7 +480,7 @@ scan, that an update without `selectwir` changes nothing, and that `capturewr` w
 outputs, which the program never clocks -- is no care. Every input but the WSP's and the
 wrapped data inputs is 0. `[wsp] program`, or `--program`, plays a `warptap-wsp-program`
 file instead; `--export` writes the program that was played. Without warptap and without a
-program file the run says so (`[wsp] builder = faultflow` selects faultflow's older program).
+program file the run says so.
 
 With the program warptap builds, the test setup programs are checked too: each mode's
 program that loads its instruction into the WIR (what a scan test of that mode starts with)
@@ -549,7 +549,7 @@ Write the cell map of a standard-cell library from its Liberty, for any PDK: eac
 combinational cell's `function` matched to one of the engine's gate types by exhaustive
 truth table (the C++ core's own gate evaluation is the oracle), each flop read from its
 `ff` group and, for a scan flop, its `test_cell`. Every other cell is listed, with why,
-rather than guessed: latches (out of scope), clock-gating cells (not yet modelled),
+rather than guessed: latches (out of scope),
 tristates, tie and physical cells, and functions no gate type has. FaultFlow's own
 internal cells (the scan flop it stitches, its observe buffers) are carried into the
 map. Drive strengths share a `<name>_*` pattern unless it would match another cell. Point

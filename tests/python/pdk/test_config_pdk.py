@@ -63,7 +63,7 @@ def test_a_named_library_resolves_from_the_pdk(
     assert json.loads(cfg.cell_lib.read_text(encoding="utf-8"))[
         "sky130_fd_sc_hs__nand2_*"
     ]
-    assert "sky130_fd_sc_hs__a222o_1" in cfg.dont_use
+    assert "sky130_fd_sc_hs__dlxtp_1" in cfg.dont_use  # a latch
     assert "sky130_fd_sc_hs__nand4*" in cfg.dont_use  # the user's own, as given
     # A path the config names wins over the PDK's.
     own = load_config(
@@ -99,7 +99,7 @@ def test_synthesis_keeps_off_the_cells_the_map_does_not_model(
     abc = next(line for line in script.splitlines() if line.startswith("abc"))
     for line in (dfflibmap, abc):
         assert f"-liberty {cfg.liberty}" in line
-        assert "-dont_use sky130_fd_sc_hs__a222o_1" in line
+        assert "-dont_use sky130_fd_sc_hs__dlxtp_1" in line
         assert "-dont_use sky130_fd_sc_hs__nand2_1" not in line
 
 

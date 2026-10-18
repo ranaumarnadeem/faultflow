@@ -109,6 +109,16 @@ TEST_CASE("Sky130 primitive truth tables are independently pinned",
   check_table(GateType::NAND4BB, 4, [](const auto& in) {
     return in[0] || in[1] || !in[2] || !in[3];
   });
+  // GF180MCU's oai33 and oai222, Sky130 hs/ms/ls's a222o.
+  check_table(GateType::O33AI, 6, [](const auto& in) {
+    return !((in[0] || in[1] || in[2]) && (in[3] || in[4] || in[5]));
+  });
+  check_table(GateType::O222AI, 6, [](const auto& in) {
+    return !((in[0] || in[1]) && (in[2] || in[3]) && (in[4] || in[5]));
+  });
+  check_table(GateType::A222O, 6, [](const auto& in) {
+    return (in[0] && in[1]) || (in[2] && in[3]) || (in[4] && in[5]);
+  });
 }
 
 // Regression for the NAND4BB pin-name bug: the cell map + graph compiler once

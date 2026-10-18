@@ -70,7 +70,15 @@ _FF: dict[str, tuple[str, bool, str | None, str]] = {
     "scan_ff_reset": ("POSEDGE", True, "clear", "sdfrtp"),
     "scan_ff_set": ("POSEDGE", True, "preset", "sdfstp"),
 }
-ROLES = tuple(_FF) + tuple(_COMB)
+_ICG: dict[str, tuple[str, str]] = {
+    # role: (edge, preferred name) -- a clock gate with a test enable, which scan
+    # stitching puts in place of one without (faultflow.scan.clock_gates).
+    "icg": ("POSEDGE", "sdlclkp"),
+    "icg_negedge": ("NEGEDGE", "icgtn"),
+}
+ROLES = tuple(_FF) + tuple(_COMB) + tuple(_ICG)
+# The widest gate a combinational role is looked for in with inputs tied off.
+_MAX_TIED_INPUTS = 4
 
 
 def _short(pattern: str) -> str:
@@ -125,6 +133,8 @@ class LibraryRoles:
                 found = self._comb(role)
             elif role in _FF:
                 found = self._ff(role)
+            elif role in _ICG:
+                found = self._icg(role)
             else:
                 raise KeyError(role)
             if found is None:
@@ -177,7 +187,72 @@ class LibraryRoles:
                     (out,) = entry["outputs"].values()
                     pins["out"] = str(out)
                     return RoleCell(_concrete(pattern, entry), pins)
+        return self._comb_tied(role)
+
+    def _comb_tied(self, role: str) -> RoleCell | None:
+        """The role from a gate with more inputs, the rest tied to constants --
+        GF180MCU has no and2b, but its mux2 with A1 tied low is one (``S ? 0 :
+        A0``). The fewest inputs, then the fewest ties, first."""
+        logical, fn, _, _ = _COMB[role]
+        n = len(logical)
+        candidates = sorted(
+            (
+                (k, e)
+                for k, e in self._entries("GATE")
+                if n < len(e.get("inputs", [])) <= _MAX_TIED_INPUTS
+                and len(e.get("outputs", {})) == 1
+            ),
+            key=lambda ke: (len(ke[1]["inputs"]), not _sized(*ke), ke[0]),
+        )
+        for pattern, entry in candidates:
+            inputs = [str(p) for p in entry["inputs"]]
+            m = len(inputs)
+            # place[j]: the entry input logical pin j drives; the rest are tied.
+            for place in itertools.permutations(range(m), n):
+                rest = [i for i in range(m) if i not in place]
+                for consts in itertools.product([False, True], repeat=len(rest)):
+                    tied = dict(zip(rest, consts))
+
+                    def at(values: tuple[bool, ...]) -> list[bool]:
+                        row = [False] * m
+                        for j, i in enumerate(place):
+                            row[i] = values[j]
+                        for i, c in tied.items():
+                            row[i] = c
+                        return row
+
+                    if all(
+                        bool(self.core.eval_gate(str(entry["gate_type"]), at(values)))
+                        == fn(*values)
+                        for values in itertools.product([False, True], repeat=n)
+                    ):
+                        pins = {logical[j]: inputs[i] for j, i in enumerate(place)}
+                        (out,) = entry["outputs"].values()
+                        pins["out"] = str(out)
+                        ties = {inputs[i]: "1" if c else "0" for i, c in tied.items()}
+                        return RoleCell(_concrete(pattern, entry), pins, ties)
         return None
+
+    def _icg(self, role: str) -> RoleCell | None:
+        """The role's clock gate: of its edge, with a test enable."""
+        edge, short = _ICG[role]
+        fits = [
+            (_short(pattern) != short, not _sized(pattern, entry), pattern, entry)
+            for pattern, entry in self._entries("ICG")
+            if (entry.get("icg") or {}).get("edge", "POSEDGE") == edge
+            and (entry.get("icg") or {}).get("test")
+        ]
+        if not fits:
+            return None
+        *_, pattern, entry = sorted(fits, key=lambda f: f[:3])[0]
+        icg = entry["icg"]
+        pins = {
+            "clk": str(icg["clock"]),
+            "en": str(icg["enable"]),
+            "te": str(icg["test"]),
+            "gclk": str(icg["output"]),
+        }
+        return RoleCell(_concrete(pattern, entry), pins)
 
     def _ff(self, role: str) -> RoleCell | None:
         """The role's flop: one of exactly its shape, else (none in the library) one
@@ -276,6 +351,7 @@ HD_PINS: dict[str, dict[str, str]] = {
         "set_n": "SET_B",
         "q": "Q",
     },
+    "icg": {"clk": "CLK", "en": "GATE", "te": "SCE", "gclk": "GCLK"},
 }
 
 _DEFAULT: list[LibraryRoles] = []

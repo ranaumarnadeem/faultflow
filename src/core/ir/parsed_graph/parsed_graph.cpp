@@ -140,6 +140,18 @@ ParsedGraph ParsedGraph::from_json(const nlohmann::json& j) {
             cell.conns[conn.key()] = parse_bits(conn.value());
           }
         }
+        // FaultFlow's own cell attributes (a scan ATPG view's clock gates:
+        // kIcgEnableAttr) -- not Yosys's (src, keep, ...), which every cell of a
+        // large netlist carries and nothing here reads.
+        if (c.value().contains("attributes") &&
+            c.value()["attributes"].is_object()) {
+          for (auto a = c.value()["attributes"].begin();
+               a != c.value()["attributes"].end(); ++a) {
+            if (a.key().rfind("faultflow_", 0) == 0) {
+              cell.attrs[a.key()] = attr_to_string(a.value());
+            }
+          }
+        }
         if (c.value().contains("port_directions") &&
             c.value()["port_directions"].is_object()) {
           for (auto d = c.value()["port_directions"].begin();

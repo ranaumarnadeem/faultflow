@@ -452,16 +452,14 @@ class JtagConfig:
 class WspConfig:
     """``ff.py wsp`` ([wsp]): the integrity program the faults a block's scan test
     leaves to its IEEE 1500 WSP are graded with. ``program``: a
-    warptap-wsp-program file; else ``builder`` makes one -- "warptap", from the
-    wrapper's ICL (the program's sentinel ``margin``, and whether to test every code of
-    the WIR, not only the instructions' own), or "faultflow", its own older builder.
-    Report-only: not fingerprinted -- a WSP grade keys itself to its program and
-    netlist."""
+    warptap-wsp-program file; else warptap builds one from the wrapper's ICL (the
+    program's sentinel ``margin``, and whether to test every code of the WIR, not only
+    the instructions' own). Report-only: not fingerprinted -- a WSP grade keys itself
+    to its program and netlist."""
 
     program: Path | None = None
     margin: int = 8
     exhaustive_opcodes: bool = True
-    builder: str = "warptap"
 
 
 @dataclass(frozen=True)
@@ -845,10 +843,10 @@ def _parse_wsp(parser: ConfigParser) -> WspConfig:
     if not parser.has_section("wsp"):
         return WspConfig()
     defaults = WspConfig()
-    builder = parser.get("wsp", "builder", fallback=defaults.builder).strip().lower()
-    if builder not in ("warptap", "faultflow"):
+    if parser.has_option("wsp", "builder"):
         raise ConfigError(
-            f"[wsp] builder must be warptap or faultflow, got '{builder}'"
+            "[wsp] builder is retired: warptap builds the WSP's integrity program "
+            "from the wrapper's ICL ([wsp] program plays a program file instead)"
         )
     config = WspConfig(
         program=_optional_path(parser, "wsp", "program"),
@@ -856,7 +854,6 @@ def _parse_wsp(parser: ConfigParser) -> WspConfig:
         exhaustive_opcodes=_bool(
             parser, "wsp", "exhaustive_opcodes", defaults.exhaustive_opcodes
         ),
-        builder=builder,
     )
     if config.margin < 2:
         raise ConfigError("[wsp] margin must be at least 2")

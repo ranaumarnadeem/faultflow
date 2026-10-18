@@ -306,6 +306,55 @@ NormalizedGraph NormalizedGraph::from_parsed(
       throw UnsupportedCellError(cell.type);
     }
 
+    if (entry->node_type == NodeType::ICG) {
+      // An integrated clock gate: a gate node with a latch (eval_icg), its
+      // inputs clock, enable and test enable in that order; a test pin the cell
+      // has none of, or the netlist leaves unconnected, reads 0. The clock it
+      // reads and the clock it drives are clock nets.
+      const CellICGMetadata& icg = entry->icg;
+      NormNode gate;
+      gate.id = next_node_id++;
+      gate.instance = inst;
+      gate.type = NodeType::GATE;
+      gate.gate_type = icg.edge == TriggerType::POSEDGE ? GateType::ICG_POS
+                                                        : GateType::ICG_NEG;
+      const auto view = cell.attrs.find(kIcgEnableAttr);
+      if (view != cell.attrs.end()) {
+        gate.gate_type =
+            view->second == "chain" ? GateType::ICG_EN_CHAIN : GateType::ICG_EN;
+      }
+      gate.input_order = {icg.clock, icg.enable};
+      if (!icg.test.empty()) {
+        gate.input_order.push_back(icg.test);
+      }
+      for (const auto& pin : gate.input_order) {
+        auto it = cell.conns.find(pin);
+        if (it != cell.conns.end() && !it->second.empty()) {
+          gate.input_pins[pin] = it->second.front();
+        } else if (pin != icg.test) {
+          throw ParseError("clock gate " + inst + " (type '" + cell.type +
+                           "') has no connection on its pin " + pin);
+        }
+      }
+      auto out = cell.conns.find(icg.output);
+      if (out == cell.conns.end() || out->second.empty()) {
+        continue;  // a clock gate clocking nothing
+      }
+      const int gclk = out->second.front();
+      gate.output_pins[icg.output] = gclk;
+      if (ng.nets[gclk].driver >= 0) {
+        throw ParseError("Multiple drivers on net " + std::to_string(gclk));
+      }
+      ng.nets[gclk].driver = gate.id;
+      const int clk = gate.input_pins.at(icg.clock);
+      if (clk >= 0) {  // a constant (a view's tied-off root clock) is no clock
+        tag_clock_net(ng, clk);
+      }
+      tag_clock_net(ng, gclk);
+      ng.nodes[gate.id] = std::move(gate);
+      continue;
+    }
+
     if (entry->node_type == NodeType::CONST && !entry->constants.empty()) {
       // A tie cell with several outputs (Sky130's conb): a constant node per
       // output, each its own constant.

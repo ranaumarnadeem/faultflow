@@ -309,6 +309,59 @@ def test_cells_the_engine_does_not_model_are_listed_explicitly(core: Any) -> Non
     assert cm["demo__probe_p_*"]["unsupported"] is True
 
 
+def test_a_clock_gate_maps_from_its_liberty_pins(core: Any) -> None:
+    """An integrated clock gate's kind and its clock_gate_*_pin attributes: Sky130's
+    sdlclkp (latch_posedge_precontrol, a test enable) and GF180MCU's icgtn
+    (latch_negedge_precontrol), its pins named otherwise."""
+    pos = _cell(
+        "demo__sdlclkp_1",
+        ' clock_gating_integrated_cell : "latch_posedge_precontrol";\n'
+        + _pin("CLK", clock_gate_clock_pin="true")
+        + _pin("GATE", clock_gate_enable_pin="true")
+        + _pin("SCE", clock_gate_test_pin="true")
+        + _pin("GCLK", "output", clock_gate_out_pin="true"),
+    )
+    neg = _cell(
+        "demo__icgtn_1",
+        ' clock_gating_integrated_cell : "latch_negedge_precontrol";\n'
+        + _pin("CLKN", clock_gate_clock_pin="true")
+        + _pin("E", clock_gate_enable_pin="true")
+        + _pin("TE", clock_gate_test_pin="true")
+        + _pin("Q", "output", clock_gate_out_pin="true"),
+    )
+    # A _precontrol gate without its test pin is listed, never guessed.
+    broken = _cell(
+        "demo__icgx_1",
+        ' clock_gating_integrated_cell : "latch_posedge_precontrol";\n'
+        + _pin("CLK", clock_gate_clock_pin="true")
+        + _pin("GATE", clock_gate_enable_pin="true")
+        + _pin("GCLK", "output", clock_gate_out_pin="true"),
+    )
+    cm = _generate(_lib(pos, neg, broken)).cell_map
+    assert cm["demo__sdlclkp_*"] == {
+        "node_type": "ICG",
+        "inputs": ["CLK", "GATE", "SCE"],
+        "outputs": {"GCLK": "GCLK"},
+        "icg": {
+            "clock": "CLK",
+            "enable": "GATE",
+            "test": "SCE",
+            "output": "GCLK",
+            "edge": "POSEDGE",
+        },
+        "variants": ["demo__sdlclkp_1"],
+    }
+    assert cm["demo__icgtn_*"]["icg"] == {
+        "clock": "CLKN",
+        "enable": "E",
+        "test": "TE",
+        "output": "Q",
+        "edge": "NEGEDGE",
+    }
+    assert cm["demo__icgx_*"]["unsupported"] is True
+    assert "test pin" in cm["demo__icgx_*"]["reason"]
+
+
 def test_internal_cells_are_carried_over(core: Any) -> None:
     base = {"$scanff_faultflow": {"node_type": "FF", "ff": {"clock": "CLK"}}}
     cm = _generate(
@@ -359,12 +412,16 @@ def test_the_hd_map_regenerated_agrees_with_the_shipped_one(core: Any) -> None:
             not in (
                 "GATE",
                 "FF",
+                "ICG",
             )
         ):
             continue
         new = lookup(generated, name)
         assert new is not None and new.get("node_type") == old["node_type"], name
-        if old["node_type"] == "GATE":
+        if old["node_type"] == "ICG":
+            assert new["icg"] == old["icg"], name
+            assert new["inputs"] == old["inputs"] and new["outputs"] == old["outputs"]
+        elif old["node_type"] == "GATE":
             pins = sorted(set(old["inputs"]))
             assert sorted(new["inputs"]) == pins, name
             assert new["outputs"] == old["outputs"], name

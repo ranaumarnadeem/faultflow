@@ -414,13 +414,53 @@ class _Generator:
             outputs["QN"] = qn[0]
         return {"node_type": "FF", "inputs": inputs, "outputs": outputs, "ff": meta}
 
+    # ---------------------------------------------------------------- clock gates
+    def icg(self, name: str, cell: Group) -> dict[str, Any]:
+        """An integrated clock gate, from its Liberty: ``latch_posedge`` (a latch
+        transparent while the clock is low, ANDed with it) or ``latch_negedge``
+        (transparent while it is high, ORed with it), each ``_precontrol`` with a
+        test enable ORed into the latch's input; the pins by their
+        ``clock_gate_*_pin`` attributes. Any other kind is listed."""
+        kind = cell.attrs["clock_gating_integrated_cell"].strip('"').lower()
+        edge = {"latch_posedge": "POSEDGE", "latch_negedge": "NEGEDGE"}
+        base = kind.removesuffix("_precontrol")
+        if base not in edge:
+            return self.listed(name, "icg", f"clock-gating cell of kind {kind}")
+        found: dict[str, str] = {}
+        for pin, group in _pins(cell).items():
+            for role in ("clock", "enable", "test", "out"):
+                if group.attrs.get(f"clock_gate_{role}_pin", "").strip('"') == "true":
+                    found[role] = pin
+        need = ("clock", "enable", "out", *(("test",) if kind != base else ()))
+        missing = [role for role in need if role not in found]
+        if missing:
+            return self.listed(
+                name, "icg", f"clock-gating cell without a {missing[0]} pin"
+            )
+        icg = {
+            "clock": found["clock"],
+            "enable": found["enable"],
+            **({"test": found["test"]} if "test" in found else {}),
+            "output": found["out"],
+            "edge": edge[base],
+        }
+        inputs = [found["clock"], found["enable"]]
+        if "test" in found:
+            inputs.append(found["test"])
+        return {
+            "node_type": "ICG",
+            "inputs": inputs,
+            "outputs": {"GCLK": found["out"]},
+            "icg": icg,
+        }
+
     # ---------------------------------------------------------------- cells
     def entry(self, cell: Group) -> dict[str, Any]:
         name = str(cell.args[0])
         if any(fnmatch.fnmatchcase(name, glob) for glob in PHYSICAL_GLOBS):
             return self.listed(name, "physical", "probe cell (physical, by policy)")
         if "clock_gating_integrated_cell" in cell.attrs:
-            return self.listed(name, "icg", "clock-gating cell (deferred)")
+            return self.icg(name, cell)
         if cell.find("latch") is not None:
             return self.listed(name, "latch", "latch (out of scope: no X-state)")
         ff = cell.find("ff")
@@ -484,7 +524,7 @@ def generate_cell_map(
         sized = all(_DRIVE.search(m) for m in members)
         if same and sized and not clash:
             entry = dict(entries[members[0]])
-            if entry.get("node_type") in ("GATE", "FF", "CONST"):
+            if entry.get("node_type") in ("GATE", "FF", "CONST", "ICG"):
                 # The concrete cells the pattern stands for: what FaultFlow
                 # instantiates when it adds one (faultflow.pdk.roles).
                 entry["variants"] = list(members)

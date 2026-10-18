@@ -107,3 +107,56 @@ def test_mbist_insert_synthesizes_on_the_ofs_libraries_and_keeps_their_cells(
     if shutil.which("iverilog") is None or shutil.which("vvp") is None:
         pytest.skip("needs iverilog")
     assert replay_on_cells(cfg, patterns, out / "replay") == []
+
+
+@pytest.mark.parametrize(
+    "library", ["gf180mcu_fd_sc_mcu7t5v0", "gf180mcu_fd_sc_mcu9t5v0"]
+)
+def test_mbist_insert_with_jtag_runs_on_gf180mcu(
+    library: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fixture chip, MBIST and its JTAG access inserted, synthesized on a
+    GF180MCU library: scanned, checked, ATPG'd, its patterns replayed on the
+    library's cells, and ff.py jtag testing the TAP and the IJTAG network."""
+    from faultflow.cli import main
+    from faultflow.mbist.insert import insert_command
+    from faultflow.runner.runner import _load_core
+    from warptap_helpers import skip_unless_warptap
+
+    if _load_core() is None:
+        pytest.skip("needs the C++ core")
+    skip_unless_warptap("warptap.tap_integrity")
+    root = pdk_root_with("gf180mcuD", library)
+    if root is None:
+        pytest.skip(f"needs gf180mcuD's {library}")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    spec = chip_copy(
+        tmp_path, lambda t: t.replace("jtag: false", "jtag: {tck_max_mhz: 10}")
+    )
+    base = tmp_path / "chip.ofs"
+    base.write_text(
+        f"[design]\npdk = gf180mcuD\nstd_cell_library = {library}\n"
+        f"pdk_root = {root}\n\n[scan]\nchains = 8\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+    insert_command(spec, TOP, out, base)
+    ofs = out / f"{TOP}_mbist.ofs"
+    monkeypatch.chdir(out)
+    patterns = out / "patterns.json"
+    for step in (
+        ["init"],
+        ["scan"],
+        ["scan-check"],
+        ["sim", "--scan", "--export-patterns", str(patterns)],
+        ["jtag"],
+    ):
+        assert main([*step, "--top", TOP, "-c", str(ofs)]) == 0, step
+    cfg = load_config(ofs, TOP)
+    scanned = (cfg.output_dir / f"{TOP}_scan.v").read_text(encoding="utf-8")
+    types = set(re.findall(r"^\s+([A-Za-z_]\w*)\s+(?:\\\S+|\w+)\s*\(", scanned, re.M))
+    library_types = {t for t in types if t.startswith(("gf180", "sky130"))}
+    assert library_types and all(t.startswith(library) for t in library_types)
+    if shutil.which("iverilog") is None or shutil.which("vvp") is None:
+        pytest.skip("needs iverilog")
+    assert replay_on_cells(cfg, patterns, out / "replay") == []

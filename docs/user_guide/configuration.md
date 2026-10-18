@@ -93,7 +93,7 @@ library's Liberty at the corner, generates its cell map from it (as `ff.py cell-
 does; cached in `$XDG_CACHE_HOME/faultflow/pdk`, by the Liberty's hash) and joins its
 `primitives.v` and cell models into one file for iverilog. Synthesis (`dfflibmap`,
 `abc`) is told not to use any cell the map doesn't model -- latches, tristates,
-clock-gating cells, functions the engine has no gate type for -- so a synthesized
+functions the engine has no gate type for -- so a synthesized
 netlist only holds cells FaultFlow simulates. The cells FaultFlow adds itself (scan
 flops, the IEEE 1500 wrapper and its WSP, the gates stitching folds an enable into)
 are the library's too. Install a PDK with ciel, e.g.
@@ -427,8 +427,7 @@ of the campaign fingerprint (a WSP grade keys itself to its program, netlist and
 
 | Key | Format | Default | Meaning |
 |---|---|---|---|
-| `program` | path | — | A `warptap-wsp-program` JSON file to play; without it `builder` makes one |
-| `builder` | `warptap` or `faultflow` | `warptap` | `warptap`: warptap builds the program from the ICL of the wrapper (written beside the report as `<top>_wsp.icl`); needs warptap importable. `faultflow`: faultflow's own older builder, kept for comparison |
+| `program` | path | — | A `warptap-wsp-program` JSON file to play; without it warptap builds the program from the ICL of the wrapper (written beside the report as `<top>_wsp.icl`), which needs warptap importable |
 | `margin` | integer ≥ 2 | `8` | Sentinel bits fed past each register's length in a warptap-built program |
 | `exhaustive_opcodes` | boolean | `true` | Test every code of the WIR in a warptap-built program, not only the instructions' own |
 

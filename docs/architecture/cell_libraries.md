@@ -20,20 +20,22 @@ Any other library's map is generated from its Liberty: `ff.py cell-map`, or
 Each library below is tested end to end: every gate and flop its map models is
 simulated against the library's own Liberty, and a design is synthesized onto it, scan
 inserted, ATPG'd, compressed and compacted, and the exported patterns replayed on the
-library's own Verilog cell models.
+library's own Verilog cell models; the IEEE 1500 wrapper's INTEST and EXTEST too
+(with its WSP where the library has a falling-edge flop with a reset), and on
+GF180MCU mbist-insert with JTAG.
 
 | PDK (`pdk`) | Libraries (`std_cell_library`) | Not modelled |
 |---|---|---|
-| `sky130A` / `sky130B` | `sky130_fd_sc_hd` (shipped map), `_hdll`, `_hs`, `_ms`, `_ls`, `_lp`, `_hvl` | latches, clock gates, tristates; HD's `fahcin` / `fahcon` |
-| `gf180mcuA`..`D` | `gf180mcu_fd_sc_mcu7t5v0`, `gf180mcu_fd_sc_mcu9t5v0` | latches, clock gates, tristates, `oai33`, `oai222` |
-| `ihp-sg13g2` | `sg13g2_stdcell` | latches, clock gates, tristates |
+| `sky130A` / `sky130B` | `sky130_fd_sc_hd` (shipped map), `_hdll`, `_hs`, `_ms`, `_ls`, `_lp`, `_hvl` | latches, tristates; `fahcin` / `fahcon` |
+| `gf180mcuA`..`D` | `gf180mcu_fd_sc_mcu7t5v0`, `gf180mcu_fd_sc_mcu9t5v0` | latches, tristates |
+| `ihp-sg13g2` | `sg13g2_stdcell` | latches, tristates |
 | — | OSU035 (shipped map, no scan flop: generic scan) | |
 
 Install them with [ciel](https://github.com/fossi-foundation/ciel) (`--pdk-family
 sky130`, `gf180mcu` or `ihp-sg13`). GF180MCU's other libraries (`osu_sc_*`,
 `as_sc_*`, `ocd_sc_*`) map too but have no scan flop. A library short of a cell a
-flow needs is refused by that flow, naming the cell's role: GF180MCU's fd_sc has no
-`and2b` for the IEEE 1500 wrapper, IHP no negative-edge flop for its WSP.
+flow needs is refused by that flow, naming the cell's role: Sky130 hdll and hvl and
+IHP have no falling-edge flop with a reset for the WSP's WIR.
 
 A design may also use cells of several libraries of one PDK, e.g. Sky130 hd logic
 with hvl level shifters and flops (`[design] extra_libraries`): each flop is scanned
@@ -120,6 +122,9 @@ A representative sample of the gate-evaluation table — the full set is much la
 | `OR4BB` | `in0 \| in1 \| ~in2 \| ~in3` | e.g. `sky130_fd_sc_hd__or4bb_*`, pins `[A, B, C_N, D_N]` |
 | `AND4BB` | `~in0 & ~in1 & in2 & in3` | e.g. `sky130_fd_sc_hd__and4bb_*`, pins `[A_N, B_N, C, D]` — first two bubbled |
 | `A2BB2O` | `(~in0&~in1) \| (in2&in3)` | e.g. `sky130_fd_sc_hd__a2bb2o_*`, pins `[A1_N, A2_N, B1, B2]` |
+| `O33AI` | `~((in0\|in1\|in2) & (in3\|in4\|in5))` | GF180MCU's `oai33` |
+| `O222AI` | `~((in0\|in1) & (in2\|in3) & (in4\|in5))` | GF180MCU's `oai222` |
+| `A222O` | `(in0&in1) \| (in2&in3) \| (in4&in5)` | Sky130 hs/ms/ls's `a222o` |
 
 The `JSON expression` field on each cell-map entry documents the same formula for
 humans — it is informational only, never authoritative (see the warning above).
@@ -154,9 +159,12 @@ still reads only the map.
   the engine's model -- scan mux, then an enable that holds the state, then the data
   pin -- checked by truth table. A second, inverted output (`Q_N`) is
   `outputs.QN`: the engine drives it with an inverter reading `Q`.
-- Every other cell is listed, with why, never guessed: latches and clock-gating cells
-  (`unsupported`), tristates (`TBUF`), tie and physical cells, and functions no gate
-  type has.
+- An integrated clock gate (`clock_gating_integrated_cell`: `latch_posedge` or
+  `latch_negedge`, `_precontrol` with a test enable) is an `ICG` entry, its pins
+  from their `clock_gate_{clock,enable,test,out}_pin` attributes: Sky130's
+  `dlclkp`/`sdlclkp`, GF180MCU's `icgtp`/`icgtn`, IHP's `lgcp`/`slgcp`.
+- Every other cell is listed, with why, never guessed: latches (`unsupported`),
+  tristates (`TBUF`), tie and physical cells, and functions no gate type has.
 - Drive strengths share a `<name>_*` pattern, whose `variants` name the cells, unless
   the pattern would match another cell.
 
@@ -170,9 +178,33 @@ logical function -- a non-inverting `mux2`, an `and2b`, a flop with an active-lo
 reset, a scan flop -- and the library's cell for it is found and checked with the same
 oracle. A flop role the library has no cell of exactly its shape for takes a flop with
 more controls, holding the rest inactive: IHP SG13G2 has reset flops only, so its
-plain scan flop is `sg13g2_sdfrbpq` with `RESET_B` tied high. Likewise a flop
+plain scan flop is `sg13g2_sdfrbpq` with `RESET_B` tied high. A gate role likewise
+takes a wider gate with inputs tied off: GF180MCU and Sky130 hvl have no `and2b`
+(`!a_n & b`), and their `mux2` with `A1` tied low is one. Likewise a flop
 synthesis tied off a reset of (on a library without a plain flop) scans as a plain
 one. A flow that needs a role the library lacks says which.
+
+### Clock gates
+
+A clock gate is simulated as its cell is built, with no X: a latch of `EN | TE`,
+transparent while the clock is off (low for a `latch_posedge` gate, high for a
+`latch_negedge` one), and the gated clock out of it -- `CLK & L`, or `CLK | ~L`.
+The latch is always known: every clock-off phase loads it, and a scan test starts
+with the clocks off. The flops behind a gate see its clock's edges, so a gate closed
+in capture holds them, and an enable that changes while the clock is high (the flops
+it clocks just updated) never glitches the clock.
+
+Scan insertion scans a gated flop on its *root* clock -- the clock the gate, or a
+chain of gates, reads -- and keeps its pin on the gate's clock. Every gate must be
+open while the chains shift: a gate whose test enable is tied off (or unconnected)
+gets the scan enable on it, and a gate without one becomes its library's gate with
+one (role `icg`, or `icg_negedge`), its test enable on the scan enable; a flop
+behind a gate its library has no such gate for stays out of scan
+(`clock_gate_without_test`). A test enable the design drives is left alone, and
+`scan-check` refuses a gate it can't show held open in shift. In the ATPG view a
+gated flop captures `enable ? D : Q`, the gate evaluating to its enable (`GateType`
+`ICG_EN`, `ICG_EN_CHAIN` behind another gate), so the enable logic is graded; the
+scan enable is 0 in every capture.
 
 A library's Liberty at a corner is its main file and the companion files of that corner
 (`<corner>_<suffix>`) that characterize cells the main one lacks: Sky130 hvl's eight

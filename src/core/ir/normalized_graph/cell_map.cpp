@@ -74,6 +74,8 @@ const std::map<std::string, GateType>& gate_name_table() {
       {"O41AI", GateType::O41AI},
       {"OR2B", GateType::OR2B},      {"OR4BB", GateType::OR4BB},
       {"AND4BB", GateType::AND4BB},  {"A2BB2O", GateType::A2BB2O},
+      {"A222O", GateType::A222O},    {"O33AI", GateType::O33AI},
+      {"O222AI", GateType::O222AI},
   };
   return kMap;
 }
@@ -193,6 +195,18 @@ CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node)
   }
   if (node.contains("ff")) {
     entry.ff = parse_ff_metadata(node.at("ff"));
+  }
+  if (entry.node_type == NodeType::ICG) {
+    if (!node.contains("icg")) {
+      throw ParseError("ICG entry " + pattern + " has no icg pins");
+    }
+    const auto& icg = node.at("icg");
+    entry.icg.present = true;
+    entry.icg.clock = icg.at("clock").get<std::string>();
+    entry.icg.enable = icg.at("enable").get<std::string>();
+    entry.icg.test = icg.value("test", std::string());
+    entry.icg.output = icg.at("output").get<std::string>();
+    entry.icg.edge = parse_trigger(icg.value("edge", std::string("POSEDGE")));
   }
   if (node.contains("constants")) {
     for (auto it = node.at("constants").begin(); it != node.at("constants").end();
