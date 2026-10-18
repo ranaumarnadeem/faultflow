@@ -480,7 +480,7 @@ scan, that an update without `selectwir` changes nothing, and that `capturewr` w
 outputs, which the program never clocks -- is no care. Every input but the WSP's and the
 wrapped data inputs is 0. `[wsp] program`, or `--program`, plays a `warptap-wsp-program`
 file instead; `--export` writes the program that was played. Without warptap and without a
-program file the run says so (`[wsp] builder = faultflow` selects faultflow's older program).
+program file the run says so.
 
 With the program warptap builds, the test setup programs are checked too: each mode's
 program that loads its instruction into the WIR (what a scan test of that mode starts with)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from typing import Any, Mapping
 
 import pytest
 
@@ -29,3 +30,27 @@ def skip_unless_warptap(module: str = "warptap") -> None:
     if os.environ.get(REQUIRE_ENV) == "1":
         pytest.fail(f"{message}; {REQUIRE_ENV}=1 says this run has it")
     pytest.skip(message)
+
+
+def wsp_program(
+    wrapper: Mapping[str, Any],
+    scan_outs: Mapping[int, str] | None = None,
+    scan_ins: Mapping[int, str] | None = None,
+    *,
+    top: str = "chip",
+    scan_enable: str = "scan_en",
+) -> Any:
+    """warptap's WSP integrity program for the wrapper record ``wrapper``
+    (faultflow.wrap.wsp_icl.program_from_warptap): what ``ff.py wsp`` grades with.
+    ``scan_outs`` and ``scan_ins``: each wrapper chain's scan-out and scan-in, by
+    default ``wbr_so<k>`` and ``wbr_si<k>`` for each chain of the record's cells."""
+    skip_unless_warptap("warptap.wsp_integrity")
+    from faultflow.wrap.wsp_icl import program_from_warptap
+
+    chains = sorted({int(c["chain"]) for c in wrapper.get("cells", [])})
+    outs = dict(scan_outs) if scan_outs is not None else {}
+    outs = outs or {k: f"wbr_so{k}" for k in chains}
+    ins = dict(scan_ins) if scan_ins is not None else {k: f"wbr_si{k}" for k in chains}
+    return program_from_warptap(
+        wrapper, outs, top=top, scan_ins=ins, scan_enable=scan_enable
+    )

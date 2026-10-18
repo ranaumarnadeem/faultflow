@@ -20,7 +20,6 @@ from faultflow.wrap.wsp_program import (
     WspProgram,
     WspProgramError,
     conformance_failures,
-    legacy_integrity_program,
     program_tests,
 )
 from faultflow.wrap.wsp_setup import MODE_INSTRUCTIONS, mode_program
@@ -205,12 +204,6 @@ def test_a_care_bit_the_chain_model_disagrees_with_is_a_failure() -> None:
     )
     failures = conformance_failures(WspProgram.from_json(data, SOC), SOC)
     assert len(failures) == 1 and f"cycle {at}" in failures[0]
-
-
-@pytest.mark.unit
-def test_faultflows_own_builder_grades_a_blocks_wsp_not_a_socs() -> None:
-    with pytest.raises(WrapError, match="block's"):
-        legacy_integrity_program(SOC)
 
 
 @pytest.mark.unit

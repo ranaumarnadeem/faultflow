@@ -453,13 +453,11 @@ def _program(
     path: Path | None,
 ) -> tuple[WspProgram, str]:
     """The program to grade with and where it came from: a file (``path``, else
-    [wsp] program), warptap's, or faultflow's own builder ([wsp] builder)."""
+    [wsp] program), or warptap's, built from the wrapper's ICL."""
     path = path or cfg.wsp.program
     if path is not None:
         text = path.read_text(encoding="utf-8")
         return WspProgram.from_text(text, wrapper, scan_outs), "file"
-    if cfg.wsp.builder == "faultflow":
-        return WspProgram.build(wrapper, scan_outs), "faultflow"
     from faultflow.wrap.wsp_icl import program_from_warptap
     from faultflow.wrap.wsp_pdl import check_setup_program
 
@@ -509,9 +507,8 @@ def run_wsp(
     """Grade, record and report (see the module docstring) the faults the latest
     scan campaign of the test mode ([testmode] mode) leaves to the WSP, with the
     program in the ``warptap-wsp-program`` file ``program`` ([wsp] program), else
-    the one ``[wsp] builder`` makes: warptap's, built from the wrapper's ICL, or
-    faultflow's own (faultflow.wrap.wsp_program). ``export``: write the program
-    played as a file."""
+    warptap's, built from the wrapper's ICL (faultflow.wrap.wsp_icl). ``export``:
+    write the program played as a file."""
     from faultflow.config import resolve_sim_threads
     from faultflow.db import connect, summary
     from faultflow.runner.runner import _load_core

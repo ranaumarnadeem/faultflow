@@ -4,13 +4,14 @@ it observes (WSO, the wrapped outputs, the wrapper chains' scan-outs) with an ex
 value and a care bit for each -- read against the block's wrapper record into the steps
 ``ff.py wsp`` grades with.
 
-The builder's own program written as a file reads back to the same steps, so a program
-from another tool (warptap) grades exactly as the builder's would; and a file that
-doesn't fit the wrapper, or isn't a program, is refused before anything is graded."""
+warptap's program written as a file reads back to the same steps, so a program file
+grades exactly as the program warptap builds would; and a file that doesn't fit the
+wrapper, or isn't a program, is refused before anything is graded."""
 
 from __future__ import annotations
 
 import copy
+import functools
 import json
 from typing import Any
 
@@ -23,9 +24,9 @@ from faultflow.wrap.wsp_program import (
     WspProgram,
     WspProgramError,
     conformance_failures,
-    legacy_integrity_program,
     program_tests,
 )
+from warptap_helpers import wsp_program
 
 ROLES = ("wsi", "wso", "shiftwr", "capturewr", "updatewr", "selectwir", "wrck", "wrstn")
 
@@ -48,25 +49,25 @@ SCAN_OUTS = {0: "wbr_so0", 1: "wbr_so1"}
 
 
 def _file() -> dict[str, Any]:
-    return legacy_program().to_json(RECORD, SCAN_OUTS)
+    return _program().to_json(RECORD, SCAN_OUTS)
 
 
-def legacy_program() -> WspProgram:
-    return WspProgram.build(RECORD, SCAN_OUTS)
+@functools.lru_cache(maxsize=None)
+def _program() -> WspProgram:
+    """warptap's program for RECORD (built once: it is the same every time)."""
+    return wsp_program(RECORD, SCAN_OUTS)
 
 
 @pytest.mark.unit
-def test_the_builders_program_is_a_program_and_names_its_source() -> None:
-    program = legacy_program()
-    assert program.source == "builder"
-    assert program.steps == tuple(legacy_integrity_program(RECORD, SCAN_OUTS))
+def test_warptaps_program_is_a_program_of_its_tests() -> None:
+    program = _program()
     assert program.tests == program_tests(program.steps)
-    assert len(program) == len(program.steps)
+    assert program.tests[0] == "reset" and len(program) == len(program.steps) > 0
 
 
 @pytest.mark.unit
 def test_a_program_written_as_a_file_reads_back_to_the_same_steps() -> None:
-    program = legacy_program()
+    program = _program()
     data = json.loads(json.dumps(program.to_json(RECORD, SCAN_OUTS)))
     assert data["format"] == FORMAT and data["version"] == VERSION
     again = WspProgram.from_json(data, RECORD, SCAN_OUTS)
@@ -86,7 +87,7 @@ def test_the_file_names_the_roles_the_drive_the_observed_points_and_the_tests() 
         ("wbr_so0", "scan_out"),
         ("wbr_so1", "scan_out"),
     ]
-    assert [t["name"] for t in data["tests"]] == program_tests(legacy_program().steps)
+    assert [t["name"] for t in data["tests"]] == program_tests(_program().steps)
     count = len(data["wrstn"])
     for column in ("selectwir", "shiftwr", "capturewr", "updatewr", "wsi", "pulse"):
         assert len(data[column]) == count
@@ -109,17 +110,7 @@ def test_a_scan_out_is_found_by_the_chain_not_by_the_name_the_file_gives_it() ->
             old = point["name"]
             point["name"] = f"so{point['index']}"
             renamed["expect"][point["name"]] = renamed["expect"].pop(old)
-    assert (
-        WspProgram.from_json(renamed, RECORD, SCAN_OUTS).steps == legacy_program().steps
-    )
-
-
-@pytest.mark.unit
-def test_a_program_without_scan_outs_compares_wso_and_the_outputs_only() -> None:
-    program = WspProgram.build(RECORD)
-    data = program.to_json(RECORD)
-    assert [p["kind"] for p in data["observe"]] == ["wso", "output"]
-    assert WspProgram.from_json(data, RECORD).steps == program.steps
+    assert WspProgram.from_json(renamed, RECORD, SCAN_OUTS).steps == _program().steps
 
 
 @pytest.mark.unit
@@ -233,8 +224,6 @@ def test_the_refusals_are_wrap_errors_and_a_soc_or_pin_wrapper_has_no_program() 
     # A record with blocks is a SoC's: without its WSP chain it can't be read.
     with pytest.raises(WrapError, match="no WSP chain"):
         WspProgram.from_json(_file(), {**RECORD, "blocks": []}, SCAN_OUTS)
-    with pytest.raises(WrapError, match="block's"):
-        WspProgram.build({**RECORD, "blocks": []})
 
 
 @pytest.mark.unit
@@ -244,7 +233,7 @@ def test_a_program_that_isnt_json_text_is_refused_with_a_message() -> None:
     with pytest.raises(WspProgramError, match="JSON object"):
         WspProgram.from_text("[1, 2]", RECORD, SCAN_OUTS)
     program = WspProgram.from_text(json.dumps(_file()), RECORD, SCAN_OUTS)
-    assert program.steps == legacy_program().steps
+    assert program.steps == _program().steps
 
 
 # --- the conformance gate: the program against faultflow's own model ----------------
@@ -264,8 +253,8 @@ def _first_care(data: dict[str, Any], point: str) -> int:
 
 
 @pytest.mark.unit
-def test_the_builders_program_conforms_to_the_model_and_so_does_its_file() -> None:
-    program = legacy_program()
+def test_warptaps_program_conforms_to_the_model_and_so_does_its_file() -> None:
+    program = _program()
     assert conformance_failures(program, RECORD, SCAN_OUTS) == []
     again = WspProgram.from_json(_file(), RECORD, SCAN_OUTS)
     assert conformance_failures(again, RECORD, SCAN_OUTS) == []
@@ -337,7 +326,7 @@ def test_a_point_the_block_doesnt_have_is_a_failure() -> None:
 
     steps = tuple(
         dataclasses.replace(step, expected=(*step.expected, ("nowhere", 1)))
-        for step in legacy_program().steps
+        for step in _program().steps
     )
     failures = conformance_failures(WspProgram(steps, "file"), RECORD, SCAN_OUTS)
     assert failures and "nowhere" in failures[0]
@@ -351,6 +340,22 @@ def flow_tools() -> None:
 
     if shutil.which("yosys") is None or _load_core() is None:
         pytest.skip("needs Yosys on PATH and the C++ core")
+
+
+def _block_program(manifest: dict[str, Any], scan_outs: dict[int, str]) -> Any:
+    """warptap's program for the scanned block ``manifest`` records."""
+    scan_ins = {
+        int(c["index"]): str(c["scan_in"])
+        for c in manifest["chains"]
+        if c.get("kind") == "wrapper"
+    }
+    return wsp_program(
+        manifest["wrapper"],
+        scan_outs,
+        scan_ins,
+        top=str(manifest["top"]),
+        scan_enable=str(manifest["scan_enable"]),
+    )
 
 
 def _detections(db: Any) -> list[tuple[int, str, int]]:
@@ -370,10 +375,10 @@ def _detections(db: Any) -> list[tuple[int, str, int]]:
 
 
 @pytest.mark.integration
-def test_a_program_file_grades_exactly_as_the_builders_program(
+def test_a_program_file_grades_exactly_as_the_program_warptap_builds(
     tmp_path: Any, flow_tools: None
 ) -> None:
-    """The builder's program written as a file and handed to ff.py wsp is the same
+    """warptap's program written as a file and handed to ff.py wsp is the same
     program: up to date against the run it came from, and -- forced -- the same
     faults detected by the same tests at the same cycles."""
     from faultflow.cli import main
@@ -382,12 +387,7 @@ def test_a_program_file_grades_exactly_as_the_builders_program(
 
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(tmp_path)
-        cfg, _ = run_mode(
-            tmp_path,
-            "intest",
-            sections="[wsp]\nbuilder = faultflow\n",
-            wrap="control = wsp\n",
-        )
+        cfg, _ = run_mode(tmp_path, "intest", wrap="control = wsp\n")
         assert main(["wsp", "--top", TOP, "-c", str(tmp_path / "chip.ofs")]) == 0
         built = _detections(cfg.db_path)
         manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
@@ -396,7 +396,7 @@ def test_a_program_file_grades_exactly_as_the_builders_program(
             for c in manifest["chains"]
             if c.get("kind") == "wrapper"
         }
-        program = WspProgram.build(manifest["wrapper"], scan_outs)
+        program = _block_program(manifest, scan_outs)
         path = tmp_path / "wsp_program.json"
         path.write_text(
             json.dumps(program.to_json(manifest["wrapper"], scan_outs)),
@@ -426,7 +426,7 @@ def test_a_program_the_model_disagrees_with_stops_at_the_conformance_gate(
             for c in manifest["chains"]
             if c.get("kind") == "wrapper"
         }
-        data = WspProgram.build(manifest["wrapper"], scan_outs).to_json(
+        data = _block_program(manifest, scan_outs).to_json(
             manifest["wrapper"], scan_outs
         )
         wso = data["expect"]["wso"]

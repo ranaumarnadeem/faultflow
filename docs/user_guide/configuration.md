@@ -427,8 +427,7 @@ of the campaign fingerprint (a WSP grade keys itself to its program, netlist and
 
 | Key | Format | Default | Meaning |
 |---|---|---|---|
-| `program` | path | — | A `warptap-wsp-program` JSON file to play; without it `builder` makes one |
-| `builder` | `warptap` or `faultflow` | `warptap` | `warptap`: warptap builds the program from the ICL of the wrapper (written beside the report as `<top>_wsp.icl`); needs warptap importable. `faultflow`: faultflow's own older builder, kept for comparison |
+| `program` | path | — | A `warptap-wsp-program` JSON file to play; without it warptap builds the program from the ICL of the wrapper (written beside the report as `<top>_wsp.icl`), which needs warptap importable |
 | `margin` | integer ≥ 2 | `8` | Sentinel bits fed past each register's length in a warptap-built program |
 | `exhaustive_opcodes` | boolean | `true` | Test every code of the WIR in a warptap-built program, not only the instructions' own |
 
