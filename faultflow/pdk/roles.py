@@ -71,6 +71,8 @@ _FF: dict[str, tuple[str, bool, str | None, str]] = {
     "scan_ff_set": ("POSEDGE", True, "preset", "sdfstp"),
 }
 ROLES = tuple(_FF) + tuple(_COMB)
+# The widest gate a combinational role is looked for in with inputs tied off.
+_MAX_TIED_INPUTS = 4
 
 
 def _short(pattern: str) -> str:
@@ -177,6 +179,50 @@ class LibraryRoles:
                     (out,) = entry["outputs"].values()
                     pins["out"] = str(out)
                     return RoleCell(_concrete(pattern, entry), pins)
+        return self._comb_tied(role)
+
+    def _comb_tied(self, role: str) -> RoleCell | None:
+        """The role from a gate with more inputs, the rest tied to constants --
+        GF180MCU has no and2b, but its mux2 with A1 tied low is one (``S ? 0 :
+        A0``). The fewest inputs, then the fewest ties, first."""
+        logical, fn, _, _ = _COMB[role]
+        n = len(logical)
+        candidates = sorted(
+            (
+                (k, e)
+                for k, e in self._entries("GATE")
+                if n < len(e.get("inputs", [])) <= _MAX_TIED_INPUTS
+                and len(e.get("outputs", {})) == 1
+            ),
+            key=lambda ke: (len(ke[1]["inputs"]), not _sized(*ke), ke[0]),
+        )
+        for pattern, entry in candidates:
+            inputs = [str(p) for p in entry["inputs"]]
+            m = len(inputs)
+            # place[j]: the entry input logical pin j drives; the rest are tied.
+            for place in itertools.permutations(range(m), n):
+                rest = [i for i in range(m) if i not in place]
+                for consts in itertools.product([False, True], repeat=len(rest)):
+                    tied = dict(zip(rest, consts))
+
+                    def at(values: tuple[bool, ...]) -> list[bool]:
+                        row = [False] * m
+                        for j, i in enumerate(place):
+                            row[i] = values[j]
+                        for i, c in tied.items():
+                            row[i] = c
+                        return row
+
+                    if all(
+                        bool(self.core.eval_gate(str(entry["gate_type"]), at(values)))
+                        == fn(*values)
+                        for values in itertools.product([False, True], repeat=n)
+                    ):
+                        pins = {logical[j]: inputs[i] for j, i in enumerate(place)}
+                        (out,) = entry["outputs"].values()
+                        pins["out"] = str(out)
+                        ties = {inputs[i]: "1" if c else "0" for i, c in tied.items()}
+                        return RoleCell(_concrete(pattern, entry), pins, ties)
         return None
 
     def _ff(self, role: str) -> RoleCell | None:

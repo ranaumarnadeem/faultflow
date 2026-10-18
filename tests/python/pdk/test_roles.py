@@ -88,8 +88,9 @@ def test_sky130_hd_roles_are_the_cells_faultflow_has_always_used(
 def test_every_library_has_its_own_cell_for_every_role(
     lib: str, liberty: Path, tmp_path: Path, require_cpp_core: None
 ) -> None:
-    """A role the library can't fill -- hvl has no scan flop with an active-low set,
-    GF180MCU's fd_sc no and2b -- is refused, by name."""
+    """A role the library can't fill -- hdll, hvl and IHP SG13G2 have no falling-edge
+    flop with a reset -- is refused, by name. Every library fills every gate role:
+    GF180MCU's and hvl's and2b is their mux2, A1 tied low."""
     out = tmp_path / f"{lib}.json"
     cell_map_command(liberty, out)
     cell_map = _map(out)
@@ -100,6 +101,7 @@ def test_every_library_has_its_own_cell_for_every_role(
             got = roles[role]
         except PdkError as exc:
             assert role in str(exc) and lib in str(exc)
+            assert role.startswith(("ff", "scan_ff")), role  # never a gate role
             continue
         entry = lookup_cell(got.cell, entries)
         assert entry is not None and not got.cell.startswith("$"), (role, got.cell)
@@ -120,6 +122,39 @@ def test_a_role_the_library_cannot_fill_is_refused_by_name(
     roles = library_roles(cm, name="acme")
     with pytest.raises(PdkError, match="acme.*mux2"):
         roles["mux2"]
+
+
+@pytest.mark.unit
+def test_a_gate_role_the_library_has_no_cell_of_is_a_wider_gate_with_inputs_tied(
+    require_cpp_core: None,
+) -> None:
+    """GF180MCU has no and2b (!a_n & b); its mux2 with A1 tied low is one:
+    S ? 0 : A0. An exact cell still comes first."""
+    from faultflow.pdk.roles import role_cell
+
+    mux2 = {
+        "node_type": "GATE",
+        "gate_type": "MUX2_NI",
+        "inputs": ["I0", "I1", "S"],
+        "outputs": {"Z": "Z"},
+    }
+    roles = library_roles({"acme__mux2_*": mux2}, name="acme")
+    got = roles["and2b"]
+    assert got.cell == "acme__mux2_1"
+    assert dict(got.pins) == {"a_n": "S", "b": "I0", "out": "Z"}
+    assert dict(got.ties) == {"I1": "0"}
+    cell = role_cell(roles, "and2b", {}, {"a_n": 5, "b": 6}, {"out": 7})
+    assert cell["connections"] == {"S": [5], "I0": [6], "Z": [7], "I1": ["0"]}
+    assert cell["port_directions"]["I1"] == "input"
+
+    and2b = {
+        "node_type": "GATE",
+        "gate_type": "AND2B",
+        "inputs": ["A_N", "B"],
+        "outputs": {"X": "X"},
+    }
+    exact = library_roles({"acme__mux2_*": mux2, "acme__and2b_*": and2b})
+    assert exact["and2b"].cell == "acme__and2b_1" and not exact["and2b"].ties
 
 
 @pytest.mark.unit

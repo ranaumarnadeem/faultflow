@@ -185,7 +185,12 @@ void wire_inputs(SimNode& sn, GateType gt,
       wire_seq({"A1", "A2", "A3", "B1", "C1"});
       break;
     case GateType::A222OI:
+    case GateType::A222O:
+    case GateType::O222AI:
       wire_seq({"A1", "A2", "B1", "B2", "C1", "C2"});
+      break;
+    case GateType::O33AI:
+      wire_seq({"A1", "A2", "A3", "B1", "B2", "B3"});
       break;
     case GateType::A2BB2OI:
     case GateType::O2BB2AI:

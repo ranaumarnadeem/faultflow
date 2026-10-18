@@ -74,6 +74,8 @@ const std::map<std::string, GateType>& gate_name_table() {
       {"O41AI", GateType::O41AI},
       {"OR2B", GateType::OR2B},      {"OR4BB", GateType::OR4BB},
       {"AND4BB", GateType::AND4BB},  {"A2BB2O", GateType::A2BB2O},
+      {"A222O", GateType::A222O},    {"O33AI", GateType::O33AI},
+      {"O222AI", GateType::O222AI},
   };
   return kMap;
 }

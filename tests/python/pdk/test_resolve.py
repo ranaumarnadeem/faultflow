@@ -69,7 +69,7 @@ def test_a_sky130_library_resolves_to_its_files_and_a_generated_map(
     assert cell_map["sky130_fd_sc_hs__nand2_*"]["gate_type"] == "NAND2"
     assert "$scanff_faultflow" in cell_map
     # The cells synthesis must not use: what the map doesn't model, by name.
-    assert "sky130_fd_sc_hs__a222o_1" in lib.dont_use
+    assert "sky130_fd_sc_hs__a222o_1" not in lib.dont_use  # A222O
     assert "sky130_fd_sc_hs__dlxtp_1" in lib.dont_use
     assert "sky130_fd_sc_hs__nand2_1" not in lib.dont_use
     # Cached: a second resolve reuses the map.

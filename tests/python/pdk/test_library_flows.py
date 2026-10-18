@@ -16,7 +16,9 @@ import pytest
 
 from faultflow.cell_map import load_cell_map, lookup_cell
 from faultflow.config import load_config
+from scan_credit import credit_not_reproduced
 from scan_replay import replay_on_cells
+from wrap_flow import ACCUMULATOR
 
 from .installed import installed, pdk_root_with
 
@@ -152,3 +154,69 @@ def test_flops_without_a_reset_scan_on_the_librarys_cells(
     report = json.loads(cfg.coverage_json_path.read_text(encoding="utf-8"))
     assert report["summary"]["detected"] > 0
     assert replay_on_cells(cfg, patterns, tmp_path / "replay") == []
+
+
+def _has_role(cfg: Any, role: str) -> bool:
+    from faultflow.pdk.roles import PdkError, library_roles
+
+    try:
+        library_roles(json.loads(cfg.cell_lib.read_text(encoding="utf-8")))[role]
+    except PdkError:
+        return False
+    return True
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("mode", ["intest", "extest"])
+@pytest.mark.parametrize(("pdk", "library"), LIBRARIES)
+def test_the_ieee_1500_wrapper_runs_and_replays_on_the_librarys_cells(
+    pdk: str,
+    library: str,
+    mode: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flow_tools: None,
+) -> None:
+    """The accumulator wrapped -- its boundary cells and, where the library has a
+    falling-edge flop with a reset for the WIR's update stage, its WSP -- of the
+    library's cells: INTEST and EXTEST patterns replay on them, INTEST with the
+    environment at X, and every credit holds in the full scan protocol."""
+    from faultflow.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    root = pdk_root_with(pdk, library)
+    if root is None:
+        pytest.skip(f"{pdk} {library} is not installed")
+    rtl = tmp_path / "acc.v"
+    rtl.write_text(ACCUMULATOR, encoding="utf-8")
+    design = (
+        f"[design]\nnetlist = {rtl}\npdk = {pdk}\nstd_cell_library = {library}\n"
+        f"pdk_root = {root}\n"
+    )
+    probe = tmp_path / "probe.ofs"
+    probe.write_text(design, encoding="utf-8")
+    wsp = _has_role(load_config(probe, "acc"), "ff_reset_negedge")
+    ofs = tmp_path / "acc.ofs"
+    ofs.write_text(
+        f"{design}\n[wrap]\nenabled = true\nexclude = b[1]\n"
+        + ("control = wsp\n\n[clocks]\ngroups = clk wrck\n" if wsp else "")
+        + "\n[scan]\nchains = 1\n",
+        encoding="utf-8",
+    )
+    patterns = tmp_path / f"{mode}.json"
+    for step in (["init"], ["scan"], ["scan-check"]):
+        assert main([*step, "--top", "acc", "-c", str(ofs)]) == 0, step
+    run = [mode, "--export-patterns", str(patterns), "--top", "acc", "-c", str(ofs)]
+    assert main(run) == 0
+    cfg = load_config(ofs, "acc")
+    manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+    assert (manifest["wrapper"].get("control") == "wsp") == wsp
+    assert json.loads(patterns.read_text(encoding="utf-8"))
+    environment = ["en", "a[0]", "a[1]", "b[0]"] if mode == "intest" else []
+    assert (
+        replay_on_cells(cfg, patterns, tmp_path / "replay", unknown_inputs=environment)
+        == []
+    )
+    campaign = "scan" if mode == "intest" else "scan_extest"
+    assert credit_not_reproduced(cfg, patterns, campaign_type=campaign) == []

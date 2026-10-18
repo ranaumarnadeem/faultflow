@@ -20,20 +20,22 @@ Any other library's map is generated from its Liberty: `ff.py cell-map`, or
 Each library below is tested end to end: every gate and flop its map models is
 simulated against the library's own Liberty, and a design is synthesized onto it, scan
 inserted, ATPG'd, compressed and compacted, and the exported patterns replayed on the
-library's own Verilog cell models.
+library's own Verilog cell models; the IEEE 1500 wrapper's INTEST and EXTEST too
+(with its WSP where the library has a falling-edge flop with a reset), and on
+GF180MCU mbist-insert with JTAG.
 
 | PDK (`pdk`) | Libraries (`std_cell_library`) | Not modelled |
 |---|---|---|
-| `sky130A` / `sky130B` | `sky130_fd_sc_hd` (shipped map), `_hdll`, `_hs`, `_ms`, `_ls`, `_lp`, `_hvl` | latches, clock gates, tristates; HD's `fahcin` / `fahcon` |
-| `gf180mcuA`..`D` | `gf180mcu_fd_sc_mcu7t5v0`, `gf180mcu_fd_sc_mcu9t5v0` | latches, clock gates, tristates, `oai33`, `oai222` |
+| `sky130A` / `sky130B` | `sky130_fd_sc_hd` (shipped map), `_hdll`, `_hs`, `_ms`, `_ls`, `_lp`, `_hvl` | latches, clock gates, tristates; `fahcin` / `fahcon` |
+| `gf180mcuA`..`D` | `gf180mcu_fd_sc_mcu7t5v0`, `gf180mcu_fd_sc_mcu9t5v0` | latches, clock gates, tristates |
 | `ihp-sg13g2` | `sg13g2_stdcell` | latches, clock gates, tristates |
 | — | OSU035 (shipped map, no scan flop: generic scan) | |
 
 Install them with [ciel](https://github.com/fossi-foundation/ciel) (`--pdk-family
 sky130`, `gf180mcu` or `ihp-sg13`). GF180MCU's other libraries (`osu_sc_*`,
 `as_sc_*`, `ocd_sc_*`) map too but have no scan flop. A library short of a cell a
-flow needs is refused by that flow, naming the cell's role: GF180MCU's fd_sc has no
-`and2b` for the IEEE 1500 wrapper, IHP no negative-edge flop for its WSP.
+flow needs is refused by that flow, naming the cell's role: Sky130 hdll and hvl and
+IHP have no falling-edge flop with a reset for the WSP's WIR.
 
 A design may also use cells of several libraries of one PDK, e.g. Sky130 hd logic
 with hvl level shifters and flops (`[design] extra_libraries`): each flop is scanned
@@ -120,6 +122,9 @@ A representative sample of the gate-evaluation table — the full set is much la
 | `OR4BB` | `in0 \| in1 \| ~in2 \| ~in3` | e.g. `sky130_fd_sc_hd__or4bb_*`, pins `[A, B, C_N, D_N]` |
 | `AND4BB` | `~in0 & ~in1 & in2 & in3` | e.g. `sky130_fd_sc_hd__and4bb_*`, pins `[A_N, B_N, C, D]` — first two bubbled |
 | `A2BB2O` | `(~in0&~in1) \| (in2&in3)` | e.g. `sky130_fd_sc_hd__a2bb2o_*`, pins `[A1_N, A2_N, B1, B2]` |
+| `O33AI` | `~((in0\|in1\|in2) & (in3\|in4\|in5))` | GF180MCU's `oai33` |
+| `O222AI` | `~((in0\|in1) & (in2\|in3) & (in4\|in5))` | GF180MCU's `oai222` |
+| `A222O` | `(in0&in1) \| (in2&in3) \| (in4&in5)` | Sky130 hs/ms/ls's `a222o` |
 
 The `JSON expression` field on each cell-map entry documents the same formula for
 humans — it is informational only, never authoritative (see the warning above).
@@ -170,7 +175,9 @@ logical function -- a non-inverting `mux2`, an `and2b`, a flop with an active-lo
 reset, a scan flop -- and the library's cell for it is found and checked with the same
 oracle. A flop role the library has no cell of exactly its shape for takes a flop with
 more controls, holding the rest inactive: IHP SG13G2 has reset flops only, so its
-plain scan flop is `sg13g2_sdfrbpq` with `RESET_B` tied high. Likewise a flop
+plain scan flop is `sg13g2_sdfrbpq` with `RESET_B` tied high. A gate role likewise
+takes a wider gate with inputs tied off: GF180MCU and Sky130 hvl have no `and2b`
+(`!a_n & b`), and their `mux2` with `A1` tied low is one. Likewise a flop
 synthesis tied off a reset of (on a library without a plain flop) scans as a plain
 one. A flow that needs a role the library lacks says which.
 
