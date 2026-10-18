@@ -182,9 +182,17 @@ void BitParallelSim::update_ff_states(SimState& state,
     const uint64_t edge =
         edge_mask(state.prev_values[sn.in1], nv[sn.in1], cfg.trigger) &
         ~(clear | preset);
-    uint64_t capture = nv[sn.in0];
+    // What an edge latches -- D, the scan mux, the enable -- as it settled before
+    // this cycle (SimState::settled): the same whatever the inputs this cycle
+    // changes with the clock, and whatever the net's fanout.
+    const auto& sampled = state.settled ? state.prev_values : nv;
+    const uint64_t scan_select =
+        (cfg.has_scan && sn.in4 != UNUSED_INPUT && sn.in5 != UNUSED_INPUT)
+            ? active_mask(sampled[sn.in5], cfg.scan_enable_polarity)
+            : 0ULL;
+    uint64_t capture = sampled[sn.in0];
     if (cfg.has_scan && sn.in4 != UNUSED_INPUT && sn.in5 != UNUSED_INPUT) {
-      capture = (capture & ~scan_active) | (nv[sn.in4] & scan_active);
+      capture = (capture & ~scan_select) | (sampled[sn.in4] & scan_select);
     }
     // Data-enable (edfxtp DE): a synchronous D/hold mux, not an async force.
     // Where enable is inactive, capture holds at the FF's current state
@@ -194,7 +202,7 @@ void BitParallelSim::update_ff_states(SimState& state,
     // no such cell exists today.
     if (cfg.has_enable && sn.in2 != UNUSED_INPUT) {
       const uint64_t enable_active =
-          active_mask(nv[sn.in2], cfg.enable_polarity) | scan_active;
+          active_mask(sampled[sn.in2], cfg.enable_polarity) | scan_select;
       capture = (capture & enable_active) | (next[idx] & ~enable_active);
     }
 
@@ -288,6 +296,7 @@ uint64_t BitParallelSim::simulate_batch(const CompiledSimGraph& cg,
       }
     }
     state.prev_values = state.current_values();
+    state.settled = true;
   }
   return detected & batch.mask;
 }
@@ -360,6 +369,7 @@ uint64_t BitParallelSim::simulate_batch_observed(
       }
     }
     state.prev_values = state.current_values();
+    state.settled = true;
   }
   return detected;
 }
@@ -403,6 +413,7 @@ std::vector<std::vector<uint64_t>> BitParallelSim::simulate_batch_samples(
       samples.push_back(state.current_values());
     }
     state.prev_values = state.current_values();
+    state.settled = true;
   }
   return samples;
 }

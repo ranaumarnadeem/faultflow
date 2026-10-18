@@ -158,10 +158,13 @@ bool edge_active(bool prev, bool cur, TriggerType trigger) {
   return prev && !cur;
 }
 
+// `settled`: prev_values holds a cycle's settled values -- what an edge latches
+// (D, the scan mux, the enable) is taken from them (SimState::settled).
 void update_ff_states(const CompiledSimGraph& cg,
                       const std::vector<bool>& values,
                       const std::vector<bool>& prev_values,
-                      std::vector<bool>& ff_states) {
+                      std::vector<bool>& ff_states, bool settled) {
+  const std::vector<bool>& sampled = settled ? prev_values : values;
   std::vector<bool> next = ff_states;
   for (size_t idx = 0; idx < cg.ff_nodes.size(); ++idx) {
     const SimNode& sn = cg.nodes.at(cg.ff_nodes[idx]);
@@ -193,11 +196,14 @@ void update_ff_states(const CompiledSimGraph& cg,
       continue;
     }
     if (edge_active(prev_values[sn.in1], values[sn.in1], cfg.trigger)) {
-      bool capture = values[sn.in0];
-      if (scan_active) {
-        capture = values[sn.in4];
+      const bool scan_select =
+          cfg.has_scan && sn.in4 != UNUSED_INPUT && sn.in5 != UNUSED_INPUT &&
+          control_active(sampled[sn.in5], cfg.scan_enable_polarity);
+      bool capture = sampled[sn.in0];
+      if (scan_select) {
+        capture = sampled[sn.in4];
       } else if (cfg.has_enable && sn.in2 != UNUSED_INPUT &&
-                 !control_active(values[sn.in2], cfg.enable_polarity)) {
+                 !control_active(sampled[sn.in2], cfg.enable_polarity)) {
         // Data-enable (edfxtp DE) inactive: hold at the current state instead
         // of capturing D. Scan shift takes precedence (the `else` above).
         capture = next[idx];
@@ -391,6 +397,7 @@ std::vector<std::map<int, bool>> run_sequence(const CompiledSimGraph& cg,
   std::vector<bool> prev_values(cg.net_count, false);
   std::vector<bool> ff_states(cg.ff_configs.size(), false);
   std::vector<bool> latches(cg.net_count, false);  // clock gates' (eval_icg)
+  bool settled = false;  // prev_values holds a cycle's (SimState::settled)
   for (const auto& [idx, value] : vec.initial_ff_state) {
     if (idx < ff_states.size()) {
       ff_states[idx] = value;
@@ -405,7 +412,7 @@ std::vector<std::map<int, bool>> run_sequence(const CompiledSimGraph& cg,
     broadcast_inputs(cg, cycle, values, cycle_fault);
     seed_ff_outputs(cg, ff_states, values, cycle_fault);
     evaluate_combinational(cg, values, cycle_fault, &latches);
-    update_ff_states(cg, values, prev_values, ff_states);
+    update_ff_states(cg, values, prev_values, ff_states, settled);
     seed_ff_outputs(cg, ff_states, values, cycle_fault);
     evaluate_combinational(cg, values, cycle_fault, &latches);
     for (int i = 0; i < cycle.settle_cycles; ++i) {
@@ -419,6 +426,7 @@ std::vector<std::map<int, bool>> run_sequence(const CompiledSimGraph& cg,
     for (size_t i = 0; i < values.size(); ++i) {
       prev_values[i] = values[i];
     }
+    settled = true;
   }
   return samples;
 }

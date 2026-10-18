@@ -6,6 +6,7 @@ add_executable(
   sim/test_golden_ref.cpp
   sim/test_sequential_ff.cpp
   sim/test_icg.cpp
+  sim/test_edge_sampling.cpp
   scan/test_scan_chain.cpp
   scan/test_scan_sequence.cpp
   scan/test_scan_multiclock_stagger.cpp

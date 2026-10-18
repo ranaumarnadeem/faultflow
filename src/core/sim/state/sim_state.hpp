@@ -22,6 +22,11 @@ struct SimState {
   // first use, so a graph without clock gates never allocates it. All 0 at the
   // start: every clock-off evaluation then loads it.
   std::vector<uint64_t> latches;
+  // Whether prev_values holds a cycle's settled values: a flop clocked in a cycle
+  // samples its D, scan and enable inputs as they settled before it (what a real
+  // flop latches when the inputs change with its clock edge); the first cycle has
+  // none, and samples them as they are.
+  bool settled = false;
 
   void init(int net_count, int frame_count = 1, int ff_count = 0) {
     frames.assign(frame_count, std::vector<uint64_t>(net_count, 0ULL));
@@ -31,11 +36,13 @@ struct SimState {
     prev_values.assign(net_count, 0ULL);
     fault_present.assign(net_count, 0);
     latches.clear();
+    settled = false;
   }
 
   void reset_ff_states() {
     ff_states = initial_ff_state;
     latches.clear();
+    settled = false;
   }
 
   std::vector<uint64_t>& current_values() { return frames[current_frame]; }
