@@ -89,7 +89,10 @@ practice it is rarely present — don't rely on it as a routine deliverable.
 The reliable ways to get generated vectors out are the campaign database
 (`faultflow.sqlite`) and `coverage_report.json` below, or
 `sim --scan --export-patterns PATH` — a distinct, JSON-format mechanism (see
-[Running without the shell](running_without_shell.md)). External vectors supplied
+[Running without the shell](running_without_shell.md)). In that file a transition
+pattern carries `launch`: `loc`, a functional clock pulse between the load and the
+capture, or `los`, one more shift with scan enable on and each chain's
+`launch_scan_in` bit at its scan input. External vectors supplied
 with `sim --ext` use the same plain-text format as `patterns.test` and require a
 same-stem `.bench` sidecar that fixes the primary-input order.
 

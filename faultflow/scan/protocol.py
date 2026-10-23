@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from faultflow.scan.atpg_view import PPI_PREFIX, PPO_PREFIX
@@ -149,6 +149,12 @@ class ScanPattern:
     load_seqs: dict[int, list[bool]]
     capture_pi_values: dict[str, bool]
     expected_unload: dict[int, list[bool]]
+    # A transition pattern's launch, between the load and the capture: "loc", a
+    # functional pulse (launch on capture); "los", one more shift with scan enable
+    # on and launch_scan_in's bit at each chain's scan-in (launch on shift). ""
+    # for a stuck-at pattern, which captures right after the load.
+    launch: str = ""
+    launch_scan_in: dict[int, bool] = field(default_factory=dict)
 
 
 def _chain_lengths(manifest: dict[str, Any]) -> dict[int, int]:

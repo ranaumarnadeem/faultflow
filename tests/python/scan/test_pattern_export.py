@@ -57,3 +57,35 @@ def test_bool_values_are_preserved() -> None:
     for seq in restored.load_seqs.values():
         assert all(isinstance(b, bool) for b in seq)
     assert all(isinstance(v, bool) for v in restored.capture_pi_values.values())
+
+
+def test_stuck_at_pattern_exports_no_launch() -> None:
+    d = scan_pattern_to_dict(_sample_pattern())
+    assert "launch" not in d
+    assert "launch_scan_in" not in d
+
+
+def test_launch_on_shift_roundtrips_its_scan_in_bits() -> None:
+    p = ScanPattern(
+        load_seqs={0: [True], 1: [False]},
+        capture_pi_values={},
+        expected_unload={0: [False], 1: [True]},
+        launch="los",
+        launch_scan_in={0: True, 1: False},
+    )
+    d = json.loads(json.dumps(scan_pattern_to_dict(p)))
+    assert d["launch"] == "los"
+    assert d["launch_scan_in"] == {"0": True, "1": False}
+    assert scan_pattern_from_dict(d) == p
+
+
+def test_launch_on_capture_roundtrips() -> None:
+    p = ScanPattern(
+        load_seqs={0: [True]},
+        capture_pi_values={},
+        expected_unload={0: [False]},
+        launch="loc",
+    )
+    restored = scan_pattern_from_dict(json.loads(json.dumps(scan_pattern_to_dict(p))))
+    assert restored == p
+    assert restored.launch_scan_in == {}

@@ -7,7 +7,7 @@ import sqlite3
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
@@ -637,6 +637,19 @@ def _process_scan_candidate(
         scan_ctx.pseudo_port_map,
         scan_ctx.manifest,
     )
+    if transition:
+        # What a tester applies between the load and the capture: a launch pulse
+        # (LOC), or one more shift with these scan-in bits (LOS), every chain's.
+        chains = range(len(scan_ctx.manifest.get("scan_inputs", [])))
+        scan_pattern = replace(
+            scan_pattern,
+            launch=launch_mode,
+            launch_scan_in=(
+                {chain: bool(head_bits.get(chain, False)) for chain in chains}
+                if is_los
+                else {}
+            ),
+        )
     insert_pending_candidate(
         conn,
         campaign_id=campaign_id,

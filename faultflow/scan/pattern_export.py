@@ -29,6 +29,17 @@ def scan_pattern_to_dict(pattern: ScanPattern) -> dict[str, Any]:
             str(chain): [bool(b) for b in seq]
             for chain, seq in pattern.expected_unload.items()
         },
+        **({"launch": pattern.launch} if pattern.launch else {}),
+        **(
+            {
+                "launch_scan_in": {
+                    str(chain): bool(bit)
+                    for chain, bit in pattern.launch_scan_in.items()
+                }
+            }
+            if pattern.launch_scan_in
+            else {}
+        ),
     }
 
 
@@ -44,4 +55,9 @@ def scan_pattern_from_dict(data: dict[str, Any]) -> ScanPattern:
             str(port): bool(value) for port, value in data["capture_pi_values"].items()
         },
         expected_unload=_int_keyed(data["expected_unload"]),
+        launch=str(data.get("launch", "")),
+        launch_scan_in={
+            int(chain): bool(bit)
+            for chain, bit in data.get("launch_scan_in", {}).items()
+        },
     )
