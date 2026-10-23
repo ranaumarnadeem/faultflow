@@ -333,7 +333,8 @@ def _accept_and_simulate(
     test_mode: str = "",
     sim_threads: int = 1,
     on_vector_accepted: Callable[[dict[str, bool], int | None], None] | None,
-) -> None:
+) -> set[int]:
+    """Returns the fault ids this vector detected."""
     fault_id = fault_ids[0] if len(fault_ids) == 1 else None
     if on_vector_accepted is not None:
         on_vector_accepted(vector, fault_id)
@@ -341,7 +342,7 @@ def _accept_and_simulate(
     core.append_vectors(
         db_path, campaign_id, run_id, vector_source, [key], vector_index
     )
-    core.simulate_incremental(
+    detections = core.simulate_incremental(
         json_path,
         cell_map_path,
         db_path,
@@ -357,6 +358,7 @@ def _accept_and_simulate(
         sim_threads,
     )
     core.update_run_vector_count(db_path, run_id, vector_index)
+    return {int(row["fault_id"]) for row in detections}
 
 
 def transition_pattern_key(
@@ -400,7 +402,8 @@ def _accept_and_simulate_transition(
     unsupported: str,
     blackbox_instances: list[str],
     sim_threads: int = 1,
-) -> None:
+) -> set[int]:
+    """Returns the fault ids this pair detected."""
     launch_key = pattern_key(launch, input_order)
     capture_key = pattern_key(capture, input_order)
     # Capture frame in `pattern`, launch frame in `launch_pattern`.
@@ -413,7 +416,7 @@ def _accept_and_simulate_transition(
         vector_index,
         [launch_key],
     )
-    core.simulate_transition_incremental(
+    detections = core.simulate_transition_incremental(
         json_path,
         cell_map_path,
         db_path,
@@ -428,6 +431,7 @@ def _accept_and_simulate_transition(
         sim_threads,
     )
     core.update_run_vector_count(db_path, run_id, vector_index)
+    return {int(row["fault_id"]) for row in detections}
 
 
 def _precertify_redundant(
