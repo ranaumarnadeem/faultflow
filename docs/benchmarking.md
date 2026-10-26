@@ -2,7 +2,7 @@
 
 ## SA Faults
 
-Every row except the two marked ¹ was run on main at 182193f (the scan
+Every row except those marked ¹ was run on main at 182193f (the scan
 Q-branch over-credit fix), Sky130 HD, `collapsing = false`, one worker, one
 end-to-end run per design; Wall covers init, scan insertion, scan check and ATPG.
 Every fault a scan campaign credited was replayed with the campaign's exported
@@ -11,8 +11,10 @@ patterns through the full scan-protocol fault simulator on the scanned netlist
 s5378 and s15850 are not listed: scan insertion refuses the flip-flop without a
 data connection that Yosys emits in each (as in s13207).
 
-¹ Earlier run, before the over-credit fix; not repeated. A stuck-at rerun on main
-at fd68085, graded the same way, reproduced every credit.
+¹ Earlier run, before the over-credit fix; not repeated. A boxcar stuck-at rerun
+on main at fd68085, graded the same way, reproduced every credit. picorv32a's
+stuck-at Hybrid row was rerun at 182193f like the others; only its Random and
+transition rows are earlier runs.
 
 ### Hybrid ATPG
 
@@ -20,8 +22,8 @@ Random vectors to 85% coverage, then SAT.
 
 | Design | Cells | FFs | Chains | Coverage | Redundant | Vectors | Wall |
 |---|---:|---:|---:|---:|---:|---:|---:|
+| picorv32a | 10,989 | 1,613 | 162 | 99.992% | 930 | 2,434 | 2,444 s |
 | boxcar¹ | 1,243 | 1,130 | 113 | 100.00% | 0 | 1,100 | 1,243.3 s |
-| picorv32a¹ | 10,989 | 1,613 | 162 | 99.976% | 918 | 1,784 | 13,913.8 s |
 | genericfir_small | 3,982 | 471 | 48 | 100.00% | 17 | 406 | 107 s |
 | s9234_1 | 715 | 135 | 14 | 100.00% | 36 | 226 | 39 s |
 | s1238 | 320 | 18 | 2 | 100.00% | 42 | 188 | 20 s |
