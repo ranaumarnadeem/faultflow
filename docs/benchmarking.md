@@ -8,8 +8,10 @@ end-to-end run per design; Wall covers init, scan insertion, scan check and ATPG
 Every fault a scan campaign credited was replayed with the campaign's exported
 patterns through the full scan-protocol fault simulator on the scanned netlist
 (`tests/python/scan_credit.py`): none failed to reproduce, in any table below.
-s5378 and s15850 are not listed: scan insertion refuses the flip-flop without a
-data connection that Yosys emits in each (as in s13207).
+s5378, s13207 and s15850 (marked ²) were run later, on main with the
+constant-D fix: synthesis ties some of their flip-flops' D to a literal
+`0`/`1`, which scan insertion used to refuse; those flops are now scanned, the
+constant's fault into D graded where the flop captures it. Graded the same way.
 
 ¹ Earlier run, before the over-credit fix; not repeated. A boxcar stuck-at rerun
 on main at fd68085, graded the same way, reproduced every credit. picorv32a's
@@ -24,6 +26,9 @@ Random vectors to 85% coverage, then SAT.
 |---|---:|---:|---:|---:|---:|---:|---:|
 | picorv32a | 10,989 | 1,613 | 162 | 99.992% | 930 | 2,434 | 2,444 s |
 | boxcar¹ | 1,243 | 1,130 | 113 | 100.00% | 0 | 1,100 | 1,243.3 s |
+| s13207² | 877 | 225 | 64 | 100.00% | 48 | 261 | 148 s |
+| s5378² | 867 | 162 | 17 | 100.00% | 18 | 427 | 145 s |
+| s15850² | 634 | 157 | 56 | 100.00% | 12 | 213 | 115 s |
 | genericfir_small | 3,982 | 471 | 48 | 100.00% | 17 | 406 | 107 s |
 | s9234_1 | 715 | 135 | 14 | 100.00% | 36 | 226 | 39 s |
 | s1238 | 320 | 18 | 2 | 100.00% | 42 | 188 | 20 s |

@@ -110,6 +110,27 @@ write_verilog {gate_verilog}
 """
 
 
+# The ineligible reason of an IEEE 1500 WBR scan cell (scan.stitch).
+WBR_SCAN_REASON = "wbr_scan_cell"
+
+
+def full_scan_blockers(manifest: dict[str, Any]) -> list[str]:
+    """The flops (instance names, sorted) that keep a scan manifest from full scan.
+
+    WBR scan cells aren't: they go on the wrapper chain (fused into the view by
+    fuse_wbr_into_view), not the main one. Genuinely unscannable
+    ones (unsupported_ff_shape, unknown_cell_type, existing_scan_cell, ...) are.
+    scan-check and sim --scan both refuse them, so the two can't disagree."""
+    ineligible = manifest.get("ineligible_ffs", [])
+    if not isinstance(ineligible, list):
+        return []
+    return sorted(
+        str(item.get("instance", "?"))
+        for item in ineligible
+        if isinstance(item, dict) and item.get("reason") != WBR_SCAN_REASON
+    )
+
+
 def _hash_file(path: Path) -> str:
     if not path.exists():
         return ""
@@ -1130,6 +1151,12 @@ class Runner:
         structural = check_scan_structure(manifest, require_techmap=require_techmap)
         errors = list(structural.errors)
         warnings = list(structural.warnings)
+        blockers = full_scan_blockers(manifest)
+        if blockers:
+            # The flops sim --scan would refuse: the check must not pass them.
+            errors.append(
+                "full scan required; ineligible FFs remain: " + ", ".join(blockers)
+            )
         normal_mode: dict[str, object] | None = None
         techmap_equivalence: dict[str, object] | None = None
         # Populated by the normal-mode check below so the techmap-equivalence
@@ -1735,24 +1762,22 @@ class Runner:
             # into the view downstream by fuse_wbr_into_view), NOT the main scan
             # chain -- they are not a full-scan blocker. Genuinely unscannable FFs
             # (unsupported_ff_shape, unknown_cell_type, existing_scan_cell) are.
-            blockers = [
-                item
+            wbr_count = sum(
+                1
                 for item in ineligible
-                if isinstance(item, dict) and item.get("reason") != "wbr_scan_cell"
-            ]
-            wbr_count = len(ineligible) - len(blockers)
+                if isinstance(item, dict) and item.get("reason") == WBR_SCAN_REASON
+            )
             if wbr_count:
                 log.info(
                     "scan preflight: %d WBR cell(s) routed to wrapper chain",
                     wbr_count,
                 )
-            if blockers:
-                names = ", ".join(
-                    sorted(str(item.get("instance", "?")) for item in blockers)
-                )
-                raise RunnerError(
-                    f"sim --scan requires full scan; ineligible FFs remain: {names}"
-                )
+        blockers = full_scan_blockers(manifest)
+        if blockers:
+            raise RunnerError(
+                "sim --scan requires full scan; ineligible FFs remain: "
+                + ", ".join(blockers)
+            )
         return manifest
 
     def sim(
