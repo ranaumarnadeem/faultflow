@@ -158,6 +158,24 @@ write_verilog {gate_verilog}
 """
 
 
+def full_scan_blockers(manifest: dict[str, Any]) -> list[str]:
+    """The flops (instance names, sorted) that keep a scan manifest from full scan.
+
+    Flops left out by [scan] nonscan_cells, and an IEEE 1500 WSP's, aren't: the
+    view ties them (scan.nonscan refuses one it can't). Genuinely unscannable
+    ones (unsupported_ff_shape, unknown_cell_type, existing_scan_cell, ...) are.
+    scan-check and sim --scan both refuse them, so the two can't disagree."""
+    ineligible = manifest.get("ineligible_ffs", [])
+    if not isinstance(ineligible, list):
+        return []
+    return sorted(
+        str(item.get("instance", "?"))
+        for item in ineligible
+        if isinstance(item, dict)
+        and item.get("reason") not in (NONSCAN_REASON, WSP_REASON)
+    )
+
+
 def _hash_file(path: Path) -> str:
     if not path.exists():
         return ""
@@ -1892,6 +1910,12 @@ class Runner:
         )
         errors = list(structural.errors)
         warnings = list(structural.warnings)
+        blockers = full_scan_blockers(manifest)
+        if blockers:
+            # The flops sim --scan would refuse: the check must not pass them.
+            errors.append(
+                "full scan required; ineligible FFs remain: " + ", ".join(blockers)
+            )
         if not errors:
             try:
                 self._check_test_instruments(manifest)
@@ -2541,25 +2565,12 @@ class Runner:
                 "scan-check is stale for the current generic scanned JSON; "
                 "re-run scan-check"
             )
-        ineligible = manifest.get("ineligible_ffs", [])
-        if isinstance(ineligible, list) and ineligible:
-            # Flops left out by [scan] nonscan_cells, and an IEEE 1500 WSP's, aren't
-            # a full-scan blocker: the view ties them (scan.nonscan refuses one it
-            # can't). Genuinely unscannable FFs (unsupported_ff_shape,
-            # unknown_cell_type, existing_scan_cell) are.
-            blockers = [
-                item
-                for item in ineligible
-                if isinstance(item, dict)
-                and item.get("reason") not in (NONSCAN_REASON, WSP_REASON)
-            ]
-            if blockers:
-                names = ", ".join(
-                    sorted(str(item.get("instance", "?")) for item in blockers)
-                )
-                raise RunnerError(
-                    f"sim --scan requires full scan; ineligible FFs remain: {names}"
-                )
+        blockers = full_scan_blockers(manifest)
+        if blockers:
+            raise RunnerError(
+                "sim --scan requires full scan; ineligible FFs remain: "
+                + ", ".join(blockers)
+            )
         return manifest
 
     def sim(

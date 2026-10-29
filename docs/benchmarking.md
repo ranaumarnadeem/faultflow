@@ -42,14 +42,22 @@
 
 ### Hybrid ATPG — Re-run (current build, `collapsing = false`, same methodology as above)
 
-Re-run of the same corpus against the current build. `s5378`/`s15850` were not re-run this
-pass (Yosys sliced some flip-flops into `$auto$ff.cc:337:slice$...` cells that don't fit
-faultflow's scan-insertion shape requirements on this build — a genuine per-design gap, not a
-methodology change). Coverage is 100.000% on every design except `picorv32a`; both figures are
-within noise of the original 99.976%.
+Re-run of the same corpus against the current build. Coverage is 100.000% on every design
+except `picorv32a`; both figures are within noise of the original 99.976%.
+
+`s5378`, `s13207` and `s15850` were first left out of this pass: synthesis proves some of
+their flip-flops' next state constant and ties D to a literal `0`/`1`, which scan stitching
+refused (`no_data_pin`) while `scan-check` still passed. Those flops are now scanned like any
+other (the scan cell keeps the constant on D, and the constant's fault into D is graded where
+the flop captures it), and `scan-check` refuses exactly what `sim --scan` refuses. The three
+rows below are from that build, every credit replayed through the full scan protocol (none
+failed to reproduce).
 
 | Design | Coverage | Vectors | Wall |
 |---|---:|---:|---:|
+| s5378 | 100.00% | 394 | 62 s |
+| s13207 | 100.00% | 227 | 67 s |
+| s15850 | 100.00% | 199 | 47 s |
 | s9234_1 | 100.00% | 154 | 203.7 s |
 | picorv32a | 99.956% | 2,160 | 9,971.6 s |
 | s1423 | 100.00% | 74 | 61.1 s |
@@ -93,7 +101,8 @@ regression matters here; not investigated further in this pass.
 
 Same corpus and current build as the re-run above, with fault collapsing enabled this time
 (primitive-gate equivalence plus the exhaustively-derived Sky130 compound-cell classes — see
-`docs/collapsing_rules.md`). `s5378`/`s15850` excluded for the same reason as above. Coverage is
+`docs/collapsing_rules.md`). `s5378`/`s13207`/`s15850` were not run with collapsing (see the
+constant-D note above). Coverage is
 100.000% everywhere except `picorv32a` (99.969%, consistent with the other two runs). The
 `Collapsed / Raw faults` column makes the effect concrete: collapsing is folding a real, sizable
 fraction of the enumerated fault set away before ATPG ever runs on every design, not just a
