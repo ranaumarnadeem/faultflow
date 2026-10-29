@@ -12,6 +12,7 @@ from faultflow.coverage.site_key import (
 from faultflow.scan.errors import ScanError
 from faultflow.scan.manifest import manifest_clock_net_ids
 from faultflow.scan.stitch import (
+    CONST_NETS,
     SCAN_CELL_TYPES,
     YOSYS_CAPTURE_AND_CELL,
     YOSYS_CAPTURE_INV_CELL,
@@ -374,7 +375,7 @@ def _add_internal_buf_cell(
     cells: dict[str, Any],
     instance: str,
     cell_type: str,
-    in_bit: int,
+    in_bit: int | str,
     out_bit: int,
     index: "_BitIndex | None" = None,
 ) -> None:
@@ -602,7 +603,7 @@ def _resolve_d_observe_boundary(
     cells: dict[str, Any],
     *,
     instance: str,
-    d_net: int,
+    d_net: int | str,
     generic_d_net: int,
     shared: bool,
     next_id: int,
@@ -616,25 +617,25 @@ def _resolve_d_observe_boundary(
     the generic D net has other sites than this D pin -- decided on the
     generic netlist, so the view is the same whatever order flops are
     processed in. A shared D gets a branch buffer that only this flop's
-    capture reads."""
-    observe_input = d_net
+    capture reads. So does a constant D (a literal "0"/"1", `generic_d_net`
+    the core's id for it): the capture needs a net of its own to be graded at,
+    and the buffer reads the design's own constant net, so a fault on that
+    net's stem still reaches the capture."""
     d_boundary_site_key = stem_site_key(generic_d_net)
-    d_observe_net_id = d_net
+    if not shared and not isinstance(d_net, str):
+        return d_net, d_boundary_site_key, next_id, d_net
 
+    d_branch_bit = next_id
+    next_id += 1
+    _add_internal_buf_cell(
+        cells,
+        f"$ffbranch_{instance}",
+        D_BRANCH_BUF_CELL,
+        d_net,
+        d_branch_bit,
+        index,
+    )
     if shared:
-        d_branch_bit = next_id
-        next_id += 1
-        branch_instance = f"$ffbranch_{instance}"
-        _add_internal_buf_cell(
-            cells,
-            branch_instance,
-            D_BRANCH_BUF_CELL,
-            d_net,
-            d_branch_bit,
-            index,
-        )
-        observe_input = d_branch_bit
-        d_observe_net_id = d_branch_bit
         d_boundary_site_key = canonical_site_key(
             SiteProvenance(
                 yosys_net_id=generic_d_net,
@@ -643,8 +644,35 @@ def _resolve_d_observe_boundary(
                 input_pin=DATA_PIN,
             )
         )
+    return d_branch_bit, d_boundary_site_key, next_id, d_branch_bit
 
-    return observe_input, d_boundary_site_key, next_id, d_observe_net_id
+
+def _constant_data(cell: dict[str, Any]) -> str | None:
+    """The constant a flop's D is tied to ("0"/"1", as the parser reads it),
+    or None for a net."""
+    bits = (cell.get("connections") or {}).get(DATA_PIN)
+    if isinstance(bits, list) and len(bits) == 1:
+        bit = _parsed_net(bits[0])
+        if bit in CONST_NETS:
+            return str(bit)
+    return None
+
+
+def _constant_readers(module: dict[str, Any]) -> dict[str, int]:
+    """How many cell input pins read each constant: the core gives a constant
+    read by more than one pin a branch per pin, as it does a net."""
+    readers = {bit: 0 for bit in CONST_NETS}
+    for cell in (module.get("cells") or {}).values():
+        if not isinstance(cell, dict):
+            continue
+        directions = cell.get("port_directions") or {}
+        for pin, bits in (cell.get("connections") or {}).items():
+            if directions.get(pin) == "output" or not isinstance(bits, list):
+                continue
+            for bit in {_parsed_net(b) for b in bits if isinstance(b, str)}:
+                if bit in readers:
+                    readers[str(bit)] += 1
+    return readers
 
 
 def _parsed_net(bit: object) -> object:
@@ -982,6 +1010,7 @@ def build_scan_atpg_view(
     # decisions follow it, whatever order the flops are processed in.
     source_index = _BitIndex(source_module)
     source_cells = source_module.get("cells", {})
+    constant_readers = _constant_readers(source_module)
 
     for record in records:
         instance = str(record["instance"])
@@ -1039,8 +1068,17 @@ def build_scan_atpg_view(
         # case: no mux, D == Q) -- has its OWN just-completed rewrite invalidate
         # d_net within this same iteration. Reading it only once, before that
         # rewrite, would tap the stale (soon-orphaned) net instead of the PPI.
-        d_net = _current_data_net(cell, int(record["data_net"]))
+        d_net: int | str = _current_data_net(cell, int(record["data_net"]))
         generic_d_net = _current_data_net(source_cell, int(record["data_net"]))
+        constant = _constant_data(source_cell)
+        if constant is not None:
+            # D tied to a constant: the core keys it as a net of its own, which
+            # every pin tied to the same constant reads.
+            d_net = constant
+            generic_d_net = CONST_NETS[constant]
+            d_shared = constant_readers[constant] > 1
+        else:
+            d_shared = source_index.consumer_count(generic_d_net) > 1
 
         # Create PPO only for FFs in the active domain (or always when single-domain).
         ppo_is_active = active_clock_net is None or record_clock_net == active_clock_net
@@ -1059,7 +1097,7 @@ def build_scan_atpg_view(
                     instance=instance,
                     d_net=d_net,
                     generic_d_net=generic_d_net,
-                    shared=source_index.consumer_count(generic_d_net) > 1,
+                    shared=d_shared,
                     next_id=next_id,
                     index=bit_index,
                 )
@@ -1131,7 +1169,11 @@ def build_scan_atpg_view(
             "q_drive_net_id": q_drive,
             "ppo_net_id": ppo_bit,
             "original_q_net": net_name_by_bit.get(q_net) or str(q_net),
-            "original_d_net": net_name_by_bit.get(d_net) or str(d_net),
+            # A constant D keeps its literal ("0"/"1") as its name.
+            "original_d_net": (
+                net_name_by_bit.get(d_net) if isinstance(d_net, int) else None
+            )
+            or str(d_net),
             "chain_id": int(record["chain_index"]),
             "position_in_chain": int(record["chain_position"]),
             "clock_net": record_clock_net,

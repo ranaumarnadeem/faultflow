@@ -52,6 +52,12 @@ DEFAULT_SCAN_IN = "scan_in"
 DEFAULT_SCAN_OUT = "scan_out"
 DEFAULT_SCAN_ENABLE = "scan_en"
 
+# The net ids the core gives Yosys's constant bits (parsed_graph.cpp parse_bit):
+# a flop whose D synthesis tied to a constant has one of these as its data_net,
+# and its scan cell keeps the literal on D.
+CONST_NETS = {"0": -1, "1": -2}
+CONST_BITS = {net: bit for bit, net in CONST_NETS.items()}
+
 # The scan ports of the IEEE 1500 wrapper's chains (faultflow.wrap): wbr_si and
 # wbr_so, or wbr_si_<k> and wbr_so_<k> with more than one.
 DEFAULT_WRAPPER_SCAN_IN = "wbr_si"
@@ -257,6 +263,22 @@ def _maybe_one_bit(value: Any) -> int | None:
     return bit if isinstance(bit, int) else None
 
 
+def _data_net(value: Any) -> int | None:
+    """A flop's D connection as a net: the net, the core's id for a constant
+    ("0"/"1": abc proved the next state constant), or None."""
+    bit = _maybe_one_bit(value)
+    if bit is not None:
+        return bit
+    if isinstance(value, list) and len(value) == 1 and value[0] in CONST_NETS:
+        return CONST_NETS[value[0]]
+    return None
+
+
+def _wire_bit(net: int) -> int | str:
+    """``net`` as a connection bit: a constant's literal, else the net."""
+    return CONST_BITS.get(net, net)
+
+
 def _resolve_enable_bit(
     conns: dict[str, Any], pin: str
 ) -> tuple[int | None, bool | None]:
@@ -437,7 +459,10 @@ def _reason_for_ff(
         ("output", "no_output_pin"),
     ):
         pin = _ff_pin(ff_meta, key)
-        if pin is None or _maybe_one_bit(conns.get(pin)) is None:
+        # D may be a constant (_data_net): the flop still holds state -- a set or
+        # reset loads the other value, and the scan load any value.
+        read = _data_net if key == "data" else _maybe_one_bit
+        if pin is None or read(conns.get(pin)) is None:
             return reason
     return None
 
@@ -522,6 +547,9 @@ def _collect_ffs(
         q_pin = _ff_pin(ff_meta, "output")
         if clk_pin is None or d_pin is None or q_pin is None:
             raise ScanError(f"{instance}: internal FF metadata validation failed")
+        data_net = _data_net(conns.get(d_pin))
+        if data_net is None:
+            raise ScanError(f"{instance}: internal FF metadata validation failed")
         async_kind, async_pin = _async_control(ff_meta)
         if _async_held_inactive(ff_meta, conns):
             async_kind, async_pin = "none", None  # a plain flop (see above)
@@ -567,7 +595,7 @@ def _collect_ffs(
                 clock_net=root if path else pin_clock,
                 pin_clock_net=pin_clock if path else -1,
                 clock_gates=tuple(g.instance for g in path),
-                data_net=_one_bit(conns.get(d_pin), f"{instance}.{d_pin}"),
+                data_net=data_net,
                 q_net=_one_bit(conns.get(q_pin), f"{instance}.{q_pin}"),
                 async_kind=async_kind,
                 async_net=async_net,
@@ -1070,7 +1098,7 @@ def _add_internal_gate2_cell(
     cells: dict[str, Any],
     instance: str,
     cell_type: str,
-    a_bit: int,
+    a_bit: int | str,
     b_bit: int,
     out_bit: int,
 ) -> None:
@@ -1087,7 +1115,7 @@ def _add_internal_gate2_cell(
 def _add_enable_hold_mux(
     cells: dict[str, Any],
     instance: str,
-    d_net: int,
+    d_net: int | str,
     q_net: int,
     enable_net: int,
     enable_level: str,
@@ -1120,7 +1148,7 @@ def _add_enable_hold_mux(
 def _hold_mux_gates(
     cells: dict[str, Any],
     instance: str,
-    d_net: int,
+    d_net: int | str,
     q_net: int,
     enable_net: int,
     enable_level: str,
@@ -1241,14 +1269,14 @@ def stitch_scan_json(
             "SE": "input",
             "Q": "output",
         }
-        data_net = record.data_net
+        data_net: int | str = _wire_bit(record.data_net)
         if ff.enable_net != -1:
             # Generic scan cell has no enable pin -- synthesize the hold-mux
             # ahead of D instead of dropping the enable behavior entirely.
             data_net, mux_next_id = _add_enable_hold_mux(
                 cells,
                 record.instance,
-                record.data_net,
+                data_net,
                 record.q_net,
                 ff.enable_net,
                 ff.enable_level,
@@ -1262,7 +1290,7 @@ def stitch_scan_json(
             active = (
                 ff.enable_const if ff.enable_level == "HIGH" else not ff.enable_const
             )
-            data_net = record.data_net if active else record.q_net
+            data_net = data_net if active else record.q_net
         connections = {
             # A gated flop stays on its gate's clock.
             "CLK": [record.pin_clock_net if record.clock_gates else record.clock_net],
