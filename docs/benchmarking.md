@@ -2,21 +2,25 @@
 
 ## SA Faults
 
-Every row except those marked ¹ was run on main at 182193f (the scan
+Every row except those marked ¹ or ³ was run on main at 182193f (the scan
 Q-branch over-credit fix), Sky130 HD, `collapsing = false`, one worker, one
 end-to-end run per design; Wall covers init, scan insertion, scan check and ATPG.
+All runs were on one laptop (HP EliteBook 840 G11, Intel Core Ultra 5 125U) in
+WSL2 Ubuntu 24.04, which sees 10 logical CPUs and 23 GB of RAM.
 Every fault a scan campaign credited was replayed with the campaign's exported
 patterns through the full scan-protocol fault simulator on the scanned netlist
 (`tests/python/scan_credit.py`): none failed to reproduce, in any table below.
-s5378, s13207 and s15850 (marked ²) were run later, on main with the
-constant-D fix: synthesis ties some of their flip-flops' D to a literal
-`0`/`1`, which scan insertion used to refuse; those flops are now scanned, the
-constant's fault into D graded where the flop captures it. Graded the same way.
 
 ¹ Earlier run, before the over-credit fix; not repeated. A boxcar stuck-at rerun
 on main at fd68085, graded the same way, reproduced every credit. picorv32a's
 stuck-at Hybrid row was rerun at 182193f like the others; only its Random and
 transition rows are earlier runs.
+
+³ s5378, s13207 and s15850, stuck-at and transition, were run later, on main
+with the constant-D fix (aa34c10): synthesis ties some of their flip-flops' D to
+a literal `0`/`1`, which scan insertion used to refuse; those flops are now
+scanned, the constant's fault into D graded where the flop captures it. Graded
+the same way. They have no Random runs.
 
 ### Hybrid ATPG
 
@@ -26,9 +30,9 @@ Random vectors to 85% coverage, then SAT.
 |---|---:|---:|---:|---:|---:|---:|---:|
 | picorv32a | 10,989 | 1,613 | 162 | 99.992% | 930 | 2,434 | 2,444 s |
 | boxcar¹ | 1,243 | 1,130 | 113 | 100.00% | 0 | 1,100 | 1,243.3 s |
-| s13207² | 877 | 225 | 64 | 100.00% | 48 | 261 | 148 s |
-| s5378² | 867 | 162 | 17 | 100.00% | 18 | 427 | 145 s |
-| s15850² | 634 | 157 | 56 | 100.00% | 12 | 213 | 115 s |
+| s13207³ | 877 | 225 | 64 | 100.00% | 48 | 261 | 148 s |
+| s5378³ | 867 | 162 | 17 | 100.00% | 18 | 427 | 145 s |
+| s15850³ | 634 | 157 | 56 | 100.00% | 12 | 213 | 115 s |
 | genericfir_small | 3,982 | 471 | 48 | 100.00% | 17 | 406 | 107 s |
 | s9234_1 | 715 | 135 | 14 | 100.00% | 36 | 226 | 39 s |
 | s1238 | 320 | 18 | 2 | 100.00% | 42 | 188 | 20 s |
@@ -95,6 +99,14 @@ Random vectors to 85% coverage, then SAT.
 | s27 | 12 | 3 | 1 | 100.00% | 12 s |
 | c17 | 3 | — | — | 100.00% | 6 s |
 
+## Comparison with Fault
+
+FaultFlow against Fault 0.9.4 on 16 ISCAS netlists mapped to OSU035 (not Sky130):
+239.2 s against 5,150.3 s for Fault's default pseudo-random ATPG, 21.5x in total
+and 14.7x as the geometric mean of the per-design ratios. With Quaigh as its ATPG,
+Fault takes 111.6 s, so FaultFlow is 2.1x slower than that flow. Setup, per-design
+table, logs and scripts: [docs/benchmarks/fault_compare](https://github.com/ranaumarnadeem/faultflow/tree/main/docs/benchmarks/fault_compare).
+
 ## Transition Delay Faults
 
 ### Hybrid ATPG
@@ -106,6 +118,9 @@ Launch-on-capture. Fault cov. counts SAT-proven-redundant faults as undetected.
 | boxcar¹ | 1,243 | 1,130 | 113 | 100.00% | 80.98% | 5,326 | ~11.7 h |
 | picorv32a¹ ² | 10,989 | 1,613 | 162 | 94.73% | 89.81% | 3,861 | ~10.5 h |
 | genericfir_small | 3,982 | 471 | 48 | 99.80% | 85.41% | 3,722 | 985 s |
+| s5378³ | 867 | 162 | 17 | 99.38% | 71.70% | 1,119 | 162 s |
+| s13207³ | 877 | 225 | 64 | 99.73% | 77.80% | 743 | 121 s |
+| s15850³ | 634 | 157 | 56 | 98.40% | 70.11% | 682 | 85 s |
 | s9234_1 | 715 | 135 | 14 | 99.65% | 86.84% | 423 | 74 s |
 | s1238 | 320 | 18 | 2 | 99.74% | 18.68% | 1,671 | 36 s |
 | s1423 | 435 | 74 | 8 | 99.75% | 76.02% | 490 | 28 s |

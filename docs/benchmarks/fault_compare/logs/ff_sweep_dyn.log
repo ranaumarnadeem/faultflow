@@ -1,0 +1,96 @@
+##START c432
+initialized output/c432
+sim complete top=c432 mode=c++ vectors=39 raw_vectors=61 source=compacted_native_sat_atpg sidecar=output/c432/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.157 fault_sim_seconds=1.513 atpg_terminal=COMPLETE report=output/c432/coverage.rpt json=output/c432/.faultflow/intermediate/coverage_report.json
+##WALL_S 12.218028518
+top=c432 scan_mode=false coverage=100.000% detected=633 denominator=633 undetected=0 redundant=5 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=0 xdomain=0 atpg_seconds=0.157 fault_sim_seconds=1.513 total_sim_seconds=3.211 atpg_terminal=COMPLETE rounds=1 sat=30 unsat=5 timeout=0 unknown=0 rejected=0 generated=61 accepted=61
+##END c432
+##START c499
+initialized output/c499
+sim complete top=c499 mode=c++ vectors=48 raw_vectors=76 source=compacted_native_sat_atpg sidecar=output/c499/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.085 fault_sim_seconds=2.711 atpg_terminal=COMPLETE report=output/c499/coverage.rpt json=output/c499/.faultflow/intermediate/coverage_report.json
+##WALL_S 10.580462382
+top=c499 scan_mode=false coverage=100.000% detected=918 denominator=918 undetected=0 redundant=0 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=0 xdomain=0 atpg_seconds=0.085 fault_sim_seconds=2.711 total_sim_seconds=4.628 atpg_terminal=COMPLETE rounds=1 sat=31 unsat=0 timeout=0 unknown=0 rejected=0 generated=76 accepted=76
+##END c499
+##START c880
+initialized output/c880
+sim complete top=c880 mode=c++ vectors=47 raw_vectors=71 source=compacted_native_sat_atpg sidecar=output/c880/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.150 fault_sim_seconds=2.152 atpg_terminal=COMPLETE report=output/c880/coverage.rpt json=output/c880/.faultflow/intermediate/coverage_report.json
+##WALL_S 10.391045353
+top=c880 scan_mode=false coverage=100.000% detected=1200 denominator=1200 undetected=0 redundant=0 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=0 xdomain=0 atpg_seconds=0.150 fault_sim_seconds=2.152 total_sim_seconds=4.654 atpg_terminal=COMPLETE rounds=1 sat=39 unsat=0 timeout=0 unknown=0 rejected=0 generated=71 accepted=71
+##END c880
+##START c1355
+initialized output/c1355
+sim complete top=c1355 mode=c++ vectors=49 raw_vectors=86 source=compacted_native_sat_atpg sidecar=output/c1355/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.082 fault_sim_seconds=2.184 atpg_terminal=COMPLETE report=output/c1355/coverage.rpt json=output/c1355/.faultflow/intermediate/coverage_report.json
+##WALL_S 9.671568801
+top=c1355 scan_mode=false coverage=100.000% detected=918 denominator=918 undetected=0 redundant=0 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=0 xdomain=0 atpg_seconds=0.082 fault_sim_seconds=2.184 total_sim_seconds=4.086 atpg_terminal=COMPLETE rounds=1 sat=34 unsat=0 timeout=0 unknown=0 rejected=0 generated=86 accepted=86
+##END c1355
+##START c1908
+initialized output/c1908
+sim complete top=c1908 mode=c++ vectors=78 raw_vectors=247 source=compacted_native_sat_atpg sidecar=output/c1908/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.239 fault_sim_seconds=5.154 atpg_terminal=COMPLETE report=output/c1908/coverage.rpt json=output/c1908/.faultflow/intermediate/coverage_report.json
+##WALL_S 12.180734373
+top=c1908 scan_mode=false coverage=100.000% detected=1586 denominator=1586 undetected=0 redundant=4 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=0 xdomain=0 atpg_seconds=0.239 fault_sim_seconds=5.154 total_sim_seconds=8.404 atpg_terminal=COMPLETE rounds=1 sat=54 unsat=4 timeout=0 unknown=0 rejected=0 generated=247 accepted=247
+##END c1908
+##START c2670
+initialized output/c2670
+sim complete top=c2670 mode=c++ vectors=92 raw_vectors=1071 source=compacted_native_sat_atpg sidecar=output/c2670/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.225 fault_sim_seconds=16.248 atpg_terminal=COMPLETE report=output/c2670/coverage.rpt json=output/c2670/.faultflow/intermediate/coverage_report.json
+##WALL_S 42.233272125
+top=c2670 scan_mode=false coverage=100.000% detected=1899 denominator=1899 undetected=0 redundant=5 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=0 xdomain=0 atpg_seconds=0.225 fault_sim_seconds=16.248 total_sim_seconds=38.473 atpg_terminal=COMPLETE rounds=1 sat=71 unsat=5 timeout=0 unknown=0 rejected=0 generated=1071 accepted=1071
+##END c2670
+##START c3540
+initialized output/c3540
+sim complete top=c3540 mode=c++ vectors=139 raw_vectors=266 source=compacted_native_sat_atpg sidecar=output/c3540/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=1.836 fault_sim_seconds=5.016 atpg_terminal=COMPLETE report=output/c3540/coverage.rpt json=output/c3540/.faultflow/intermediate/coverage_report.json
+##WALL_S 15.708658706
+top=c3540 scan_mode=false coverage=100.000% detected=3745 denominator=3745 undetected=0 redundant=13 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=0 xdomain=0 atpg_seconds=1.836 fault_sim_seconds=5.016 total_sim_seconds=12.225 atpg_terminal=COMPLETE rounds=1 sat=120 unsat=13 timeout=0 unknown=0 rejected=0 generated=266 accepted=266
+##END c3540
+##START c5315
+initialized output/c5315
+sim complete top=c5315 mode=c++ vectors=88 raw_vectors=175 source=compacted_native_sat_atpg sidecar=output/c5315/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.649 fault_sim_seconds=4.647 atpg_terminal=COMPLETE report=output/c5315/coverage.rpt json=output/c5315/.faultflow/intermediate/coverage_report.json
+##WALL_S 21.797741736
+top=c5315 scan_mode=false coverage=100.000% detected=4593 denominator=4593 undetected=0 redundant=7 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=0 xdomain=0 atpg_seconds=0.649 fault_sim_seconds=4.647 total_sim_seconds=18.504 atpg_terminal=COMPLETE rounds=1 sat=149 unsat=7 timeout=0 unknown=0 rejected=0 generated=175 accepted=175
+##END c5315
+##START s27
+initialized output/s27_bench
+sim complete top=s27_bench mode=c++ vectors=7 raw_vectors=103 source=compacted_native_sat_atpg sidecar=output/s27_bench/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.006 fault_sim_seconds=1.613 atpg_terminal=COMPLETE report=output/s27_bench/coverage.rpt json=output/s27_bench/.faultflow/intermediate/coverage_report.json
+##WALL_S 6.153520790
+top=s27_bench scan_mode=false coverage=100.000% detected=56 denominator=56 undetected=0 redundant=6 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=8 xdomain=0 atpg_seconds=0.006 fault_sim_seconds=1.613 total_sim_seconds=2.614 atpg_terminal=COMPLETE rounds=1 sat=0 unsat=6 timeout=0 unknown=0 rejected=0 generated=103 accepted=103
+##END s27
+##START s298
+initialized output/s298_bench
+sim complete top=s298_bench mode=c++ vectors=23 raw_vectors=39 source=compacted_native_sat_atpg sidecar=output/s298_bench/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.024 fault_sim_seconds=0.658 atpg_terminal=COMPLETE report=output/s298_bench/coverage.rpt json=output/s298_bench/.faultflow/intermediate/coverage_report.json
+##WALL_S 4.944585710
+top=s298_bench scan_mode=false coverage=100.000% detected=354 denominator=354 undetected=0 redundant=28 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=30 xdomain=0 atpg_seconds=0.024 fault_sim_seconds=0.658 total_sim_seconds=1.393 atpg_terminal=COMPLETE rounds=1 sat=11 unsat=28 timeout=0 unknown=0 rejected=0 generated=39 accepted=39
+##END s298
+##START s344
+initialized output/s344_bench
+sim complete top=s344_bench mode=c++ vectors=21 raw_vectors=47 source=compacted_native_sat_atpg sidecar=output/s344_bench/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.044 fault_sim_seconds=1.169 atpg_terminal=COMPLETE report=output/s344_bench/coverage.rpt json=output/s344_bench/.faultflow/intermediate/coverage_report.json
+##WALL_S 7.336420309
+top=s344_bench scan_mode=false coverage=100.000% detected=433 denominator=433 undetected=0 redundant=31 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=32 xdomain=0 atpg_seconds=0.044 fault_sim_seconds=1.169 total_sim_seconds=2.320 atpg_terminal=COMPLETE rounds=1 sat=10 unsat=31 timeout=0 unknown=0 rejected=0 generated=47 accepted=47
+##END s344
+##START s382
+initialized output/s382_bench
+sim complete top=s382_bench mode=c++ vectors=32 raw_vectors=70 source=compacted_native_sat_atpg sidecar=output/s382_bench/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.049 fault_sim_seconds=1.425 atpg_terminal=COMPLETE report=output/s382_bench/coverage.rpt json=output/s382_bench/.faultflow/intermediate/coverage_report.json
+##WALL_S 6.233207430
+top=s382_bench scan_mode=false coverage=100.000% detected=536 denominator=536 undetected=0 redundant=42 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=44 xdomain=0 atpg_seconds=0.049 fault_sim_seconds=1.425 total_sim_seconds=2.762 atpg_terminal=COMPLETE rounds=1 sat=21 unsat=42 timeout=0 unknown=0 rejected=0 generated=70 accepted=70
+##END s382
+##START s526
+initialized output/s526_bench
+sim complete top=s526_bench mode=c++ vectors=31 raw_vectors=95 source=compacted_native_sat_atpg sidecar=output/s526_bench/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.048 fault_sim_seconds=2.325 atpg_terminal=COMPLETE report=output/s526_bench/coverage.rpt json=output/s526_bench/.faultflow/intermediate/coverage_report.json
+##WALL_S 7.912549602
+top=s526_bench scan_mode=false coverage=100.000% detected=591 denominator=591 undetected=0 redundant=43 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=44 xdomain=0 atpg_seconds=0.048 fault_sim_seconds=2.325 total_sim_seconds=4.143 atpg_terminal=COMPLETE rounds=1 sat=16 unsat=43 timeout=0 unknown=0 rejected=0 generated=95 accepted=95
+##END s526
+##START s820
+initialized output/s820_bench
+sim complete top=s820_bench mode=c++ vectors=87 raw_vectors=450 source=compacted_native_sat_atpg sidecar=output/s820_bench/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.072 fault_sim_seconds=9.260 atpg_terminal=COMPLETE report=output/s820_bench/coverage.rpt json=output/s820_bench/.faultflow/intermediate/coverage_report.json
+##WALL_S 18.269485691
+top=s820_bench scan_mode=false coverage=100.000% detected=1120 denominator=1120 undetected=0 redundant=10 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=12 xdomain=0 atpg_seconds=0.072 fault_sim_seconds=9.260 total_sim_seconds=14.797 atpg_terminal=COMPLETE rounds=1 sat=40 unsat=10 timeout=0 unknown=0 rejected=0 generated=450 accepted=450
+##END s820
+##START s1238
+initialized output/s1238_bench
+sim complete top=s1238_bench mode=c++ vectors=161 raw_vectors=1068 source=compacted_native_sat_atpg sidecar=output/s1238_bench/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.409 fault_sim_seconds=17.538 atpg_terminal=COMPLETE report=output/s1238_bench/coverage.rpt json=output/s1238_bench/.faultflow/intermediate/coverage_report.json
+##WALL_S 32.577127786
+top=s1238_bench scan_mode=false coverage=100.000% detected=2103 denominator=2103 undetected=0 redundant=83 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=38 xdomain=0 atpg_seconds=0.409 fault_sim_seconds=17.538 total_sim_seconds=29.133 atpg_terminal=COMPLETE rounds=1 sat=68 unsat=83 timeout=0 unknown=0 rejected=0 generated=1068 accepted=1068
+##END s1238
+##START s1423
+initialized output/s1423_bench
+sim complete top=s1423_bench mode=c++ vectors=56 raw_vectors=221 source=compacted_native_sat_atpg sidecar=output/s1423_bench/.faultflow/intermediate/native_sat_atpg coverage=100.000% atpg_seconds=0.426 fault_sim_seconds=7.196 atpg_terminal=COMPLETE report=output/s1423_bench/coverage.rpt json=output/s1423_bench/.faultflow/intermediate/coverage_report.json
+##WALL_S 20.993168637
+top=s1423_bench scan_mode=false coverage=100.000% detected=2162 denominator=2162 undetected=0 redundant=158 protocol_unresolved=0 collapsed=0 excluded_blackbox=0 excluded_clock=0 excluded_reset=150 xdomain=0 atpg_seconds=0.426 fault_sim_seconds=7.196 total_sim_seconds=16.939 atpg_terminal=COMPLETE rounds=1 sat=46 unsat=158 timeout=0 unknown=0 rejected=0 generated=221 accepted=221
+##END s1423

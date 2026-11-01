@@ -28,31 +28,39 @@ Manufacturing test of digital chips depends on ATPG, and the established tools (
 
 ## Results
 
-Stuck-at results, copied from [docs/benchmarking.md](docs/benchmarking.md). Hybrid ATPG is the default flow (random fill, then SAT ATPG on the faults left); Random runs never call SAT.
+Selected rows from [docs/benchmarking.md](docs/benchmarking.md). Hybrid ATPG is the default flow (random fill, then SAT ATPG on the faults left); Random runs never call SAT.
 
 | Design | Fault model | ATPG mode | FFs | Scan chains | Test coverage | Patterns | Wall time |
 |---|---|---|---:|---:|---:|---:|---:|
-| s5378 | Stuck-at | Hybrid | 162 | 17 | 100.00% | 577 | 994.2 s |
-| s9234_1 | Stuck-at | Hybrid | 135 | 14 | 100.00% | 505 | 769.3 s |
-| s15850 | Stuck-at | Hybrid | 559 | 56 | 100.00% | 866 | 2,654.3 s |
-| boxcar | Stuck-at | Hybrid | 1,130 | 113 | 100.00% | 1,100 | 1,243.3 s |
-| boxcar | Stuck-at | Random | 1,130 | 113 | 98.926% | 288 | 336.1 s |
-| picorv32a | Stuck-at | Hybrid | 1,613 | 162 | 99.976% | 1,784 | 13,913.8 s |
-| picorv32a | Stuck-at | Random | 1,613 | 162 | 99.785% | 1,164 | 4,387.8 s |
+| s5378 | Stuck-at | Hybrid | 162 | 17 | 100.00% | 427 | 145 s |
+| s9234_1 | Stuck-at | Hybrid | 135 | 14 | 100.00% | 226 | 39 s |
+| s13207 | Stuck-at | Hybrid | 225 | 64 | 100.00% | 261 | 148 s |
+| s15850 | Stuck-at | Hybrid | 157 | 56 | 100.00% | 213 | 115 s |
+| genericfir_small | Stuck-at | Hybrid | 471 | 48 | 100.00% | 406 | 107 s |
+| boxcar¹ | Stuck-at | Hybrid | 1,130 | 113 | 100.00% | 1,100 | 1,243.3 s |
+| boxcar¹ | Stuck-at | Random | 1,130 | 113 | 98.926% | not recorded | 336.1 s |
+| picorv32a | Stuck-at | Hybrid | 1,613 | 162 | 99.992% | 2,434 | 2,444 s |
+| picorv32a¹ | Stuck-at | Random | 1,613 | 162 | 99.785% | not recorded | 4,387.8 s |
 
-Test coverage is detected faults over in-scope faults minus those SAT proved redundant; fault coverage counts redundant faults as undetected. Random runs prove none redundant, so for them the two are equal. Fault collapsing is off in every run. The picorv32a FF count is the 1,613-cell scan length in the SoC1 table. Full tables, including every ISCAS-85/89 design, collapsing on and off, and hierarchical SoC roll-ups: [docs/benchmarking.md](docs/benchmarking.md).
+Hybrid reaches 100.00% stuck-at test coverage on 32 of the 33 designs in [docs/benchmarking.md](docs/benchmarking.md) (mean 99.99976%); picorv32a is at 99.992%. Test coverage is detected faults over in-scope faults minus those SAT proved redundant; fault coverage counts redundant faults as undetected. Random runs prove none redundant, so for them the two are equal. Fault collapsing is off in every run, and each run uses one worker. Every fault a scan campaign credited was replayed with its exported patterns through the full scan-protocol fault simulator; none failed to reproduce. All runs were on one laptop (Intel Core Ultra 5 125U) in WSL2 Ubuntu 24.04 with 10 logical CPUs and 23 GB of RAM. Full tables, including every ISCAS-85/89 design and hierarchical SoC roll-ups: [docs/benchmarking.md](docs/benchmarking.md).
 
 ### Transition delay faults
 
-| Design | ATPG mode | FFs | Scan chains | Test coverage | Fault coverage | Wall time |
-|---|---|---:|---:|---:|---:|---:|
-| s9234_1 | Hybrid | 135 | 14 | 99.91% | 86.06% | 834.4 s |
-| boxcar¹ | Hybrid | 1,130 | 113 | 100.00% | 80.98% | ~11.7 h |
-| picorv32a² | Hybrid | 1,613 | 162 | 94.73% | 89.81% | ~10.5 h |
+Launch-on-capture, Hybrid ATPG.
 
-Pattern counts are not recorded for these runs.
+| Design | FFs | Scan chains | Test coverage | Fault coverage | Wall time |
+|---|---:|---:|---:|---:|---:|
+| s5378 | 162 | 17 | 99.38% | 71.70% | 162 s |
+| s9234_1 | 135 | 14 | 99.65% | 86.84% | 74 s |
+| s13207 | 225 | 64 | 99.73% | 77.80% | 121 s |
+| s15850 | 157 | 56 | 98.40% | 70.11% | 85 s |
+| genericfir_small | 471 | 48 | 99.80% | 85.41% | 985 s |
+| boxcar¹ | 1,130 | 113 | 100.00% | 80.98% | ~11.7 h |
+| picorv32a¹ ² | 1,613 | 162 | 94.73% | 89.81% | ~10.5 h |
 
-¹ Restarted mid-run after diagnosing a WSL 9P-bridge I/O bottleneck: the SQLite DB had grown large on `/mnt/c` and was moved to native ext4 storage, keeping all prior progress. The run fully converged (`atpg_terminal=COMPLETE`, 0 timeouts, 0 unknowns) and was stopped after all 27,988 faults resolved (0 undetected), once a subsequent vector-compaction phase began growing the DB unboundedly (29 GB in <1 h) with no further effect on the coverage numerator or denominator.
+Against Fault 0.9.4's default pseudo-random ATPG on 16 ISCAS netlists mapped to OSU035, faultflow took 239.2 s in total against 5,150.3 s (21.5x; geometric mean 14.7x); Fault with Quaigh as its ATPG took 111.6 s. Setup, logs and scripts: [docs/benchmarks/fault_compare](docs/benchmarks/fault_compare/README.md).
+
+¹ Earlier run, before the scan over-credit fix; not repeated.
 
 ² Stopped after two ATPG rounds, before compaction.
 
@@ -169,7 +177,7 @@ Yes. faultflow reads technology-mapped Yosys output for sky130 HD and OSU035 cel
 Yes. It inserts full scan, validates chains structurally and runs scan ATPG, including launch-on-capture and launch-on-shift for transition faults.
 
 **What fault coverage does it reach?**
-See Results above and [docs/benchmarking.md](docs/benchmarking.md); for example, 99.969% stuck-at test coverage on picorv32a with 2,441 patterns.
+See Results above and [docs/benchmarking.md](docs/benchmarking.md); for example, 99.992% stuck-at test coverage on picorv32a with 2,434 patterns, and 100.00% on the other 32 benchmark designs.
 
 ## Citing
 

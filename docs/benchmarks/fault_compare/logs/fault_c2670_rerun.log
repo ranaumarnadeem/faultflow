@@ -1,0 +1,2 @@
+RESULT c2670 prng rc=0 tries=1 sites=1399 faults=2798 coverage=82.9521 raw_tvs=5000 tvs=24 wall=733.445643381
+RESULT c2670 quaigh rc=0 tries=1 sites=1399 faults=2798 coverage=99.14225 raw_tvs=100 tvs=63 wall=13.304512724
