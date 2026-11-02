@@ -1,0 +1,7 @@
+WAIT cone_restrict=false 2026-11-02T09:54:32+05:00
+START cone_restrict=false 2026-11-02T09:59:37+05:00 load=0.08 0.07 0.03 1/231 765
+RESULT cone_restrict=false | setup=9s sim=2146s total=2155s | vectors=2433 | coverage=99.992% detected=87517 detected=7 redundant=930 atpg_seconds=153.444 fault_sim_seconds=1529.542 atpg_terminal=STALLED timeout=61 | maxload1m=8.41
+WAIT cone_restrict=true 2026-11-02T10:35:33+05:00
+START cone_restrict=true 2026-11-02T10:41:41+05:00 load=0.00 0.35 0.79 1/223 1110
+RESULT cone_restrict=true | setup=9s sim=2129s total=2138s | vectors=2430 | coverage=99.992% detected=87517 detected=7 redundant=930 atpg_seconds=139.850 fault_sim_seconds=1545.966 atpg_terminal=STALLED timeout=42 | maxload1m=7.99
+ALL DONE 2026-11-02T11:17:19+05:00

@@ -1,0 +1,4 @@
+initialized output/picorv32a
+scan complete top=picorv32a chains=162 cells=1613 generic=output/picorv32a/picorv32a_scan.json techmap=output/picorv32a/.faultflow/generated_scripts/faultflow_scanff_map.v sky130=output/picorv32a/picorv32a_scan.v manifest=output/picorv32a/.faultflow/manifests/scan_manifest.json
+scan-check PASS top=picorv32a vectors=12 techmap_equiv=PASS manifest=output/picorv32a/.faultflow/manifests/scan_manifest.json
+sim complete top=picorv32a mode=scan vectors=2430 raw_vectors=3195 source=compacted_scan_native_sat_atpg sidecar=output/picorv32a/.faultflow/intermediate/scan_atpg_view.json coverage=99.992% atpg_seconds=139.850 fault_sim_seconds=1545.966 atpg_terminal=STALLED report=output/picorv32a/coverage.rpt json=output/picorv32a/.faultflow/intermediate/coverage_report.json

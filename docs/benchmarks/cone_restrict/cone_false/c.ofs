@@ -1,0 +1,26 @@
+[design]
+netlist = /home/potato/ffcmp/cone_ab/cone_false/picorv32a_sky130.json
+top = picorv32a
+cell_lib = /home/potato/cdm/src/cells/sky130/sky130_fd_sc_hd.json
+liberty = /home/potato/cdm/src/cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib
+
+[fault_model]
+type = stuck_at
+collapsing = false
+include_clock_faults = false
+include_reset_faults = false
+
+[simulation]
+unsupported_cells = blackbox
+verify = false
+
+[atpg]
+tool = native
+mode = comb
+output = patterns.test
+workers = 10
+cone_restrict = false
+
+[report]
+output = coverage.rpt
+threshold = 100.0
