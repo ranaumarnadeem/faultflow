@@ -203,9 +203,15 @@ def _drop_dangling_scan_ports(
 ) -> None:
     used = _nets_used_by_cells(module)
     scan_names = _manifest_scan_port_names(manifest)
-    for clk_net in clock_nets:
-        clock_name = _clock_port_name(module, clk_net)
-        if clock_name is not None:
+    recorded = manifest.get("clock_ports")
+    if isinstance(recorded, list) and len(recorded) == len(clock_nets):
+        # The ports stitching traced each clock to (clock_gates.clock_path).
+        scan_names.update(str(name) for name in recorded)
+    else:
+        for clk_net in clock_nets:
+            clock_name = _clock_port_name(module, clk_net)
+            if clock_name is None:
+                raise ScanError(f"cannot map scan clock net {clk_net} to a port")
             scan_names.add(clock_name)
     ports = module.get("ports", {})
     netnames = module.get("netnames", {})
@@ -585,7 +591,10 @@ def _mark_clock_gates(module: dict[str, Any], manifest: dict[str, Any]) -> None:
             continue
         conns = cell.setdefault("connections", {})
         clock = _all_int_bits(conns.get(pins["clock_pin"]))
-        chained = bool(clock) and clock[0] in outputs
+        if "clocked_by" in pins:  # another gate's clock, through buffers or not
+            chained = bool(pins["clocked_by"])
+        else:
+            chained = bool(clock) and clock[0] in outputs
         attrs = cell.setdefault("attributes", {})
         attrs[ICG_ENABLE_ATTR] = "chain" if chained else "root"
         if not chained:

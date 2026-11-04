@@ -2,7 +2,8 @@
 
 Every data input and every output bit is wrapped, constant bits and feedthroughs
 included. Left as they are:
-- a clock: an input that reaches a flop's clock through buffers and inverters;
+- a clock: an input that reaches a flop's clock through buffers, inverters and
+  clock gates (faultflow.scan.clock_gates.clock_path);
 - an asynchronous clear or preset: an input that reaches a flop's clear or preset
   that way (a boundary cell there would let the reset follow the wrapper chain while
   it shifts);
@@ -20,7 +21,8 @@ import fnmatch
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from faultflow.control_trace import Netlist, TraceError
+from faultflow.control_trace import Netlist, TraceError, one_net
+from faultflow.scan.clock_gates import clock_gates, clock_path
 from faultflow.scan.stitch import SCAN_CELL_TYPES
 from faultflow.wrap.cell import CELL_ATTR
 from faultflow.wrap.errors import WrapError
@@ -124,13 +126,21 @@ def classify(
         flops = netlist.flops()
     except TraceError as exc:
         raise WrapError(str(exc)) from exc
+    gates = clock_gates(module, cell_map)
     clocks: set[str] = set()
     controls: set[str] = set()
     through_logic: dict[str, str] = {}
     for flop in flops:
-        pins = [(flop.clock_pin, flop.clock, clocks)]
-        pins += [(c.pin, c.trace, controls) for c in flop.controls]
-        for pin, trace, kind in pins:
+        pin_net = one_net(
+            netlist.cells[flop.instance].get("connections", {}).get(flop.clock_pin)
+        )
+        found = clock_path(pin_net, gates, netlist)
+        if isinstance(found.root, int) and found.root in netlist.input_net_names:
+            clocks.add(netlist.input_net_names[found.root])
+        elif isinstance(found.root, int):
+            for port in _fan_in_ports(netlist, found.root):
+                through_logic.setdefault(port, f"{flop.instance}.{flop.clock_pin}")
+        for pin, trace, kind in [(c.pin, c.trace, controls) for c in flop.controls]:
             if trace.port is not None:
                 kind.add(trace.port)
             elif trace.const is None and trace.steps:

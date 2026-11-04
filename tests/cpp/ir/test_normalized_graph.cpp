@@ -374,3 +374,18 @@ TEST_CASE("NormalizedGraph identifies clock and reset names", "[normalized_graph
   REQUIRE(ng.nets.at(2).is_clock);
   REQUIRE(ng.nets.at(3).is_reset);
 }
+
+TEST_CASE("A clock tree's buffers and inverters carry clock nets back to the port",
+          "[normalized_graph]") {
+  // ck -> clkbuf (4) -> clkinv (5) -> u_ff.CLK; ck2 & en (8) -> u_ff2.CLK. No net
+  // is named like a clock.
+  const NormalizedGraph ng = test::load_normalized("tiny_clock_tree.json");
+  for (const int net : {5, 4, 2, 8}) {
+    REQUIRE(ng.nets.at(net).is_clock);
+  }
+  // An AND is no clock buffer: its inputs (the clock, the enable) stay data, as
+  // the scan flow's held-gate tracing decides (faultflow.scan.clock_gates).
+  for (const int net : {9, 7, 3}) {
+    REQUIRE_FALSE(ng.nets.at(net).is_clock);
+  }
+}

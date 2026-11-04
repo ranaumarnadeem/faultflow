@@ -5,7 +5,7 @@ from typing import Any
 
 from faultflow.config import FaultflowConfig
 from faultflow.scan.cell_map import resolve_scan_cell_map
-from faultflow.scan.manifest import manifest_clock_net_ids
+from faultflow.scan.manifest import manifest_clock_ports
 from faultflow.scan.protocol import ScanPattern
 from faultflow.scan.setup import setup_request
 
@@ -55,7 +55,7 @@ def verify_golden_scan_protocol(
     los_launch_scan_in: dict[int, bool] | None = None,
     active_clock_ports: list[str] | None = None,
 ) -> None:
-    from faultflow.runner.runner import RunnerError, _load_core, _port_name_for_net
+    from faultflow.runner.runner import RunnerError, _load_core
 
     core = _load_core()
     if core is None:
@@ -64,13 +64,7 @@ def verify_golden_scan_protocol(
             "Run: cmake --build build -- -j2"
         )
 
-    clock_net_ids = manifest_clock_net_ids(manifest, error_cls=RunnerError)
-    clock_ports: list[str] = []
-    for clk_net in clock_net_ids:
-        port = _port_name_for_net(generic_json, str(manifest["top"]), clk_net, "input")
-        if port is None:
-            raise RunnerError(f"cannot map scan clock net {clk_net} to a port")
-        clock_ports.append(port)
+    clock_ports = manifest_clock_ports(manifest, generic_json, error_cls=RunnerError)
 
     scan_inputs = manifest.get("scan_inputs", [])
     scan_outputs = manifest.get("scan_outputs", [])

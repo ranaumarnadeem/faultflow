@@ -206,6 +206,31 @@ gated flop captures `enable ? D : Q`, the gate evaluating to its enable (`GateTy
 `ICG_EN`, `ICG_EN_CHAIN` behind another gate), so the enable logic is graded; the
 scan enable is 0 in every capture.
 
+### Clock paths
+
+A flop's root clock is found by following its clock pin back
+(`faultflow/scan/clock_gates.py: clock_path`) through clock gates, buffers and
+inverters, and through any cell that `[scan] hold` keeps passing the clock on: a
+clock mux whose held select picks it, an AND whose other input is held at 1, an OR
+whose other input is held at 0. The trace stops at the first net none of them
+drives, and that net must be an input port: the port the scan test pulses. A flop
+whose clock comes from logic instead (a divider, a clock mux nothing holds) stays
+out of scan (`clock_not_from_port`), and so does one the port reaches through an
+odd number of inverters (`inverted_clock`): it would capture on the pulse's
+trailing edge, as a negedge flop does. Flops behind any number of buffers from one
+port are one clock domain and share its chains; each keeps its pin on its own
+buffer's net, and simulation treats the clocks as ideal (every flop of the domain
+takes the value its inputs held before the edge, however deep its buffer).
+
+The manifest records each domain's port (`clock_ports`) and its paths
+(`clock_paths`): the nets on them and the holds that keep them open. Every net on
+a clock path is a clock net (Policy 3, `excluded_clock` unless
+`include_clock_faults`); the core also tags every net a clock net reads through
+buffers and inverters, in every flow. A held side input (the mux's select, the
+AND's enable) is not a clock, and its faults are graded. `scan-check` traces every
+scan flop's clock again with `[scan] hold` as it is and refuses one that no longer
+reaches its port, and the rule checker's CLK001 uses the same trace.
+
 A library's Liberty at a corner is its main file and the companion files of that corner
 (`<corner>_<suffix>`) that characterize cells the main one lacks: Sky130 hvl's eight
 level shifters are only in its dual-supply `tt_025C_3v30_lv1v80`, and map as `BUF`,

@@ -44,6 +44,13 @@ nets, and the flip-flops left out of scan with the reason. A design scanned with
 ([`schemas/wrapper.schema.json`](https://github.com/ranaumarnadeem/faultflow/blob/main/schemas/wrapper.schema.json)):
 its mode pins and clock, and per boundary cell its port bit, side, mux, gate and flop
 instances, the nets on its system and core sides, and its flop's chain and position.
+`clock_nets` are the scan clocks' nets and `clock_ports` the input ports carrying
+them, in the same order; `clock_paths` gives, per port, the nets from it to its
+flops' clock pins (through buffers, clock gates and cells `[scan] hold` keeps
+open) and those holds. A scan cell clocked through such cells also has its pin's
+net (`pin_clock_net`). The flops left out of scan are listed with their reason,
+among them `clock_not_from_port` (a clock no input port pulses) and
+`inverted_clock` (one a port pulses through an inverter).
 Later steps add their own entries (`latest_check`, `compression`, `compaction`).
 
 ## `coverage.rpt`

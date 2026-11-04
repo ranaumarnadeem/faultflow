@@ -8,10 +8,10 @@ import json
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from faultflow.pdk.roles import LIBRARY_KEY
-from faultflow.scan.clock_gates import ClockGate, clock_gates, root_clock
+from faultflow.scan.clock_gates import ClockGate, clock_gates, clock_path
 from faultflow.scan.errors import ScanError
 
 SCAN_CELL_TYPE = "$scanff_faultflow"
@@ -82,6 +82,12 @@ INELIGIBLE_REASONS = {
     # Gated by a clock gate without a test enable, its library having no gate with
     # one to put in its place: nothing would open it in shift.
     "clock_gate_without_test",
+    "inverted_output_used",
+    # A clock no input port pulses through buffers, clock gates and the cells
+    # [scan] hold keeps passing it on -- a divided clock, an unheld clock mux
+    # (faultflow.scan.clock_gates.clock_path) -- or one a port pulses inverted.
+    "clock_not_from_port",
+    "inverted_clock",
 }
 
 # The parameter a generic scan cell (and its enable's gates) carries when the flop it
@@ -149,6 +155,30 @@ class ScanStitchResult(ScanPlan):
     # Each clock gate a scan flop is gated by, by instance: its pins (clock_pin,
     # enable_pin, test_pin, output_pin) and edge, in the stitched netlist.
     clock_gates: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
+    # Each clock net's port, in clock_nets' order; and each port's clock path
+    # (_clock_paths).
+    clock_ports: list[str] = dataclasses.field(default_factory=list)
+    clock_paths: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
+
+
+def _clock_paths(flops: Sequence["_EligibleFF"]) -> dict[str, dict[str, Any]]:
+    """Each root clock port's paths to its scan flops' pins, merged: the nets on
+    them (clock nets, Policy 3) and the held inputs that keep them passing the
+    clock on ([scan] hold; scan-check re-traces them)."""
+    nets: dict[str, set[int]] = {}
+    holds: dict[str, set[tuple[str, int]]] = {}
+    for ff in flops:
+        nets.setdefault(ff.clock_port, set()).update(ff.clock_path_nets)
+        holds.setdefault(ff.clock_port, set()).update(ff.clock_holds)
+    return {
+        port: {
+            "nets": sorted(nets[port]),
+            "holds": [
+                {"port": name, "value": value} for name, value in sorted(holds[port])
+            ],
+        }
+        for port in sorted(nets)
+    }
 
 
 @dataclass(frozen=True)
@@ -182,9 +212,15 @@ class _EligibleFF:
     # The extra library the flop is from ([design] extra_libraries), "" for the
     # primary: its scan cell is that library's, its chain only that library's.
     library: str = ""
-    # A gated flop (clock_net its root clock): its pin's net and its clock gates.
+    # A flop its root clock (clock_net) reaches through cells -- buffers, clock
+    # gates, a held mux: its pin's net and its clock gates.
     pin_clock_net: int = -1
     clock_gates: tuple[str, ...] = ()
+    # The root clock's port, the nets from the pin to it, and the held inputs
+    # ((port bit, value)) that keep the cells on the way passing it on.
+    clock_port: str = ""
+    clock_path_nets: tuple[int, ...] = ()
+    clock_holds: tuple[tuple[str, int], ...] = ()
 
 
 def _truthy_attr(value: object) -> bool:
@@ -471,10 +507,16 @@ def _collect_ffs(
     module: dict[str, Any],
     cell_map: dict[str, Any],
     nonscan_cells: Sequence[str] = (),
+    holds: Mapping[str, int] | None = None,
 ) -> tuple[list[_EligibleFF], list[IneligibleFF]]:
     """Every flop of ``module``, eligible for scan or not. A flop whose instance name
     matches a ``nonscan_cells`` glob stays out of scan whatever its shape, and so
-    does an IEEE 1500 WSP's (faultflow.wrap.wsp: reason ``wsp``)."""
+    does an IEEE 1500 WSP's (faultflow.wrap.wsp: reason ``wsp``). Each one's clock
+    is followed back to the input port that pulses it (clock_gates.clock_path,
+    ``holds`` the scan test's held inputs); one no port pulses that way stays out
+    (``clock_not_from_port``), and so does one a port pulses inverted
+    (``inverted_clock``)."""
+    from faultflow.control_trace import Netlist  # it imports this module
     from faultflow.wrap.wsp import WSP_ATTR  # wrap imports scan
 
     cells = module.get("cells", {})
@@ -485,6 +527,7 @@ def _collect_ffs(
     ineligible: list[IneligibleFF] = []
     library_cells = _LibraryScanCells(cell_map)
     gates = clock_gates(module, cell_map)
+    netlist = Netlist(module, cell_map)
     test_gates = _TestClockGates(cell_map)
     # How many connections each net bit has, across every cell pin and top port: a
     # flop's inverted output is in use when its net has another.
@@ -571,16 +614,27 @@ def _collect_ffs(
             )
             continue
         pin_clock = _one_bit(conns.get(clk_pin), f"{instance}.{clk_pin}")
-        root, path = root_clock(pin_clock, gates)
+        found = clock_path(pin_clock, gates, netlist, holds)
+        root, path = found.root, found.gates
+        if path and not isinstance(root, int):
+            ineligible.append(IneligibleFF(str(instance), cell_type, "no_clock_pin"))
+            continue
+        if root not in netlist.input_net_names:
+            # A clock logic makes (a divider, a mux nothing holds): no port of
+            # the scan test pulses it.
+            ineligible.append(
+                IneligibleFF(str(instance), cell_type, "clock_not_from_port")
+            )
+            continue
+        if found.inverted:
+            # Its edge is the port pulse's trailing one: it would capture out of
+            # step with the chains it shifts on, as a negedge flop would.
+            ineligible.append(IneligibleFF(str(instance), cell_type, "inverted_clock"))
+            continue
         if path:
             # Gated: scanned on its root clock, each gate opened in shift by its
             # test enable -- one without has to become the library's gate with
             # one (clock_gates.py).
-            if not isinstance(root, int):
-                ineligible.append(
-                    IneligibleFF(str(instance), cell_type, "no_clock_pin")
-                )
-                continue
             if any(not g.test_pin and test_gates.role(g) is None for g in path):
                 ineligible.append(
                     IneligibleFF(str(instance), cell_type, "clock_gate_without_test")
@@ -592,9 +646,16 @@ def _collect_ffs(
                 cell=cell,
                 ff_meta=ff_meta,
                 original_type=cell_type,
-                clock_net=root if path else pin_clock,
-                pin_clock_net=pin_clock if path else -1,
+                clock_net=root,
+                pin_clock_net=pin_clock if pin_clock != root else -1,
                 clock_gates=tuple(g.instance for g in path),
+                clock_port=netlist.input_net_names[root],
+                clock_path_nets=found.nets,
+                clock_holds=tuple(
+                    (netlist.input_net_names[net], value)
+                    for net, _cell, _pin, value in found.holds
+                    if net in netlist.input_net_names
+                ),
                 data_net=data_net,
                 q_net=_one_bit(conns.get(q_pin), f"{instance}.{q_pin}"),
                 async_kind=async_kind,
@@ -980,11 +1041,12 @@ def _plan(
     scan_enable: str,
     nonscan_cells: Sequence[str],
     wrapper_chains: int | None,
+    holds: Mapping[str, int] | None = None,
 ) -> tuple[ScanPlan, list[_EligibleFF], int, int]:
     """The scan plan of ``module`` -- its core flops on the requested chains, an IEEE
     1500 wrapper's on chains of their own -- every eligible flop, the scan enable's
     net, and the first net id the plan leaves free."""
-    eligible, ineligible = _collect_ffs(module, cell_map, nonscan_cells)
+    eligible, ineligible = _collect_ffs(module, cell_map, nonscan_cells, holds)
     core, wrapper = _split_wrapper(eligible)
     chain_count = (
         _chain_count_from_options(_domain_sizes(core), scan_chains, max_chain_length)
@@ -1025,11 +1087,12 @@ def scan_clock_domains(
     cell_map_json: Path,
     top: str,
     nonscan_cells: Sequence[str] = (),
+    holds: Mapping[str, int] | None = None,
 ) -> dict[int, int]:
     """Scan-eligible FF count per clock net: the clock domains stitching
     gives chains of their own."""
     _, module = _top_module(_load_json(netlist_json), top)
-    eligible, _ = _collect_ffs(module, _load_json(cell_map_json), nonscan_cells)
+    eligible, _ = _collect_ffs(module, _load_json(cell_map_json), nonscan_cells, holds)
     counts: dict[int, int] = {}
     for ff in eligible:
         counts[ff.clock_net] = counts.get(ff.clock_net, 0) + 1
@@ -1041,12 +1104,13 @@ def scan_domain_count(
     cell_map_json: Path,
     top: str,
     nonscan_cells: Sequence[str] = (),
+    holds: Mapping[str, int] | None = None,
 ) -> int:
     """How many scan domains -- clock domains, each split by cell library
     ([design] extra_libraries) -- stitching gives chains of their own: the
     fewest chains it takes."""
     _, module = _top_module(_load_json(netlist_json), top)
-    eligible, _ = _collect_ffs(module, _load_json(cell_map_json), nonscan_cells)
+    eligible, _ = _collect_ffs(module, _load_json(cell_map_json), nonscan_cells, holds)
     return len({_domain(ff) for ff in eligible})
 
 
@@ -1062,6 +1126,7 @@ def plan_scan_json(
     nonscan_cells: Sequence[str] = (),
     *,
     wrapper_chains: int | None = None,
+    holds: Mapping[str, int] | None = None,
 ) -> ScanPlan:
     data = _load_json(netlist_json)
     cell_map = _load_json(cell_map_json)
@@ -1077,6 +1142,7 @@ def plan_scan_json(
         scan_enable,
         nonscan_cells,
         wrapper_chains,
+        holds,
     )
     return plan
 
@@ -1212,6 +1278,7 @@ def stitch_scan_json(
     nonscan_cells: Sequence[str] = (),
     *,
     wrapper_chains: int | None = None,
+    holds: Mapping[str, int] | None = None,
 ) -> ScanStitchResult:
     """``netlist_json`` scanned into ``output_json``: its core flops on the requested
     chains; an IEEE 1500 wrapper's flops (faultflow.wrap) on chains of their own,
@@ -1240,6 +1307,7 @@ def stitch_scan_json(
         scan_enable,
         nonscan_cells,
         wrapper_chains,
+        holds,
     )
     for chain in plan.chains:
         _add_port(stitched_module, chain.scan_in, "input", chain.scan_in_net)
@@ -1292,8 +1360,10 @@ def stitch_scan_json(
             )
             data_net = data_net if active else record.q_net
         connections = {
-            # A gated flop stays on its gate's clock.
-            "CLK": [record.pin_clock_net if record.clock_gates else record.clock_net],
+            # A flop stays on its pin's clock: a buffer's, a gate's.
+            "CLK": [
+                record.pin_clock_net if record.pin_clock_net >= 0 else record.clock_net
+            ],
             "D": [data_net],
             "SDI": [record.scan_in_net],
             "SE": [record.scan_enable_net],
@@ -1362,6 +1432,13 @@ def stitch_scan_json(
         cells=plan.cells,
         ineligible_ffs=plan.ineligible_ffs,
         clock_gates=gate_pins,
+        clock_ports=[
+            next(ff.clock_port for ff in eligible if ff.clock_net == net)
+            for net in plan.clock_nets
+        ],
+        clock_paths=_clock_paths(
+            [ff for ff in eligible if ff.instance in {c.instance for c in plan.cells}]
+        ),
     )
 
 
@@ -1382,6 +1459,12 @@ def _open_clock_gates(
         return {}
     by_name = {g.instance: g for g in clock_gates(module, cell_map).values()}
     test_gates = _TestClockGates(cell_map)
+    # The gate each gate's clock comes from, directly or through buffers.
+    upstream = {
+        gate: cell.clock_gates[index + 1]
+        for cell in plan.cells
+        for index, gate in enumerate(cell.clock_gates[:-1])
+    }
     cells = module["cells"]
     found: dict[str, dict[str, str]] = {}
     for name in used:
@@ -1395,6 +1478,7 @@ def _open_clock_gates(
             "test_pin": gate.test_pin,
             "output_pin": gate.output_pin,
             "edge": gate.edge,
+            "clocked_by": upstream.get(name, ""),
         }
         if not gate.test_pin:
             role = test_gates.role(gate)

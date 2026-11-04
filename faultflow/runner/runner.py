@@ -56,6 +56,7 @@ from faultflow.rule_check.model import RuleCheckReport
 from faultflow.scan.checks import Transparent, check_scan_structure
 from faultflow.scan.atpg_view import build_scan_atpg_view
 from faultflow.scan.cell_map import resolve_scan_cell_map
+from faultflow.scan.clock_gates import clock_path_problems
 from faultflow.scan.compression import (
     ContinuousDecompressor,
     insert_continuous_compression,
@@ -69,7 +70,7 @@ from faultflow.scan.instrument_guard import (
     check_test_instruments,
     manifest_instrument_globs,
 )
-from faultflow.scan.manifest import manifest_clock_net_ids
+from faultflow.scan.manifest import manifest_clock_net_ids, manifest_clock_ports
 from faultflow.scan.reports import (
     format_dry_run,
     hash_file,
@@ -719,6 +720,7 @@ class Runner:
                         scan_enable=se_name,
                         nonscan_cells=self.cfg.scan.nonscan_cells,
                         wrapper_chains=self.cfg.scan.wrapper_chains,
+                        holds=dict(self.cfg.scan.hold),
                     )
                 except ScanError as exc:
                     raise RunnerError(str(exc)) from exc
@@ -744,6 +746,7 @@ class Runner:
                 scan_enable=se_name,
                 nonscan_cells=self.cfg.scan.nonscan_cells,
                 wrapper_chains=self.cfg.scan.wrapper_chains,
+                holds=dict(self.cfg.scan.hold),
             )
             log.info(
                 "scan   inserted  %d chains  %d scan cells  %.1fs",
@@ -924,12 +927,7 @@ class Runner:
                 "[compression] clock must be set explicitly: the scan manifest "
                 f"declares {len(clock_nets)} clock net(s), not exactly one"
             )
-        port = _port_name_for_net(
-            generic_json, str(manifest["top"]), clock_nets[0], "input"
-        )
-        if port is None:
-            raise RunnerError(f"cannot map scan clock net {clock_nets[0]} to a port")
-        return port
+        return manifest_clock_ports(manifest, generic_json, error_cls=RunnerError)[0]
 
     def scan_compress(self) -> str:
         """Insert the continuous-flow scan compression decompressor (a ring
@@ -1604,17 +1602,7 @@ class Runner:
         )
         if not output_order:
             raise RunnerError("normal-mode scan check requires at least one PO")
-        clock_net_ids = manifest_clock_net_ids(manifest, error_cls=RunnerError)
-        clock_names: list[str] = []
-        for clk_net in clock_net_ids:
-            port = _port_name_for_net(
-                source_json, str(manifest["top"]), clk_net, "input"
-            )
-            if port is None:
-                raise RunnerError(
-                    f"cannot map scan clock net {clk_net} to an input port"
-                )
-            clock_names.append(port)
+        clock_names = manifest_clock_ports(manifest, source_json, error_cls=RunnerError)
         vectors, vector_source = self._scan_vector_source(source_json, vectors_path)
         raw_scan_inputs = manifest.get("scan_inputs", [])
         scan_inputs = (
@@ -1922,6 +1910,8 @@ class Runner:
             except (ScanError, RunnerError) as exc:
                 errors.append(str(exc))
         if not errors:
+            errors.extend(self._clock_path_problems(manifest))
+        if not errors:
             try:
                 violations = self._shift_control_violations(manifest)
             except RunnerError as exc:
@@ -2057,6 +2047,18 @@ class Runner:
             allow=self.cfg.scan.scan_test_access,
         )
 
+    def _clock_path_problems(self, manifest: dict[str, Any]) -> list[str]:
+        """Each scan flop's clock traced again, with [scan] hold as it is now, to
+        the port the manifest records (scan.clock_gates.clock_path_problems)."""
+        generic_json = Path(str(manifest["generic_json"]))
+        _, module = _json_top_module(generic_json, self.cfg.top)
+        return clock_path_problems(
+            module,
+            manifest,
+            _load_json_object(resolve_scan_cell_map(self.cfg)),
+            dict(self.cfg.scan.hold),
+        )
+
     def _shift_control_violations(
         self, manifest: dict[str, Any]
     ) -> list[ShiftViolation]:
@@ -2093,7 +2095,13 @@ class Runner:
         manifest_path = self._scan_manifest_path()
         if manifest_path.exists():
             manifest = load_manifest(manifest_path)
-        report = run_rule_check(netlist, self.cfg.cell_lib, self.cfg.top, manifest)
+        report = run_rule_check(
+            netlist,
+            self.cfg.cell_lib,
+            self.cfg.top,
+            manifest,
+            holds=dict(self.cfg.scan.hold),
+        )
         txt_path = self.cfg.output_dir / "rule_check.rpt"
         json_path = self.cfg.output_dir / "rule_check.json"
         write_rule_reports(report, txt_path, json_path, strict=strict)
