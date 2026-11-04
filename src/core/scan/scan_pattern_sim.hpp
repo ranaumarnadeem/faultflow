@@ -151,6 +151,15 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
     const std::string& unsupported_policy, int sim_threads = 1,
     const std::vector<std::string>& blackbox_instances = {});
 
+// The scalar oracle for simulate_scan_protocol_faults: each fault graded
+// alone through GoldenRefSim, one outcome per request.faults entry, in order.
+// capture_diffs is ignored.
+std::vector<ScanProtocolFaultOutcome> simulate_scan_protocol_faults_reference(
+    const std::string& json_path, const std::string& cell_map_path,
+    const ScanProtocolFaultRequest& request,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
+
 bool scan_observations_equal(const ScanPatternResult& lhs,
                              const ScanPatternResult& rhs);
 
