@@ -26,6 +26,7 @@ add_executable(
   atpg/test_cone_equivalence.cpp
   atpg/test_cone_ordering.cpp
   atpg/test_incremental_equivalence.cpp
+  atpg/test_lazy_launch_equivalence.cpp
   atpg/test_miter_sat.cpp
   atpg/test_transition_atpg.cpp
   atpg/test_scan_transition_atpg.cpp

@@ -35,6 +35,10 @@ struct SatSolveOptions {
   // observable's cone at a time instead of the whole cone up front. Verdict-
   // equivalent to the single-shot solver (proven by the equivalence test).
   bool incremental = false;
+  // Two-frame transition CNFs: encode the launch frame over the nets the
+  // capture frame and the fault site read only (verdict-equivalent; the full
+  // launch frame, false, is the A/B control).
+  bool lazy_launch = true;
   // IFC fast untestability proof (FUP): node budget of the forward-bounded
   // region whose boundary cut is solved first to prove redundancy on a small
   // CNF. 0 disables FUP; only applied when the IFC solver is selected.

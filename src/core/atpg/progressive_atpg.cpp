@@ -650,7 +650,7 @@ SolveTransitionResult solve_transition_fault_for_db(
   options.sat_timeout_seconds = sat_timeout_seconds;
   options.blocked_patterns = blocked_patterns;
   // Broadside two-frame transition: cone restricts the two capture machines;
-  // the launch frame stays full. Scan LOC/LOS transition stays whole-circuit.
+  // the launch frame is encoded over the fault net's fan-in only.
   options.cone_restrict = cone_restrict;
 
   std::map<std::string, bool> launch;
@@ -693,8 +693,8 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
   options.conflict_limit = conflict_limit;
   options.sat_timeout_seconds = sat_timeout_seconds;
   options.blocked_patterns = blocked_patterns;
-  // Scan LOC transition: cone restricts the two capture machines; launch frame
-  // full (the PPI<->PPO coupling needs every coupled PPO computed).
+  // Scan LOC transition: cone restricts the two capture machines; the launch
+  // frame covers the fault net and the PPOs of the capture PPIs they read.
   options.cone_restrict = cone_restrict;
   options.seed_width = seed_width;
   options.seeded_inputs = seeded_pis(pis, seeded_inputs);
@@ -766,7 +766,8 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
   options.conflict_limit = conflict_limit;
   options.sat_timeout_seconds = sat_timeout_seconds;
   options.blocked_patterns = blocked_patterns;
-  // Scan LOS transition: cone restricts the two capture machines; launch full.
+  // Scan LOS transition: cone restricts the two capture machines; the launch
+  // frame covers the fault net's fan-in.
   options.cone_restrict = cone_restrict;
   options.seed_width = seed_width;
   options.seeded_inputs = seeded_pis(pis, seeded_inputs);

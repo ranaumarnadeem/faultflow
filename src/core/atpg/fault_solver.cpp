@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <chrono>
 #include <functional>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "atpg/cnf_encoder.hpp"
@@ -15,6 +17,7 @@
 #include "atpg/sat_terminator.hpp"
 #include "common/types.hpp"
 #include "ir/compiled_graph/compiled_graph.hpp"
+#include "sim/gate_eval.hpp"
 
 namespace faultflow::atpg {
 namespace {
@@ -677,22 +680,95 @@ SatSolveResult solve_stuck_at_fault_incremental(
 
 namespace {
 
-// Installs the launch<->capture PI coupling clauses for a two-frame transition
-// CNF. Invoked after the per-PI capture good==faulty equivs are added. Broadside
-// uses a no-op (launch and capture PIs independent); scan LOC couples each
-// capture PPI to its launch PPO and holds the real PIs.
-using PiCoupler = std::function<void(CaDiCaL::Solver&, const std::vector<int>&,
-                                     CnfVarMap&)>;
+// The launch<->capture coupling of a two-frame transition CNF: each pair is
+// (capture net, launch net), the capture-frame good value equal to the launch
+// frame's. Broadside has none (launch and capture PIs independent); scan LOC
+// couples each capture PPI to its launch PPO, scan LOS to its chain
+// predecessor's launch PPI, and both hold the real PIs.
+using Coupling = std::vector<std::pair<uint32_t, uint32_t>>;
+
+// The launch-frame nets the CNF reads (lazy launch frame): the fault net, for
+// its pre-transition value, and the launch net of every coupling whose capture
+// net the capture machines read (in the capture support), each with its fan-in
+// cone. No other clause names a launch net, so the gates left out only define
+// values nothing constrains; any model of the smaller CNF extends to the whole
+// two-frame CNF by simulating them, and the verdict is the same.
+std::vector<char> launch_cone(const CompiledSimGraph& cg, uint32_t fault_net,
+                              const Coupling& coupling, const ConeMasks& masks) {
+  std::vector<int> fallback;
+  const std::vector<int>* driver = &cg.driver_index;
+  if (cg.driver_index.empty()) {
+    fallback = build_driver_index(cg);
+    driver = &fallback;
+  }
+  std::vector<char> needed(static_cast<size_t>(cg.net_count), 0);
+  std::vector<uint32_t> work;
+  const auto need = [&](uint32_t net) {
+    if (!needed[net]) {
+      needed[net] = 1;
+      work.push_back(net);
+    }
+  };
+  need(fault_net);
+  for (const auto& [capture, launch] : coupling) {
+    if (masks.in_support[capture]) {
+      need(launch);
+    }
+  }
+  while (!work.empty()) {
+    const uint32_t net = work.back();
+    work.pop_back();
+    const int d = (*driver)[net];
+    if (d < 0) {
+      continue;
+    }
+    for (uint32_t input : inputs_of(cg.nodes[static_cast<size_t>(d)])) {
+      need(input);
+    }
+  }
+  return needed;
+}
+
+// The fault-free launch frame for the launch-net values `launch_value` gives
+// the INPUT nets (the solved launch): every net, in level order.
+std::vector<bool> simulate_launch(const CompiledSimGraph& cg,
+                                  const std::function<bool(uint32_t)>& launch_value) {
+  std::vector<bool> values(static_cast<size_t>(cg.net_count), false);
+  std::vector<bool> ins;
+  const auto eval_node = [&](const SimNode& node) {
+    if (node.type == GateType::INPUT) {
+      values[node.out] = launch_value(node.out);
+      return;
+    }
+    ins.clear();
+    for (uint32_t input : inputs_of(node)) {
+      ins.push_back(values[input]);
+    }
+    values[node.out] = eval_gate_scalar(node.type, ins);
+  };
+  if (cg.level_starts.size() >= 2) {
+    for (size_t lvl = 0; lvl + 1 < cg.level_starts.size(); ++lvl) {
+      for (int i = cg.level_starts[lvl]; i < cg.level_starts[lvl + 1]; ++i) {
+        eval_node(cg.nodes[static_cast<size_t>(i)]);
+      }
+    }
+  } else {
+    for (const SimNode& node : cg.nodes) {
+      eval_node(node);
+    }
+  }
+  return values;
+}
 
 // Shared two-frame transition CNF: three net-variable copies (launch good,
 // capture good, capture faulty), the transition edge requirement + capture
 // stuck-at force at the fault net, and the capture good-vs-faulty miter over the
-// observable set. The only thing that varies between broadside and scan LOC is
-// `couple_pis`; everything else is identical.
+// observable set. The only thing that varies between broadside and scan LOC/LOS
+// is `coupling`; everything else is identical.
 SatSolveResult solve_two_frame_transition(
     const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
     const CompactFault& fault, const SatSolveOptions& options,
-    const PiCoupler& couple_pis, bool launch_only_blocking,
+    const Coupling& coupling, bool launch_only_blocking,
     const std::vector<uint32_t>& extra_block_compiled,
     std::map<std::string, bool>& v1_out, std::map<std::string, bool>& v2_out) {
   // vars.free_vars / vars.faulty_vars are the CAPTURE-frame (frame 1) good and
@@ -710,10 +786,8 @@ SatSolveResult solve_two_frame_transition(
   const auto time_guard = apply_solver_limits(solver, options);
 
   // Cone masks restrict the two CAPTURE-frame machines (good + faulty); the
-  // LAUNCH frame stays full because the scan LOC/LOS PI coupling forces every
-  // capture PPI equal to its launch PPO regardless of the fault, so the launch
-  // frame must be able to compute all coupled PPOs. Restricting 2 of 3 machines
-  // is still verdict-preserving. Empty reached-observable set => redundant.
+  // LAUNCH frame is encoded over launch_cone only. Empty reached-observable
+  // set => redundant.
   const std::vector<uint32_t> observable_set(cg.observable.begin(),
                                              cg.observable.end());
   const ConeMasks masks = build_cone_masks(cg, fault.net_index, observable_set,
@@ -721,19 +795,25 @@ SatSolveResult solve_two_frame_transition(
   if (masks.redundant) {
     return SatSolveResult::UNSAT;
   }
+  const std::vector<char> in_launch =
+      options.lazy_launch
+          ? launch_cone(cg, fault.net_index, coupling, masks)
+          : std::vector<char>(static_cast<size_t>(cg.net_count), 1);
 
   for (const SimNode& node : cg.nodes) {
     if (node.type == GateType::INPUT) {
       continue;
     }
     const auto input_nets = inputs_of(node);
-    // Launch frame: full good machine (no fault anywhere).
-    std::vector<int> launch_inputs;
-    launch_inputs.reserve(input_nets.size());
-    for (uint32_t input : input_nets) {
-      launch_inputs.push_back(launch_vars.at(input));
+    // Launch frame: the good machine (no fault anywhere) over launch_cone.
+    if (in_launch[node.out]) {
+      std::vector<int> launch_inputs;
+      launch_inputs.reserve(input_nets.size());
+      for (uint32_t input : input_nets) {
+        launch_inputs.push_back(launch_vars.at(input));
+      }
+      add_gate_cnf(solver, node.type, launch_inputs, launch_vars.at(node.out));
     }
-    add_gate_cnf(solver, node.type, launch_inputs, launch_vars.at(node.out));
     // Capture good machine: over the fault's support.
     if (masks.in_support[node.out]) {
       std::vector<int> free_inputs;
@@ -770,9 +850,13 @@ SatSolveResult solve_two_frame_transition(
     }
   }
 
-  // Launch<->capture PI coupling: broadside = none (independent); scan LOC =
-  // capture PPI == launch PPO + held real PIs.
-  couple_pis(solver, launch_vars, vars);
+  // Launch<->capture coupling: broadside = none (independent); scan LOC =
+  // capture PPI == launch PPO + held real PIs. Installed on the GOOD capture
+  // machine even when the capture net is the fault net (the faulty copy is
+  // independently forced to the stuck value).
+  for (const auto& [capture, launch] : coupling) {
+    add_equiv(solver, vars.free_vars.at(capture), launch_vars.at(launch));
+  }
   // Scan compression: the launch frame's load and (LOS) the capture frame's
   // launch-shift scan-in bits come from one seed.
   const NetVar capture_var = [&](uint32_t net) { return vars.free_vars.at(net); };
@@ -848,6 +932,28 @@ SatSolveResult solve_two_frame_transition(
     v1_out[pi.name] = solver.val(launch_vars.at(pi.compiled)) > 0;
     v2_out[pi.name] = solver.val(vars.free_vars.at(pi.compiled)) > 0;
   }
+  // A coupled capture value the CNF left free (its launch net outside
+  // launch_cone): what the launch frame computes from V1, fault-free.
+  std::vector<std::pair<uint32_t, uint32_t>> derived;
+  for (const auto& [capture, launch] : coupling) {
+    if (!in_launch[launch]) {
+      derived.emplace_back(capture, launch);
+    }
+  }
+  if (!derived.empty()) {
+    const std::vector<bool> launch_frame = simulate_launch(
+        cg, [&](uint32_t net) { return solver.val(launch_vars.at(net)) > 0; });
+    std::map<uint32_t, bool> capture_value;
+    for (const auto& [capture, launch] : derived) {
+      capture_value[capture] = launch_frame[launch];
+    }
+    for (const AtpgPiInfo& pi : pis) {
+      const auto it = capture_value.find(pi.compiled);
+      if (it != capture_value.end()) {
+        v2_out[pi.name] = it->second;
+      }
+    }
+  }
   read_seed(solver, options, free_seed);
   return SatSolveResult::SAT;
 }
@@ -862,9 +968,7 @@ SatSolveResult solve_transition_fault(const CompiledSimGraph& cg,
                                       std::map<std::string, bool>& v2_out) {
   // Broadside two-pattern: launch and capture PIs are independent, so no extra
   // coupling beyond the shared good==faulty capture equivs.
-  const PiCoupler no_coupling =
-      [](CaDiCaL::Solver&, const std::vector<int>&, CnfVarMap&) {};
-  return solve_two_frame_transition(cg, pis, fault, options, no_coupling,
+  return solve_two_frame_transition(cg, pis, fault, options, Coupling{},
                                     /*launch_only_blocking=*/false,
                                     /*extra_block_compiled=*/{}, v1_out, v2_out);
 }
@@ -875,22 +979,17 @@ SatSolveResult solve_scan_transition_fault(
     const std::vector<uint32_t>& held_pi_compiled, const CompactFault& fault,
     const SatSolveOptions& options, std::map<std::string, bool>& v1_out,
     std::map<std::string, bool>& v2_out) {
-  const PiCoupler loc_coupling = [&](CaDiCaL::Solver& solver,
-                                     const std::vector<int>& launch_vars,
-                                     CnfVarMap& vars) {
-    // Per scan FF: capture-frame current state (PPI) == launch-frame next-state
-    // (PPO). This is the LOC functional-launch derivation V2 = f(V1). It is
-    // installed on the GOOD capture machine even when the PPI is the fault net
-    // (the faulty copy is independently forced to the stuck value).
-    for (const LocCouple& c : couples) {
-      add_equiv(solver, vars.free_vars.at(c.ppi_compiled),
-                launch_vars.at(c.ppo_compiled));
-    }
-    // Real PIs hold launch->capture (single-clock LOC convention).
-    for (uint32_t held : held_pi_compiled) {
-      add_equiv(solver, vars.free_vars.at(held), launch_vars.at(held));
-    }
-  };
+  // Per scan FF: capture-frame current state (PPI) == launch-frame next-state
+  // (PPO), the LOC functional-launch derivation V2 = f(V1); real PIs hold
+  // launch->capture (single-clock LOC convention).
+  Coupling loc_coupling;
+  loc_coupling.reserve(couples.size() + held_pi_compiled.size());
+  for (const LocCouple& c : couples) {
+    loc_coupling.emplace_back(c.ppi_compiled, c.ppo_compiled);
+  }
+  for (uint32_t held : held_pi_compiled) {
+    loc_coupling.emplace_back(held, held);
+  }
   // V2 is functionally derived from V1, so blocking the launch (V1) alone is
   // sufficient to force a new pair: launch-only N-bit blocked keys, matching the
   // stuck-at scan path's pattern_key handling.
@@ -906,25 +1005,20 @@ SatSolveResult solve_scan_los_transition_fault(
     const std::vector<uint32_t>& held_pi_compiled, const CompactFault& fault,
     const SatSolveOptions& options, std::map<std::string, bool>& v1_out,
     std::map<std::string, bool>& v2_out) {
-  const PiCoupler los_coupling = [&](CaDiCaL::Solver& solver,
-                                     const std::vector<int>& launch_vars,
-                                     CnfVarMap& vars) {
-    // Per scan FF: capture-frame current state (PPI) == chain PREDECESSOR's
-    // launch-frame current state (PPI). This is the shift relation V2[ff] =
-    // V1[predecessor(ff)] created by the last scan-shift launch. Installed on the
-    // GOOD capture machine even when the PPI is the fault net (the faulty copy is
-    // independently forced to the stuck value). Chain HEAD PPIs get NO clause —
-    // their capture value is the fresh launch scan-in bit (a free variable).
-    for (const LosCouple& c : couples) {
-      add_equiv(solver, vars.free_vars.at(c.capture_ppi_compiled),
-                launch_vars.at(c.pred_ppi_compiled));
-    }
-    // Real PIs hold launch->capture (one functional capture clock after the
-    // shift).
-    for (uint32_t held : held_pi_compiled) {
-      add_equiv(solver, vars.free_vars.at(held), launch_vars.at(held));
-    }
-  };
+  // Per scan FF: capture-frame current state (PPI) == chain PREDECESSOR's
+  // launch-frame current state (PPI), the shift relation V2[ff] =
+  // V1[predecessor(ff)] created by the last scan-shift launch. Chain HEAD PPIs
+  // get NO pair: their capture value is the fresh launch scan-in bit (a free
+  // variable). Real PIs hold launch->capture (one functional capture clock
+  // after the shift).
+  Coupling los_coupling;
+  los_coupling.reserve(couples.size() + held_pi_compiled.size());
+  for (const LosCouple& c : couples) {
+    los_coupling.emplace_back(c.capture_ppi_compiled, c.pred_ppi_compiled);
+  }
+  for (uint32_t held : held_pi_compiled) {
+    los_coupling.emplace_back(held, held);
+  }
   // V2 = shift(V1) plus the free head scan-in bits, so the blocked key is
   // launch ‖ head-bits (launch_only_blocking with the head PPIs appended).
   return solve_two_frame_transition(cg, pis, fault, options, los_coupling,
