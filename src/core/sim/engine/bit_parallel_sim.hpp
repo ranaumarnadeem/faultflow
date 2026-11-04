@@ -39,6 +39,12 @@ class BitParallelSim {
       const CompiledSimGraph& cg, const TestVector& vec,
       const FaultBatch& batch) const;
 
+  // simulate_batch_samples keeping only `nets` (compiled net indices) of each
+  // sampled cycle: samples[t][i] is nets[i]'s word at the t-th sampled cycle.
+  std::vector<std::vector<uint64_t>> simulate_batch_samples(
+      const CompiledSimGraph& cg, const TestVector& vec, const FaultBatch& batch,
+      const std::vector<uint32_t>& nets) const;
+
   // simulate_batch's cycle loop, detecting only on `observe` (compiled net
   // indices) at sampled cycles. first_sample[lane] = index, among the sampled
   // cycles, of the first one at which the lane differs from lane 0 on any
