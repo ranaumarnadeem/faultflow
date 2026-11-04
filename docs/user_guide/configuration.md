@@ -164,9 +164,15 @@ line rather than setting it turns collapsing back on.
 :class: important
 With `fail` (the default), faultflow aborts immediately if the netlist contains any
 cell not in the cell map — coverage is never reported on an unknown netlist. With
-`blackbox`, unknown cells are explicitly modeled as test boundaries: their outputs
-get no fault sites and are excluded from the denominator (and reported separately).
-There is no silent-skip option.
+`blackbox`, a cell missing from the cell map (or mapped `unsupported`, like a latch)
+has unknown outputs in every flow: its output nets get no fault sites and are
+excluded from the denominator (`excluded_blackbox`), nothing their value reaches,
+through gates or flops, is credited, and a fault only such a cell blocks (testable
+were its outputs controllable and its inputs observable) is `blackbox_unresolved`,
+never redundant. A scan run masks it like a `[blackbox]` instance whose
+`output_value` is `x`, and refuses one whose output reaches a scan flop's clock,
+scan-in, scan-enable or async set/reset. The report lists the cells
+(`policy.unknown_cells`). There is no silent-skip option.
 ```
 
 ## `[atpg]`

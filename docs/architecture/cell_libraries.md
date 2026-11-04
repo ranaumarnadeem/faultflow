@@ -137,8 +137,13 @@ encountered depends on `[simulation] unsupported_cells`:
 
 - `fail` (default) — abort immediately; coverage is never reported on a netlist with
   unknown or unsupported cells.
-- `blackbox` — model the cell as a test boundary; its outputs get no fault sites and
-  are excluded from the denominator, and the exclusion is reported.
+- `blackbox` — the cell's outputs are unknown in every flow: they get no fault sites
+  and are excluded from the denominator, every observation point their value reaches
+  is dropped from what the graders, the golden reference and SAT may observe
+  (`GraphCompiler`), and a fault only the cell blocks is re-solved with the cell
+  transparent (outputs free, inputs observed): `blackbox_unresolved` if testable
+  there, redundant only if not. Scan runs model it like a `[blackbox]` instance
+  whose outputs are `x`.
 
 Tristate (`TBUF`) and latch cells are currently a hard error by policy; see the
 [Roadmap](../roadmap.md).

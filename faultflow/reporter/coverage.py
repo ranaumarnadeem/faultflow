@@ -4,6 +4,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, cast
 
 from faultflow.config import FaultflowConfig
@@ -68,7 +69,11 @@ def _per_node(conn: sqlite3.Connection, campaign_id: int) -> list[dict[str, Any]
     return nodes
 
 
-def _blackbox_boundary(fp: dict[str, Any], blackbox_instances: tuple[str, ...]) -> str:
+def _blackbox_boundary(
+    fp: dict[str, Any],
+    blackbox_instances: tuple[str, ...],
+    unknown_cells: Sequence[str] = (),
+) -> str:
     """How a blackboxed instance's boundary was modeled -- a documented coverage
     assumption. A scan campaign models it opaque: its inputs are unobserved,
     and its outputs are whatever blackbox_output_values says -- unknown by
@@ -77,9 +82,11 @@ def _blackbox_boundary(fp: dict[str, Any], blackbox_instances: tuple[str, ...]) 
     observe its inputs -- an IEEE 1500 wrapper's EXTEST (scan_extest) no more
     than any other scan test. A combinational campaign models it as a test
     interface (inputs observable, outputs controllable), parallel to scan
-    pseudo-PI/PO."""
+    pseudo-PI/PO. Unknown cells (unsupported_cells = blackbox) are opaque in
+    every campaign: nothing their outputs reach is observed, and their inputs
+    are not."""
     if not blackbox_instances:
-        return "none"
+        return "opaque" if unknown_cells else "none"
     scan = fp.get("campaign_type") in ("scan", "scan_extest")
     return "opaque" if scan else "pseudo_port"
 
@@ -88,6 +95,7 @@ def _policy(
     fp: dict[str, Any],
     blackbox_instances: tuple[str, ...] = (),
     blackbox_output_values: tuple[tuple[str, str], ...] = (),
+    unknown_cells: Sequence[str] = (),
 ) -> dict[str, Any]:
     policy: dict[str, Any] = {
         "unsupported_cells": fp.get("unsupported_cells", "fail"),
@@ -95,8 +103,11 @@ def _policy(
         "include_reset_faults": bool(fp.get("include_reset_faults", 0)),
         "collapsing": bool(fp.get("collapsing", 0)),
         "blackbox_instances": list(blackbox_instances),
-        "blackbox_boundary": _blackbox_boundary(fp, blackbox_instances),
+        "blackbox_boundary": _blackbox_boundary(fp, blackbox_instances, unknown_cells),
     }
+    if policy["unsupported_cells"] == "blackbox":
+        # The cells left out of the model: their outputs unknown everywhere.
+        policy["unknown_cells"] = sorted(unknown_cells)
     if policy["blackbox_boundary"] == "opaque":
         # What each opaque blackbox's outputs hold in the scan test: "x"
         # (unknown) or "0" ([blackbox] output_value).
@@ -576,6 +587,7 @@ def write_reports(
     cfg: FaultflowConfig,
     scan_context: dict[str, Any] | None = None,
     campaign_id: int | None = None,
+    unknown_cells: Sequence[str] = (),
 ) -> tuple[Path, Path, dict[str, Any]]:
     cfg.ensure_workspace()
     top = cfg.top
@@ -642,7 +654,9 @@ def write_reports(
             "config_hash": fp.get("config_hash", ""),
             "template_hash": fp.get("template_hash", ""),
         },
-        "policy": _policy(fp, cfg.blackbox_instances, cfg.blackbox_output_values),
+        "policy": _policy(
+            fp, cfg.blackbox_instances, cfg.blackbox_output_values, unknown_cells
+        ),
         "summary": data,
         "run": _latest_run(conn, campaign_id),
         "per_node": per_node,
@@ -760,6 +774,7 @@ def write_reports(
             f"include_clock_faults:{_policy_text(report, 'include_clock_faults')}",
             f"include_reset_faults:{_policy_text(report, 'include_reset_faults')}",
             f"collapsing:          {_policy_text(report, 'collapsing')}",
+            *_unknown_cell_lines(report),
             "",
             "coverage gap by reason:",
         ]
@@ -800,6 +815,15 @@ def write_reports(
     txt.append("")
     txt_path.write_text("\n".join(txt), encoding="utf-8")
     return json_path, txt_path, report
+
+
+def _unknown_cell_lines(report: dict[str, Any]) -> list[str]:
+    """The cells unsupported_cells = blackbox left out: their outputs unknown,
+    so nothing they reach is credited (blackbox_unresolved)."""
+    cells = cast(dict[str, Any], report["policy"]).get("unknown_cells")
+    if cells is None:
+        return []
+    return [f"unknown_cells:       {', '.join(cells) if cells else 'none'}"]
 
 
 def _policy_text(report: dict[str, Any], key: str) -> Any:

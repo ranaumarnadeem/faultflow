@@ -299,6 +299,7 @@ NormalizedGraph NormalizedGraph::from_parsed(
             }
           }
         }
+        ng.unknown_cells.insert(inst);
         continue;
       }
       throw UnsupportedCellError(cell.type);
@@ -306,6 +307,7 @@ NormalizedGraph NormalizedGraph::from_parsed(
 
     if (entry->unsupported) {
       if (policy == "blackbox") {
+        ng.unknown_cells.insert(inst);
         if (!entry->outputs.empty()) {
           for (const auto& [logical, lib_pin] : entry->outputs) {
             (void)logical;

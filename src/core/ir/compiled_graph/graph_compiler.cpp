@@ -504,6 +504,43 @@ void rebuild_fanout_csr(CompiledSimGraph& cg) {
   }
 }
 
+// A cell missing from the cell map (unsupported_cells = blackbox) has unknown
+// outputs (ng.blackboxed): the simulators read them as 0 and SAT as free, and
+// neither is what the silicon does. Nothing may be credited through them, so
+// every observable their value reaches, through gates and flops (the fanout
+// CSR runs D, clock and controls to Q), leaves `observable`; the graders, the
+// golden reference and every SAT miter read only that set.
+void drop_unknown_reach(CompiledSimGraph& cg, const NormalizedGraph& ng) {
+  if (ng.blackboxed.empty() || cg.observable.empty()) {
+    return;
+  }
+  std::vector<char> reached(static_cast<size_t>(cg.net_count), 0);
+  std::vector<uint32_t> work;
+  for (int yid : ng.blackboxed) {
+    const auto it = cg.yosys_to_compiled.find(yid);
+    if (it != cg.yosys_to_compiled.end() && !reached[it->second]) {
+      reached[it->second] = 1;
+      work.push_back(static_cast<uint32_t>(it->second));
+    }
+  }
+  while (!work.empty()) {
+    const uint32_t net = work.back();
+    work.pop_back();
+    for (uint32_t i = cg.fanout_offsets[net]; i < cg.fanout_offsets[net + 1];
+         ++i) {
+      const uint32_t t = cg.fanout_targets[i];
+      if (!reached[t]) {
+        reached[t] = 1;
+        work.push_back(t);
+      }
+    }
+  }
+  cg.observable.erase(
+      std::remove_if(cg.observable.begin(), cg.observable.end(),
+                     [&](int obs) { return reached[static_cast<size_t>(obs)] != 0; }),
+      cg.observable.end());
+}
+
 }  // namespace
 
 CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
@@ -664,6 +701,7 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
   }
 
   rebuild_fanout_csr(cg);
+  drop_unknown_reach(cg, ng);
 
   // driver_index: net -> node index that drives it (or -1). Topology-invariant,
   // so build it once here and reuse it in the ATPG cone extraction instead of

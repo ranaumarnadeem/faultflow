@@ -427,7 +427,8 @@ def check_x_off_scan_path(
     )
     if bad:
         raise ScanError(
-            "a blackbox output with an unknown value reaches the scan path of "
+            "a blackbox or unknown cell output with an unknown value reaches the "
+            "scan path of "
             + ", ".join(bad)
             + ": it would corrupt the scan shift. If the design guarantees the "
             "output's value in test mode, declare it with [blackbox] output_value."

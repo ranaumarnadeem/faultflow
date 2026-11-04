@@ -68,7 +68,12 @@ struct NormalizedGraph {
   std::set<int> TPs;
   std::set<int> clocks;
   std::set<int> resets;
+  // Output nets of the cells unsupported_cells = blackbox left out (missing
+  // from the cell map, or mapped "unsupported"): unknown values, so nothing
+  // their value reaches is observed (GraphCompiler). unknown_cells names
+  // those cells.
   std::set<int> blackboxed;
+  std::set<std::string> unknown_cells;
   // Phase 9: blackbox output nets exposed as controllable pseudo-PIs, and the
   // set of instance names blackboxed by name (boundary test interface).
   std::set<int> pseudo_inputs;

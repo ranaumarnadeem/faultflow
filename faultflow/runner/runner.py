@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -206,6 +207,30 @@ def _truthy_attr(value: object) -> bool:
     if set(text) <= {"0", "1"}:
         return "1" in text
     return False
+
+
+def _unknown_cells(
+    cfg: FaultflowConfig, json_path: Path | str, cell_map: Path | str
+) -> tuple[str, ...]:
+    """The cells of ``json_path`` that unsupported_cells = blackbox leaves out
+    of the model (missing from ``cell_map``, or mapped "unsupported")."""
+    if cfg.simulation.unsupported_cells != "blackbox":
+        return ()
+    core = _load_core()
+    if core is None:
+        raise RunnerError("C++ extension _faultflow_core is required")
+    found = core.unknown_cell_instances(
+        str(json_path), str(cell_map), "blackbox", list(cfg.blackbox_instances)
+    )
+    return tuple(str(i) for i in found)
+
+
+def _with_unknown_cells(cfg: FaultflowConfig, generic_json: Path) -> FaultflowConfig:
+    """``cfg`` with ``unknown_cells``, those of the scanned ``generic_json``."""
+    return dataclasses.replace(
+        cfg,
+        unknown_cells=_unknown_cells(cfg, generic_json, resolve_scan_cell_map(cfg)),
+    )
 
 
 def _load_json_object(path: Path) -> dict[str, Any]:
@@ -469,6 +494,14 @@ class Runner:
                 self.cfg.compression.effective_ring_width
             )
             payload["compression_warmup"] = self.cfg.compression.effective_warmup
+        if self.cfg.simulation.unsupported_cells == "blackbox":
+            # The cells this leaves out have unknown outputs: nothing they reach
+            # is credited, and what only they block is blackbox_unresolved. A
+            # campaign graded before read them as 0 (and SAT as free), crediting
+            # through them and calling what they block redundant, so it must
+            # not resume into this one; a design under "fail" keeps its
+            # config_hash.
+            payload["unknown_cells"] = "x"
         return payload
 
     def _rendered_yosys_script(self, source: Path | None = None) -> str:
@@ -2816,6 +2849,7 @@ class Runner:
                 conn,
                 self.cfg,
                 campaign_id=campaign_id,
+                unknown_cells=_unknown_cells(self.cfg, netlist, self.cfg.cell_lib),
             )
 
         purge_note = f" purged_transients={removed}" if purge else ""
@@ -3058,6 +3092,9 @@ class Runner:
                     _load_json_object(resolve_scan_cell_map(self.cfg)),
                 ).items()
             }
+        # Unknown cells are unknown in the scan test too: modeled with the
+        # blackbox instances, their outputs unknown (Config.unknown_cells).
+        cfg = _with_unknown_cells(cfg, generic_json)
         # Blackbox instances are modeled opaque in the reduced view (outputs
         # tied to 0, inputs unobserved) so SAT and the reduced simulators see
         # exactly what the scan protocol does, and every observation point an
@@ -3071,7 +3108,7 @@ class Runner:
         view, pseudo_port_map = build_scan_atpg_view(
             _load_json_object(generic_json),
             run_manifest,
-            blackbox_instances=cfg.blackbox_instances,
+            blackbox_instances=cfg.scan_boundary_instances,
             nonscan=nonscan,
         )
 
@@ -3232,6 +3269,7 @@ class Runner:
                 self.cfg,
                 scan_context=scan_context,
                 campaign_id=campaign_id,
+                unknown_cells=cfg.unknown_cells,
             )
 
         purge_note = f" purged_transients={removed}" if purge else ""

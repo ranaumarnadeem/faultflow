@@ -918,8 +918,9 @@ def _build_blackbox_twin(
 ) -> _Twin | None:
     """None unless the view models a blackbox. Non-scan cells are set free in it
     too (make_nonscan_free): tried after the hold twin, it catches a fault only a
-    blackbox and the holds together block."""
-    if not blackbox_instances:
+    blackbox and the holds together block. `blackbox_instances` are the generic
+    netlist's (its loads); the view models the unknown cells opaque too."""
+    if not scan_ctx.cfg.scan_boundary_instances:
         return None
     reduced = Path(reduced_json_path)
     view = json.loads(reduced.read_text(encoding="utf-8"))

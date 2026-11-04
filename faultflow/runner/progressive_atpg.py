@@ -252,10 +252,96 @@ def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[sqlit
           AND exclusion = 'none'
           AND collapsed_into IS NULL
           AND protocol_unresolved = 0
+          AND blackbox_unresolved = 0
         ORDER BY id
         """,
         (campaign_id,),
     ).fetchall()
+
+
+class _UnknownCellTwin:
+    """The transparent twin of a netlist whose unknown cells (unsupported_cells
+    = blackbox: missing from the cell map, or mapped "unsupported") have
+    unknown outputs, so nothing their values reach is observed: the same
+    netlist with those cells as [blackbox] instances, outputs driven and
+    inputs observed. A fault UNSAT in the netlist is re-solved there: a test
+    there (or no verdict -- redundant needs a proof) means only an unknown
+    cell blocks it, blackbox_unresolved (Tessent's AU.BB), never redundant."""
+
+    def __init__(
+        self,
+        core: Any,
+        json_path: str,
+        cell_map: str,
+        unsupported: str,
+        blackbox_instances: list[str],
+    ) -> None:
+        unknown = (
+            list(
+                core.unknown_cell_instances(
+                    json_path, cell_map, unsupported, blackbox_instances
+                )
+            )
+            if unsupported == "blackbox"
+            else []
+        )
+        self.unknown_cells = unknown
+        self.instances = [*blackbox_instances, *unknown]
+        self._index: dict[int, int] = {}
+        if not unknown:
+            return
+        twin_by_site = {
+            str(row["site_key"]): int(row["compiled_net_index"])
+            for row in core.list_site_keys(
+                json_path, cell_map, unsupported, self.instances
+            )
+        }
+        for row in core.list_site_keys(
+            json_path, cell_map, unsupported, blackbox_instances
+        ):
+            site = str(row["site_key"])
+            if site not in twin_by_site:
+                raise RunnerError(
+                    f"unknown-cell twin has no fault site {site}: a bug in the "
+                    "twin, not the design"
+                )
+            self._index[int(row["compiled_net_index"])] = twin_by_site[site]
+
+    def __bool__(self) -> bool:
+        return bool(self.unknown_cells)
+
+    def testable(
+        self,
+        core: Any,
+        *,
+        json_path: str,
+        cell_map: str,
+        db_path: str,
+        fault_id: int,
+        net_index: int,
+        conflict_limit: int,
+        timeout: int,
+        unsupported: str,
+        cone_restrict: bool,
+        transition: bool,
+    ) -> bool:
+        solve = (
+            core.solve_transition_fault_atpg if transition else core.solve_fault_atpg
+        )
+        solved = solve(
+            json_path,
+            cell_map,
+            db_path,
+            fault_id,
+            [],
+            conflict_limit,
+            timeout,
+            unsupported,
+            blackbox_instances=self.instances,
+            cone_restrict=cone_restrict,
+            net_index_override=self._index[net_index],
+        )
+        return str(solved["result"]) != "UNSAT"
 
 
 def _cone_size_order(
@@ -566,6 +652,9 @@ def run_progressive_native_atpg(
     unsupported = cfg.simulation.unsupported_cells
 
     bb_instances = list(cfg.blackbox_instances)
+    unknown_twin = _UnknownCellTwin(
+        core, json_path, effective_cell_map, unsupported, bb_instances
+    )
     sim_threads = resolve_sim_threads(cfg.simulation.sim_threads)
     if sim_threads > 1:
         log.info("parallel fault grading across %d threads", sim_threads)
@@ -1074,7 +1163,29 @@ def run_progressive_native_atpg(
                     stats.protocol_no_progress_rounds += 1
             elif result == "UNSAT":
                 stats.unsat += 1
-                core.mark_fault_redundant(effective_db_path, fault_id, redundancy_model)
+                # UNSAT with patterns blocked isn't a proof to classify.
+                if (
+                    unknown_twin
+                    and not blocked
+                    and unknown_twin.testable(
+                        core,
+                        json_path=json_path,
+                        cell_map=effective_cell_map,
+                        db_path=effective_db_path,
+                        fault_id=fault_id,
+                        net_index=int(row_by_id[fault_id]["net_index"]),
+                        conflict_limit=cfg.atpg.sat_conflict_limit,
+                        timeout=tier_timeout,
+                        unsupported=unsupported,
+                        cone_restrict=cfg.atpg.cone_restrict,
+                        transition=False,
+                    )
+                ):
+                    core.mark_fault_blackbox_unresolved(effective_db_path, fault_id)
+                else:
+                    core.mark_fault_redundant(
+                        effective_db_path, fault_id, redundancy_model
+                    )
             elif result == "TIMEOUT":
                 stats.timeout += 1
                 round_tracker.sat_outcomes.append("TIMEOUT")
@@ -1213,6 +1324,9 @@ def run_progressive_transition_atpg(
     unsupported = cfg.simulation.unsupported_cells
 
     bb_instances = list(cfg.blackbox_instances)
+    unknown_twin = _UnknownCellTwin(
+        core, json_path, effective_cell_map, unsupported, bb_instances
+    )
     sim_threads = resolve_sim_threads(cfg.simulation.sim_threads)
     if sim_threads > 1:
         log.info("parallel fault grading across %d threads", sim_threads)
@@ -1394,6 +1508,7 @@ def run_progressive_transition_atpg(
             init_schema(conn)
             active_rows = _active_fault_rows(conn, campaign_id)
             active_ids = [int(row["id"]) for row in active_rows]
+        row_by_id: dict[int, Any] = {int(r["id"]): r for r in active_rows}
 
         # M1 (transition twin): grade each accepted launch/capture pair against
         # every still-undetected fault this round, then skip already-covered
@@ -1588,7 +1703,29 @@ def run_progressive_transition_atpg(
                     stats.protocol_no_progress_rounds += 1
             elif result == "UNSAT":
                 stats.unsat += 1
-                core.mark_fault_redundant(effective_db_path, fault_id, redundancy_model)
+                # UNSAT with patterns blocked isn't a proof to classify.
+                if (
+                    unknown_twin
+                    and not blocked
+                    and unknown_twin.testable(
+                        core,
+                        json_path=json_path,
+                        cell_map=effective_cell_map,
+                        db_path=effective_db_path,
+                        fault_id=fault_id,
+                        net_index=int(row_by_id[fault_id]["net_index"]),
+                        conflict_limit=cfg.atpg.sat_conflict_limit,
+                        timeout=tier_timeout,
+                        unsupported=unsupported,
+                        cone_restrict=cfg.atpg.cone_restrict,
+                        transition=True,
+                    )
+                ):
+                    core.mark_fault_blackbox_unresolved(effective_db_path, fault_id)
+                else:
+                    core.mark_fault_redundant(
+                        effective_db_path, fault_id, redundancy_model
+                    )
             elif result == "TIMEOUT":
                 stats.timeout += 1
                 round_tracker.sat_outcomes.append("TIMEOUT")
