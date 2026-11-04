@@ -1,0 +1,217 @@
+{
+  "creator": "Yosys 0.61+129 (faultflow fixture generator)",
+  "modules": {
+    "tiny_clock_tree": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "ck": {
+          "direction": "input",
+          "bits": [
+            2
+          ]
+        },
+        "d": {
+          "direction": "input",
+          "bits": [
+            3
+          ]
+        },
+        "q": {
+          "direction": "output",
+          "bits": [
+            6
+          ]
+        },
+        "en": {
+          "direction": "input",
+          "bits": [
+            7
+          ]
+        },
+        "ck2": {
+          "direction": "input",
+          "bits": [
+            9
+          ]
+        },
+        "q2": {
+          "direction": "output",
+          "bits": [
+            10
+          ]
+        }
+      },
+      "cells": {
+        "u_b1": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__clkbuf_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "X": "output"
+          },
+          "connections": {
+            "A": [
+              2
+            ],
+            "X": [
+              4
+            ]
+          }
+        },
+        "u_i": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__clkinv_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "Y": "output"
+          },
+          "connections": {
+            "A": [
+              4
+            ],
+            "Y": [
+              5
+            ]
+          }
+        },
+        "u_ff": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [
+              5
+            ],
+            "D": [
+              3
+            ],
+            "Q": [
+              6
+            ]
+          }
+        },
+        "u_a": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__and2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "A": "input",
+            "B": "input",
+            "X": "output"
+          },
+          "connections": {
+            "A": [
+              9
+            ],
+            "B": [
+              7
+            ],
+            "X": [
+              8
+            ]
+          }
+        },
+        "u_ff2": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "CLK": "input",
+            "D": "input",
+            "Q": "output"
+          },
+          "connections": {
+            "CLK": [
+              8
+            ],
+            "D": [
+              3
+            ],
+            "Q": [
+              10
+            ]
+          }
+        }
+      },
+      "netnames": {
+        "ck": {
+          "hide_name": 0,
+          "bits": [
+            2
+          ],
+          "attributes": {}
+        },
+        "d": {
+          "hide_name": 0,
+          "bits": [
+            3
+          ],
+          "attributes": {}
+        },
+        "q": {
+          "hide_name": 0,
+          "bits": [
+            6
+          ],
+          "attributes": {}
+        },
+        "en": {
+          "hide_name": 0,
+          "bits": [
+            7
+          ],
+          "attributes": {}
+        },
+        "ck2": {
+          "hide_name": 0,
+          "bits": [
+            9
+          ],
+          "attributes": {}
+        },
+        "q2": {
+          "hide_name": 0,
+          "bits": [
+            10
+          ],
+          "attributes": {}
+        },
+        "n4": {
+          "hide_name": 0,
+          "bits": [
+            4
+          ],
+          "attributes": {}
+        },
+        "n5": {
+          "hide_name": 0,
+          "bits": [
+            5
+          ],
+          "attributes": {}
+        },
+        "n8": {
+          "hide_name": 0,
+          "bits": [
+            8
+          ],
+          "attributes": {}
+        }
+      }
+    }
+  }
+}

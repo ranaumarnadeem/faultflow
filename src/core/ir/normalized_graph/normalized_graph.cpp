@@ -57,6 +57,38 @@ void tag_clock_net(NormalizedGraph& ng, int bit) {
   ng.clocks.insert(bit);
 }
 
+// A clock tree: every net a clock net reads through buffers and inverters is a
+// clock net too (Policy 3), whatever it is named -- the port a buffered clock
+// starts at and each buffer between. A mux or a gate on the way is the scan
+// flow's to follow (faultflow.scan.clock_gates), with the inputs it holds.
+void tag_clock_trees(NormalizedGraph& ng) {
+  std::vector<int> work(ng.clocks.begin(), ng.clocks.end());
+  while (!work.empty()) {
+    const int net = work.back();
+    work.pop_back();
+    const auto net_it = ng.nets.find(net);
+    if (net_it == ng.nets.end() || net_it->second.driver < 0) {
+      continue;
+    }
+    const auto node_it = ng.nodes.find(net_it->second.driver);
+    if (node_it == ng.nodes.end()) {
+      continue;
+    }
+    const NormNode& node = node_it->second;
+    if (node.type != NodeType::GATE ||
+        (node.gate_type != GateType::BUF && node.gate_type != GateType::INV) ||
+        node.input_pins.size() != 1) {
+      continue;
+    }
+    const int in = node.input_pins.begin()->second;
+    if (in < 0 || ng.clocks.count(in) != 0 || ng.nets.count(in) == 0) {
+      continue;  // a constant, or already a clock net
+    }
+    tag_clock_net(ng, in);
+    work.push_back(in);
+  }
+}
+
 void tag_reset_net(NormalizedGraph& ng, int bit) {
   ng.nets[bit].is_reset = true;
   ng.resets.insert(bit);
@@ -527,6 +559,8 @@ NormalizedGraph NormalizedGraph::from_parsed(
       }
     }
   }
+
+  tag_clock_trees(ng);
 
   // Fanout from nodes
   for (const auto& [nid, node] : ng.nodes) {

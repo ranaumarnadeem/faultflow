@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 from faultflow.coverage.site_key import SiteProvenance, canonical_site_key
 
@@ -51,9 +51,12 @@ def build_scan_execution_map(
     pseudo_port_map: dict[str, dict[str, Any]],
     manifest: Mapping[str, Any],
     blackbox_instances: Sequence[str] = (),
+    clock_nets: Collection[int] = (),
 ) -> tuple[dict[str, int], dict[str, str]]:
     # `blackbox_instances` are the GENERIC netlist's: the reduced view models
     # them opaque (atpg_view._model_blackboxes_opaque) and contains none.
+    # `clock_nets`: nets on the scan flops' clock paths (the manifest's
+    # clock_paths), clock nets whatever the core tagged (Policy 3).
     generic_rows: list[dict[str, Any]] = list(
         core.list_site_keys(
             str(generic_json_path),
@@ -87,6 +90,7 @@ def build_scan_execution_map(
     }
     execution: dict[str, int] = {}
     exclusions: dict[str, str] = {}
+    clock_yids = set(clock_nets)
 
     q_boundaries: dict[int, dict[str, Any]] = {}
     d_boundaries: dict[str, int] = {}
@@ -131,6 +135,9 @@ def build_scan_execution_map(
         key = str(row["site_key"])
         yid = int(row["yosys_net_id"])
         kind = str(row["kind"])
+        if yid in clock_yids:
+            exclusions[key] = "clock"
+            continue
         if yid in scan_chain_yids:
             exclusions[key] = "scan_chain"
             continue

@@ -53,7 +53,11 @@ from faultflow.scan.atpg_view import (
     make_nonscan_free,
 )
 from faultflow.scan.cell_map import resolve_scan_cell_map
-from faultflow.scan.manifest import manifest_clock_net_ids
+from faultflow.scan.manifest import (
+    clock_path_nets,
+    manifest_clock_net_ids,
+    manifest_clock_ports,
+)
 from faultflow.scan.stitch import _top_module
 from faultflow.scan.protocol import ScanPattern, serialize_vector
 from faultflow.scan.domain_reach import (
@@ -267,16 +271,9 @@ def build_scan_pipeline_context(
     reset_pi_holds = _scan_reset_pi_holds(
         generic_json, str(manifest.get("top", cfg.top)), cell_map
     )
-    from faultflow.runner.runner import _port_name_for_net
-
-    clock_ports: list[str] = []
-    for clk_net in manifest_clock_net_ids(manifest, error_cls=RunnerError):
-        port = _port_name_for_net(
-            generic_json, str(manifest.get("top", cfg.top)), clk_net, "input"
-        )
-        if port is None:
-            raise RunnerError(f"cannot map scan clock net {clk_net} to a port")
-        clock_ports.append(port)
+    clock_ports = manifest_clock_ports(
+        {"top": cfg.top, **manifest}, generic_json, error_cls=RunnerError
+    )
     decompressor: ContinuousDecompressor | None = None
     seed_program: SeedProgram | None = None
     seeded_inputs: dict[str, list[int]] = {}
@@ -816,6 +813,14 @@ class _Twin:
     net_index_by_site: dict[str, int]
 
 
+def _clock_tree_nets(scan_ctx: ScanPipelineContext) -> set[int]:
+    """The nets on the scan flops' clock paths, clock faults unless [fault_model]
+    include_clock_faults grades them."""
+    if scan_ctx.cfg.fault_model.include_clock_faults:
+        return set()
+    return clock_path_nets(scan_ctx.manifest)
+
+
 def _mapped_twin(
     core: Any,
     scan_ctx: ScanPipelineContext,
@@ -843,6 +848,7 @@ def _mapped_twin(
         scan_ctx.pseudo_port_map,
         scan_ctx.manifest,
         blackbox_instances=blackbox_instances,
+        clock_nets=_clock_tree_nets(scan_ctx),
     )
     if twin_map.keys() != execution_map.keys():
         raise ScanError(f"{what} maps different fault sites than the scan ATPG view")
@@ -1895,6 +1901,7 @@ def run_progressive_scan_atpg(
         scan_ctx.pseudo_port_map,
         scan_ctx.manifest,
         blackbox_instances=bb,
+        clock_nets=_clock_tree_nets(scan_ctx),
     )
     # For transition faults in multi-domain designs, tag cross-domain fault sites.
     if cfg.fault_model.model == "transition":

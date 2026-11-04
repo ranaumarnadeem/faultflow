@@ -36,9 +36,11 @@ def _cell_row(cell: Any) -> dict[str, object]:
         "scan_enable_net": cell.scan_enable_net,
         "q_net": cell.q_net,
     }
-    if getattr(cell, "clock_gates", ()):
-        # A gated flop: clock_net is its root clock, this its pin's.
+    if getattr(cell, "pin_clock_net", -1) >= 0:
+        # Clocked through cells (buffers, clock gates): clock_net is its root
+        # clock, this its pin's.
         row["pin_clock_net"] = cell.pin_clock_net
+    if getattr(cell, "clock_gates", ()):
         row["clock_gates"] = list(cell.clock_gates)
     return row
 
@@ -75,6 +77,10 @@ def manifest_from_result(
         "chain_count": result.chain_count,
         "cell_count": result.cell_count,
         "clock_nets": result.clock_nets,
+        # Each clock net's input port, and each port's paths to its flops' pins
+        # (faultflow.scan.clock_gates.clock_path).
+        "clock_ports": list(getattr(result, "clock_ports", [])),
+        "clock_paths": dict(getattr(result, "clock_paths", {})),
         "scan_inputs": result.scan_inputs,
         "scan_outputs": result.scan_outputs,
         "scan_enable": result.scan_enable,

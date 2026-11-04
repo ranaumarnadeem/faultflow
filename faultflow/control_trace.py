@@ -133,11 +133,13 @@ class Through:
     """Where a net's value comes from, followed back through every cell that passes
     one input on while held values fix its others (:meth:`Netlist.through`): the
     net it stops at, whether the cells on the way invert it, and the held side
-    inputs that keep them passing it (see :data:`Step`)."""
+    inputs that keep them passing it (see :data:`Step`). ``nets``: every net on the
+    way, the one followed first, ``source`` last."""
 
     source: int | str
     inverted: bool
     steps: tuple[Step, ...]
+    nets: tuple[int, ...] = ()
 
 
 def one_net(value: Any) -> int | str | None:
@@ -271,10 +273,12 @@ class Netlist:
         output, other logic, or a constant."""
         known = known or {}
         steps: list[Step] = []
+        nets: list[int] = []
         inverted = False
         seen: set[int] = set()
         while isinstance(net, int) and net not in seen:
             seen.add(net)
+            nets.append(net)
             if net in self.input_net_names or net in known or net not in self.drivers:
                 break
             driver = self.drivers[net][0]
@@ -288,7 +292,7 @@ class Netlist:
             inverted ^= flips
             steps.extend(held)
             net = source
-        return Through(net, inverted, tuple(steps))
+        return Through(net, inverted, tuple(steps), tuple(nets))
 
     def _passed(
         self,
@@ -301,12 +305,14 @@ class Netlist:
         whether the gate inverts it, and the held inputs' paths -- or None."""
         from faultflow.runner.runner import _load_core
 
-        core = _load_core()
         gate = str(entry.get("gate_type", ""))
         inputs = [str(p) for p in entry.get("inputs", [])]
+        conns = self.cells[driver].get("connections", {})
+        if gate in ("BUF", "INV") and len(inputs) == 1:
+            return one_net(conns.get(inputs[0])), gate == "INV", []
+        core = _load_core()
         if core is None or not gate or len(inputs) > _MAX_EVALUATED_INPUTS:
             return None
-        conns = self.cells[driver].get("connections", {})
         held: list[int | None] = []
         steps: list[Step] = []
         for pin in inputs:

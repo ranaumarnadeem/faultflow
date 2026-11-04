@@ -5,11 +5,53 @@ scan-chain rules reuse the existing `check_scan_structure`.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from faultflow.rule_check.facts import CellFact, NetlistFacts, build_netlist_facts
 from faultflow.rule_check.model import RuleCheckReport, Severity, Violation
+from faultflow.scan.stitch import _load_json, _top_module
+
+
+@dataclass(frozen=True)
+class ClockRoots:
+    """Each flop clock net's root, as scan stitching traces it
+    (faultflow.scan.clock_gates.clock_path, with [scan] hold): the input port
+    net it reaches, or the net itself when it reaches none; and the cells on the
+    paths, which pass the clock on rather than read it as data."""
+
+    root: dict[int, int] = field(default_factory=dict)
+    cells: frozenset[str] = frozenset()
+
+    def of(self, net: int) -> int:
+        return self.root.get(net, net)
+
+
+def clock_roots(
+    netlist_json: Path,
+    cell_map_json: Path,
+    top: str,
+    facts: NetlistFacts,
+    holds: Mapping[str, int] | None = None,
+) -> ClockRoots:
+    from faultflow.control_trace import Netlist
+    from faultflow.scan.clock_gates import clock_gates, clock_path
+
+    cell_map = _load_json(cell_map_json)
+    _, module = _top_module(_load_json(netlist_json), top)
+    netlist = Netlist(module, cell_map)
+    gates = clock_gates(module, cell_map)
+    root: dict[int, int] = {}
+    cells: set[str] = set()
+    for net in facts.clock_nets:
+        found = clock_path(net, gates, netlist, holds)
+        if isinstance(found.root, int) and found.root in facts.pis:
+            root[net] = found.root
+        cells.update(
+            netlist.drivers[on][0] for on in found.nets if on in netlist.drivers
+        )
+    return ClockRoots(root, frozenset(cells))
 
 
 def _cell_index(facts: NetlistFacts) -> dict[str, CellFact]:
@@ -21,35 +63,42 @@ def _net(facts: NetlistFacts, net: int) -> str:
 
 
 # --- CLK003: informational — multi-clock is fully supported ---
-def rule_multiple_clock_domains(facts: NetlistFacts) -> list[Violation]:
-    if len(facts.clock_nets) <= 1:
+def rule_multiple_clock_domains(
+    facts: NetlistFacts, roots: ClockRoots | None = None
+) -> list[Violation]:
+    roots = roots or ClockRoots()
+    domains = {roots.of(n) for n in facts.clock_nets}
+    if len(domains) <= 1:
         return []
-    ff_per_domain: dict[int, int] = {n: 0 for n in facts.clock_nets}
+    ff_per_domain: dict[int, int] = {n: 0 for n in domains}
     for cell in facts.cells:
-        if cell.is_ff and cell.clock_net in ff_per_domain:
-            ff_per_domain[cell.clock_net] += 1
+        if cell.is_ff and cell.clock_net is not None:
+            ff_per_domain[roots.of(cell.clock_net)] += 1
 
     def _dom(n: int) -> str:
         count = ff_per_domain[n]
         label = "FF" if count == 1 else "FFs"
         return f"{facts.net_name(n)} ({count} {label})"
 
-    domain_strs = ", ".join(_dom(n) for n in sorted(facts.clock_nets))
+    domain_strs = ", ".join(_dom(n) for n in sorted(domains))
     return [
         Violation(
             "CLK003",
             Severity.INFO,
             "multiple clock domains",
-            f"design has {len(facts.clock_nets)} clock domains: {domain_strs}; "
+            f"design has {len(domains)} clock domains: {domain_strs}; "
             "stuck-at, scan ATPG, and per-domain at-speed transition are supported",
         )
     ]
 
 
 # --- CLK004: informational — FF->FF cross-domain data paths ---
-def rule_cross_domain_data_paths(facts: NetlistFacts) -> list[Violation]:
+def rule_cross_domain_data_paths(
+    facts: NetlistFacts, roots: ClockRoots | None = None
+) -> list[Violation]:
     """Cross-domain FF->FF paths are masked during per-domain at-speed transition."""
-    if len(facts.clock_nets) <= 1:
+    roots = roots or ClockRoots()
+    if len({roots.of(n) for n in facts.clock_nets}) <= 1:
         return []
     cell_by_inst: dict[str, CellFact] = {c.instance: c for c in facts.cells}
 
@@ -83,7 +132,9 @@ def rule_cross_domain_data_paths(facts: NetlistFacts) -> list[Violation]:
                 dst = cell_by_inst.get(dst_inst)
                 if dst is None or not dst.is_ff:
                     continue
-                if dst.clock_net != cell.clock_net:
+                if dst.clock_net is None or cell.clock_net is None:
+                    continue
+                if roots.of(dst.clock_net) != roots.of(cell.clock_net):
                     pair = (cell.instance, dst_inst)
                     if pair not in seen:
                         seen.add(pair)
@@ -130,11 +181,16 @@ def _clock_controllable(
         return False
 
 
-def rule_uncontrollable_clock(facts: NetlistFacts) -> list[Violation]:
+def rule_uncontrollable_clock(
+    facts: NetlistFacts, roots: ClockRoots | None = None
+) -> list[Violation]:
     cells = _cell_index(facts)
     out: list[Violation] = []
     for clock_net in sorted(facts.clock_nets):
-        if _clock_controllable(facts, cells, clock_net):
+        if roots is not None:
+            if roots.of(clock_net) in facts.pis:
+                continue
+        elif _clock_controllable(facts, cells, clock_net):
             continue
         drv = facts.driver_of.get(clock_net)
         src = f"driven by {drv[0]}" if drv else "undriven internal net"
@@ -151,8 +207,11 @@ def rule_uncontrollable_clock(facts: NetlistFacts) -> list[Violation]:
 
 
 # --- CLK002: a clock net must not also be consumed as data/logic ---
-def rule_clock_as_data(facts: NetlistFacts) -> list[Violation]:
+def rule_clock_as_data(
+    facts: NetlistFacts, roots: ClockRoots | None = None
+) -> list[Violation]:
     cells = _cell_index(facts)
+    passing = roots.cells if roots is not None else frozenset()
     out: list[Violation] = []
     for clock_net in sorted(facts.clock_nets):
         for inst, pin in facts.sinks_of.get(clock_net, []):
@@ -161,8 +220,8 @@ def rule_clock_as_data(facts: NetlistFacts) -> list[Violation]:
                 continue
             if cell.is_ff and pin == cell.clock_pin:
                 continue  # legitimate clock use
-            if cell.is_buffer:
-                continue  # clock distribution buffer
+            if cell.is_buffer or inst in passing:
+                continue  # clock distribution: a buffer, a held clock mux
             out.append(
                 Violation(
                     "CLK002",
@@ -361,13 +420,17 @@ def run_rule_check(
     cell_map_json: Path,
     top: str,
     manifest: dict[str, Any] | None = None,
+    holds: Mapping[str, int] | None = None,
 ) -> RuleCheckReport:
+    """``holds``: [scan] hold, the inputs a scan test holds -- a clock mux or
+    gate they keep passing a clock on is part of its path, as stitching sees it."""
     facts = build_netlist_facts(netlist_json, cell_map_json, top)
+    roots = clock_roots(netlist_json, cell_map_json, top, facts, holds)
     report = RuleCheckReport(top=top)
-    report.violations.extend(rule_multiple_clock_domains(facts))
-    report.violations.extend(rule_cross_domain_data_paths(facts))
-    report.violations.extend(rule_uncontrollable_clock(facts))
-    report.violations.extend(rule_clock_as_data(facts))
+    report.violations.extend(rule_multiple_clock_domains(facts, roots))
+    report.violations.extend(rule_cross_domain_data_paths(facts, roots))
+    report.violations.extend(rule_uncontrollable_clock(facts, roots))
+    report.violations.extend(rule_clock_as_data(facts, roots))
     report.violations.extend(rule_multi_driver(facts))
     report.violations.extend(rule_combinational_feedback(facts))
     if manifest is not None:

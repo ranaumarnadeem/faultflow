@@ -16,9 +16,12 @@ from __future__ import annotations
 
 import fnmatch
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from faultflow.scan.errors import ScanError
+
+if TYPE_CHECKING:
+    from faultflow.control_trace import Netlist
 
 
 @dataclass(frozen=True)
@@ -84,11 +87,109 @@ def root_clock(
 ) -> tuple[Any, tuple[ClockGate, ...]]:
     """The clock ``net`` is gated from, and the gates on the way, the nearest
     first."""
+    found = clock_path(net, gates)
+    return found.root, found.gates
+
+
+@dataclass(frozen=True)
+class ClockPath:
+    """Where a flop's clock comes from: ``root``, the net the path stops at (an
+    input port's when a port pulses it), the clock gates on the way, the nearest
+    first, whether the cells on it invert the clock, every net on it (the pin's
+    first, the root's last), and the held side inputs that keep it passing the
+    clock on (control_trace.Step: net, the cell reading it, its pin, the value)."""
+
+    root: Any
+    gates: tuple[ClockGate, ...]
+    inverted: bool
+    nets: tuple[int, ...]
+    holds: tuple[tuple[int, str, str, int], ...]
+
+
+def clock_path(
+    net: Any,
+    gates: Mapping[int, ClockGate],
+    netlist: "Netlist | None" = None,
+    holds: Mapping[str, int] | None = None,
+) -> ClockPath:
+    """Follow the clock ``net`` back through clock gates, and with ``netlist``
+    through every cell that passes it on while ``holds`` (input port bits at their
+    values, ``[scan] hold``) fix its other inputs -- a buffer, an inverter, a mux a
+    held select steers, an AND whose other input is held at 1
+    (control_trace.Netlist.through) -- to the first net none of them drives."""
     path: list[ClockGate] = []
-    while isinstance(net, int) and net in gates:
-        gate = gates[net]
-        if any(g.instance == gate.instance for g in path):
-            raise ScanError(f"clock gate {gate.instance} gates its own clock")
-        path.append(gate)
-        net = gate.clock_net
-    return net, tuple(path)
+    nets: list[int] = []
+    steps: list[tuple[int, str, str, int]] = []
+    inverted = False
+    values = dict(holds or {})
+    seen: set[int] = set()
+    while isinstance(net, int) and net not in seen:  # not round a loop
+        seen.add(net)
+        nets.append(net)
+        if net in gates:
+            gate = gates[net]
+            if any(g.instance == gate.instance for g in path):
+                raise ScanError(f"clock gate {gate.instance} gates its own clock")
+            path.append(gate)
+            net = gate.clock_net
+            continue
+        if netlist is None:
+            break
+        found = netlist.through(net, values)
+        if found.source == net:
+            break
+        passed = [n for n in found.nets[1:] if n != found.source and n not in seen]
+        nets.extend(passed)
+        seen.update(passed)
+        inverted ^= found.inverted
+        steps.extend(found.steps)
+        net = found.source
+    return ClockPath(net, tuple(path), inverted, tuple(nets), tuple(steps))
+
+
+def clock_path_problems(
+    module: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    cell_map: Mapping[str, Any],
+    holds: Mapping[str, int],
+) -> list[str]:
+    """What keeps the stitched ``module``'s scan flops off the root clocks the
+    manifest records, with ``holds`` (``[scan] hold`` as it is now): each flop's
+    clock traced again from its pin (:func:`clock_path`). Empty when every one
+    still reaches its port, not inverted -- a hold changed since stitching, say,
+    would let a clock mux pick another clock."""
+    from faultflow.control_trace import Netlist  # it imports scan.stitch
+
+    netlist = Netlist(module, cell_map)
+    gates = clock_gates(module, cell_map)
+    nets = [int(net) for net in manifest.get("clock_nets") or []]
+    names = dict(zip(nets, [str(p) for p in manifest.get("clock_ports") or []]))
+    cells = module.get("cells") or {}
+    moved: list[str] = []
+    for row in manifest.get("cells") or []:
+        if not isinstance(row, dict) or row.get("instance") not in cells:
+            continue
+        instance = str(row["instance"])
+        pin = (cells[instance].get("connections") or {}).get("CLK") or []
+        if len(pin) != 1:
+            continue
+        found = clock_path(pin[0], gates, netlist, holds)
+        if found.root != row.get("clock_net") or found.inverted:
+            moved.append(instance)
+    if not moved:
+        return []
+    held = sorted(
+        {
+            f"{hold['port']}:{hold['value']}"
+            for path in (manifest.get("clock_paths") or {}).values()
+            for hold in path.get("holds", [])
+        }
+    )
+    roots = sorted(set(names.values())) or [str(net) for net in nets]
+    shown = ", ".join(moved[:3]) + (f" and {len(moved) - 3} more" if moved[3:] else "")
+    return [
+        f"the clocks of scan flops {shown} no longer reach "
+        f"{', '.join(roots)} as scan insertion traced them"
+        + (f", through cells it found held by {', '.join(held)}" if held else "")
+        + "; [scan] hold changed since: run ff.py scan again"
+    ]

@@ -103,7 +103,11 @@ def run(
 ) -> list[str]:
     """Compile `testbench` with the chip's netlist, the cell models (`models`: the
     design library's, Sky130 HD's by default) and a stub per blackbox; run it; its
-    output lines."""
+    output lines. A flop's output changes a time unit after its clock edge
+    (UNIT_DELAY, the Sky130 models' flop and latch delay), every gate's at once:
+    the ideal clock FaultFlow grades on -- a flop deeper in an unbalanced clock
+    tree (buffers, a clock gate) still takes what its inputs held before the
+    edge, as it will once clock-tree synthesis balances it."""
     if chip.netlist is None:
         raise ValueError(
             "the chip's sky130 netlist wasn't written ([scan] run_techmap)"
@@ -122,6 +126,7 @@ def run(
             "iverilog",
             "-g2012",
             "-DFUNCTIONAL",
+            "-DUNIT_DELAY=#1",
             "-o",
             str(sim),
             str(tb),

@@ -36,6 +36,33 @@
     "chain_count": {"type": "integer", "minimum": 0},
     "cell_count": {"type": "integer", "minimum": 0},
     "clock_nets": {"type": "array", "items": {"type": "integer"}},
+    "clock_ports": {
+      "description": "Each clock net's input port, in clock_nets' order: the port the scan test pulses.",
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "clock_paths": {
+      "description": "Each clock port's paths to its scan flops' clock pins (faultflow.scan.clock_gates.clock_path): the nets on them, clock nets every one, and the held inputs ([scan] hold) that keep a mux or a gate on them passing the clock on. scan-check traces them again.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["nets", "holds"],
+        "properties": {
+          "nets": {"type": "array", "items": {"type": "integer"}},
+          "holds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["port", "value"],
+              "properties": {
+                "port": {"type": "string"},
+                "value": {"enum": [0, 1]}
+              }
+            }
+          }
+        }
+      }
+    },
     "scan_inputs": {"type": "array", "items": {"type": "string"}},
     "scan_outputs": {"type": "array", "items": {"type": "string"}},
     "scan_enable": {"type": "string"},
@@ -65,6 +92,11 @@
               "unsupported_ff_shape",
               "multiple_clock_nets",
               "nonscan_policy",
+              "no_library_scan_cell",
+              "clock_gate_without_test",
+              "inverted_output_used",
+              "clock_not_from_port",
+              "inverted_clock",
               "wsp"
             ]
           }
@@ -124,6 +156,11 @@
         "chain_index": {"type": "integer", "minimum": 0},
         "chain_position": {"type": "integer", "minimum": 0},
         "clock_net": {"type": "integer"},
+        "pin_clock_net": {
+          "description": "The flop's clock pin's net, when cells (buffers, clock gates) lie between it and its root clock, clock_net.",
+          "type": "integer"
+        },
+        "clock_gates": {"type": "array", "items": {"type": "string"}},
         "data_net": {"type": "integer"},
         "scan_in_net": {"type": "integer"},
         "scan_enable_net": {"type": "integer"},
