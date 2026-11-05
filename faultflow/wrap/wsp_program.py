@@ -139,11 +139,9 @@ def _bits(column: Sequence[int]) -> str:
 
 @dataclass(frozen=True)
 class WspProgram:
-    """The steps ``ff.py wsp`` grades with, and where they came from: ``source`` is
-    ``"warptap"`` (built from the wrapper's ICL) or ``"file"``."""
+    """The steps ``ff.py wsp`` grades with."""
 
     steps: tuple[WspStep, ...]
-    source: str = "file"
 
     def __len__(self) -> int:
         return len(self.steps)
@@ -388,7 +386,7 @@ class WspProgram:
                     tuple(seen),
                 )
             )
-        return cls(tuple(steps), "file")
+        return cls(tuple(steps))
 
 
 def conformance_failures(

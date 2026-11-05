@@ -314,46 +314,41 @@ bool lane_bit(uint64_t word, int bit) {
 }
 
 // The nets a scan protocol fault grade reads, sampled at each sampled cycle:
-// the functional output ports, then the scan-out ports, then (transition
-// patterns) one batch's fault nets. `slot(port)` is a port's index into a
-// sample; a port it does not hold throws.
+// the functional output ports, then the scan-out ports, each port once (a
+// transition grade appends one batch's fault nets after them). po_slot[i] /
+// so_slot[i] is functional output port i's / scan output port i's index into a
+// sample.
 struct SampleSlots {
   std::vector<uint32_t> nets;
-  std::map<std::string, size_t> port_slot;
-  size_t ports = 0;
-
-  size_t slot(const std::string& port) const {
-    const auto it = port_slot.find(port);
-    if (it == port_slot.end()) {
-      throw std::runtime_error("scan pattern sample missing port: " + port);
-    }
-    return it->second;
-  }
+  std::vector<size_t> po_slot;
+  std::vector<size_t> so_slot;
 };
 
 SampleSlots scan_sample_slots(const ParsedGraph& parsed,
                               const CompiledSimGraph& cg,
                               const ScanPatternRequest& request) {
   SampleSlots slots;
+  std::map<std::string, size_t> slot_of;
   const auto add = [&](const std::string& port) {
-    if (slots.port_slot.count(port) != 0) {
-      return;
+    const auto found = slot_of.find(port);
+    if (found != slot_of.end()) {
+      return found->second;
     }
     const int yid = parsed.net_id_by_name(port);
     const auto it = cg.yosys_to_compiled.find(yid);
     if (it == cg.yosys_to_compiled.end()) {
       throw std::runtime_error("scan pattern sample missing port: " + port);
     }
-    slots.port_slot[port] = slots.nets.size();
+    slot_of.emplace(port, slots.nets.size());
     slots.nets.push_back(static_cast<uint32_t>(it->second));
+    return slots.nets.size() - 1;
   };
   for (const auto& port : request.functional_output_ports) {
-    add(port);
+    slots.po_slot.push_back(add(port));
   }
   for (const auto& port : request.scan_output_ports) {
-    add(port);
+    slots.so_slot.push_back(add(port));
   }
-  slots.ports = slots.nets.size();
   return slots;
 }
 
@@ -368,13 +363,13 @@ ScanPatternResult extract_scan_lane_observations(
     throw std::runtime_error("scan pattern sample count mismatch");
   }
   ScanPatternResult result;
-  for (const auto& port : request.functional_output_ports) {
-    result.real_po_values[port] = lane_bit(
-        samples[static_cast<size_t>(functional_idx)].at(slots.slot(port)), bit);
+  for (size_t i = 0; i < request.functional_output_ports.size(); ++i) {
+    result.real_po_values[request.functional_output_ports[i]] = lane_bit(
+        samples[static_cast<size_t>(functional_idx)].at(slots.po_slot[i]), bit);
   }
   for (size_t chain_id = 0; chain_id < request.scan_output_ports.size();
        ++chain_id) {
-    const size_t slot = slots.slot(request.scan_output_ports.at(chain_id));
+    const size_t slot = slots.so_slot[chain_id];
     std::vector<bool> bits;
     bits.reserve(request.max_chain_length);
     for (int offset = 0; offset < request.max_chain_length; ++offset) {
@@ -523,22 +518,23 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
     }
 
     // Only the sampled ports and (transition) the batch's fault nets, at
-    // slots.ports + the fault's offset in the batch.
-    SampleSlots slots = port_slots;
+    // port_slots.nets.size() + the fault's offset in the batch.
+    std::vector<uint32_t> sampled_nets;
     if (transition) {
+      sampled_nets = port_slots.nets;
       for (size_t fault_idx = begin; fault_idx < end; ++fault_idx) {
-        slots.nets.push_back(request.faults[fault_idx].compiled_net_index);
+        sampled_nets.push_back(request.faults[fault_idx].compiled_net_index);
       }
     }
     BitParallelSim parallel;
-    const auto batch_samples =
-        parallel.simulate_batch_samples(cg, vec, fault_batch, slots.nets);
+    const auto batch_samples = parallel.simulate_batch_samples(
+        cg, vec, fault_batch, transition ? sampled_nets : port_slots.nets);
     for (size_t fault_idx = begin; fault_idx < end; ++fault_idx) {
       ScanProtocolFaultLaneResult lane;
       lane.fault_index = fault_idx;
       const int lane_bit_index = static_cast<int>(fault_idx - begin) + 1;
       const ScanPatternResult faulty_obs = extract_scan_lane_observations(
-          slots, request.pattern, batch_samples, lane_bit_index);
+          port_slots, request.pattern, batch_samples, lane_bit_index);
       bool detected =
           observations_differ(result.golden, faulty_obs, request.unload_mask);
 
@@ -560,7 +556,7 @@ ScanProtocolFaultSimResult simulate_scan_protocol_faults(
       // samples. samples[0]=launch, samples[1]=capture; bit 0 is the good lane.
       if (detected && transition) {
         const ScanProtocolFaultSpec& spec = request.faults[fault_idx];
-        const size_t net = slots.ports + (fault_idx - begin);
+        const size_t net = port_slots.nets.size() + (fault_idx - begin);
         const bool launch_good = (batch_samples[0].at(net) & 1ULL) != 0;
         const bool capture_good = (batch_samples[1].at(net) & 1ULL) != 0;
         const bool pre = spec.fault_type == 1;   // STF pre=1, STR pre=0

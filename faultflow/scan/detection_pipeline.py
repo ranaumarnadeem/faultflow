@@ -149,7 +149,7 @@ class ScanPipelineContext:
     compaction_map: CompactionMap | None = None
     # Precomputed ONCE per campaign (build_scan_pipeline_context), not
     # per-candidate: resolving a clock net id to its port name
-    # (_port_name_for_net) does a full, uncached JSON parse of generic_json,
+    # (manifest_clock_ports) can do a full, uncached JSON parse of generic_json,
     # and this is otherwise static for the whole campaign. Previously
     # recomputed inside _protocol_fault_sim_kwargs, called once per
     # candidate -- a real cost at scale (the "Python per-candidate JSON

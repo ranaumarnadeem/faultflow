@@ -42,7 +42,6 @@ struct CellICGMetadata {
   std::string test;
   std::string output;
   TriggerType edge = TriggerType::POSEDGE;
-  bool present = false;
 };
 
 struct CellMapEntry {

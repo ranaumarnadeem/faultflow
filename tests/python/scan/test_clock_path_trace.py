@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from faultflow.control_trace import Netlist
-from faultflow.scan.clock_gates import clock_gates, clock_path, root_clock
+from faultflow.scan.clock_gates import clock_gates, clock_path
 
 ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = json.loads(
@@ -98,9 +98,10 @@ def test_buffers_on_both_sides_of_a_clock_gate(traced: tuple[Netlist, Any]) -> N
     found = clock_path(12, gates, netlist)
     assert found.root == 2 and found.nets == (12, 11, 3, 2)
     assert [g.instance for g in found.gates] == ["u_cg"]
-    # Without a netlist only the clock gates are followed, as root_clock does.
+    # Without a netlist only the clock gates are followed.
     assert clock_path(12, gates).root == 12
-    assert root_clock(11, gates) == (3, found.gates)
+    unbuffered = clock_path(11, gates)
+    assert (unbuffered.root, unbuffered.gates) == (3, found.gates)
 
 
 def test_a_loop_of_buffers_ends_the_trace(traced: tuple[Netlist, Any]) -> None:

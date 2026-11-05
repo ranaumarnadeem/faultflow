@@ -121,15 +121,9 @@ ConeMasks build_cone_masks(const CompiledSimGraph& cg, uint32_t fault_net,
         flag[obs] = 1;
       }
     }
-    // Reuse the graph's precomputed driver index (topology-invariant); fall back
-    // to building it only for a graph that predates the cached field.
-    std::vector<int> fallback;
-    const std::vector<int>* driver = &cg.driver_index;
-    if (cg.driver_index.empty()) {
-      fallback = build_driver_index(cg);
-      driver = &fallback;
-    }
-    FaultCone cone = extract_fault_cone(cg, fault_net, *driver, flag);
+    std::vector<int> scratch;
+    FaultCone cone = extract_fault_cone(
+        cg, fault_net, driver_index_of(cg, scratch), flag);
     m.in_outcone = std::move(cone.in_outcone);
     m.in_support = std::move(cone.in_support);
     m.observed = std::move(cone.reached_observables);
@@ -695,12 +689,6 @@ using Coupling = std::vector<std::pair<uint32_t, uint32_t>>;
 // two-frame CNF by simulating them, and the verdict is the same.
 std::vector<char> launch_cone(const CompiledSimGraph& cg, uint32_t fault_net,
                               const Coupling& coupling, const ConeMasks& masks) {
-  std::vector<int> fallback;
-  const std::vector<int>* driver = &cg.driver_index;
-  if (cg.driver_index.empty()) {
-    fallback = build_driver_index(cg);
-    driver = &fallback;
-  }
   std::vector<char> needed(static_cast<size_t>(cg.net_count), 0);
   std::vector<uint32_t> work;
   const auto need = [&](uint32_t net) {
@@ -715,34 +703,39 @@ std::vector<char> launch_cone(const CompiledSimGraph& cg, uint32_t fault_net,
       need(launch);
     }
   }
-  while (!work.empty()) {
-    const uint32_t net = work.back();
-    work.pop_back();
-    const int d = (*driver)[net];
-    if (d < 0) {
-      continue;
-    }
-    for (uint32_t input : inputs_of(cg.nodes[static_cast<size_t>(d)])) {
-      need(input);
-    }
-  }
+  std::vector<int> scratch;
+  close_fanin(cg, driver_index_of(cg, scratch), needed, work);
   return needed;
 }
 
-// The fault-free launch frame for the launch-net values `launch_value` gives
-// the INPUT nets (the solved launch): every net, in level order.
+// The fault-free launch frame over the fan-in cone of `nets`, for the
+// launch-net values `launch_value` gives the INPUT nets (the solved launch):
+// the cone's nets, in level order; every other net false.
 std::vector<bool> simulate_launch(const CompiledSimGraph& cg,
+                                  std::vector<uint32_t> nets,
                                   const std::function<bool(uint32_t)>& launch_value) {
+  std::vector<char> cone(static_cast<size_t>(cg.net_count), 0);
+  for (uint32_t net : nets) {
+    cone[net] = 1;
+  }
+  std::vector<int> scratch;
+  close_fanin(cg, driver_index_of(cg, scratch), cone, nets);
   std::vector<bool> values(static_cast<size_t>(cg.net_count), false);
   std::vector<bool> ins;
   const auto eval_node = [&](const SimNode& node) {
+    if (!cone[node.out]) {
+      return;
+    }
     if (node.type == GateType::INPUT) {
       values[node.out] = launch_value(node.out);
       return;
     }
     ins.clear();
-    for (uint32_t input : inputs_of(node)) {
-      ins.push_back(values[input]);
+    for (uint32_t input : {node.in0, node.in1, node.in2, node.in3, node.in4,
+                           node.in5}) {
+      if (input != UNUSED_INPUT) {
+        ins.push_back(values[input]);
+      }
     }
     values[node.out] = eval_gate_scalar(node.type, ins);
   };
@@ -801,7 +794,9 @@ SatSolveResult solve_two_frame_transition(
           : std::vector<char>(static_cast<size_t>(cg.net_count), 1);
 
   for (const SimNode& node : cg.nodes) {
-    if (node.type == GateType::INPUT) {
+    if (node.type == GateType::INPUT ||
+        !(in_launch[node.out] || masks.in_support[node.out] ||
+          masks.in_outcone[node.out])) {
       continue;
     }
     const auto input_nets = inputs_of(node);
@@ -934,23 +929,24 @@ SatSolveResult solve_two_frame_transition(
   }
   // A coupled capture value the CNF left free (its launch net outside
   // launch_cone): what the launch frame computes from V1, fault-free.
-  std::vector<std::pair<uint32_t, uint32_t>> derived;
+  std::map<uint32_t, uint32_t> derived;  // capture net -> launch net
   for (const auto& [capture, launch] : coupling) {
     if (!in_launch[launch]) {
-      derived.emplace_back(capture, launch);
+      derived[capture] = launch;
     }
   }
   if (!derived.empty()) {
-    const std::vector<bool> launch_frame = simulate_launch(
-        cg, [&](uint32_t net) { return solver.val(launch_vars.at(net)) > 0; });
-    std::map<uint32_t, bool> capture_value;
+    std::vector<uint32_t> launch_nets;
     for (const auto& [capture, launch] : derived) {
-      capture_value[capture] = launch_frame[launch];
+      launch_nets.push_back(launch);
     }
+    const std::vector<bool> launch_frame = simulate_launch(
+        cg, std::move(launch_nets),
+        [&](uint32_t net) { return solver.val(launch_vars.at(net)) > 0; });
     for (const AtpgPiInfo& pi : pis) {
-      const auto it = capture_value.find(pi.compiled);
-      if (it != capture_value.end()) {
-        v2_out[pi.name] = it->second;
+      const auto it = derived.find(pi.compiled);
+      if (it != derived.end()) {
+        v2_out[pi.name] = launch_frame[it->second];
       }
     }
   }

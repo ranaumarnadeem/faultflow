@@ -71,7 +71,6 @@ def test_a_program_written_as_a_file_reads_back_to_the_same_steps() -> None:
     data = json.loads(json.dumps(program.to_json(RECORD, SCAN_OUTS)))
     assert data["format"] == FORMAT and data["version"] == VERSION
     again = WspProgram.from_json(data, RECORD, SCAN_OUTS)
-    assert again.source == "file"
     assert again.steps == program.steps
     assert again.tests == program.tests
 
@@ -328,7 +327,7 @@ def test_a_point_the_block_doesnt_have_is_a_failure() -> None:
         dataclasses.replace(step, expected=(*step.expected, ("nowhere", 1)))
         for step in _program().steps
     )
-    failures = conformance_failures(WspProgram(steps, "file"), RECORD, SCAN_OUTS)
+    failures = conformance_failures(WspProgram(steps), RECORD, SCAN_OUTS)
     assert failures and "nowhere" in failures[0]
 
 

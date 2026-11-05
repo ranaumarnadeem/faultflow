@@ -14,7 +14,6 @@ gate closed holds its flops, as a clock enable would: the ATPG view captures
 
 from __future__ import annotations
 
-import fnmatch
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Mapping
 
@@ -37,20 +36,12 @@ class ClockGate:
     output_net: int
 
 
-def _entry(cell_map: Mapping[str, Any], cell_type: str) -> Mapping[str, Any] | None:
-    exact = cell_map.get(cell_type)
-    if isinstance(exact, Mapping):
-        return exact
-    for pattern, entry in cell_map.items():
-        if isinstance(entry, Mapping) and fnmatch.fnmatchcase(cell_type, pattern):
-            return entry
-    return None
-
-
 def clock_gates(
     module: Mapping[str, Any], cell_map: Mapping[str, Any]
 ) -> dict[int, ClockGate]:
     """Every clock gate of ``module``, by the net it drives."""
+    from faultflow.scan.stitch import _lookup_cell  # it imports this module
+
     found: dict[int, ClockGate] = {}
     entries: dict[str, Mapping[str, Any] | None] = {}
     for instance, cell in (module.get("cells") or {}).items():
@@ -58,7 +49,8 @@ def clock_gates(
             continue
         cell_type = str(cell.get("type", ""))
         if cell_type not in entries:
-            entries[cell_type] = _entry(cell_map, cell_type)
+            hit = _lookup_cell(cell_map, cell_type)
+            entries[cell_type] = hit[1] if hit is not None else None
         entry = entries[cell_type]
         if entry is None or entry.get("node_type") != "ICG":
             continue
@@ -80,15 +72,6 @@ def clock_gates(
             output_net=out[0],
         )
     return found
-
-
-def root_clock(
-    net: Any, gates: Mapping[int, ClockGate]
-) -> tuple[Any, tuple[ClockGate, ...]]:
-    """The clock ``net`` is gated from, and the gates on the way, the nearest
-    first."""
-    found = clock_path(net, gates)
-    return found.root, found.gates
 
 
 @dataclass(frozen=True)
@@ -166,6 +149,7 @@ def clock_path_problems(
     names = dict(zip(nets, [str(p) for p in manifest.get("clock_ports") or []]))
     cells = module.get("cells") or {}
     moved: list[str] = []
+    paths: dict[Any, ClockPath] = {}  # by pin net: flops on one leaf share it
     for row in manifest.get("cells") or []:
         if not isinstance(row, dict) or row.get("instance") not in cells:
             continue
@@ -173,7 +157,9 @@ def clock_path_problems(
         pin = (cells[instance].get("connections") or {}).get("CLK") or []
         if len(pin) != 1:
             continue
-        found = clock_path(pin[0], gates, netlist, holds)
+        if pin[0] not in paths:
+            paths[pin[0]] = clock_path(pin[0], gates, netlist, holds)
+        found = paths[pin[0]]
         if found.root != row.get("clock_net") or found.inverted:
             moved.append(instance)
     if not moved:

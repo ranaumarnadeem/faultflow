@@ -201,7 +201,6 @@ CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node)
       throw ParseError("ICG entry " + pattern + " has no icg pins");
     }
     const auto& icg = node.at("icg");
-    entry.icg.present = true;
     entry.icg.clock = icg.at("clock").get<std::string>();
     entry.icg.enable = icg.at("enable").get<std::string>();
     entry.icg.test = icg.value("test", std::string());

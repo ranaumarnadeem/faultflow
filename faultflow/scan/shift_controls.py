@@ -166,7 +166,7 @@ def shift_control_violations(
         if name not in netlist.cells:
             continue
         opening = [str(pins[k]) for k in ("test_pin", "enable_pin") if pins.get(k)]
-        forced = [netlist.forced(name, pin, values, known) for pin in opening]
+        forced = (netlist.forced(name, pin, values, known) for pin in opening)
         if any(f is not None and f.value == 1 for f in forced):
             continue
         pin = opening[0]

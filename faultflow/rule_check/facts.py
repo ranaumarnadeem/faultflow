@@ -9,10 +9,9 @@ connections only (the supported gate/FF cells are scalar); constants ("0"/"1"/
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-from faultflow.scan.stitch import _load_json, _lookup_cell, _top_module
+from faultflow.scan.stitch import _lookup_cell
 
 
 @dataclass(frozen=True)
@@ -69,11 +68,9 @@ def _port_bits(port: Any) -> list[int]:
 
 
 def build_netlist_facts(
-    netlist_json: Path, cell_map_json: Path, top: str
+    module: dict[str, Any], cell_map: dict[str, Any], top: str
 ) -> NetlistFacts:
-    data = _load_json(netlist_json)
-    cell_map = _load_json(cell_map_json)
-    _, module = _top_module(data, top)
+    """The facts of the top ``module`` (named ``top``) of a loaded netlist."""
     facts = NetlistFacts(top=top)
 
     ports = module.get("ports", {})

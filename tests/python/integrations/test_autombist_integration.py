@@ -157,9 +157,9 @@ def _assert_unload_independent_of_memory(
     an exported pattern may depend on it: replayed through the scan protocol
     with the memory's outputs forced to 1, and to random per-bit values, every
     bit the pattern's unload_mask compares must come out as expected."""
-    from faultflow.runner.runner import _load_core, _port_name_for_net
+    from faultflow.runner.runner import _load_core
     from faultflow.scan.cell_map import resolve_scan_cell_map
-    from faultflow.scan.manifest import manifest_clock_net_ids
+    from faultflow.scan.manifest import manifest_clock_ports
     from faultflow.scan.pattern_export import scan_pattern_from_dict
 
     core = _load_core()
@@ -177,10 +177,7 @@ def _assert_unload_independent_of_memory(
         if isinstance(bit, int)
     )
     cell_map = str(resolve_scan_cell_map(cfg))
-    clock_ports = [
-        _port_name_for_net(scan_json, top, net, "input")
-        for net in manifest_clock_net_ids(manifest)
-    ]
+    clock_ports = manifest_clock_ports(manifest, scan_json)
 
     def forced(values: dict[int, str], name: str) -> Path:
         """The scanned netlist with the memory replaced by constants."""

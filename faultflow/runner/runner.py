@@ -90,7 +90,6 @@ from faultflow.scan.setup import SetupCycle, check_setup, load_setup, setup_hash
 from faultflow.scan.stil import write_stil
 from faultflow.scan.tester_program import chip_of, cycles
 from faultflow.scan.shift_controls import (
-    ShiftViolation,
     shift_control_message,
     shift_control_violations,
 )
@@ -331,20 +330,6 @@ def _atpg_pi_names(path: Path, top: str) -> list[str]:
             continue
         out.extend(_positional_bus_bits(str(name), len(bits)))
     return sorted(out)
-
-
-def _port_name_for_net(path: Path, top: str, net_id: int, direction: str) -> str | None:
-    _, module = _json_top_module(path, top)
-    ports = module.get("ports")
-    if not isinstance(ports, dict):
-        return None
-    for name, port in ports.items():
-        if not isinstance(port, dict) or port.get("direction") != direction:
-            continue
-        bits = port.get("bits")
-        if isinstance(bits, list) and bits == [net_id]:
-            return str(name)
-    return None
 
 
 def _load_core() -> Any | None:
@@ -1910,18 +1895,32 @@ class Runner:
             except (ScanError, RunnerError) as exc:
                 errors.append(str(exc))
         if not errors:
-            errors.extend(self._clock_path_problems(manifest))
-        if not errors:
-            try:
-                violations = self._shift_control_violations(manifest)
-            except RunnerError as exc:
-                errors.append(str(exc))
-            else:
-                if violations:
-                    warn = self.cfg.scan.shift_controls == "warn"
-                    (warnings if warn else errors).append(
-                        shift_control_message(violations)
+            generic_json = Path(str(manifest["generic_json"]))
+            _, module = _json_top_module(generic_json, self.cfg.top)
+            cell_map = _load_json_object(resolve_scan_cell_map(self.cfg))
+            # Each scan flop's clock traced again, with [scan] hold as it is now.
+            errors.extend(
+                clock_path_problems(
+                    module, manifest, cell_map, dict(self.cfg.scan.hold)
+                )
+            )
+            if not errors:
+                try:
+                    violations = shift_control_violations(
+                        module,
+                        manifest,
+                        cell_map,
+                        holds=dict(self._holds(manifest)),
+                        nonscan=self._nonscan_setup(manifest, generic_json),
                     )
+                except RunnerError as exc:
+                    errors.append(str(exc))
+                else:
+                    if violations:
+                        warn = self.cfg.scan.shift_controls == "warn"
+                        (warnings if warn else errors).append(
+                            shift_control_message(violations)
+                        )
         normal_mode: dict[str, object] | None = None
         techmap_equivalence: dict[str, object] | None = None
         # Populated by the normal-mode check below so the techmap-equivalence
@@ -2045,34 +2044,6 @@ class Runner:
             tck=self.cfg.jtag.tck,
             globs=manifest_instrument_globs(self.cfg.autombist_manifest),
             allow=self.cfg.scan.scan_test_access,
-        )
-
-    def _clock_path_problems(self, manifest: dict[str, Any]) -> list[str]:
-        """Each scan flop's clock traced again, with [scan] hold as it is now, to
-        the port the manifest records (scan.clock_gates.clock_path_problems)."""
-        generic_json = Path(str(manifest["generic_json"]))
-        _, module = _json_top_module(generic_json, self.cfg.top)
-        return clock_path_problems(
-            module,
-            manifest,
-            _load_json_object(resolve_scan_cell_map(self.cfg)),
-            dict(self.cfg.scan.hold),
-        )
-
-    def _shift_control_violations(
-        self, manifest: dict[str, Any]
-    ) -> list[ShiftViolation]:
-        """The scan flops whose clear or preset isn't held inactive during shift
-        (scan.shift_controls), with [scan] hold and the non-scan flops the test
-        ties."""
-        generic_json = Path(str(manifest["generic_json"]))
-        _, module = _json_top_module(generic_json, self.cfg.top)
-        return shift_control_violations(
-            module,
-            manifest,
-            _load_json_object(resolve_scan_cell_map(self.cfg)),
-            holds=dict(self._holds(manifest)),
-            nonscan=self._nonscan_setup(manifest, generic_json),
         )
 
     def rule_check(self, *, strict: bool = False) -> RuleCheckReport:

@@ -21,11 +21,10 @@ from typing import Any, Callable
 from faultflow.runner.runner import (
     _atpg_pi_names,
     _load_core,
-    _port_name_for_net,
     _positional_bus_bits,
 )
 from faultflow.scan.cell_map import resolve_scan_cell_map
-from faultflow.scan.manifest import manifest_clock_net_ids
+from faultflow.scan.manifest import manifest_clock_ports
 from faultflow.scan.pattern_export import scan_pattern_from_dict
 from faultflow.scan.setup import setup_request
 from faultflow.scan.site_resolution import build_site_key_index, fault_type_to_sa_code
@@ -175,10 +174,7 @@ def _grader(
     assert credited, "the campaign credits nothing"
     index = build_site_key_index(core, generic, cell_map, unsupported, blackboxes)
     specs = [(index[key], fault_type_to_sa_code(ft)) for key, ft in credited]
-    clock_ports = [
-        _port_name_for_net(generic, top, net, "input")
-        for net in manifest_clock_net_ids(manifest)
-    ]
+    clock_ports = manifest_clock_ports(manifest, generic)
     patterns = [
         scan_pattern_from_dict(raw)
         for raw in json.loads(patterns_path.read_text(encoding="utf-8"))
@@ -349,10 +345,7 @@ def compressed_credit_not_reproduced(
         (index[_composed_site_key(key, nets)], fault_type_to_sa_code(ft))
         for key, ft in credited
     ]
-    clock_ports = [
-        str(_port_name_for_net(generic, str(manifest["top"]), net, "input"))
-        for net in manifest_clock_net_ids(manifest)
-    ]
+    clock_ports = manifest_clock_ports(manifest, generic)
     scan_enable = str(manifest["scan_enable"])
     scan_outputs = [str(port) for port in manifest["scan_outputs"]]
     max_chain_length = int(manifest["max_chain_length"])
@@ -477,7 +470,6 @@ def soc_credit_not_reproduced(
     assert core is not None
     manifest = json.loads(soc_cfg.scan_manifest_path.read_text(encoding="utf-8"))
     generic = Path(str(manifest["generic_json"]))
-    top = str(manifest["top"])
     cell_map = str(resolve_scan_cell_map(soc_cfg))
     unsupported = soc_cfg.simulation.unsupported_cells
     conn = sqlite3.connect(block_cfg.db_path)
@@ -501,10 +493,7 @@ def soc_credit_not_reproduced(
         for site in sorted(soc_sites.get(key, ())):
             specs.append((index[site], fault_type_to_sa_code(fault_type)))
             owners.append(number)
-    clock_ports = [
-        _port_name_for_net(generic, top, net, "input")
-        for net in manifest_clock_net_ids(manifest)
-    ]
+    clock_ports = manifest_clock_ports(manifest, generic)
     patterns = [
         scan_pattern_from_dict(raw)
         for raw in json.loads(patterns_path.read_text(encoding="utf-8"))

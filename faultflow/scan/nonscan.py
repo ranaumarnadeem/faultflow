@@ -70,11 +70,10 @@ from faultflow.scan.errors import ScanError
 from faultflow.scan.manifest import manifest_clock_net_ids
 from faultflow.scan.setup import SetupCycle, check_setup
 from faultflow.scan.setup_sim import SetupSimulator, changed_by
+from faultflow.scan.stitch import PARSED_CONST_NETS
 
 NONSCAN_REASON = "nonscan_policy"
 WSP_REASON = "wsp"  # an IEEE 1500 WSP's flop: its mode's program programs it
-# The nets the C++ core gives a constant bit (common/types.hpp; x and z read as 0).
-CONST_NETS = {"0": -1, "x": -1, "z": -1, "1": -2}
 
 
 Pins = tuple[tuple[str, int], ...]  # (pin, net)
@@ -233,9 +232,11 @@ def analyze_nonscan(
             and isinstance(bits[0], int)
         )
         tied = tuple(
-            (pin, CONST_NETS[bits[0]])
+            (pin, PARSED_CONST_NETS[bits[0]])
             for pin, bits in sorted(cell["connections"].items())
-            if directions[pin] == "input" and len(bits) == 1 and bits[0] in CONST_NETS
+            if directions[pin] == "input"
+            and len(bits) == 1
+            and bits[0] in PARSED_CONST_NETS
         )
         if forcing:
             control, found = forcing[0]

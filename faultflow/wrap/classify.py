@@ -130,6 +130,7 @@ def classify(
     clocks: set[str] = set()
     controls: set[str] = set()
     through_logic: dict[str, str] = {}
+    generated: set[int] = set()  # clock roots logic makes, their fan-in traced
     for flop in flops:
         pin_net = one_net(
             netlist.cells[flop.instance].get("connections", {}).get(flop.clock_pin)
@@ -137,16 +138,18 @@ def classify(
         found = clock_path(pin_net, gates, netlist)
         if isinstance(found.root, int) and found.root in netlist.input_net_names:
             clocks.add(netlist.input_net_names[found.root])
-        elif isinstance(found.root, int):
+        elif isinstance(found.root, int) and found.root not in generated:
+            generated.add(found.root)
             for port in _fan_in_ports(netlist, found.root):
                 through_logic.setdefault(port, f"{flop.instance}.{flop.clock_pin}")
-        for pin, trace, kind in [(c.pin, c.trace, controls) for c in flop.controls]:
+        for control in flop.controls:
+            trace = control.trace
             if trace.port is not None:
-                kind.add(trace.port)
+                controls.add(trace.port)
             elif trace.const is None and trace.steps:
                 net = trace.steps[-1][0]
                 for port in _fan_in_ports(netlist, net):
-                    through_logic.setdefault(port, f"{flop.instance}.{pin}")
+                    through_logic.setdefault(port, f"{flop.instance}.{control.pin}")
     decisions: list[Decision] = []
     for bit in port_bits(module):
         if bit.direction not in ("input", "output"):

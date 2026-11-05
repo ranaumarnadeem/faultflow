@@ -183,6 +183,7 @@ class Netlist:
     def __init__(self, module: Mapping[str, Any], cell_map: Mapping[str, Any]) -> None:
         self.cells: dict[str, dict[str, Any]] = dict(module.get("cells", {}))
         self.cell_map = cell_map
+        self._entries: dict[str, dict[str, Any] | None] = {}  # by cell type
         self.input_net_names = {net: name for name, net in port_bits(module, "input")}
         self.drivers: dict[int, tuple[str, str]] = {}
         for instance, cell in self.cells.items():
@@ -195,10 +196,11 @@ class Netlist:
                         self.drivers[bit] = (instance, pin)
 
     def entry(self, instance: str) -> dict[str, Any] | None:
-        found = _lookup_cell(
-            dict(self.cell_map), str(self.cells[instance].get("type", ""))
-        )
-        return found[1] if found is not None else None
+        cell_type = str(self.cells[instance].get("type", ""))
+        if cell_type not in self._entries:
+            found = _lookup_cell(self.cell_map, cell_type)
+            self._entries[cell_type] = found[1] if found is not None else None
+        return self._entries[cell_type]
 
     def direction(self, instance: str, pin: str, entry: dict[str, Any] | None) -> str:
         directions = self.cells[instance].get("port_directions", {})

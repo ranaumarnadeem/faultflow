@@ -34,6 +34,17 @@ struct FaultCone {
 // so a backward walk terminates at them. Build once per graph.
 std::vector<int> build_driver_index(const CompiledSimGraph& cg);
 
+// cg.driver_index, or (a graph that predates the cached field) the index
+// build_driver_index builds into `scratch`.
+const std::vector<int>& driver_index_of(const CompiledSimGraph& cg,
+                                        std::vector<int>& scratch);
+
+// Close the net mask `in` under fan-in: every input of the driver of a net it
+// holds is set too. `work` lists the nets set but not yet walked (consumed).
+// O(the nets it sets).
+void close_fanin(const CompiledSimGraph& cg, const std::vector<int>& driver,
+                 std::vector<char>& in, std::vector<uint32_t>& work);
+
 // Extract the cone for the stuck-at site `fault_net`. `observable` is a per-net
 // flag (size >= net_count) of the ACTIVE observable set — cg.observable for the
 // plain path, or mc.observable_nets for the mode-aware path. `driver` is from

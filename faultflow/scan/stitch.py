@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from faultflow.pdk.roles import LIBRARY_KEY
-from faultflow.scan.clock_gates import ClockGate, clock_gates, clock_path
+from faultflow.scan.clock_gates import ClockGate, ClockPath, clock_gates, clock_path
 from faultflow.scan.errors import ScanError
 
 SCAN_CELL_TYPE = "$scanff_faultflow"
@@ -57,6 +57,8 @@ DEFAULT_SCAN_ENABLE = "scan_en"
 # and its scan cell keeps the literal on D.
 CONST_NETS = {"0": -1, "1": -2}
 CONST_BITS = {net: bit for bit, net in CONST_NETS.items()}
+# Every constant bit the parser reads: "x" and "z" tie to the "0" net.
+PARSED_CONST_NETS = {**CONST_NETS, "x": -1, "z": -1}
 
 # The scan ports of the IEEE 1500 wrapper's chains (faultflow.wrap): wbr_si and
 # wbr_so, or wbr_si_<k> and wbr_so_<k> with more than one.
@@ -265,7 +267,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _lookup_cell(
-    cell_map: dict[str, Any], cell_type: str
+    cell_map: Mapping[str, Any], cell_type: str
 ) -> tuple[str, dict[str, Any]] | None:
     exact = cell_map.get(cell_type)
     if isinstance(exact, dict):
@@ -528,6 +530,7 @@ def _collect_ffs(
     library_cells = _LibraryScanCells(cell_map)
     gates = clock_gates(module, cell_map)
     netlist = Netlist(module, cell_map)
+    paths: dict[int, ClockPath] = {}
     test_gates = _TestClockGates(cell_map)
     # How many connections each net bit has, across every cell pin and top port: a
     # flop's inverted output is in use when its net has another.
@@ -614,7 +617,9 @@ def _collect_ffs(
             )
             continue
         pin_clock = _one_bit(conns.get(clk_pin), f"{instance}.{clk_pin}")
-        found = clock_path(pin_clock, gates, netlist, holds)
+        if pin_clock not in paths:  # flops on one clock leaf share its path
+            paths[pin_clock] = clock_path(pin_clock, gates, netlist, holds)
+        found = paths[pin_clock]
         root, path = found.root, found.gates
         if path and not isinstance(root, int):
             ineligible.append(IneligibleFF(str(instance), cell_type, "no_clock_pin"))
@@ -677,21 +682,27 @@ class _TestClockGates:
     def __init__(self, cell_map: dict[str, Any]) -> None:
         self.cell_map = cell_map
         self.roles: dict[str, Any] = {}
+        self.found: dict[tuple[str, str], Any] = {}  # by gate cell type, edge
 
     def role(self, gate: ClockGate) -> Any:
         from faultflow.pdk.roles import PdkError, library_maps, library_roles
 
+        key = (gate.cell_type, gate.edge)
+        if key in self.found:
+            return self.found[key]
         match = _lookup_cell(self.cell_map, gate.cell_type)
         library = str(match[1].get(LIBRARY_KEY, "")) if match else ""
         if library not in self.roles:
             own = library_maps(self.cell_map).get(library, {})
             self.roles[library] = library_roles(own, name=library or None)
         try:
-            return self.roles[library][
+            found = self.roles[library][
                 "icg" if gate.edge == "POSEDGE" else "icg_negedge"
             ]
         except PdkError:
-            return None
+            found = None
+        self.found[key] = found
+        return found
 
 
 class _LibraryScanCells:
@@ -888,18 +899,8 @@ def _build_plan(
         if len({ff.library for ff in chain_ffs}) > 1:
             raise ScanError(f"chain {chain_index} spans two cell libraries")
         for chain_position, ff in enumerate(chain_ffs):
-            record = ScanCellRecord(
-                instance=ff.instance,
-                original_type=ff.original_type,
-                chain_index=chain_index,
-                chain_position=chain_position,
-                clock_net=ff.clock_net,
-                data_net=ff.data_net,
-                scan_in_net=previous_q,
-                scan_enable_net=scan_enable_bit,
-                q_net=ff.q_net,
-                pin_clock_net=ff.pin_clock_net,
-                clock_gates=ff.clock_gates,
+            record = _cell_record(
+                ff, chain_index, chain_position, previous_q, scan_enable_bit
             )
             chain_cells.append(record)
             records.append(record)
@@ -927,6 +928,28 @@ def _build_plan(
         chains=chains,
         cells=records,
         ineligible_ffs=ineligible,
+    )
+
+
+def _cell_record(
+    ff: _EligibleFF,
+    chain_index: int,
+    chain_position: int,
+    scan_in_net: int,
+    scan_enable_bit: int,
+) -> ScanCellRecord:
+    return ScanCellRecord(
+        instance=ff.instance,
+        original_type=ff.original_type,
+        chain_index=chain_index,
+        chain_position=chain_position,
+        clock_net=ff.clock_net,
+        data_net=ff.data_net,
+        scan_in_net=scan_in_net,
+        scan_enable_net=scan_enable_bit,
+        q_net=ff.q_net,
+        pin_clock_net=ff.pin_clock_net,
+        clock_gates=ff.clock_gates,
     )
 
 
@@ -989,21 +1012,7 @@ def _with_wrapper(
         previous_q = first_bit + k
         cells: list[ScanCellRecord] = []
         for position, ff in enumerate(wrapper[cursor : cursor + length]):
-            cells.append(
-                ScanCellRecord(
-                    instance=ff.instance,
-                    original_type=ff.original_type,
-                    chain_index=index,
-                    chain_position=position,
-                    clock_net=ff.clock_net,
-                    data_net=ff.data_net,
-                    scan_in_net=previous_q,
-                    scan_enable_net=scan_enable_bit,
-                    q_net=ff.q_net,
-                    pin_clock_net=ff.pin_clock_net,
-                    clock_gates=ff.clock_gates,
-                )
-            )
+            cells.append(_cell_record(ff, index, position, previous_q, scan_enable_bit))
             previous_q = ff.q_net
         chains.append(
             ScanChainRecord(
@@ -1419,6 +1428,7 @@ def stitch_scan_json(
         json.dumps(stitched, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    scanned = {c.instance for c in plan.cells}
     return ScanStitchResult(
         top=plan.top,
         output_json=output_json,
@@ -1436,9 +1446,7 @@ def stitch_scan_json(
             next(ff.clock_port for ff in eligible if ff.clock_net == net)
             for net in plan.clock_nets
         ],
-        clock_paths=_clock_paths(
-            [ff for ff in eligible if ff.instance in {c.instance for c in plan.cells}]
-        ),
+        clock_paths=_clock_paths([ff for ff in eligible if ff.instance in scanned]),
     )
 
 

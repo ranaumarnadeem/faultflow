@@ -124,7 +124,6 @@ def test_the_program_warptap_builds_from_the_icl_conforms_to_faultflows_model() 
     from faultflow.wrap.wsp_icl import program_from_warptap
 
     program = program_from_warptap(RECORD, SCAN_OUTS, **FIT)
-    assert program.source == "file"
     assert conformance_failures(program, RECORD, SCAN_OUTS) == []
     tests = program_tests(program.steps)
     assert tests[:2] == ["reset", "wir_length"]

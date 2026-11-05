@@ -141,7 +141,6 @@ def test_the_program_warptap_builds_for_the_chain_conforms_to_the_chain_model() 
     program = program_from_warptap(
         SOC, {}, top="soc", scan_ins={}, scan_enable="scan_en"
     )
-    assert program.source == "file"
     assert conformance_failures(program, SOC) == []
     tests = program_tests(program.steps)
     assert tests[:2] == ["reset", "wir_length"]

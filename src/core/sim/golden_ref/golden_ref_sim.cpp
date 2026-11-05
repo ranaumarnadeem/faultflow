@@ -85,12 +85,11 @@ void seed_ff_outputs(const CompiledSimGraph& cg,
 }
 
 // `latches`: each integrated clock gate's latch, by its output net, across the
-// cycles of a sequence (eval_icg); without them a clock gate is evaluated with its
-// latch transparent.
+// cycles of a sequence (eval_icg).
 void evaluate_combinational(const CompiledSimGraph& cg,
                             std::vector<bool>& values,
                             const CompactFault* fault,
-                            std::vector<bool>* latches = nullptr) {
+                            std::vector<bool>& latches) {
   // Reused across nodes so the hot per-node eval does not heap-allocate a fresh
   // vector each time (the scan-pattern sim runs this thousands of times over a
   // large graph; the per-node alloc dominated the runtime).
@@ -118,15 +117,15 @@ void evaluate_combinational(const CompiledSimGraph& cg,
         ins.push_back(values[slot]);
       }
     }
-    if (is_icg(sn.type) && latches != nullptr) {
+    if (is_icg(sn.type)) {
       const auto at = [&](uint32_t slot) {
         return slot != UNUSED_INPUT && values[slot];
       };
-      uint64_t latch = (*latches)[sn.out] ? ~0ULL : 0ULL;
+      uint64_t latch = latches[sn.out] ? ~0ULL : 0ULL;
       const uint64_t out =
           eval_icg(sn.type, at(sn.in0) ? ~0ULL : 0ULL,
                    (at(sn.in1) || at(sn.in2)) ? ~0ULL : 0ULL, latch);
-      (*latches)[sn.out] = (latch & 1ULL) != 0;
+      latches[sn.out] = (latch & 1ULL) != 0;
       values[sn.out] = (out & 1ULL) != 0;
     } else {
       values[sn.out] = eval_gate_scalar(sn.type, ins);
@@ -174,9 +173,10 @@ void update_ff_states(const CompiledSimGraph& cg,
     // (set/reset ignored), so the chain is not wiped by an active reset during
     // shift; set/reset apply normally at capture (SE inactive). No-op for
     // plain-scan or non-scan FFs.
+    const bool scan_mux =
+        cfg.has_scan && sn.in4 != UNUSED_INPUT && sn.in5 != UNUSED_INPUT;
     const bool scan_active =
-        cfg.has_scan && sn.in4 != UNUSED_INPUT && sn.in5 != UNUSED_INPUT &&
-        control_active(values[sn.in5], cfg.scan_enable_polarity);
+        scan_mux && control_active(values[sn.in5], cfg.scan_enable_polarity);
     const bool clear_active =
         !scan_active && cfg.has_clear && sn.in2 != UNUSED_INPUT &&
         control_active(values[sn.in2], cfg.clear_polarity);
@@ -197,8 +197,7 @@ void update_ff_states(const CompiledSimGraph& cg,
     }
     if (edge_active(prev_values[sn.in1], values[sn.in1], cfg.trigger)) {
       const bool scan_select =
-          cfg.has_scan && sn.in4 != UNUSED_INPUT && sn.in5 != UNUSED_INPUT &&
-          control_active(sampled[sn.in5], cfg.scan_enable_polarity);
+          scan_mux && control_active(sampled[sn.in5], cfg.scan_enable_polarity);
       bool capture = sampled[sn.in0];
       if (scan_select) {
         capture = sampled[sn.in4];
@@ -411,13 +410,13 @@ std::vector<std::map<int, bool>> run_sequence(const CompiledSimGraph& cg,
     const CompactFault* cycle_fault = cycle.fault_active ? active_fault : nullptr;
     broadcast_inputs(cg, cycle, values, cycle_fault);
     seed_ff_outputs(cg, ff_states, values, cycle_fault);
-    evaluate_combinational(cg, values, cycle_fault, &latches);
+    evaluate_combinational(cg, values, cycle_fault, latches);
     update_ff_states(cg, values, prev_values, ff_states, settled);
     seed_ff_outputs(cg, ff_states, values, cycle_fault);
-    evaluate_combinational(cg, values, cycle_fault, &latches);
+    evaluate_combinational(cg, values, cycle_fault, latches);
     for (int i = 0; i < cycle.settle_cycles; ++i) {
       seed_ff_outputs(cg, ff_states, values, cycle_fault);
-      evaluate_combinational(cg, values, cycle_fault, &latches);
+      evaluate_combinational(cg, values, cycle_fault, latches);
     }
     if (cycle.sample_outputs) {
       samples.push_back(sample_yids ? snapshot_sampled(cg, values, *sample_yids)

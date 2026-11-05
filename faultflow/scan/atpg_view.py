@@ -10,7 +10,7 @@ from faultflow.coverage.site_key import (
     stem_site_key,
 )
 from faultflow.scan.errors import ScanError
-from faultflow.scan.manifest import manifest_clock_net_ids
+from faultflow.scan.manifest import manifest_clock_ports
 from faultflow.scan.stitch import (
     CONST_NETS,
     SCAN_CELL_TYPES,
@@ -183,36 +183,10 @@ def _manifest_scan_port_names(manifest: dict[str, Any]) -> set[str]:
     return names
 
 
-def _clock_port_name(module: dict[str, Any], clock_net: int) -> str | None:
-    ports = module.get("ports", {})
-    if not isinstance(ports, dict):
-        return None
-    for name, port in ports.items():
-        if not isinstance(port, dict):
-            continue
-        bits = _all_int_bits(port.get("bits"))
-        if len(bits) == 1 and bits[0] == clock_net:
-            return str(name)
-    return None
-
-
-def _drop_dangling_scan_ports(
-    module: dict[str, Any],
-    manifest: dict[str, Any],
-    clock_nets: list[int],
-) -> None:
+def _drop_dangling_scan_ports(module: dict[str, Any], manifest: dict[str, Any]) -> None:
     used = _nets_used_by_cells(module)
     scan_names = _manifest_scan_port_names(manifest)
-    recorded = manifest.get("clock_ports")
-    if isinstance(recorded, list) and len(recorded) == len(clock_nets):
-        # The ports stitching traced each clock to (clock_gates.clock_path).
-        scan_names.update(str(name) for name in recorded)
-    else:
-        for clk_net in clock_nets:
-            clock_name = _clock_port_name(module, clk_net)
-            if clock_name is None:
-                raise ScanError(f"cannot map scan clock net {clk_net} to a port")
-            scan_names.add(clock_name)
+    scan_names.update(manifest_clock_ports(manifest, module=module))
     ports = module.get("ports", {})
     netnames = module.get("netnames", {})
     if not isinstance(ports, dict) or not isinstance(netnames, dict):
@@ -617,8 +591,9 @@ def _resolve_d_observe_boundary(
     shared: bool,
     next_id: int,
     index: "_BitIndex | None" = None,
-) -> tuple[int, str, int, int]:
-    """Return (observe_input_net, d_boundary_site_key, next_id, d_observe_net_id).
+) -> tuple[int, str, int]:
+    """Return (d_observe_net_id, d_boundary_site_key, next_id): the net the
+    capture observes D at.
 
     `d_net` is the D pin as currently wired, `generic_d_net` as the generic
     netlist wires it: a flop processed earlier may have rewired D to its own
@@ -632,7 +607,7 @@ def _resolve_d_observe_boundary(
     net's stem still reaches the capture."""
     d_boundary_site_key = stem_site_key(generic_d_net)
     if not shared and not isinstance(d_net, str):
-        return d_net, d_boundary_site_key, next_id, d_net
+        return d_net, d_boundary_site_key, next_id
 
     d_branch_bit = next_id
     next_id += 1
@@ -653,7 +628,7 @@ def _resolve_d_observe_boundary(
                 input_pin=DATA_PIN,
             )
         )
-    return d_branch_bit, d_boundary_site_key, next_id, d_branch_bit
+    return d_branch_bit, d_boundary_site_key, next_id
 
 
 def _constant_data(cell: dict[str, Any]) -> str | None:
@@ -1100,7 +1075,7 @@ def build_scan_atpg_view(
             next_id += 1
 
             _add_port(module, _ppo_port_str, "output", _ppo_bit_int)
-            observe_input, d_boundary_site_key, next_id, d_observe_net_id = (
+            d_observe_net_id, d_boundary_site_key, next_id = (
                 _resolve_d_observe_boundary(
                     cells,
                     instance=instance,
@@ -1111,6 +1086,7 @@ def build_scan_atpg_view(
                     index=bit_index,
                 )
             )
+            observe_input = d_observe_net_id
             # A gated flop captures only while its clock gate is open: the PPO is
             # `enable ? D : Q`, the enable the gate's output in the view (marked
             # below, faultflow.scan.clock_gates), so its enable logic is graded.
@@ -1190,8 +1166,7 @@ def build_scan_atpg_view(
         }
 
     _mark_clock_gates(module, manifest)
-    clock_nets_list = manifest_clock_net_ids(manifest)
-    _drop_dangling_scan_ports(module, manifest, clock_nets_list)
+    _drop_dangling_scan_ports(module, manifest)
     _model_blackboxes_opaque(module, blackbox_instances)
     if nonscan is not None:
         _model_nonscan(module, nonscan)

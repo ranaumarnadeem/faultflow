@@ -35,21 +35,24 @@ def manifest_clock_ports(
     manifest: dict[str, Any],
     netlist_json: Path | str | None = None,
     *,
+    module: dict[str, Any] | None = None,
     error_cls: type[Exception] = ScanError,
 ) -> list[str]:
     """Each clock domain's input port, in ``clock_nets``' order: the ports a scan
     test pulses. Stitching records them (``clock_ports``, each traced from the
     flops' pins through buffers, clock gates and held cells,
     faultflow.scan.clock_gates.clock_path); a manifest from before that is read
-    by the port carrying each clock net in ``netlist_json`` (the scanned netlist
-    by default). Raises ``error_cls`` for a clock net no port carries."""
+    by the port carrying each clock net in the top ``module``, else in
+    ``netlist_json`` (the scanned netlist by default). Raises ``error_cls`` for a
+    clock net no port carries."""
     nets = manifest_clock_net_ids(manifest, error_cls=error_cls)
     recorded = manifest.get("clock_ports")
     if isinstance(recorded, list) and len(recorded) == len(nets):
         return [str(port) for port in recorded]
-    path = Path(str(netlist_json or manifest["generic_json"]))
-    data = json.loads(path.read_text(encoding="utf-8"))
-    module = data["modules"][str(manifest["top"])]
+    if module is None:
+        path = Path(str(netlist_json or manifest["generic_json"]))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        module = data["modules"][str(manifest["top"])]
     by_net = {
         port["bits"][0]: str(name)
         for name, port in (module.get("ports") or {}).items()

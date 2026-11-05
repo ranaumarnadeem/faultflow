@@ -5,9 +5,8 @@ import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
-from faultflow.scan.stitch import ScanPlan, ScanStitchResult
+from faultflow.scan.stitch import ScanCellRecord, ScanPlan, ScanStitchResult
 
 
 def utc_timestamp() -> str:
@@ -24,7 +23,7 @@ def hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _cell_row(cell: Any) -> dict[str, object]:
+def _cell_row(cell: ScanCellRecord) -> dict[str, object]:
     row: dict[str, object] = {
         "instance": cell.instance,
         "original_type": cell.original_type,
@@ -36,11 +35,11 @@ def _cell_row(cell: Any) -> dict[str, object]:
         "scan_enable_net": cell.scan_enable_net,
         "q_net": cell.q_net,
     }
-    if getattr(cell, "pin_clock_net", -1) >= 0:
+    if cell.pin_clock_net >= 0:
         # Clocked through cells (buffers, clock gates): clock_net is its root
         # clock, this its pin's.
         row["pin_clock_net"] = cell.pin_clock_net
-    if getattr(cell, "clock_gates", ()):
+    if cell.clock_gates:
         row["clock_gates"] = list(cell.clock_gates)
     return row
 
@@ -79,8 +78,8 @@ def manifest_from_result(
         "clock_nets": result.clock_nets,
         # Each clock net's input port, and each port's paths to its flops' pins
         # (faultflow.scan.clock_gates.clock_path).
-        "clock_ports": list(getattr(result, "clock_ports", [])),
-        "clock_paths": dict(getattr(result, "clock_paths", {})),
+        "clock_ports": list(result.clock_ports),
+        "clock_paths": dict(result.clock_paths),
         "scan_inputs": result.scan_inputs,
         "scan_outputs": result.scan_outputs,
         "scan_enable": result.scan_enable,
@@ -111,11 +110,7 @@ def manifest_from_result(
         ],
         "latest_check": check_result,
         # The clock gates scan flops are gated by (faultflow.scan.clock_gates).
-        **(
-            {"clock_gates": dict(result.clock_gates)}
-            if getattr(result, "clock_gates", None)
-            else {}
-        ),
+        **({"clock_gates": dict(result.clock_gates)} if result.clock_gates else {}),
     }
 
 

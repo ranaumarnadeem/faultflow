@@ -18,6 +18,36 @@ std::vector<int> build_driver_index(const CompiledSimGraph& cg) {
   return driver;
 }
 
+const std::vector<int>& driver_index_of(const CompiledSimGraph& cg,
+                                        std::vector<int>& scratch) {
+  if (!cg.driver_index.empty()) {
+    return cg.driver_index;
+  }
+  scratch = build_driver_index(cg);
+  return scratch;
+}
+
+void close_fanin(const CompiledSimGraph& cg, const std::vector<int>& driver,
+                 std::vector<char>& in, std::vector<uint32_t>& work) {
+  while (!work.empty()) {
+    const uint32_t net = work.back();
+    work.pop_back();
+    const int d = driver[net];
+    if (d < 0) {
+      continue;  // PI / source net: nothing upstream
+    }
+    const SimNode& node = cg.nodes[static_cast<size_t>(d)];
+    const uint32_t ins[] = {node.in0, node.in1, node.in2,
+                            node.in3, node.in4, node.in5};
+    for (uint32_t input : ins) {
+      if (input != UNUSED_INPUT && !in[input]) {
+        in[input] = 1;
+        work.push_back(input);
+      }
+    }
+  }
+}
+
 FaultCone extract_fault_cone(const CompiledSimGraph& cg, uint32_t fault_net,
                              const std::vector<int>& driver,
                              const std::vector<char>& observable) {
@@ -59,24 +89,8 @@ FaultCone extract_fault_cone(const CompiledSimGraph& cg, uint32_t fault_net,
     }
   }
 
-  // Support S: backward BFS via driver + node inputs (fan-in of the out-cone).
-  while (!back.empty()) {
-    const uint32_t net = back.back();
-    back.pop_back();
-    const int d = driver[net];
-    if (d < 0) {
-      continue;  // PI / source net: nothing upstream
-    }
-    const SimNode& node = cg.nodes[static_cast<size_t>(d)];
-    const uint32_t ins[] = {node.in0, node.in1, node.in2,
-                            node.in3, node.in4, node.in5};
-    for (uint32_t in : ins) {
-      if (in != UNUSED_INPUT && !cone.in_support[in]) {
-        cone.in_support[in] = 1;
-        back.push_back(in);
-      }
-    }
-  }
+  // Support S: the fan-in of the out-cone.
+  close_fanin(cg, driver, cone.in_support, back);
   return cone;
 }
 

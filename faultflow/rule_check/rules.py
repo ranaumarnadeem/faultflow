@@ -29,17 +29,14 @@ class ClockRoots:
 
 
 def clock_roots(
-    netlist_json: Path,
-    cell_map_json: Path,
-    top: str,
+    module: dict[str, Any],
+    cell_map: dict[str, Any],
     facts: NetlistFacts,
     holds: Mapping[str, int] | None = None,
 ) -> ClockRoots:
     from faultflow.control_trace import Netlist
     from faultflow.scan.clock_gates import clock_gates, clock_path
 
-    cell_map = _load_json(cell_map_json)
-    _, module = _top_module(_load_json(netlist_json), top)
     netlist = Netlist(module, cell_map)
     gates = clock_gates(module, cell_map)
     root: dict[int, int] = {}
@@ -64,9 +61,8 @@ def _net(facts: NetlistFacts, net: int) -> str:
 
 # --- CLK003: informational — multi-clock is fully supported ---
 def rule_multiple_clock_domains(
-    facts: NetlistFacts, roots: ClockRoots | None = None
+    facts: NetlistFacts, roots: ClockRoots
 ) -> list[Violation]:
-    roots = roots or ClockRoots()
     domains = {roots.of(n) for n in facts.clock_nets}
     if len(domains) <= 1:
         return []
@@ -94,10 +90,9 @@ def rule_multiple_clock_domains(
 
 # --- CLK004: informational — FF->FF cross-domain data paths ---
 def rule_cross_domain_data_paths(
-    facts: NetlistFacts, roots: ClockRoots | None = None
+    facts: NetlistFacts, roots: ClockRoots
 ) -> list[Violation]:
     """Cross-domain FF->FF paths are masked during per-domain at-speed transition."""
-    roots = roots or ClockRoots()
     if len({roots.of(n) for n in facts.clock_nets}) <= 1:
         return []
     cell_by_inst: dict[str, CellFact] = {c.instance: c for c in facts.cells}
@@ -159,38 +154,12 @@ def rule_cross_domain_data_paths(
 
 
 # --- CLK001: every FF clock must be controllable from a primary input ---
-def _clock_controllable(
-    facts: NetlistFacts, cells: dict[str, CellFact], clock_net: int
-) -> bool:
-    cur = clock_net
-    seen: set[int] = set()
-    while True:
-        if cur in facts.pis:
-            return True
-        if cur in seen:
-            return False
-        seen.add(cur)
-        drv = facts.driver_of.get(cur)
-        if drv is None:
-            return False
-        cell = cells.get(drv[0])
-        # Transparent only through a pure single-input buffer/inverter clock tree.
-        if cell is not None and cell.is_buffer and len(cell.inputs) == 1:
-            cur = next(iter(cell.inputs.values()))
-            continue
-        return False
-
-
 def rule_uncontrollable_clock(
-    facts: NetlistFacts, roots: ClockRoots | None = None
+    facts: NetlistFacts, roots: ClockRoots
 ) -> list[Violation]:
-    cells = _cell_index(facts)
     out: list[Violation] = []
     for clock_net in sorted(facts.clock_nets):
-        if roots is not None:
-            if roots.of(clock_net) in facts.pis:
-                continue
-        elif _clock_controllable(facts, cells, clock_net):
+        if roots.of(clock_net) in facts.pis:
             continue
         drv = facts.driver_of.get(clock_net)
         src = f"driven by {drv[0]}" if drv else "undriven internal net"
@@ -207,11 +176,9 @@ def rule_uncontrollable_clock(
 
 
 # --- CLK002: a clock net must not also be consumed as data/logic ---
-def rule_clock_as_data(
-    facts: NetlistFacts, roots: ClockRoots | None = None
-) -> list[Violation]:
+def rule_clock_as_data(facts: NetlistFacts, roots: ClockRoots) -> list[Violation]:
     cells = _cell_index(facts)
-    passing = roots.cells if roots is not None else frozenset()
+    passing = roots.cells
     out: list[Violation] = []
     for clock_net in sorted(facts.clock_nets):
         for inst, pin in facts.sinks_of.get(clock_net, []):
@@ -424,8 +391,10 @@ def run_rule_check(
 ) -> RuleCheckReport:
     """``holds``: [scan] hold, the inputs a scan test holds -- a clock mux or
     gate they keep passing a clock on is part of its path, as stitching sees it."""
-    facts = build_netlist_facts(netlist_json, cell_map_json, top)
-    roots = clock_roots(netlist_json, cell_map_json, top, facts, holds)
+    cell_map = _load_json(cell_map_json)
+    _, module = _top_module(_load_json(netlist_json), top)
+    facts = build_netlist_facts(module, cell_map, top)
+    roots = clock_roots(module, cell_map, facts, holds)
     report = RuleCheckReport(top=top)
     report.violations.extend(rule_multiple_clock_domains(facts, roots))
     report.violations.extend(rule_cross_domain_data_paths(facts, roots))
