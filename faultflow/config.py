@@ -517,6 +517,13 @@ class FaultflowConfig:
     # so every observation point they reach is masked (scan.x_mask). "0": the
     # design guarantees 0, e.g. gated in test mode.
     blackbox_output_values: tuple[tuple[str, str], ...] = ()
+    # Not read from the file: the cells a scan run's netlist has that
+    # unsupported_cells = blackbox leaves out (missing from the cell map, or
+    # mapped "unsupported"), set by the run itself. Their outputs are unknown:
+    # the scan test models them like [blackbox] instances whose outputs are
+    # "x" (scan_boundary_instances), while every load of the netlist keeps
+    # them out of the model and their nets excluded (Policy 1/3).
+    unknown_cells: tuple[str, ...] = ()
     testpoint: TestpointConfig = TestpointConfig()
     # IEEE 1500 wrapper test mode: "functional" | "intest" | "extest". INTEST and
     # EXTEST hold the wrapper's mode pins in a scan test of the wrapped block
@@ -555,9 +562,19 @@ class FaultflowConfig:
 
     @property
     def blackbox_x_instances(self) -> tuple[str, ...]:
-        """The blackbox instances whose outputs are unknown in a scan test."""
+        """The blackbox instances whose outputs are unknown in a scan test, the
+        unknown cells among them."""
         values = dict(self.blackbox_output_values)
-        return tuple(i for i in self.blackbox_instances if values.get(i, "x") == "x")
+        listed = tuple(i for i in self.blackbox_instances if values.get(i, "x") == "x")
+        return listed + tuple(i for i in self.unknown_cells if i not in listed)
+
+    @property
+    def scan_boundary_instances(self) -> tuple[str, ...]:
+        """The cells a scan test models opaque: the [blackbox] instances and
+        the unknown cells."""
+        return self.blackbox_instances + tuple(
+            i for i in self.unknown_cells if i not in self.blackbox_instances
+        )
 
     @property
     def output_dir(self) -> Path:

@@ -132,6 +132,8 @@ ConeMasks build_cone_masks(const CompiledSimGraph& cg, uint32_t fault_net,
     m.in_outcone.assign(n, 1);
     m.in_support.assign(n, 1);
     m.observed = observable_set;
+    // No observable at all (every one masked, e.g. behind unknown cells).
+    m.redundant = m.observed.empty();
   }
   return m;
 }

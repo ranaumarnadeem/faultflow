@@ -633,7 +633,8 @@ SolveTransitionResult solve_transition_fault_for_db(
     const std::string& db_path, int64_t fault_id,
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances, bool cone_restrict) {
+    const std::vector<std::string>& blackbox_instances, bool cone_restrict,
+    int64_t net_index_override) {
   const CachedGraph& ctx =
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
@@ -643,6 +644,7 @@ SolveTransitionResult solve_transition_fault_for_db(
   }
   const auto pis = ordered_pis(ctx.parsed, ctx.cg);
   CompactFault fault = fault_from_record(rec);
+  apply_net_index_override(fault, ctx.cg, net_index_override);
   fault.model = FaultModel::TRANSITION;
 
   SatSolveOptions options;

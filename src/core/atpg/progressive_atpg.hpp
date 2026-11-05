@@ -130,7 +130,7 @@ SolveTransitionResult solve_transition_fault_for_db(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {},
-    bool cone_restrict = true);
+    bool cone_restrict = true, int64_t net_index_override = -1);
 
 bool verify_transition_fault_vector(
     const std::string& json_path, const std::string& cell_map_path,

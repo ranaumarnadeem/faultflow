@@ -1462,7 +1462,7 @@ unsupported_cells = fail
     )
     monkeypatch.setattr(
         "faultflow.runner.runner.write_reports",
-        lambda conn, cfg, scan_context=None, campaign_id=None: (
+        lambda conn, cfg, scan_context=None, campaign_id=None, unknown_cells=(): (
             cfg.coverage_json_path,
             cfg.coverage_report_path,
             {"summary": {"coverage_percent": 50.0}},

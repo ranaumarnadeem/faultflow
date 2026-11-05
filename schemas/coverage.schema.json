@@ -47,6 +47,7 @@
         "collapsing": { "type": "boolean" },
         "blackbox_instances": { "type": "array", "items": { "type": "string" } },
         "blackbox_boundary": { "enum": ["none", "pseudo_port", "opaque"] },
+        "unknown_cells": { "type": "array", "items": { "type": "string" } },
         "blackbox_output_values": {
           "type": "object",
           "additionalProperties": { "enum": ["x", "0"] }

@@ -63,13 +63,7 @@ Implemented today:
 
 No further core-simulation-engine features are planned. faultflow's scope is now considered
 complete for flip-flop-only synchronous designs with no tristate — see Scope boundaries
-below for what's permanently excluded and why. DFT items still open:
-
-- Scan insertion of flip-flops whose D input synthesis tied to a constant.
-- Cells missing from the cell map treated as unknown in every flow when
-  `unsupported_cells = blackbox`.
-- Scan clocks traced to their ports through buffers and held gates.
-- Incremental SAT and lower memory use for transition faults.
+below for what's permanently excluded and why.
 
 ## Scope boundaries
 

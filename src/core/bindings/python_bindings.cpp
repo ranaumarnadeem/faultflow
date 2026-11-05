@@ -403,12 +403,12 @@ py::dict solve_transition_fault_atpg(
     const std::vector<std::string>& blocked_patterns, int conflict_limit,
     int sat_timeout_seconds, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
-    bool cone_restrict = true) {
+    bool cone_restrict = true, int64_t net_index_override = -1) {
   const atpg::SolveTransitionResult result =
       atpg::solve_transition_fault_for_db(
           json_path, cell_map_path, db_path, fault_id, blocked_patterns,
           conflict_limit, sat_timeout_seconds, unsupported_policy,
-          blackbox_instances, cone_restrict);
+          blackbox_instances, cone_restrict, net_index_override);
   py::dict out;
   out["result"] = result.result;
   out["launch"] = result.launch;
@@ -927,6 +927,17 @@ py::dict simulate_sequence_faults_py(
   return out;
 }
 
+// The cells unsupported_cells = blackbox left out of the netlist's model
+// (NormalizedGraph::unknown_cells), sorted.
+std::vector<std::string> unknown_cell_instances_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& graph = load_cached_graph(
+      json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  return {graph.ng.unknown_cells.begin(), graph.ng.unknown_cells.end()};
+}
+
 py::list list_site_keys_py(const std::string& json_path,
                            const std::string& cell_map_path,
                            const std::string& unsupported_policy,
@@ -1220,7 +1231,7 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("conflict_limit") = 100000, py::arg("sat_timeout_seconds") = 10,
         py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("cone_restrict") = true);
+        py::arg("cone_restrict") = true, py::arg("net_index_override") = -1);
   m.def("solve_scan_transition_fault_atpg",
         &faultflow::solve_scan_transition_fault_atpg, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("db_path"), py::arg("fault_id"),
@@ -1358,6 +1369,10 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("sim_threads") = 1, py::arg("reference") = false,
         py::arg("initial_ff_value") = false,
         py::arg("fault_active") = std::vector<bool>{});
+  m.def("unknown_cell_instances", &faultflow::unknown_cell_instances_py,
+        py::arg("json_path"), py::arg("cell_map_path"),
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
   m.def("list_site_keys", &faultflow::list_site_keys_py, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{});
