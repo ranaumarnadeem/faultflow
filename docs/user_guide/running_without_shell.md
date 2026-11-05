@@ -337,6 +337,40 @@ What the STIL holds:
 These are exactly the cycles the test suite replays on the chip's sky130 cell models,
 and an independent STIL parser, Semi-ATE-STIL, reads every file it writes.
 
+## `write-cnf`
+
+```bash
+python3 ff.py write-cnf --top <top> -c config.ofs --site y1 --type sa0 -o y1_sa0.cnf
+```
+
+Write the CNF native SAT ATPG solves for one fault of the combinational campaign, as
+DIMACS, so another solver or a proof checker can be run on it. Under
+`[fault_model] model = transition` it is the broadside two-frame CNF (`sa0` / `sa1`
+are slow-to-rise / slow-to-fall); the launch frame is encoded in full, so every input
+variable is constrained. The CNF is the one ATPG builds for the fault: the fault-free
+and faulty copies of its cone (`[atpg] cone_restrict`), the fault forced on the faulty
+copy, and a clause asking for a difference at some observable. A fault that reaches
+no observable is written as the empty clause. The file is written before the solve,
+and the solve's verdict (within `[atpg] sat_timeout_seconds`) goes into the map.
+Any fault of the campaign can be written, whatever its status. Scan campaigns are not
+covered.
+The Tcl shell's `write_cnf -site ... -type sa0|sa1 -o PATH` does the same.
+
+| Option | Required | Meaning |
+|---|---|---|
+| `--site NAME` | yes | The fault's site key, or its net name when only one site has it (a fanout stem's net names its branches too; the error lists their site keys) |
+| `--type sa0\|sa1` | yes | The fault type |
+| `-o PATH`, `--output PATH` | yes | The DIMACS file to write; the variable map goes to `PATH.json` |
+
+`PATH.json` (`"format": "faultflow-fault-cnf"`, version 1) holds the fault (`id`,
+`site_key`, `net_name`, `type`, `model`), `result` (`SAT`, `UNSAT`, `TIMEOUT` or
+`UNKNOWN`), `structurally_unsat`, `inputs` (each primary input's variable; the
+capture frame in a transition CNF), `launch_inputs` (the launch frame's, transition
+only), `fault_var` (the faulty copy of the fault net) and `diff_vars` (one variable per
+observable reached, true where the two copies differ; the CNF has their OR as a
+clause). A model of the CNF, read through `inputs` (and `launch_inputs`), is a test
+for the fault.
+
 ## `status`
 
 ```bash
@@ -646,6 +680,7 @@ side.
 | Hierarchical SoC (`faultflow_project_v2`) | *(shell has no equivalent)* | `project` |
 | Retarget a block's INTEST patterns onto its SoC | *(shell has no equivalent)* | `project retarget -p ... --block ... --out ...` |
 | Write patterns as STIL | `write_patterns -patterns ... -o ...` | `write-patterns --patterns ... -o ...` |
+| Write one fault's ATPG CNF | `write_cnf -site ... -type ... -o ...` | `write-cnf --site ... --type ... -o ...` |
 | Declare a clock | `add_clock` (live session) | `add-clock` (edits `config.ofs`) |
 | DFT rule check | *(shell has no equivalent)* | `rule_check` |
 | OpenTestability oracle | *(shell has no equivalent)* | `run` |

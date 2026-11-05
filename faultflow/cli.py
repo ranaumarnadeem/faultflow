@@ -550,6 +550,31 @@ def _parser() -> argparse.ArgumentParser:
         help="Apply each pattern alone, its unload not overlapping the next load",
     )
 
+    write_cnf = sub.add_parser(
+        "write-cnf",
+        help="Write one fault's ATPG CNF (DIMACS) and its variable map",
+    )
+    add_common(write_cnf)
+    write_cnf.add_argument(
+        "--site",
+        required=True,
+        help="The fault's site key, or its net name when only one site has it",
+    )
+    write_cnf.add_argument(
+        "--type",
+        dest="fault_type",
+        choices=("sa0", "sa1"),
+        required=True,
+        help="sa0 / sa1 (slow-to-rise / slow-to-fall in a transition campaign)",
+    )
+    write_cnf.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        required=True,
+        help="The DIMACS file to write; the map goes to <output>.json",
+    )
+
     rule_check = sub.add_parser(
         "rule_check",
         help="Run DFT structural rules (DRC) on the synthesized netlist",
@@ -809,6 +834,10 @@ def main(argv: list[str] | None = None) -> int:
                 cfg, args.patterns, args.output, overlap=not args.no_overlap
             )
             print(written.message)
+        elif args.command == "write-cnf":
+            print(
+                service.write_cnf(cfg, args.site, args.fault_type, args.output).message
+            )
         elif args.command == "rule_check":
             result = service.rule_check(cfg, strict=args.strict)
             print(result.message)

@@ -15,6 +15,20 @@ struct CnfVarMap {
   explicit CnfVarMap(int net_count);
 };
 
+// While one is alive, every clause add_clause gives a solver on this thread
+// is also appended to `clauses` -- the CNF as built, for export (CaDiCaL's
+// own writer leaves out root units and what they simplify). Null: no record.
+class ClauseRecorder {
+ public:
+  explicit ClauseRecorder(std::vector<std::vector<int>>* clauses);
+  ~ClauseRecorder();
+  ClauseRecorder(const ClauseRecorder&) = delete;
+  ClauseRecorder& operator=(const ClauseRecorder&) = delete;
+
+ private:
+  std::vector<std::vector<int>>* previous_;
+};
+
 void add_clause(CaDiCaL::Solver& solver, const std::vector<int>& clause);
 void add_unit(CaDiCaL::Solver& solver, int lit);
 void add_equiv(CaDiCaL::Solver& solver, int a, int b);

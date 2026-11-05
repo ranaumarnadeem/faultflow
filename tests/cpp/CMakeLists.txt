@@ -23,6 +23,7 @@ add_executable(
   fault/test_collapser.cpp
   fault/test_transition_faults.cpp
   db/test_sqlite_store.cpp
+  atpg/test_cnf_export.cpp
   atpg/test_cnf_truth_tables.cpp
   atpg/test_cone_equivalence.cpp
   atpg/test_cone_ordering.cpp

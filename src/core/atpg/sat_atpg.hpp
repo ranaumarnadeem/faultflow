@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace faultflow::atpg {
@@ -21,6 +22,21 @@ enum class SatSolveResult : uint8_t {
 struct SeededInput {
   uint32_t compiled = 0;  // CompiledNetIndex of the PI
   std::vector<int> seed_bits;
+};
+
+// A per-fault CNF written to a DIMACS file just before the solve, and the
+// variables a reader needs to use it: the free inputs (the only frame, or the
+// capture frame of a transition), the launch-frame inputs (transition only),
+// the faulty copy of the fault net and the per-observable difference
+// variables (their OR is a clause). A fault that reaches no observable is
+// redundant before any CNF is built: the file is then the empty clause.
+struct CnfExport {
+  std::string path;
+  std::vector<std::pair<std::string, int>> inputs;
+  std::vector<std::pair<std::string, int>> launch_inputs;
+  int fault_var = 0;
+  std::vector<int> diff_vars;
+  bool structurally_unsat = false;
 };
 
 struct SatSolveOptions {
@@ -60,6 +76,9 @@ struct SatSolveOptions {
   std::vector<std::vector<int>> seed_defs;
   // When set, a SAT solve writes here the seed_width free seed bits it chose.
   std::vector<bool>* seed_out = nullptr;
+  // When set, the CNF is written there before the solve (see CnfExport). The
+  // single-shot solvers only: the incremental one builds its CNF in stages.
+  CnfExport* cnf_export = nullptr;
 };
 
 // CaDiCaL mapping: 10=SAT, 20=UNSAT, 0=UNKNOWN. Interrupt from conflict/time

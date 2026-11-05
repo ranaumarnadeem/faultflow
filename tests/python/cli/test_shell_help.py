@@ -36,6 +36,14 @@ def test_help_write_patterns_is_documented(tmp_path: Path) -> None:
     assert "Example:" in text
 
 
+def test_help_write_cnf_is_documented(tmp_path: Path) -> None:
+    text = str(_bridge(tmp_path).call("help", "write_cnf"))
+
+    assert text.startswith("write_cnf")
+    assert "-site <site key or net> -type sa0|sa1 -o <file.cnf>" in text
+    assert "Requires:" in text
+
+
 def test_help_overview_is_categorized_and_descriptive(tmp_path: Path) -> None:
     result = _bridge(tmp_path).call("help")
     text = str(result)

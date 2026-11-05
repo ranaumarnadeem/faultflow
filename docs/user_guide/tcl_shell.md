@@ -115,6 +115,7 @@ See [Test-point insertion](testpoints.md) for the full workflow.
 |---|---|
 | `write_netlist [-scan] [-techmap\|-notech] [-o PATH] [-verify]` | Publish a functional or scanned netlist. `-scan` writes generic scan Verilog; `-techmap` binds physical scan cells. `-verify` (requires `-scan -techmap`) fault-free-simulates the written techmapped netlist against the generic scan design over the scan vectors and fails if their outputs diverge — catching a broken or drifted physical-cell binding at write time. |
 | `write_patterns -patterns PATH -o PATH [-no_overlap]` | Write the scan patterns `run_atpg -export-patterns` wrote as STIL (IEEE 1450): the cycles a tester applies to the chip, the scanned netlist or the one scan compression or compaction composed, each load also unloading the pattern before (`-no_overlap`: each pattern alone). See [`write-patterns`](running_without_shell.md#write-patterns). No WGL. |
+| `write_cnf -site NAME -type sa0\|sa1 -o PATH` | Write the CNF native ATPG solves for one fault of the combinational campaign as DIMACS, and its variable map as `PATH.json`. See [`write-cnf`](running_without_shell.md#write-cnf). |
 
 ### Options
 

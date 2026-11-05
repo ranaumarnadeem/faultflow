@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <functional>
 #include <map>
 #include <memory>
@@ -243,6 +244,61 @@ void read_seed(CaDiCaL::Solver& solver, const SatSolveOptions& options,
   }
 }
 
+// A fault that reaches no observable, exported: the empty clause.
+void export_structural_unsat(const SatSolveOptions& options) {
+  CnfExport* out = options.cnf_export;
+  if (out == nullptr) {
+    return;
+  }
+  std::FILE* file = std::fopen(out->path.c_str(), "w");
+  if (file == nullptr || std::fputs("p cnf 0 1\n0\n", file) < 0 ||
+      std::fclose(file) != 0) {
+    throw std::runtime_error("cannot write CNF file " + out->path);
+  }
+  *out = CnfExport{out->path};
+  out->structurally_unsat = true;
+}
+
+// Before the solve: the recorded clauses (every one given to the solver)
+// into options.cnf_export's file, with `max_var` in its header so a variable
+// no clause names still exists there. `inputs` / `launch` are each PI's
+// variable in the capture (only) frame / the launch frame.
+void export_cnf(const std::vector<std::vector<int>>& clauses,
+                const SatSolveOptions& options, int max_var,
+                const std::vector<AtpgPiInfo>& pis,
+                const std::function<int(uint32_t)>& inputs,
+                const std::function<int(uint32_t)>& launch, int fault_var,
+                const std::vector<int>& diff_vars) {
+  CnfExport* out = options.cnf_export;
+  if (out == nullptr) {
+    return;
+  }
+  std::FILE* file = std::fopen(out->path.c_str(), "w");
+  bool ok = file != nullptr &&
+            std::fprintf(file, "p cnf %d %zu\n", max_var, clauses.size()) > 0;
+  for (size_t i = 0; ok && i < clauses.size(); ++i) {
+    for (int lit : clauses[i]) {
+      ok = ok && std::fprintf(file, "%d ", lit) > 0;
+    }
+    ok = ok && std::fputs("0\n", file) >= 0;
+  }
+  if (file != nullptr && std::fclose(file) != 0) {
+    ok = false;
+  }
+  if (!ok) {
+    throw std::runtime_error("cannot write CNF file " + out->path);
+  }
+  *out = CnfExport{out->path};
+  for (const AtpgPiInfo& pi : pis) {
+    out->inputs.emplace_back(pi.name, inputs(pi.compiled));
+    if (launch) {
+      out->launch_inputs.emplace_back(pi.name, launch(pi.compiled));
+    }
+  }
+  out->fault_var = fault_var;
+  out->diff_vars = diff_vars;
+}
+
 }  // namespace
 
 std::vector<AtpgPiInfo> ordered_pis(const ParsedGraph& parsed,
@@ -341,12 +397,16 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
   CnfVarMap vars(cg.net_count);
   CaDiCaL::Solver solver;
   const auto time_guard = apply_solver_limits(solver, options);
+  std::vector<std::vector<int>> clauses;
+  const ClauseRecorder recorder(options.cnf_export != nullptr ? &clauses
+                                                              : nullptr);
 
   const std::vector<uint32_t> observable_set(cg.observable.begin(),
                                              cg.observable.end());
   const ConeMasks masks = build_cone_masks(cg, fault.net_index, observable_set,
                                            options.cone_restrict);
   if (masks.redundant) {
+    export_structural_unsat(options);
     return SatSolveResult::UNSAT;  // fault reaches no observable -> redundant
   }
 
@@ -413,6 +473,10 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
     throw std::runtime_error("SAT ATPG requires at least one observable output");
   }
   add_clause(solver, diff_vars);
+  export_cnf(
+      clauses, options, vars.next - 1, pis,
+      [&](uint32_t net) { return vars.free_vars.at(net); }, nullptr,
+      vars.faulty_vars.at(fault.net_index), diff_vars);
 
   const int result = solver.solve();
   const SatSolveResult mapped =
@@ -441,6 +505,11 @@ SatSolveResult solve_stuck_at_fault_incremental(
     const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
     const CompactFault& fault, const SatSolveOptions& options,
     std::map<std::string, bool>& out) {
+  if (options.cnf_export != nullptr) {
+    throw std::runtime_error(
+        "CNF export needs the single-shot solver: the incremental one builds "
+        "its CNF in stages");
+  }
   const size_t n = static_cast<size_t>(cg.net_count);
   const uint32_t fault_net = fault.net_index;
 
@@ -779,6 +848,9 @@ SatSolveResult solve_two_frame_transition(
 
   CaDiCaL::Solver solver;
   const auto time_guard = apply_solver_limits(solver, options);
+  std::vector<std::vector<int>> clauses;
+  const ClauseRecorder recorder(options.cnf_export != nullptr ? &clauses
+                                                              : nullptr);
 
   // Cone masks restrict the two CAPTURE-frame machines (good + faulty); the
   // LAUNCH frame is encoded over launch_cone only. Empty reached-observable
@@ -788,6 +860,7 @@ SatSolveResult solve_two_frame_transition(
   const ConeMasks masks = build_cone_masks(cg, fault.net_index, observable_set,
                                            options.cone_restrict);
   if (masks.redundant) {
+    export_structural_unsat(options);
     return SatSolveResult::UNSAT;
   }
   const std::vector<char> in_launch =
@@ -915,6 +988,11 @@ SatSolveResult solve_two_frame_transition(
     throw std::runtime_error("SAT ATPG requires at least one observable output");
   }
   add_clause(solver, diff_vars);
+  export_cnf(
+      clauses, options, vars.next - 1, pis,
+      [&](uint32_t net) { return vars.free_vars.at(net); },
+      [&](uint32_t net) { return launch_vars.at(net); },
+      vars.faulty_vars.at(fault.net_index), diff_vars);
 
   const int result = solver.solve();
   const SatSolveResult mapped =

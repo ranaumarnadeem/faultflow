@@ -14,11 +14,25 @@ CnfVarMap::CnfVarMap(int net_count)
   }
 }
 
+namespace {
+thread_local std::vector<std::vector<int>>* recording = nullptr;
+}  // namespace
+
+ClauseRecorder::ClauseRecorder(std::vector<std::vector<int>>* clauses)
+    : previous_(recording) {
+  recording = clauses;
+}
+
+ClauseRecorder::~ClauseRecorder() { recording = previous_; }
+
 void add_clause(CaDiCaL::Solver& solver, const std::vector<int>& clause) {
   for (int lit : clause) {
     solver.add(lit);
   }
   solver.add(0);
+  if (recording != nullptr) {
+    recording->push_back(clause);
+  }
 }
 
 void add_unit(CaDiCaL::Solver& solver, int lit) { add_clause(solver, {lit}); }

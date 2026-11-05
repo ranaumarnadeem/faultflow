@@ -33,6 +33,7 @@ class TclBridge:
             "report": self._report,
             "write_netlist": self._write_netlist,
             "write_patterns": self._write_patterns,
+            "write_cnf": self._write_cnf,
             "set_option": self._set_option,
             "unset_option": self._unset_option,
             "show_config": self._show_config,
@@ -933,4 +934,30 @@ proc {name} {{args}} {{
             )
         return self.session.write_patterns(
             patterns=patterns, output=output, overlap=overlap
+        )
+
+    def _write_cnf(self, args: list[str]) -> Any:
+        values: dict[str, str] = {}
+        index = 0
+        while index < len(args):
+            key = args[index]
+            if key in ("-site", "-type", "-o") and index + 1 < len(args):
+                values[key] = args[index + 1]
+                index += 2
+            else:
+                raise ShellError(
+                    f"invalid write_cnf option: {key}", "CONFIG", "INVALID_OPTION"
+                )
+        if set(values) != {"-site", "-type", "-o"} or values["-type"] not in (
+            "sa0",
+            "sa1",
+        ):
+            raise ShellError(
+                "usage: write_cnf -site <site key or net> -type sa0|sa1 "
+                "-o <file.cnf>",
+                "CONFIG",
+                "INVALID_OPTION",
+            )
+        return self.session.write_cnf(
+            site=values["-site"], fault_type=values["-type"], output=Path(values["-o"])
         )

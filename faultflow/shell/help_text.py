@@ -384,6 +384,19 @@ COMMAND_HELP = {
         "add_scan, and patterns exported from this scan campaign.",
         "write_patterns -patterns patterns.json -o chip.stil",
     ),
+    "write_cnf": CommandHelp(
+        "Output",
+        "write_cnf -site <site key or net> -type sa0|sa1 -o <file.cnf>",
+        "Write one fault's ATPG CNF (DIMACS) and its variable map",
+        "The CNF native ATPG solves for one fault of the combinational campaign "
+        "(stuck-at, or broadside transition: sa0/sa1 are slow-to-rise/fall), as "
+        "DIMACS, and <file.cnf>.json: the variables of the inputs (and the launch "
+        "frame's), of the fault net's faulty copy and of the observable "
+        "differences, and the verdict on the file. -site is the fault's site key, "
+        "or its net name when only one site has it.",
+        "A combinational campaign run_atpg graded.",
+        "write_cnf -site y1 -type sa0 -o y1_sa0.cnf",
+    ),
     "WORKERS": CommandHelp(
         "Options",
         "WORKERS ?N?",

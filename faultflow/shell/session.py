@@ -881,6 +881,11 @@ class ProjectSession:
             self.materialize_config(), patterns, output, overlap=overlap
         )
 
+    def write_cnf(self, *, site: str, fault_type: str, output: Path) -> OperationResult:
+        return self.service.write_cnf(
+            self.materialize_config(), site, fault_type, output
+        )
+
     def set_option(self, key: str, value: str) -> OperationResult:
         allowed = {
             "atpg.easy_fault_reserve",

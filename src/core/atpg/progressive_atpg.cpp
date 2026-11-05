@@ -628,6 +628,39 @@ std::vector<VectorPair> generate_random_vector_pairs(
   return pairs;
 }
 
+FaultCnfResult export_fault_cnf(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::string& dimacs_path, bool transition, int sat_timeout_seconds,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances, bool cone_restrict) {
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  const db::FaultRecord rec = db::load_fault(db_path, fault_id);
+  const auto pis = ordered_pis(ctx.parsed, ctx.cg);
+  CompactFault fault = fault_from_record(rec);
+
+  FaultCnfResult out;
+  out.cnf.path = dimacs_path;
+  SatSolveOptions options;
+  options.sat_timeout_seconds = sat_timeout_seconds;
+  options.cone_restrict = cone_restrict;
+  options.lazy_launch = false;
+  options.cnf_export = &out.cnf;
+  SatSolveResult result;
+  if (transition) {
+    fault.model = FaultModel::TRANSITION;
+    std::map<std::string, bool> launch;
+    std::map<std::string, bool> capture;
+    result = solve_transition_fault(ctx.cg, pis, fault, options, launch, capture);
+  } else {
+    std::map<std::string, bool> vector;
+    result = solve_stuck_at_fault(ctx.cg, pis, fault, options, vector);
+  }
+  out.result = solve_result_name(result);
+  return out;
+}
+
 SolveTransitionResult solve_transition_fault_for_db(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,

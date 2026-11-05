@@ -416,6 +416,28 @@ py::dict solve_transition_fault_atpg(
   return out;
 }
 
+py::dict export_fault_cnf(const std::string& json_path,
+                          const std::string& cell_map_path,
+                          const std::string& db_path, int64_t fault_id,
+                          const std::string& dimacs_path, bool transition,
+                          int sat_timeout_seconds,
+                          const std::string& unsupported_policy,
+                          const std::vector<std::string>& blackbox_instances,
+                          bool cone_restrict) {
+  const atpg::FaultCnfResult result = atpg::export_fault_cnf(
+      json_path, cell_map_path, db_path, fault_id, dimacs_path, transition,
+      sat_timeout_seconds, unsupported_policy, blackbox_instances,
+      cone_restrict);
+  py::dict out;
+  out["result"] = result.result;
+  out["inputs"] = result.cnf.inputs;
+  out["launch_inputs"] = result.cnf.launch_inputs;
+  out["fault_var"] = result.cnf.fault_var;
+  out["diff_vars"] = result.cnf.diff_vars;
+  out["structurally_unsat"] = result.cnf.structurally_unsat;
+  return out;
+}
+
 py::dict solve_scan_transition_fault_atpg(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t fault_id,
@@ -1225,6 +1247,13 @@ PYBIND11_MODULE(_faultflow_core, m) {
   // Transition model (combinational broadside two-pattern) entry points.
   m.def("atpg_random_vector_pairs", &faultflow::atpg_random_vector_pairs,
         py::arg("input_order"), py::arg("count"), py::arg("seed"));
+  m.def("export_fault_cnf", &faultflow::export_fault_cnf, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("db_path"), py::arg("fault_id"),
+        py::arg("dimacs_path"), py::arg("transition") = false,
+        py::arg("sat_timeout_seconds") = 10,
+        py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("cone_restrict") = true);
   m.def("solve_transition_fault_atpg", &faultflow::solve_transition_fault_atpg,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("blocked_patterns"),

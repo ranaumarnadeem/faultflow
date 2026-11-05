@@ -41,6 +41,8 @@ Implemented today:
 - **Scan pattern export**: JSON (`sim --scan --export-patterns`) and STIL (IEEE 1450,
   `write-patterns`), with each load overlapping the previous unload by default. Every
   exported flow is replayed on the sky130 cell models in the test suite.
+- **Per-fault CNF export** (`write-cnf`): the CNF native ATPG solves for one fault, as
+  DIMACS with a JSON variable map, for other solvers and proof checkers.
 - **Scan-cell techmap verification** (`write_netlist -scan -techmap -verify`): the
   techmapped netlist is fault-free simulated against the generic scan design.
 - **autoMBIST integration** (`autombist-generate`): autoMBIST's MBIST design

@@ -207,6 +207,13 @@ class FlowService:
         message = str(runner.write_patterns(patterns, output, overlap=overlap))
         return OperationResult("write-patterns", cfg.top, message)
 
+    def write_cnf(
+        self, cfg: FaultflowConfig, site: str, fault_type: str, output: Path
+    ) -> OperationResult:
+        log.info("cnf    start  top=%s", cfg.top)
+        message = str(self._runner(cfg).write_cnf(site, fault_type, output))
+        return OperationResult("write-cnf", cfg.top, message)
+
     def wrap(self, cfg: FaultflowConfig, *, dry_run: bool = False) -> OperationResult:
         log.info("wrap   start  top=%s", cfg.top)
         message = str(self._runner(cfg).wrap(dry_run=dry_run))

@@ -1273,6 +1273,87 @@ class Runner:
             f"overlapped={'yes' if overlap else 'no'} stil={output}"
         )
 
+    def write_cnf(self, site: str, fault_type: str, output: Path) -> str:
+        """The per-fault CNF native ATPG solves for one fault of the
+        combinational campaign (stuck-at, or broadside transition under
+        [fault_model] model = transition), as DIMACS at ``output``, and beside
+        it ``<output>.json``: the variables of the inputs (and of the launch
+        frame's), of the fault net's faulty copy and of the observable
+        differences, and the verdict on the file. ``site`` is the fault's site
+        key or, when only one site has it, its net name."""
+        netlist = self._existing_json_netlist()
+        if netlist is None:
+            raise RunnerError(
+                "write-cnf needs the synthesized JSON netlist; run `sim` first"
+            )
+        core = _load_core()
+        if core is None:
+            raise RunnerError("C++ extension _faultflow_core is required")
+        with self._db() as conn:
+            campaign_id = self._check_fingerprint(conn, self._fingerprint(netlist))
+            rows = conn.execute(
+                "SELECT id, fault_site_key, net_name FROM faults "
+                "WHERE campaign_id = ? AND fault_type = ? "
+                "AND (fault_site_key = ? OR net_name = ?) ORDER BY id",
+                (campaign_id, fault_type, site, site),
+            ).fetchall()
+        exact = [row for row in rows if row["fault_site_key"] == site]
+        rows = exact or rows
+        if not rows:
+            raise RunnerError(
+                f"no {fault_type} fault at {site!r} in the combinational campaign "
+                "(run `sim` first; `site` is a fault site key or a net name)"
+            )
+        if len(rows) > 1:
+            keys = ", ".join(str(row["fault_site_key"]) for row in rows)
+            raise RunnerError(f"net {site!r} has several fault sites: {keys}")
+        row = rows[0]
+        transition = self.cfg.fault_model.model == "transition"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        cnf = core.export_fault_cnf(
+            str(netlist),
+            str(self.cfg.cell_lib),
+            str(self.cfg.db_path),
+            int(row["id"]),
+            str(output),
+            transition=transition,
+            sat_timeout_seconds=self.cfg.atpg.sat_timeout_seconds,
+            unsupported_policy=self.cfg.simulation.unsupported_cells,
+            blackbox_instances=list(self.cfg.blackbox_instances),
+            cone_restrict=self.cfg.atpg.cone_restrict,
+        )
+        sidecar = output.with_name(output.name + ".json")
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "format": "faultflow-fault-cnf",
+                    "version": 1,
+                    "top": self.cfg.top,
+                    "cnf": output.name,
+                    "fault": {
+                        "id": int(row["id"]),
+                        "site_key": str(row["fault_site_key"]),
+                        "net_name": str(row["net_name"]),
+                        "type": fault_type,
+                        "model": "transition" if transition else "stuck_at",
+                    },
+                    "result": str(cnf["result"]),
+                    "structurally_unsat": bool(cnf["structurally_unsat"]),
+                    "inputs": dict(cnf["inputs"]),
+                    "launch_inputs": dict(cnf["launch_inputs"]),
+                    "fault_var": int(cnf["fault_var"]),
+                    "diff_vars": [int(d) for d in cnf["diff_vars"]],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return (
+            f"cnf written top={self.cfg.top} fault={row['fault_site_key']}/"
+            f"{fault_type} result={cnf['result']} cnf={output} map={sidecar}"
+        )
+
     def wrap(self, *, dry_run: bool = False) -> str:
         """[wrap] on the design: an IEEE 1500 boundary cell on each port bit it wraps
         (faultflow.wrap.block). ``dry_run``: just the table of port bits; otherwise

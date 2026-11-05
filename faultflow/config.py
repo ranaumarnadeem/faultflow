@@ -296,9 +296,10 @@ class AtpgConfig:
     # quickest SAT calls happen first and detect more faults incidentally early.
     # False keeps the original database (enumeration) order. Coverage-identical.
     order_by_cone_size: bool = True
-    # Parallel fault-simulation workers (0 = auto-detect logical CPU count).
-    # Each worker owns its own SimState over the shared immutable CompiledSimGraph.
-    # The coordinator merges detected sets; the DB writer remains single-threaded.
+    # Parallel SAT-ATPG worker processes (forked): each runs one fault's solve
+    # at a time, and the coordinator alone writes the DB. 1 or less is serial
+    # (there is no auto-detect); fault simulation threads are
+    # [simulation] sim_threads.
     workers: int = 1
     # Run OT structural reconvergence analysis before ATPG (requires opentest on PATH).
     # Reconvergent-site faults are sorted last and skip the short timeout tier.

@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "atpg/sat_atpg.hpp"
 #include "ir/compiled_graph/compiled_graph.hpp"
 #include "ir/parsed_graph/parsed_graph.hpp"
 
@@ -90,6 +91,24 @@ SolveFaultResult solve_fault_for_db(
     int64_t net_index_override = -1,
     int seed_width = 0, const SeedRows& seeded_inputs = {},
     const SeedDefs& seed_defs = {});
+
+// The per-fault CNF of a campaign fault -- stuck-at, or broadside transition
+// when `transition` -- written to `dimacs_path` as the solver builds it for
+// ATPG (the full launch frame, so every input variable is constrained), then
+// solved: `result` is the verdict on that CNF, `cnf` its variable map. Any
+// fault of the campaign, whatever its status or exclusion.
+struct FaultCnfResult {
+  std::string result;  // SAT | UNSAT | TIMEOUT | UNKNOWN
+  CnfExport cnf;
+};
+
+FaultCnfResult export_fault_cnf(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::string& dimacs_path, bool transition, int sat_timeout_seconds,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {},
+    bool cone_restrict = true);
 
 bool verify_fault_vector(
     const std::string& json_path, const std::string& cell_map_path,

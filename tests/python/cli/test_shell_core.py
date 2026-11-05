@@ -313,3 +313,18 @@ def test_workers_command_updates_readable_global(tmp_path: Path) -> None:
     assert str(bridge.eval("set ::WORKERS")) == "8"
     # And from inside a fresh proc frame (the realistic scripted-read case).
     assert str(bridge.eval("proc _r {} {return $::WORKERS}; _r")) == "8"
+
+
+def test_write_cnf_needs_a_site_a_type_and_a_file(tmp_path: Path) -> None:
+    bridge = TclBridge(
+        ProjectSession(output_root=tmp_path / "output", service=FakeService())
+    )
+
+    for args in (
+        ["-site", "y1", "-type", "sa0"],
+        ["-site", "y1", "-type", "str", "-o", "y1.cnf"],
+        ["-site", "y1", "-type", "sa0", "-o", "y1.cnf", "-x"],
+    ):
+        with pytest.raises(ShellError) as exc:
+            bridge.call("write_cnf", *args)
+        assert exc.value.code == ("FAULTFLOW", "CONFIG", "INVALID_OPTION")
