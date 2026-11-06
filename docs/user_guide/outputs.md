@@ -47,7 +47,8 @@ instances, the nets on its system and core sides, and its flop's chain and posit
 `clock_nets` are the scan clocks' nets and `clock_ports` the input ports carrying
 them, in the same order; `clock_paths` gives, per port, the nets from it to its
 flops' clock pins (through buffers, clock gates and cells `[scan] hold` keeps
-open) and those holds. A scan cell clocked through such cells also has its pin's
+open), those holds, and the nets among them that a cell with other inputs drives
+(`cell_outputs`). A scan cell clocked through such cells also has its pin's
 net (`pin_clock_net`). The flops left out of scan are listed with their reason,
 among them `clock_not_from_port` (a clock no input port pulses) and
 `inverted_clock` (one a port pulses through an inverter).

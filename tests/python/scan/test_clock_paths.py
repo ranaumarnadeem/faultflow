@@ -376,3 +376,109 @@ def test_rule_check_traces_clocks_as_scan_does(
     report = json.loads((cfg.output_dir / "rule_check.json").read_text("utf-8"))
     clk001 = [v for v in report["violations"] if v["rule_id"] == "CLK001"]
     assert len(clk001) == errors, clk001
+
+
+def _on_net(cfg: Any, net: int) -> list[tuple[str, str, int]]:
+    """(fault type, status, hold_unresolved) of each fault on ``net``'s stem."""
+    conn = sqlite3.connect(cfg.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT fault_type, status, hold_unresolved FROM faults "
+            "WHERE campaign_id = (SELECT MAX(id) FROM campaigns) "
+            "AND fault_site_key = ?",
+            (f"net:{net}:stem",),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [(str(t).lower(), str(s), int(h)) for t, s, h in rows]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "fixture,hold,side",
+    [(MUX, "tm:0", ("tm", "pll")), (AND, "en:1", ("en",))],
+    ids=["mux", "and"],
+)
+def test_a_fault_only_a_clock_path_reads_is_hold_unresolved_not_redundant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flow_tools: None,
+    fixture: tuple[str, str],
+    hold: str,
+    side: tuple[str, ...],
+) -> None:
+    """The scan view has no flops to read a clock path, so a held side input's
+    faults and an unselected clock input's are UNSAT there. That proves nothing:
+    each changes the scan clock, or would once the hold lifts. They stay in the
+    denominator, never redundant, and nothing credits them."""
+    from faultflow.db import connect, summary
+
+    monkeypatch.chdir(tmp_path)
+    cfg, _, patterns = _flow(tmp_path, fixture, f"hold = {hold}\n")
+
+    for name in side:
+        assert sorted(_on_net(cfg, _net_of(cfg, name))) == [
+            ("sa0", "undetected", 1),
+            ("sa1", "undetected", 1),
+        ], name
+    with connect(cfg.db_path) as conn:
+        (campaign,) = conn.execute("SELECT MAX(id) FROM campaigns").fetchone()
+        data = summary(conn, campaign_id=campaign)
+    assert data["redundant"] == 0
+    assert data["hold_unresolved"] == 2 * len(side)
+    assert data["denominator"] == data["detected"] + 2 * len(side)
+
+    assert replay_on_cells(cfg, patterns, tmp_path / "replay") == []
+    assert credit_not_reproduced(cfg, patterns) == []
+
+
+@pytest.mark.integration
+def test_a_held_input_stays_graded_when_the_gate_it_feeds_clocks_no_flop_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flow_tools: None
+) -> None:
+    """Only u_a1's output reaches a clock pin through buffers, so the core takes
+    u_a0's output for data; the manifest's clock path says it is a clock net. en0 SA0
+    must not collapse into that excluded fault (with collapsing, the default): it
+    stays in the denominator as it does without collapsing."""
+    two_gates = (
+        "input en0, input en1, ",
+        "  wire c0;\n"
+        f"  {HD}__and2_1 u_a0 (.A(clk), .B(en0), .X(c0));\n"
+        f"  {HD}__and2_1 u_a1 (.A(c0), .B(en1), .X(c1));\n"
+        f"  {HD}__clkbuf_1 u_b2 (.A(c1), .X(c2));",
+    )
+    from faultflow.db import connect, summary
+
+    monkeypatch.chdir(tmp_path)
+    cfg, _, _ = _flow(tmp_path, two_gates, "hold = en0:1, en1:1\n")
+
+    for name in ("en0", "en1"):
+        assert sorted(_on_net(cfg, _net_of(cfg, name))) == [
+            ("sa0", "undetected", 1),
+            ("sa1", "undetected", 1),
+        ], name
+    with connect(cfg.db_path) as conn:
+        (campaign,) = conn.execute("SELECT MAX(id) FROM campaigns").fetchone()
+        data = summary(conn, campaign_id=campaign)
+    assert data["hold_unresolved"] == 4
+    assert data["denominator"] == data["detected"] + 4
+
+
+@pytest.mark.integration
+def test_a_clock_enable_tied_high_needs_no_hold_and_its_stuck_low_is_no_redundancy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flow_tools: None
+) -> None:
+    """A constant keeps the AND passing the clock with no [scan] hold, so the view
+    models no non-scan cell. Stuck at 0 it stops the clock, which is not redundant;
+    stuck at 1 it changes nothing, which is."""
+    tied = (
+        "",
+        f"  {HD}__and2_1 u_a (.A(clk), .B(1'b1), .X(c1));\n"
+        f"  {HD}__clkbuf_1 u_b2 (.A(c1), .X(c2));",
+    )
+    monkeypatch.chdir(tmp_path)
+    cfg, _, _ = _flow(tmp_path, tied)
+    assert sorted(_on_net(cfg, -2)) == [
+        ("sa0", "undetected", 1),
+        ("sa1", "redundant", 0),
+    ]

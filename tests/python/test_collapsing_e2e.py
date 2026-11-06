@@ -21,7 +21,9 @@ HD_CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
 FIXTURE = ROOT / "tests/cpp/fixtures/tiny_a21oi.json"
 
 
-def _enumerate(tmp_path: Path, collapsing: bool) -> tuple[int, int]:
+def _enumerate(
+    tmp_path: Path, collapsing: bool, **excluded_sites: set[str]
+) -> tuple[int, int]:
     import _faultflow_core as core  # type: ignore[import-not-found]
 
     from db_v3_helpers import insert_campaign  # type: ignore[import-not-found]
@@ -42,6 +44,7 @@ def _enumerate(tmp_path: Path, collapsing: bool) -> tuple[int, int]:
         False,
         collapsing,
         "fail",
+        **excluded_sites,
     )
 
     conn = connect(db_path)
@@ -70,3 +73,32 @@ def test_collapsing_flag_marks_faults_in_db(
     # AOI21 has two collapsible equivalence classes; the flag must take effect.
     assert collapsed_off == 0
     assert collapsed_on == 2
+
+
+@pytest.mark.golden
+@pytest.mark.parametrize(
+    ("argument", "exclusion"),
+    [("clock_sites", "clock"), ("reset_sites", "reset")],
+)
+def test_no_fault_collapses_into_a_site_the_flow_excludes(
+    tmp_path: Path, require_cpp_core: None, argument: str, exclusion: str
+) -> None:
+    """A flow's own exclusions (the scan flow's clock paths and settled flops) come
+    before collapsing, so the collapser's rule holds for them too: B1 SA1 stays its
+    own fault instead of disappearing into Y SA0, which nothing grades."""
+    total, collapsed = _enumerate(tmp_path, True, **{argument: {"net:5:stem"}})
+    assert total == 8
+    assert collapsed == 1  # A2 SA0 into A1 SA0: neither is excluded
+
+    conn = connect(tmp_path / "faults_True.db")
+    rows = {
+        (str(key), str(kind).lower()): (str(status), str(excl), into)
+        for key, kind, status, excl, into in conn.execute(
+            "SELECT fault_site_key, fault_type, status, exclusion, collapsed_into "
+            "FROM faults"
+        ).fetchall()
+    }
+    conn.close()
+    assert rows[("net:4:stem", "sa1")] == ("undetected", "none", None)
+    for kind in ("sa0", "sa1"):
+        assert rows[("net:5:stem", kind)] == ("excluded", exclusion, None)

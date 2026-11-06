@@ -60,3 +60,20 @@ TEST_CASE("FaultEnumerator tags clock and reset exclusions", "[enumerator]") {
                                 f.exclusion == FaultExclusion::RESET;
                        }));
 }
+
+TEST_CASE("FaultEnumerator keeps a constant's faults when a flop pin is tied to it",
+          "[enumerator]") {
+  const NormalizedGraph ng = test::load_normalized("tiny_tied_ff_pins.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_tied_ff_pins.json");
+  const auto faults = enumerate_faults(ng, cg);
+  const auto on_constant = [&cg](const CompactFault& f) {
+    return cg.compiled_to_yosys[f.net_index] < 0;
+  };
+  // Each constant has a stem and a branch per reader, data pins among them.
+  REQUIRE(std::count_if(faults.begin(), faults.end(), on_constant) > 4);
+  for (const CompactFault& f : faults) {
+    if (on_constant(f)) {
+      REQUIRE(f.exclusion == FaultExclusion::NONE);
+    }
+  }
+}

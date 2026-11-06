@@ -6,6 +6,12 @@ unchanged. A fault may be collapsed into another only when every *input* member 
 class is **fanout-free** (drives exactly one gate) — otherwise the input fault has additional
 downstream effects and the equivalence no longer holds in-circuit.
 
+No fault is collapsed into an excluded one, or an excluded one into another: nothing grades that
+representative, so the fault collapsed into it would go ungraded and leave the denominator. That
+covers what the scan flow excludes itself, a clock path's nets and a settled flop's own sites,
+which it passes to enumeration ahead of collapsing. A fault left to another test (JTAG, an IEEE 1500
+WSP, the other wrapper mode) can still be a representative, since that test grades it.
+
 ## Primitive gates
 
 Derived from the controlling-value argument (Abramovici Ch. 5):

@@ -77,3 +77,15 @@ def clock_path_nets(manifest: dict[str, Any]) -> set[int]:
         if isinstance(path, dict)
         for net in path.get("nets", [])
     }
+
+
+def clock_cell_outputs(manifest: dict[str, Any]) -> set[int]:
+    """The nets on the clock paths that a cell with other inputs drives: a mux a
+    hold steers, an AND a hold keeps open -- not a buffer, an inverter or a clock
+    gate."""
+    return {
+        int(net)
+        for path in (manifest.get("clock_paths") or {}).values()
+        if isinstance(path, dict)
+        for net in path.get("cell_outputs", [])
+    }

@@ -375,6 +375,57 @@ TEST_CASE("NormalizedGraph identifies clock and reset names", "[normalized_graph
   REQUIRE(ng.nets.at(3).is_reset);
 }
 
+TEST_CASE("A net merely named like a clock starts no clock tree",
+          "[normalized_graph]") {
+  // stall -> inv -> clk_en (4) -> and2 -> y: clk_en is a clock by its name alone
+  // and reaches no clock pin, so what drives it stays data.
+  const NormalizedGraph ng = test::load_normalized("tiny_clock_tree_data.json");
+  REQUIRE(ng.nets.at(4).is_clock);
+  REQUIRE_FALSE(ng.nets.at(2).is_clock);
+}
+
+TEST_CASE("A net a clock tree reads stays data if it is also read as data",
+          "[normalized_graph]") {
+  const NormalizedGraph ng = test::load_normalized("tiny_clock_tree_data.json");
+  // A divider's Q (7) drives a clock buffer into u_ff2 (9), its own toggle inverter
+  // and status logic.
+  REQUIRE(ng.nets.at(9).is_clock);
+  REQUIRE_FALSE(ng.nets.at(7).is_clock);
+  // u_a's output (23) drives a clock buffer into u_ff6 (24) and an output port.
+  REQUIRE(ng.nets.at(24).is_clock);
+  REQUIRE_FALSE(ng.nets.at(23).is_clock);
+}
+
+TEST_CASE("A clock tree is followed through a net named like a clock and its fanout",
+          "[normalized_graph]") {
+  const NormalizedGraph ng = test::load_normalized("tiny_clock_tree_data.json");
+  // ck3 -> clkbuf -> my_clk (13) -> clkbuf -> u_ff3.CLK (14).
+  for (const int net : {14, 13, 12}) {
+    REQUIRE(ng.nets.at(net).is_clock);
+  }
+  // ck4 reaches u_ff4 through a buffer and u_ff5 through an inverter and a buffer:
+  // every reader on the tree, it is a clock net.
+  for (const int net : {17, 19, 18, 16}) {
+    REQUIRE(ng.nets.at(net).is_clock);
+  }
+}
+
+TEST_CASE("A constant on a flop's clock or reset pin is no clock and no reset",
+          "[normalized_graph]") {
+  // Reset and set pins tied to 1 and to 0, clock pins tied to 0 and to 1, and flops
+  // reading the same constants as data.
+  const NormalizedGraph ng = test::load_normalized("tiny_tied_ff_pins.json");
+  for (const int constant : {CONST0_NET_ID, CONST1_NET_ID}) {
+    REQUIRE_FALSE(ng.nets.at(constant).is_clock);
+    REQUIRE_FALSE(ng.nets.at(constant).is_reset);
+    REQUIRE(ng.clocks.count(constant) == 0);
+    REQUIRE(ng.resets.count(constant) == 0);
+  }
+  // A real clock and a real reset beside them stay tagged.
+  REQUIRE(ng.nets.at(2).is_clock);
+  REQUIRE(ng.nets.at(4).is_reset);
+}
+
 TEST_CASE("A clock tree's buffers and inverters carry clock nets back to the port",
           "[normalized_graph]") {
   // ck -> clkbuf (4) -> clkinv (5) -> u_ff.CLK; ck2 & en (8) -> u_ff2.CLK. No net

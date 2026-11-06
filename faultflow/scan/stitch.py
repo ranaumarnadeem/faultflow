@@ -165,19 +165,23 @@ class ScanStitchResult(ScanPlan):
 
 def _clock_paths(flops: Sequence["_EligibleFF"]) -> dict[str, dict[str, Any]]:
     """Each root clock port's paths to its scan flops' pins, merged: the nets on
-    them (clock nets, Policy 3) and the held inputs that keep them passing the
-    clock on ([scan] hold; scan-check re-traces them)."""
+    them (clock nets, Policy 3), the held inputs that keep them passing the clock
+    on ([scan] hold; scan-check re-traces them), and the nets among them a cell with
+    other inputs drives (the scan view reads those: atpg_view._read_clock_cells)."""
     nets: dict[str, set[int]] = {}
     holds: dict[str, set[tuple[str, int]]] = {}
+    outputs: dict[str, set[int]] = {}
     for ff in flops:
         nets.setdefault(ff.clock_port, set()).update(ff.clock_path_nets)
         holds.setdefault(ff.clock_port, set()).update(ff.clock_holds)
+        outputs.setdefault(ff.clock_port, set()).update(ff.clock_cell_outputs)
     return {
         port: {
             "nets": sorted(nets[port]),
             "holds": [
                 {"port": name, "value": value} for name, value in sorted(holds[port])
             ],
+            "cell_outputs": sorted(outputs[port]),
         }
         for port in sorted(nets)
     }
@@ -223,6 +227,7 @@ class _EligibleFF:
     clock_port: str = ""
     clock_path_nets: tuple[int, ...] = ()
     clock_holds: tuple[tuple[str, int], ...] = ()
+    clock_cell_outputs: tuple[int, ...] = ()
 
 
 def _truthy_attr(value: object) -> bool:
@@ -660,6 +665,16 @@ def _collect_ffs(
                     (netlist.input_net_names[net], value)
                     for net, _cell, _pin, value in found.holds
                     if net in netlist.input_net_names
+                ),
+                clock_cell_outputs=tuple(
+                    net
+                    for net in found.nets
+                    if net in netlist.drivers
+                    and net not in gates
+                    and len(
+                        (netlist.entry(netlist.drivers[net][0]) or {}).get("inputs", [])
+                    )
+                    > 1
                 ),
                 data_net=data_net,
                 q_net=_one_bit(conns.get(q_pin), f"{instance}.{q_pin}"),

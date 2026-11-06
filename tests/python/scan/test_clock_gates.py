@@ -168,3 +168,77 @@ def test_a_clock_gate_scan_cant_open_in_shift_is_refused_by_scan_check(
     ofs.write_text(ofs.read_text(encoding="utf-8") + "hold = b:1\n", encoding="utf-8")
     assert main(["scan", "--top", "gated", "-c", str(ofs)]) == 0
     assert main(["scan-check", "--top", "gated", "-c", str(ofs)]) == 0
+
+
+def _cell(kind: str, **conns: int | str) -> dict[str, Any]:
+    outputs = ("Q", "X", "GCLK")
+    return {
+        "hide_name": 0,
+        "type": f"sky130_fd_sc_hd__{kind}_1",
+        "parameters": {},
+        "attributes": {},
+        "port_directions": {p: "output" if p in outputs else "input" for p in conns},
+        "connections": {p: [n] for p, n in conns.items()},
+    }
+
+
+@pytest.mark.integration
+def test_a_gates_tied_test_enable_gives_the_designs_constant_no_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flow_tools: None
+) -> None:
+    """In the view a gate's test enable is 0, as the scan enable is in capture. Were
+    that the design's own constant-0 net, its stuck-at-1 would open the gate there,
+    though the real test enable is the scan enable: a credit the protocol can't
+    reproduce. The net's only reader here is a buffer nothing reads: redundant."""
+    from faultflow.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    ports: dict[str, dict[str, Any]] = {
+        name: {"direction": "input", "bits": [bit]}
+        for name, bit in {"ck": 2, "en": 4, "d0": 5, "d1": 6}.items()
+    }
+    ports["y"] = {"direction": "output", "bits": [15]}
+    netlist = tmp_path / "chip.json"
+    netlist.write_text(
+        json.dumps(
+            {
+                "modules": {
+                    "chip": {
+                        "attributes": {"top": "1"},
+                        "ports": ports,
+                        "cells": {
+                            "u_cg": _cell("dlclkp", CLK=2, GATE=4, GCLK=20),
+                            "u_g": _cell("dfxtp", CLK=20, D=5, Q=10),
+                            "u_p": _cell("dfxtp", CLK=2, D=6, Q=11),
+                            "g_y": _cell("xor2", A=10, B=11, X=15),
+                            "g_t": _cell("buf", A="0", X=12),
+                        },
+                        "netnames": {
+                            name: {"hide_name": 0, "bits": port["bits"]}
+                            for name, port in ports.items()
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    ofs = tmp_path / "chip.ofs"
+    ofs.write_text(
+        f"[design]\nnetlist = {netlist}\ntop = chip\ncell_lib = {CELL_MAP}\n"
+        f"liberty = {LIBERTY}\n\n"
+        "[fault_model]\ncollapsing = false\n\n[simulation]\nverify = false\n",
+        encoding="utf-8",
+    )
+    patterns = tmp_path / "patterns.json"
+    for step in (
+        ["init"],
+        ["scan"],
+        ["scan-check"],
+        ["sim", "--scan", "--export-patterns", str(patterns)],
+    ):
+        assert main([*step, "--top", "chip", "-c", str(ofs)]) == 0, step
+    cfg = load_config(ofs, "chip")
+
+    assert _faults(cfg)["net:-1:stem:sa1"] == "redundant"
+    assert credit_not_reproduced(cfg, patterns) == []

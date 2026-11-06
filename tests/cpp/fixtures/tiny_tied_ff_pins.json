@@ -1,0 +1,94 @@
+{
+  "creator": "Yosys 0.61+129 (faultflow fixture generator)",
+  "modules": {
+    "tiny_tied_ff_pins": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "ck": {"direction": "input", "bits": [2]},
+        "d": {"direction": "input", "bits": [3]},
+        "rst_n": {"direction": "input", "bits": [4]},
+        "q_r": {"direction": "output", "bits": [10]},
+        "q_z": {"direction": "output", "bits": [11]},
+        "q_s": {"direction": "output", "bits": [12]},
+        "q_c0": {"direction": "output", "bits": [13]},
+        "q_c1": {"direction": "output", "bits": [14]},
+        "q_x1": {"direction": "output", "bits": [15]},
+        "q_x0": {"direction": "output", "bits": [16]},
+        "q_real": {"direction": "output", "bits": [17]}
+      },
+      "cells": {
+        "u_r": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfrtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "RESET_B": "input", "Q": "output"},
+          "connections": {"CLK": [2], "D": [3], "RESET_B": ["1"], "Q": [10]}
+        },
+        "u_z": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfrtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "RESET_B": "input", "Q": "output"},
+          "connections": {"CLK": [2], "D": [3], "RESET_B": ["0"], "Q": [11]}
+        },
+        "u_s": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfstp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "SET_B": "input", "Q": "output"},
+          "connections": {"CLK": [2], "D": [3], "SET_B": ["1"], "Q": [12]}
+        },
+        "u_c0": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+          "connections": {"CLK": ["0"], "D": [3], "Q": [13]}
+        },
+        "u_c1": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+          "connections": {"CLK": ["1"], "D": [3], "Q": [14]}
+        },
+        "u_x1": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+          "connections": {"CLK": [2], "D": ["1"], "Q": [15]}
+        },
+        "u_x0": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+          "connections": {"CLK": [2], "D": ["0"], "Q": [16]}
+        },
+        "u_real": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfrtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "RESET_B": "input", "Q": "output"},
+          "connections": {"CLK": [2], "D": [3], "RESET_B": [4], "Q": [17]}
+        }
+      },
+      "netnames": {
+        "ck": {"hide_name": 0, "bits": [2], "attributes": {}},
+        "d": {"hide_name": 0, "bits": [3], "attributes": {}},
+        "rst_n": {"hide_name": 0, "bits": [4], "attributes": {}}
+      }
+    }
+  }
+}

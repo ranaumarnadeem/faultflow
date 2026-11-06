@@ -57,12 +57,32 @@ void tag_clock_net(NormalizedGraph& ng, int bit) {
   ng.clocks.insert(bit);
 }
 
-// A clock tree: every net a clock net reads through buffers and inverters is a
-// clock net too (Policy 3), whatever it is named -- the port a buffered clock
-// starts at and each buffer between. A mux or a gate on the way is the scan
-// flow's to follow (faultflow.scan.clock_gates), with the inputs it holds.
-void tag_clock_trees(NormalizedGraph& ng) {
-  std::vector<int> work(ng.clocks.begin(), ng.clocks.end());
+// A clock tree: a net only the tree's buffers and inverters read is a clock net too
+// (Policy 3), whatever it is named -- the port a buffered clock starts at and each
+// buffer between. The tree starts at `clock_pins`, the nets on flops' and clock
+// gates' clock pins, not at a net merely named like a clock. A net also read as
+// data, or driving an output, stays data: its faults are ordinary ones. A mux or a
+// gate on the way is the scan flow's to follow (faultflow.scan.clock_gates), with
+// the inputs it holds.
+void tag_clock_trees(NormalizedGraph& ng, const std::set<int>& clock_pins) {
+  std::set<int> tree = clock_pins;
+  const auto buffer_at = [&](int node_id) -> const NormNode* {
+    const auto it = ng.nodes.find(node_id);
+    if (it == ng.nodes.end()) {
+      return nullptr;
+    }
+    const NormNode& node = it->second;
+    const bool buffer =
+        node.type == NodeType::GATE &&
+        (node.gate_type == GateType::BUF || node.gate_type == GateType::INV) &&
+        node.input_pins.size() == 1 && node.output_pins.size() == 1;
+    return buffer ? &node : nullptr;
+  };
+  const auto on_tree = [&](int reader) {
+    const NormNode* buffer = buffer_at(reader);
+    return buffer != nullptr && tree.count(buffer->output_pins.begin()->second) != 0;
+  };
+  std::vector<int> work(tree.begin(), tree.end());
   while (!work.empty()) {
     const int net = work.back();
     work.pop_back();
@@ -70,21 +90,24 @@ void tag_clock_trees(NormalizedGraph& ng) {
     if (net_it == ng.nets.end() || net_it->second.driver < 0) {
       continue;
     }
-    const auto node_it = ng.nodes.find(net_it->second.driver);
-    if (node_it == ng.nodes.end()) {
+    const NormNode* buffer = buffer_at(net_it->second.driver);
+    if (buffer == nullptr) {
       continue;
     }
-    const NormNode& node = node_it->second;
-    if (node.type != NodeType::GATE ||
-        (node.gate_type != GateType::BUF && node.gate_type != GateType::INV) ||
-        node.input_pins.size() != 1) {
-      continue;
+    const int in = buffer->input_pins.begin()->second;
+    const auto in_it = ng.nets.find(in);
+    if (in < 0 || in_it == ng.nets.end() || tree.count(in) != 0) {
+      continue;  // a constant, or on the tree already
     }
-    const int in = node.input_pins.begin()->second;
-    if (in < 0 || ng.clocks.count(in) != 0 || ng.nets.count(in) == 0) {
-      continue;  // a constant, or already a clock net
+    const NormNet& source = in_it->second;
+    // A reader not on the tree yet is checked again when it joins: its output's
+    // turn in `work` comes back here.
+    if (source.is_po ||
+        !std::all_of(source.fanout.begin(), source.fanout.end(), on_tree)) {
+      continue;
     }
     tag_clock_net(ng, in);
+    tree.insert(in);
     work.push_back(in);
   }
 }
@@ -257,6 +280,8 @@ NormalizedGraph NormalizedGraph::from_parsed(
   }
   ng.unobserved = parse_unobserved_nets(mod, ng.POs);
 
+  std::set<int> clock_pins;  // the nets on flops' and clock gates' clock pins
+
   for (const auto& [inst, cell] : mod.cells) {
     for (const auto& [pin, bits] : cell.conns) {
       for (int bit : bits) {
@@ -383,8 +408,10 @@ NormalizedGraph NormalizedGraph::from_parsed(
       const int clk = gate.input_pins.at(icg.clock);
       if (clk >= 0) {  // a constant (a view's tied-off root clock) is no clock
         tag_clock_net(ng, clk);
+        clock_pins.insert(clk);
       }
       tag_clock_net(ng, gclk);
+      clock_pins.insert(gclk);
       ng.nodes[gate.id] = std::move(gate);
       continue;
     }
@@ -465,11 +492,16 @@ NormalizedGraph NormalizedGraph::from_parsed(
 
     if (entry->node_type == NodeType::FF) {
       node.ff_config = build_ff_config(*entry, cell);
-      tag_clock_net(ng, node.ff_config.clock_net);
-      if (node.ff_config.clear.present) {
+      // A constant on a pin (a tied-off reset) clocks and resets nothing, and
+      // whatever else reads it keeps its faults.
+      if (node.ff_config.clock_net >= 0) {
+        tag_clock_net(ng, node.ff_config.clock_net);
+        clock_pins.insert(node.ff_config.clock_net);
+      }
+      if (node.ff_config.clear.present && node.ff_config.clear.net >= 0) {
         tag_reset_net(ng, node.ff_config.clear.net);
       }
-      if (node.ff_config.preset.present) {
+      if (node.ff_config.preset.present && node.ff_config.preset.net >= 0) {
         tag_reset_net(ng, node.ff_config.preset.net);
       }
       node.level = 0;
@@ -562,8 +594,6 @@ NormalizedGraph NormalizedGraph::from_parsed(
     }
   }
 
-  tag_clock_trees(ng);
-
   // Fanout from nodes
   for (const auto& [nid, node] : ng.nodes) {
     for (const auto& [pin, in_net] : node.input_pins) {
@@ -571,6 +601,8 @@ NormalizedGraph NormalizedGraph::from_parsed(
       ng.nets[in_net].fanout.push_back(nid);
     }
   }
+
+  tag_clock_trees(ng, clock_pins);
 
   // Levelization: level = 1 + max(driver levels); sources at 0.
   //

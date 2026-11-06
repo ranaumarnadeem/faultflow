@@ -99,10 +99,14 @@ ScanLocView build_scan_loc_view(const ParsedGraph& parsed,
 
 std::vector<CompactFault> enumerate_all(
     const NormalizedGraph& ng, const CompiledSimGraph& cg, bool include_clock_faults,
-    bool include_reset_faults, bool collapsing) {
+    bool include_reset_faults, bool collapsing,
+    const std::set<std::string>& clock_sites,
+    const std::set<std::string>& reset_sites) {
   EnumeratorOptions options;
   options.include_clock_faults = include_clock_faults;
   options.include_reset_faults = include_reset_faults;
+  options.clock_sites = clock_sites;
+  options.reset_sites = reset_sites;
   std::vector<CompactFault> faults = enumerate_faults(ng, cg, options);
   if (collapsing) {
     faults = collapse_primitive_faults(ng, cg, std::move(faults));
@@ -436,7 +440,9 @@ void ensure_faults_enumerated(
     const std::string& db_path, int64_t campaign_id, bool include_clock_faults,
     bool include_reset_faults, bool collapsing,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances,
+    const std::set<std::string>& clock_sites,
+    const std::set<std::string>& reset_sites) {
   db::init_database(db_path);
   if (db::fault_count(db_path, campaign_id) > 0) {
     return;
@@ -446,7 +452,7 @@ void ensure_faults_enumerated(
                  blackbox_instances, false);
   const std::vector<CompactFault> faults =
       enumerate_all(ctx.ng, ctx.cg, include_clock_faults, include_reset_faults,
-                    collapsing);
+                    collapsing, clock_sites, reset_sites);
   db::insert_faults_if_empty(db_path, campaign_id, ctx.ng, ctx.cg, faults);
 }
 
