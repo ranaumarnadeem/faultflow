@@ -78,9 +78,11 @@ def clock_gates(
 class ClockPath:
     """Where a flop's clock comes from: ``root``, the net the path stops at (an
     input port's when a port pulses it), the clock gates on the way, the nearest
-    first, whether the cells on it invert the clock, every net on it (the pin's
-    first, the root's last), and the held side inputs that keep it passing the
-    clock on (control_trace.Step: net, the cell reading it, its pin, the value)."""
+    first, whether the cells on it invert the clock at the pin or at a gate's clock
+    (that gate runs on the opposite phase, its latch holding over the pulse), every
+    net on it (the pin's first, the root's last), and the held side inputs that keep
+    it passing the clock on (control_trace.Step: net, the cell reading it, its pin,
+    the value)."""
 
     root: Any
     gates: tuple[ClockGate, ...]
@@ -104,6 +106,7 @@ def clock_path(
     nets: list[int] = []
     steps: list[tuple[int, str, str, int]] = []
     inverted = False
+    inverted_at_gate = False  # from the pin to a gate: from it to the root, if even
     values = dict(holds or {})
     seen: set[int] = set()
     while isinstance(net, int) and net not in seen:  # not round a loop
@@ -114,6 +117,7 @@ def clock_path(
             if any(g.instance == gate.instance for g in path):
                 raise ScanError(f"clock gate {gate.instance} gates its own clock")
             path.append(gate)
+            inverted_at_gate |= inverted
             net = gate.clock_net
             continue
         if netlist is None:
@@ -127,7 +131,28 @@ def clock_path(
         inverted ^= found.inverted
         steps.extend(found.steps)
         net = found.source
-    return ClockPath(net, tuple(path), inverted, tuple(nets), tuple(steps))
+    return ClockPath(
+        net, tuple(path), inverted or inverted_at_gate, tuple(nets), tuple(steps)
+    )
+
+
+def path_cells(path: ClockPath, netlist: "Netlist") -> tuple[str, ...]:
+    """The cells driving a net on ``path``."""
+    return tuple(netlist.drivers[net][0] for net in path.nets if net in netlist.drivers)
+
+
+def path_cell_outputs(
+    path: ClockPath, gates: Mapping[int, ClockGate], netlist: "Netlist"
+) -> tuple[int, ...]:
+    """The nets on ``path`` that a cell with other inputs drives: a mux a hold steers,
+    an AND a hold keeps open -- not a buffer, an inverter or a clock gate."""
+    return tuple(
+        net
+        for net in path.nets
+        if net in netlist.drivers
+        and net not in gates
+        and len((netlist.entry(netlist.drivers[net][0]) or {}).get("inputs", [])) > 1
+    )
 
 
 def clock_path_problems(

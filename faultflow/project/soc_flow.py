@@ -163,6 +163,7 @@ def build_soc(project: SocProject, base: FaultflowConfig, out: Path) -> SocBuild
         composed,
         original_types=original,
         known=known,
+        holds=dict(cfg.scan.hold),
     )
     manifest["ineligible_ffs"] = [
         {**item, "instance": f"{instance}__{item['instance']}"}

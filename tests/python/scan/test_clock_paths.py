@@ -72,6 +72,16 @@ GATED = (
     f"  {HD}__dlclkp_1 u_cg (.CLK(c1), .GATE(b), .GCLK(g));\n"
     f"  {HD}__clkbuf_1 u_b2 (.A(g), .X(c2));",
 )
+# An inverter on each side of a clock gate: the flops' edge is the port's rising
+# one, but the gate runs on the opposite phase.
+INVERTED_AROUND_GATE = (
+    "",
+    f"  wire n, g;\n"
+    f"  {HD}__clkinv_1 u_i1 (.A(clk), .Y(n));\n"
+    f"  {HD}__dlclkp_1 u_cg (.CLK(n), .GATE(b), .GCLK(g));\n"
+    f"  {HD}__clkinv_1 u_i2 (.A(g), .Y(c1));\n"
+    f"  {HD}__clkbuf_1 u_b2 (.A(c1), .X(c2));",
+)
 # A clock divided by a flop: no port pulses it.
 DIVIDED = (
     "",
@@ -241,6 +251,63 @@ def test_flops_behind_clock_buffers_compress_compact_and_write_stil(
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
+    "second_flop,clocks",
+    [
+        ("always @(posedge clk[1]) r1 <= r0 ^ b;", ["clk[0]", "clk[1]"]),
+        ("always @(posedge clk[0]) r1 <= r0 ^ clk[1] ^ b;", ["clk[0]"]),
+        # The clock bit read as data too: the view ties it, the other bit stays free.
+        ("always @(posedge clk[0]) r1 <= r0 ^ clk[0] ^ clk[1] ^ b;", ["clk[0]"]),
+    ],
+    ids=["both_bits", "one_bit_the_other_data", "clock_bit_read_as_data"],
+)
+def test_a_clock_on_a_bit_of_a_bus_is_exported_by_that_bit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flow_tools: None,
+    second_flop: str,
+    clocks: list[str],
+) -> None:
+    from faultflow.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    rtl = tmp_path / "ck.v"
+    rtl.write_text(
+        "module ck (input [1:0] clk, input a, input b, output y);\n"
+        "  reg r0, r1;\n"
+        "  always @(posedge clk[0]) r0 <= a ^ r1;\n"
+        f"  {second_flop}\n"
+        "  assign y = r1;\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+    ofs = tmp_path / "ck.ofs"
+    ofs.write_text(
+        f"[design]\nnetlist = {rtl}\ncell_lib = {CELL_MAP}\nliberty = {LIBERTY}\n\n"
+        f"[scan]\nchains = {len(clocks)}\n",
+        encoding="utf-8",
+    )
+    patterns = tmp_path / "patterns.json"
+    stil = tmp_path / "ck.stil"
+    for step in (
+        ["init"],
+        ["scan"],
+        ["scan-check"],
+        ["sim", "--scan", "--export-patterns", str(patterns)],
+        ["write-patterns", "--patterns", str(patterns), "-o", str(stil)],
+    ):
+        assert main([*step, "--top", "ck", "-c", str(ofs)]) == 0, step
+    cfg = load_config(ofs, "ck")
+    assert _manifest(cfg)["clock_ports"] == clocks
+    # Each clock bit in the clock group, and no group names the bus as a whole.
+    named = " + ".join(f'"{clock}"' for clock in clocks)
+    text = stil.read_text(encoding="utf-8")
+    assert f"\"_clk\" = '{named}';" in text
+    assert '"clk"' not in text
+    assert replay_on_cells(cfg, patterns, tmp_path / "replay") == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
     "fixture,hold,name",
     [(MUX, "tm:0", "mux"), (AND, "en:1", "and")],
     ids=["mux", "and"],
@@ -287,8 +354,12 @@ def test_a_clock_mux_nothing_holds_leaves_its_flops_out_of_scan(
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "fixture,reason",
-    [(INVERTED, "inverted_clock"), (DIVIDED, "clock_not_from_port")],
-    ids=["inverted", "divided"],
+    [
+        (INVERTED, "inverted_clock"),
+        (INVERTED_AROUND_GATE, "inverted_clock"),
+        (DIVIDED, "clock_not_from_port"),
+    ],
+    ids=["inverted", "inverted_around_gate", "divided"],
 )
 def test_a_flop_whose_clock_no_port_pulses_as_is_stays_out_of_scan(
     tmp_path: Path,
@@ -302,6 +373,75 @@ def test_a_flop_whose_clock_no_port_pulses_as_is_stays_out_of_scan(
     reasons = _ineligible(manifest)
     assert len(reasons) == 3 and set(reasons.values()) == {reason}, reasons
     assert manifest["clock_ports"] == ["clk"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "reader",
+    [
+        # Data logic reading the clock through its buffer.
+        "assign y = r1 ^ r2 ^ r3;\n  wire fed = c2 & a;\n"
+        "  reg r4;\n  always @(posedge clk) r4 <= fed;\n  assign z = r4;",
+        # The clock forwarded to an output.
+        "assign y = r1 ^ r2 ^ r3;\n  assign z = c2;",
+    ],
+    ids=["data", "output"],
+)
+def test_a_clock_read_as_data_is_0_in_every_pattern(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flow_tools: None, reader: str
+) -> None:
+    """Logic settles for a capture and an output is strobed with the clocks low. A
+    free clock in the view gives patterns no scan test can apply, and sim --scan
+    aborts on them."""
+    from faultflow.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    rtl = tmp_path / "ck.v"
+    rtl.write_text(
+        TEMPLATE.format(inputs="", path=BUFFERS[1])
+        .replace("assign y = r1 ^ r2 ^ r3;", reader)
+        .replace("output y)", "output y, output z)"),
+        encoding="utf-8",
+    )
+    ofs = tmp_path / "ck.ofs"
+    ofs.write_text(
+        f"[design]\nnetlist = {rtl}\ncell_lib = {CELL_MAP}\nliberty = {LIBERTY}\n\n"
+        "[scan]\nchains = 1\n",
+        encoding="utf-8",
+    )
+    patterns = tmp_path / "patterns.json"
+    for step in (
+        ["init"],
+        ["scan"],
+        ["scan-check"],
+        ["sim", "--scan", "--export-patterns", str(patterns)],
+    ):
+        assert main([*step, "--top", "ck", "-c", str(ofs)]) == 0, step
+    cfg = load_config(ofs, "ck")
+    assert replay_on_cells(cfg, patterns, tmp_path / "replay") == []
+    assert credit_not_reproduced(cfg, patterns) == []
+    # The view ties the clock, where a design reading it only as a clock leaves it.
+    assert _hold_ties(cfg) == ["$nshold_clk"]
+    # What only a clock at 1 could test stays in the denominator, not redundant.
+    if "fed" in reader:
+        conn = sqlite3.connect(cfg.db_path)
+        try:
+            (unresolved,) = conn.execute(
+                "SELECT COUNT(*) FROM faults WHERE hold_unresolved = 1 "
+                "AND campaign_id = (SELECT MAX(id) FROM campaigns)"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert unresolved > 0
+    straight, _, _ = _flow(tmp_path / "plain", BUFFERS, monkeypatch=monkeypatch)
+    assert _hold_ties(straight) == []
+
+
+def _hold_ties(cfg: Any) -> list[str]:
+    view = json.loads(
+        (cfg.intermediate_dir / "scan_atpg_view.json").read_text(encoding="utf-8")
+    )
+    return [n for n in view["modules"]["ck"]["cells"] if n.startswith("$nshold_")]
 
 
 @pytest.mark.integration

@@ -10,7 +10,13 @@ from faultflow.coverage.site_key import (
     stem_site_key,
 )
 from faultflow.scan.errors import ScanError
-from faultflow.scan.manifest import clock_cell_outputs, manifest_clock_ports
+from faultflow.scan.manifest import (
+    clock_cell_outputs,
+    clock_path_cells,
+    clock_path_nets,
+    manifest_clock_net_ids,
+    manifest_clock_ports,
+)
 from faultflow.scan.stitch import (
     CONST_NETS,
     SCAN_CELL_TYPES,
@@ -804,6 +810,48 @@ def _model_nonscan(module: dict[str, Any], nonscan: NonscanSetup) -> None:
         cells[f"{HOLD_TIE_PREFIX}{port}"] = _tie(value, entry["bits"][0], {})
 
 
+def _clock_read_as_data(module: dict[str, Any], manifest: dict[str, Any]) -> bool:
+    """Whether an output port or a cell off the clock paths reads a net on one. The
+    view's own cells don't count: they read a gate's output as its enable."""
+    clocks = clock_path_nets(manifest) | set(manifest_clock_net_ids(manifest))
+    for port in module.get("ports", {}).values():
+        if port.get("direction") == "output" and clocks & set(port.get("bits", [])):
+            return True
+    on_path = clock_path_cells(manifest)
+    for name, cell in module.get("cells", {}).items():
+        if name in on_path or cell.get("attributes", {}).get("faultflow_internal"):
+            continue
+        for bits in cell.get("connections", {}).values():
+            if clocks & set(_all_int_bits(bits)):
+                return True
+    return False
+
+
+def _tie_clocks_read_as_data(module: dict[str, Any], manifest: dict[str, Any]) -> None:
+    """A scan clock is 0 whenever logic settles for a capture or an output is
+    strobed: it pulses after the strobe. Left an input of the view, ATPG would find
+    patterns with it at 1 that no scan test can apply, so when something reads one
+    as data its port goes and a tie drives its net, as a held input's does. The hold
+    twin frees that tie: a fault only a clock at 1 could test isn't redundant. A bus
+    with a clock bit stays as the patterns name its bits: one port each."""
+    if not _clock_read_as_data(module, manifest):
+        return
+    clocks = set(manifest_clock_net_ids(manifest))
+    ports = module.get("ports", {})
+    cells = module.get("cells", {})
+    for name, port in list(ports.items()):
+        bits = port.get("bits", [])
+        if port.get("direction") != "input" or not clocks & set(bits):
+            continue
+        ports.pop(name)
+        for index, bit in enumerate(bits):
+            bit_name = name if len(bits) == 1 else f"{name}[{index}]"
+            if bit in clocks:
+                cells[f"{HOLD_TIE_PREFIX}{bit_name}"] = _tie(0, bit, {})
+            else:
+                ports[bit_name] = {"direction": "input", "bits": [bit]}
+
+
 def _branch_flop_outputs(
     module: dict[str, Any], pseudo_port_map: dict[str, dict[str, Any]]
 ) -> None:
@@ -1193,6 +1241,7 @@ def build_scan_atpg_view(
     _model_blackboxes_opaque(module, blackbox_instances)
     if nonscan is not None:
         _model_nonscan(module, nonscan)
+    _tie_clocks_read_as_data(module, manifest)
     _branch_flop_outputs(module, pseudo_port_map)
 
     attrs = module.setdefault("attributes", {})

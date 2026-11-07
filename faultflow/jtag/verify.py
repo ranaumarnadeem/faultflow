@@ -117,9 +117,11 @@ module faultflow_jtag_tb;
         $readmemb("jtag_program.mem", jtag_rows);
 {hold_text}
         for (i = 0; i < {len(program)}; i = i + 1) begin
-            {{{driven}}} = jtag_rows[i][{last}:1];
+            // TCK falls, and a falling-edge flop takes what settled before.
             {tck} = 1'b0;
-            #10;
+            #1;
+            {{{driven}}} = jtag_rows[i][{last}:1];
+            #9;
             if (jtag_rows[i][0]) $display("TDO %0d %b", i, {_escaped(ports.tdo)});
             {tck} = 1'b1;
             #10;
@@ -194,6 +196,10 @@ def replay_on_gate_level(
                 "iverilog",
                 "-g2012",
                 "-DFUNCTIONAL",
+                # A flop's output changes a time unit after its clock edge, so a flop
+                # deeper in a clock tree takes what its inputs held before the edge:
+                # the ideal clock the golden run is on.
+                "-DUNIT_DELAY=#1",
                 "-o",
                 str(sim),
                 str(tb),

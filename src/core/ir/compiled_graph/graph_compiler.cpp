@@ -328,6 +328,24 @@ std::string pin_for_compiled_input(const NormNode& norm,
   return "";
 }
 
+// The pin a fanout edge reads: a gate's by the slot wire_node_inputs wired it to, so
+// two of its pins on one stem are two sites. A flop's slots name no pin: its pins on
+// one stem (D and the scan in, in a shift register) share the first's site.
+std::string pin_of_edge(const NormNode& norm, int slot,
+                        const std::map<int, int>& y2c, uint32_t compiled_in) {
+  if (static_cast<size_t>(slot) < norm.input_order.size()) {
+    const std::string& pin = norm.input_order[slot];
+    const auto wired = norm.input_pins.find(pin);
+    if (wired != norm.input_pins.end()) {
+      const auto it = y2c.find(wired->second);
+      if (it != y2c.end() && static_cast<uint32_t>(it->second) == compiled_in) {
+        return pin;
+      }
+    }
+  }
+  return pin_for_compiled_input(norm, y2c, compiled_in);
+}
+
 void split_fanout_branches(CompiledSimGraph& cg, const NormalizedGraph& ng,
                            const std::vector<int>& sim_owner_norm_id,
                            std::map<int, int>& y2c, std::vector<int>& c2y,
@@ -383,7 +401,7 @@ void split_fanout_branches(CompiledSimGraph& cg, const NormalizedGraph& ng,
         norm_id = sim_owner_norm_id[edge.node_idx];
         if (ng.nodes.count(norm_id)) {
           const NormNode& norm = ng.nodes.at(norm_id);
-          input_pin = pin_for_compiled_input(norm, y2c, stem);
+          input_pin = pin_of_edge(norm, edge.slot, y2c, stem);
           instance = norm.instance;
         }
       }

@@ -1765,9 +1765,6 @@ class Runner:
             vector_source,
         ) = self._scan_normal_mode_context(manifest, vectors_path)
 
-        original = self._sequence_outputs(
-            source_json, vectors, output_order, clock_names
-        )
         scanned = self._sequence_outputs(
             generic_json,
             scanned_vectors,
@@ -1776,10 +1773,16 @@ class Runner:
             extra_inputs=scan_extra,
             cell_map_path=resolve_scan_cell_map(self.cfg),
         )
-        if original != scanned:
-            raise RunnerError(
-                "normal-mode scanned outputs differ from original outputs"
+        # A chip composed of scanned blocks has no netlist from before scan: an SoC's
+        # manifest names the scanned one as its source, with nothing to compare.
+        if source_json != generic_json:
+            original = self._sequence_outputs(
+                source_json, vectors, output_order, clock_names
             )
+            if original != scanned:
+                raise RunnerError(
+                    "normal-mode scanned outputs differ from original outputs"
+                )
         return (
             [],
             {

@@ -101,9 +101,11 @@ def chip_of(manifest: Mapping[str, Any]) -> Chip:
     core = generic["modules"][str(manifest["top"])]
     clock_nets = set(manifest["clock_nets"])
     clocks = tuple(
-        name
+        name if len(port["bits"]) == 1 else f"{name}[{index}]"
         for name, port in core["ports"].items()
-        if port["direction"] == "input" and set(port["bits"]) & clock_nets
+        if port["direction"] == "input"
+        for index, bit in enumerate(port["bits"])
+        if bit in clock_nets
     )
     compression = _enabled(manifest.get("compression"))
     compaction = _enabled(manifest.get("compaction"))

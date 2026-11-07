@@ -1,0 +1,28 @@
+{
+  "creator": "faultflow fixture: a NAND2 with both inputs on one net",
+  "modules": {
+    "tiny_tied_gate_pins": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "X": { "direction": "input", "bits": [ 2 ] },
+        "Y": { "direction": "output", "bits": [ 3 ] }
+      },
+      "cells": {
+        "g0": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__nand2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "B": "input", "Y": "output" },
+          "connections": { "A": [ 2 ], "B": [ 2 ], "Y": [ 3 ] }
+        }
+      },
+      "netnames": {
+        "X": { "hide_name": 0, "bits": [ 2 ], "attributes": {} },
+        "Y": { "hide_name": 0, "bits": [ 3 ], "attributes": {} }
+      }
+    }
+  }
+}

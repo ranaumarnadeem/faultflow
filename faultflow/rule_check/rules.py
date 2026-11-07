@@ -18,11 +18,12 @@ from faultflow.scan.stitch import _load_json, _top_module
 class ClockRoots:
     """Each flop clock net's root, as scan stitching traces it
     (faultflow.scan.clock_gates.clock_path, with [scan] hold): the input port
-    net it reaches, or the net itself when it reaches none; and the cells on the
-    paths, which pass the clock on rather than read it as data."""
+    net it reaches, or the net itself when it reaches none; and each cell on the
+    paths with the net it passes on rather than reads as data. The cell a path stops
+    at passes nothing on: it makes the clock, from what it reads."""
 
     root: dict[int, int] = field(default_factory=dict)
-    cells: frozenset[str] = frozenset()
+    passes: frozenset[tuple[str, int]] = frozenset()
 
     def of(self, net: int) -> int:
         return self.root.get(net, net)
@@ -40,15 +41,17 @@ def clock_roots(
     netlist = Netlist(module, cell_map)
     gates = clock_gates(module, cell_map)
     root: dict[int, int] = {}
-    cells: set[str] = set()
+    passes: set[tuple[str, int]] = set()
     for net in facts.clock_nets:
         found = clock_path(net, gates, netlist, holds)
         if isinstance(found.root, int) and found.root in facts.pis:
             root[net] = found.root
-        cells.update(
-            netlist.drivers[on][0] for on in found.nets if on in netlist.drivers
+        passes.update(
+            (netlist.drivers[on][0], source)
+            for on, source in zip(found.nets, found.nets[1:])
+            if on in netlist.drivers
         )
-    return ClockRoots(root, frozenset(cells))
+    return ClockRoots(root, frozenset(passes))
 
 
 def _cell_index(facts: NetlistFacts) -> dict[str, CellFact]:
@@ -178,7 +181,6 @@ def rule_uncontrollable_clock(
 # --- CLK002: a clock net must not also be consumed as data/logic ---
 def rule_clock_as_data(facts: NetlistFacts, roots: ClockRoots) -> list[Violation]:
     cells = _cell_index(facts)
-    passing = roots.cells
     out: list[Violation] = []
     for clock_net in sorted(facts.clock_nets):
         for inst, pin in facts.sinks_of.get(clock_net, []):
@@ -187,7 +189,7 @@ def rule_clock_as_data(facts: NetlistFacts, roots: ClockRoots) -> list[Violation
                 continue
             if cell.is_ff and pin == cell.clock_pin:
                 continue  # legitimate clock use
-            if cell.is_buffer or inst in passing:
+            if cell.is_buffer or (inst, clock_net) in roots.passes:
                 continue  # clock distribution: a buffer, a held clock mux
             out.append(
                 Violation(

@@ -100,6 +100,58 @@ def test_the_soc_is_composed_traced_and_recorded(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    "source,replaced",
+    [
+        # A clock buffer in a block: scan-check re-traces the flops to the SoC's clk.
+        (
+            "always @(posedge clk) begin",
+            "wire ck; sky130_fd_sc_hd__clkbuf_1 u_ck(.A(clk), .X(ck));\n"
+            "  always @(posedge ck) begin",
+        ),
+        # A clock gate in a block.
+        (
+            "always @(posedge clk) begin",
+            "wire ck;\n"
+            "  sky130_fd_sc_hd__dlclkp_1 u_cg(.CLK(clk), .GATE(en), .GCLK(ck));\n"
+            "  always @(posedge ck) begin",
+        ),
+        # A flop whose D differs from its scan in, its output reaching a SoC output:
+        # the normal-mode check has no netlist from before scan to compare it with.
+        (
+            "assign count=cnt_r; assign done=done_r;",
+            "reg t; always @(posedge clk) t <= ~t;\n"
+            "  assign count=cnt_r; assign done=done_r ^ t;",
+        ),
+    ],
+    ids=["clock_buffer", "clock_gate", "toggling_output"],
+)
+def test_scan_check_passes_a_soc_whose_blocks_passed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flow_tools: None,
+    source: str,
+    replaced: str,
+) -> None:
+    import soc_v2_fixtures
+
+    from faultflow.service.flow import FlowService
+
+    assert source in soc_v2_fixtures.CTR_RTL
+    monkeypatch.setattr(
+        soc_v2_fixtures, "CTR_RTL", soc_v2_fixtures.CTR_RTL.replace(source, replaced)
+    )
+    monkeypatch.chdir(tmp_path)
+    project = load_soc_project(write_soc_v2(tmp_path))
+    base = load_config(project.base_config, project.soc.top)
+    build = build_soc(project, base, tmp_path / "out")
+    FlowService().check_scan(build.cfg)
+    manifest = json.loads(build.cfg.scan_manifest_path.read_text("utf-8"))
+    manifest_validator().validate(manifest)
+    assert manifest["clock_ports"] == ["clk"]
+
+
+@pytest.mark.integration
 def test_the_project_runs_and_counts_every_fault_once(
     tmp_path: Path, flow_tools: None
 ) -> None:

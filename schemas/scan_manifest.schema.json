@@ -46,10 +46,11 @@
       "type": "object",
       "additionalProperties": {
         "type": "object",
-        "required": ["nets", "holds", "cell_outputs"],
+        "required": ["nets", "holds", "cell_outputs", "cells"],
         "properties": {
           "nets": {"type": "array", "items": {"type": "integer"}},
           "cell_outputs": {"type": "array", "items": {"type": "integer"}},
+          "cells": {"type": "array", "items": {"type": "string"}},
           "holds": {
             "type": "array",
             "items": {

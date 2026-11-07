@@ -75,7 +75,7 @@ def bench(
                 lines.append(f"    {refs[name]}= {value};")
                 applied[name] = value
         for clock in chip.clocks:
-            lines.append(f"    {_escaped(clock)}= 0;")
+            lines.append(f"    {refs[clock]}= 0;")
         lines.append("    #5;")
         for name, want in cycle.expect.items():
             if want is not None:
@@ -83,10 +83,10 @@ def bench(
         pulsed = chip.clocks if cycle.clocks is None else cycle.clocks
         if cycle.pulse:
             for clock in pulsed:
-                lines.append(f"    {_escaped(clock)}= 1;")
+                lines.append(f"    {refs[clock]}= 1;")
             lines.append("    #3;")
             for clock in pulsed:
-                lines.append(f"    {_escaped(clock)}= 0;")
+                lines.append(f"    {refs[clock]}= 0;")
             lines.append("    #2;")
         else:
             lines.append("    #5;")
