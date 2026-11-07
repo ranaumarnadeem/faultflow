@@ -200,21 +200,19 @@ def test_a_pattern_keeps_its_preamble_through_the_file() -> None:
     assert scan_pattern_from_dict(data) == settled
 
 
-@pytest.fixture(scope="module")
-def scanned(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Any]:
+def _scan_flow(work: Path, design: dict[str, Any], hold: str) -> tuple[Path, Any]:
     """init -> scan -> scan-check -> sim --scan, the synchronizer non-scan."""
     from faultflow.cli import main
     from faultflow.runner.runner import _load_core
 
     if shutil.which("yosys") is None or _load_core() is None:
         pytest.skip("needs Yosys on PATH and the C++ core")
-    work = tmp_path_factory.mktemp("settled")
     netlist = work / "chip.json"
-    netlist.write_text(json.dumps(_chip()), encoding="utf-8")
+    netlist.write_text(json.dumps(design), encoding="utf-8")
     ofs = work / "chip.ofs"
     ofs.write_text(
         f"[design]\nnetlist = {netlist}\ncell_lib = {CELL_MAP_PATH}\n\n"
-        "[scan]\nchains = 1\nnonscan_cells = u_rst_sync__*\nhold = rst_n:1\n",
+        f"[scan]\nchains = 1\nnonscan_cells = u_rst_sync__*\nhold = {hold}\n",
         encoding="utf-8",
     )
     with pytest.MonkeyPatch.context() as patch:
@@ -227,6 +225,43 @@ def scanned(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Any]:
         ):
             assert main([*step, "--top", TOP, "-c", str(ofs)]) == 0, step
         return work, load_config(ofs, TOP)
+
+
+@pytest.fixture(scope="module")
+def scanned(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Any]:
+    return _scan_flow(tmp_path_factory.mktemp("settled"), _chip(), "rst_n:1")
+
+
+@pytest.mark.integration
+def test_a_held_input_stays_graded_when_the_settled_flop_it_feeds_is_excluded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """s0's D is an AND of two held inputs and has no other reader, so its stem is
+    s0's own site, a reset fault. h0 SA0 and h1 SA0 must not collapse into that
+    excluded fault (with collapsing, the default): they stay in the denominator as
+    they do without collapsing."""
+    design = _chip(
+        u_rst_sync__s0=_cell(DFRTP, CLK=2, D=18, RESET_B=3, Q=10),
+        g_s=_cell("sky130_fd_sc_hd__and2_1", A=16, B=17, X=18),
+    )
+    ports = design["modules"][TOP]["ports"]
+    ports["h0"] = {"direction": "input", "bits": [16]}
+    ports["h1"] = {"direction": "input", "bits": [17]}
+    _, cfg = _scan_flow(tmp_path, design, "rst_n:1, h0:1, h1:1")
+
+    monkeypatch.chdir(tmp_path)
+    with sqlite3.connect(cfg.db_path) as conn:
+        rows = {
+            (str(key), str(kind).lower()): (str(status), str(excl), int(held))
+            for key, kind, status, excl, held in conn.execute(
+                "SELECT fault_site_key, fault_type, status, exclusion, "
+                "hold_unresolved FROM faults"
+            ).fetchall()
+        }
+    for kind in ("sa0", "sa1"):
+        assert rows[("net:18:stem", kind)] == ("excluded", "reset", 0)
+        for net in (16, 17):
+            assert rows[(f"net:{net}:stem", kind)] == ("undetected", "none", 1)
 
 
 @pytest.mark.integration

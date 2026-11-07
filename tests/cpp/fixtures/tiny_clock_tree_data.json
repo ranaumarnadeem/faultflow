@@ -1,0 +1,197 @@
+{
+  "creator": "Yosys 0.61+129 (faultflow fixture generator)",
+  "modules": {
+    "tiny_clock_tree_data": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "stall": {"direction": "input", "bits": [2]},
+        "b": {"direction": "input", "bits": [3]},
+        "y": {"direction": "output", "bits": [5]},
+        "ck": {"direction": "input", "bits": [6]},
+        "status": {"direction": "output", "bits": [11]},
+        "ck3": {"direction": "input", "bits": [12]},
+        "q3": {"direction": "output", "bits": [15]},
+        "ck4": {"direction": "input", "bits": [16]},
+        "q4": {"direction": "output", "bits": [20]},
+        "q5": {"direction": "output", "bits": [21]},
+        "e": {"direction": "input", "bits": [22]},
+        "o6": {"direction": "output", "bits": [23]},
+        "q6": {"direction": "output", "bits": [25]}
+      },
+      "cells": {
+        "u_n": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__inv_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "Y": "output"},
+          "connections": {"A": [2], "Y": [4]}
+        },
+        "u_g": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__and2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "X": "output"},
+          "connections": {"A": [4], "B": [3], "X": [5]}
+        },
+        "u_div": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+          "connections": {"CLK": [6], "D": [8], "Q": [7]}
+        },
+        "u_t": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__inv_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "Y": "output"},
+          "connections": {"A": [7], "Y": [8]}
+        },
+        "u_cb": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__clkbuf_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "X": "output"},
+          "connections": {"A": [7], "X": [9]}
+        },
+        "u_ff2": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+          "connections": {"CLK": [9], "D": [3], "Q": [10]}
+        },
+        "u_st": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__xor2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "X": "output"},
+          "connections": {"A": [7], "B": [10], "X": [11]}
+        },
+        "u_b3": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__clkbuf_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "X": "output"},
+          "connections": {"A": [12], "X": [13]}
+        },
+        "u_b4": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__clkbuf_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "X": "output"},
+          "connections": {"A": [13], "X": [14]}
+        },
+        "u_ff3": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+          "connections": {"CLK": [14], "D": [3], "Q": [15]}
+        },
+        "u_b5": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__clkbuf_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "X": "output"},
+          "connections": {"A": [16], "X": [17]}
+        },
+        "u_i5": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__clkinv_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "Y": "output"},
+          "connections": {"A": [16], "Y": [18]}
+        },
+        "u_b6": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__clkbuf_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "X": "output"},
+          "connections": {"A": [18], "X": [19]}
+        },
+        "u_ff4": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+          "connections": {"CLK": [17], "D": [3], "Q": [20]}
+        },
+        "u_ff5": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+          "connections": {"CLK": [19], "D": [3], "Q": [21]}
+        },
+        "u_a": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__and2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "B": "input", "X": "output"},
+          "connections": {"A": [3], "B": [22], "X": [23]}
+        },
+        "u_b7": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__clkbuf_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"A": "input", "X": "output"},
+          "connections": {"A": [23], "X": [24]}
+        },
+        "u_ff6": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+          "connections": {"CLK": [24], "D": [3], "Q": [25]}
+        }
+      },
+      "netnames": {
+        "stall": {"hide_name": 0, "bits": [2], "attributes": {}},
+        "b": {"hide_name": 0, "bits": [3], "attributes": {}},
+        "clk_en": {"hide_name": 0, "bits": [4], "attributes": {}},
+        "y": {"hide_name": 0, "bits": [5], "attributes": {}},
+        "ck": {"hide_name": 0, "bits": [6], "attributes": {}},
+        "div_q": {"hide_name": 0, "bits": [7], "attributes": {}},
+        "div_d": {"hide_name": 0, "bits": [8], "attributes": {}},
+        "div_ck": {"hide_name": 0, "bits": [9], "attributes": {}},
+        "q2": {"hide_name": 0, "bits": [10], "attributes": {}},
+        "status": {"hide_name": 0, "bits": [11], "attributes": {}},
+        "ck3": {"hide_name": 0, "bits": [12], "attributes": {}},
+        "my_clk": {"hide_name": 0, "bits": [13], "attributes": {}},
+        "n14": {"hide_name": 0, "bits": [14], "attributes": {}},
+        "q3": {"hide_name": 0, "bits": [15], "attributes": {}},
+        "ck4": {"hide_name": 0, "bits": [16], "attributes": {}},
+        "n17": {"hide_name": 0, "bits": [17], "attributes": {}},
+        "n18": {"hide_name": 0, "bits": [18], "attributes": {}},
+        "n19": {"hide_name": 0, "bits": [19], "attributes": {}},
+        "q4": {"hide_name": 0, "bits": [20], "attributes": {}},
+        "q5": {"hide_name": 0, "bits": [21], "attributes": {}},
+        "e": {"hide_name": 0, "bits": [22], "attributes": {}},
+        "o6": {"hide_name": 0, "bits": [23], "attributes": {}},
+        "n24": {"hide_name": 0, "bits": [24], "attributes": {}},
+        "q6": {"hide_name": 0, "bits": [25], "attributes": {}}
+      }
+    }
+  }
+}

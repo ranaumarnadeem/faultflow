@@ -42,13 +42,15 @@
       "items": {"type": "string"}
     },
     "clock_paths": {
-      "description": "Each clock port's paths to its scan flops' clock pins (faultflow.scan.clock_gates.clock_path): the nets on them, clock nets every one, and the held inputs ([scan] hold) that keep a mux or a gate on them passing the clock on. scan-check traces them again.",
+      "description": "Each clock port's paths to its scan flops' clock pins (faultflow.scan.clock_gates.clock_path): the nets on them, clock nets every one, the held inputs ([scan] hold) that keep a mux or a gate on them passing the clock on, and the nets among them a cell with other inputs drives. scan-check traces them again.",
       "type": "object",
       "additionalProperties": {
         "type": "object",
-        "required": ["nets", "holds"],
+        "required": ["nets", "holds", "cell_outputs", "cells"],
         "properties": {
           "nets": {"type": "array", "items": {"type": "integer"}},
+          "cell_outputs": {"type": "array", "items": {"type": "integer"}},
+          "cells": {"type": "array", "items": {"type": "string"}},
           "holds": {
             "type": "array",
             "items": {

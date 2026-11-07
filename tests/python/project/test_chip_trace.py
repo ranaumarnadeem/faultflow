@@ -10,6 +10,7 @@ import pytest
 
 from faultflow.project.chip import chip_manifest, trace_chains
 from faultflow.project.manifest import ProjectError
+from faultflow.scan.clock_gates import clock_path_problems
 
 ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = json.loads(
@@ -92,6 +93,64 @@ def test_the_manifest_is_scans_shape(tmp_path: Path) -> None:
         1,
         "$scanff_faultflow",
     )
+
+
+def test_the_manifest_records_each_flops_root_clock_and_the_path_to_it(
+    tmp_path: Path,
+) -> None:
+    """u_a__r0 on a glue clock buffer, u_b__r0 behind a clock gate after it, u_a__w0
+    on the port itself; a constant on u_b__r0's D."""
+    module = _chip()
+    cells = module["cells"]
+    cells["g_ck"] = _buf(2, 40)
+    cells["g_cg"] = {
+        "type": "sky130_fd_sc_hd__sdlclkp_1",
+        "port_directions": {
+            "CLK": "input",
+            "GATE": "input",
+            "SCE": "input",
+            "GCLK": "output",
+        },
+        "connections": {"CLK": [40], "GATE": [20], "SCE": [3], "GCLK": [41]},
+    }
+    cells["u_a__r0"]["connections"]["CLK"] = [40]
+    cells["u_b__r0"]["connections"]["CLK"] = [41]
+    cells["u_b__r0"]["connections"]["D"] = ["1"]
+    path = tmp_path / "chip.json"
+    path.write_text(json.dumps({"modules": {"soc": module}}), encoding="utf-8")
+    manifest = chip_manifest(module, "soc", CELL_MAP, path)
+
+    assert manifest["clock_nets"] == [2]
+    assert manifest["clock_ports"] == ["clk"]
+    first, second, wrapper = manifest["cells"]
+    assert (first["clock_net"], first["pin_clock_net"]) == (2, 40)
+    assert "clock_gates" not in first
+    assert (second["clock_net"], second["pin_clock_net"]) == (2, 41)
+    assert second["clock_gates"] == ["g_cg"]
+    assert isinstance(second["data_net"], int)
+    assert wrapper["clock_net"] == 2 and "pin_clock_net" not in wrapper
+    clock = manifest["clock_paths"]["clk"]
+    assert clock["nets"] == [2, 40, 41]
+    assert clock["cells"] == ["g_cg", "g_ck"]
+    assert manifest["clock_gates"]["g_cg"]["test_pin"] == "SCE"
+    # What scan-check re-traces agrees.
+    assert clock_path_problems(module, manifest, CELL_MAP, {}) == []
+
+
+def test_a_scan_flops_clock_no_chip_input_pulses_as_is_is_refused(
+    tmp_path: Path,
+) -> None:
+    inverted = _chip()
+    inverted["cells"]["g_ck"] = {
+        "type": "sky130_fd_sc_hd__inv_1",
+        "port_directions": {"A": "input", "Y": "output"},
+        "connections": {"A": [2], "Y": [40]},
+    }
+    inverted["cells"]["u_a__r0"]["connections"]["CLK"] = [40]
+    path = tmp_path / "chip.json"
+    path.write_text(json.dumps({"modules": {"soc": inverted}}), encoding="utf-8")
+    with pytest.raises(ProjectError, match="u_a__r0"):
+        chip_manifest(inverted, "soc", CELL_MAP, path)
 
 
 def test_a_mixed_chain_or_a_stray_scan_cell_is_refused() -> None:

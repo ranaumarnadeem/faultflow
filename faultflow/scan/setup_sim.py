@@ -366,23 +366,27 @@ class SetupSimulator:
         read: Callable[[Pin, str, Mapping[int, Value]], Value],
     ) -> Value:
         """The flop's next state: golden_ref_sim.cpp's update_ff_states over every
-        value of its unknowns. Before the first step the core has every net at 0
-        (run_sequence); a chip has them unknown, and so does this."""
+        value of its unknowns. An edge latches what settled in the step before (D,
+        the scan mux, the enable); clear and preset, and scan enable gating them off,
+        act on the step's own values. Before the first step the core has every net at
+        0 (run_sequence); a chip has them unknown, and so does this."""
         here = flop.instance
+        sampled = values if prev is None else prev
         operands: list[Value] = [
             None if prev is None else read(flop.clock, here, prev),
             read(flop.clock, here, values),
-            read(flop.data, here, values),
+            read(flop.data, here, sampled),
             state[here],
             read(flop.clear.pin, here, values) if flop.clear else 0,
             read(flop.preset.pin, here, values) if flop.preset else 0,
-            read(flop.enable[0], here, values) if flop.enable else 0,
-            read(flop.scan[0], here, values) if flop.scan else 0,
+            read(flop.enable[0], here, sampled) if flop.enable else 0,
+            read(flop.scan[0], here, sampled) if flop.scan else 0,
             read(flop.scan[1], here, values) if flop.scan else 0,
+            read(flop.scan[1], here, sampled) if flop.scan else 0,
         ]
 
         def update(bits: tuple[int, ...]) -> int:
-            old, clock, data, q, clear, preset, enable, scan_in, scan_en = bits
+            old, clock, data, q, clear, preset, enable, scan_in, scan_en, select = bits
             scanning = flop.scan is not None and scan_en == flop.scan[2]
             cleared = (
                 not scanning and flop.clear is not None and clear == flop.clear.active
@@ -401,7 +405,7 @@ class SetupSimulator:
             edge = (old, clock) == ((1, 0) if flop.negedge else (0, 1))
             if not edge:
                 return q
-            if scanning:
+            if flop.scan is not None and select == flop.scan[2]:
                 return scan_in
             if flop.enable is not None and enable != flop.enable[1]:
                 return q

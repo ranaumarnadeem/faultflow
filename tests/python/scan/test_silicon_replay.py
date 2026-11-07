@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from faultflow.config import load_config
-from scan_replay import replay_on_cells
+from scan_replay import parser_verdict, replay_on_cells
 
 ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP_PATH = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
@@ -123,6 +123,16 @@ def _bus_out() -> dict[str, Any]:
     return chip
 
 
+def _one_data_input() -> dict[str, Any]:
+    """_ring with d0 in place of d1: with the clock and the scan pins taken, one data
+    input is left."""
+    chip = _ring()
+    module = chip["modules"][TOP]
+    module["cells"]["g_a"] = _gate("and2", 15, 4, 16)
+    del module["ports"]["d1"]
+    return chip
+
+
 @pytest.fixture
 def flow_tools() -> None:
     from faultflow.runner.runner import _load_core
@@ -208,6 +218,21 @@ def test_two_clock_domains_patterns_unload_on_real_cells(
         _two_domains(),
         "[clocks]\nports = clk_a, clk_b\n\n[scan]\nchains = 2\n",
     )
+
+
+@pytest.mark.integration
+def test_the_stil_of_a_chip_with_one_data_input_is_checked_too(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """load_unload takes the input's value with a one-character `"_pi" = #`, valid
+    STIL that Semi-ATE-STIL 0.3.2 crashes on (scan_replay.parser_verdict). It is
+    parsed all the same, and what is wrong in such a file is still refused."""
+    _replay(tmp_path, _one_data_input(), "[scan]\nchains = 1\n")
+    text = (tmp_path / "replay/alone/patterns.stil").read_text(encoding="utf-8")
+    assert '"_pi" = #;' in text
+    wrong = tmp_path / "wrong.stil"
+    wrong.write_text(text.replace('"_pi" = #;', '"_nope" = #;'), encoding="utf-8")
+    assert parser_verdict(wrong)
 
 
 @pytest.mark.integration

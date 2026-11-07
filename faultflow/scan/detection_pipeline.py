@@ -865,11 +865,10 @@ def _build_hold_twin(
     blackbox_instances: list[str],
     execution_map: dict[str, int],
 ) -> _Twin | None:
-    """None unless the view models non-scan cells. Blackboxes stay opaque in the
-    hold twin, so what their unknown outputs reach stays unobserved: the mask is
-    recomputed for them alone, the non-scan flops no longer being unknown."""
-    if scan_ctx.nonscan is None:
-        return None
+    """None unless the view models non-scan cells or reads a clock cell. Blackboxes
+    stay opaque in the hold twin, so what their unknown outputs reach stays
+    unobserved: the mask is recomputed for them alone, the non-scan flops no longer
+    being unknown."""
     reduced = Path(reduced_json_path)
     view = json.loads(reduced.read_text(encoding="utf-8"))
     top = str(scan_ctx.manifest["top"])
@@ -925,8 +924,7 @@ def _build_blackbox_twin(
     reduced = Path(reduced_json_path)
     view = json.loads(reduced.read_text(encoding="utf-8"))
     top = str(scan_ctx.manifest["top"])
-    if scan_ctx.nonscan is not None:
-        make_nonscan_free(view, top)
+    make_nonscan_free(view, top)
     if not make_blackbox_transparent(view, top):
         return None
     return _mapped_twin(
@@ -1881,17 +1879,6 @@ def run_progressive_scan_atpg(
             len(scan_ctx.x_mask.outputs),
         )
 
-    core.ensure_faults_enumerated(
-        str(scan_ctx.generic_json),
-        generic_cell_map,
-        effective_db_path,
-        campaign_id,
-        cfg.fault_model.include_clock_faults,
-        cfg.fault_model.include_reset_faults,
-        cfg.fault_model.collapsing,
-        unsupported,
-        bb,
-    )
     execution_map, exclusions = build_scan_execution_map(
         core,
         scan_ctx.generic_json,
@@ -2013,6 +2000,23 @@ def run_progressive_scan_atpg(
             scan_ctx.wrapper_scope,
             module=graded_module,
         )
+    # Clock paths and settled flops have no test at all, so no other fault may
+    # collapse into theirs and go ungraded with them: the collapser must know them.
+    # A fault left to another test (JTAG, a WSP, the other wrapper mode) can stand
+    # for those collapsed into it, which that test grades through it.
+    core.ensure_faults_enumerated(
+        str(scan_ctx.generic_json),
+        generic_cell_map,
+        effective_db_path,
+        campaign_id,
+        cfg.fault_model.include_clock_faults,
+        cfg.fault_model.include_reset_faults,
+        cfg.fault_model.collapsing,
+        unsupported,
+        bb,
+        clock_sites={key for key, kind in exclusions.items() if kind == "clock"},
+        reset_sites=reset_keys,
+    )
     release = frozenset() if transition else scan_ctx.x_mask.release_faults
     with connect(effective_db_path) as conn:
         init_schema(conn)

@@ -335,7 +335,9 @@ What the STIL holds:
   compared. It is called first, or before each pattern with `--no-overlap`.
 
 These are exactly the cycles the test suite replays on the chip's sky130 cell models,
-and an independent STIL parser, Semi-ATE-STIL, reads every file it writes.
+and an independent STIL parser, Semi-ATE-STIL, reads every file it writes. Version
+0.3.2 of that parser crashes on a chip with one data input, at `"_pi" = #`; the tests
+read such a file past that one crash.
 
 ## `write-cnf`
 

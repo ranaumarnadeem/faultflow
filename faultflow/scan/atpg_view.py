@@ -10,7 +10,13 @@ from faultflow.coverage.site_key import (
     stem_site_key,
 )
 from faultflow.scan.errors import ScanError
-from faultflow.scan.manifest import manifest_clock_ports
+from faultflow.scan.manifest import (
+    clock_cell_outputs,
+    clock_path_cells,
+    clock_path_nets,
+    manifest_clock_net_ids,
+    manifest_clock_ports,
+)
 from faultflow.scan.stitch import (
     CONST_NETS,
     SCAN_CELL_TYPES,
@@ -45,7 +51,7 @@ DATA_PIN = "D"
 #   set   variant ($scanff_s): SET_B,   captured value 1 when active.
 SCAN_RESET_TYPES = frozenset({"$scanff_r_faultflow", "\\$scanff_r_faultflow"})
 SCAN_SET_TYPES = frozenset({"$scanff_s_faultflow", "\\$scanff_s_faultflow"})
-ATPG_VIEW_SCHEMA_VER = "scan-atpg-view-observe-buf-2"
+ATPG_VIEW_SCHEMA_VER = "scan-atpg-view-observe-buf-3"
 # In an opaque view (_model_blackboxes_opaque) a tie cell named with the first
 # prefix drives each blackbox output, and a dangling reader named with the
 # second reads each net a blackbox input read. The view's blackbox-transparent
@@ -67,6 +73,8 @@ NONSCAN_TIE_PREFIX = "$nstie"
 NONSCAN_X_PREFIX = "$nsx_"
 NONSCAN_SINK_PREFIX = "$nssink_"
 HOLD_TIE_PREFIX = "$nshold_"
+# A clock gate's test enable, tied off in the view (_mark_clock_gates).
+GATE_TEST_TIE_PREFIX = "$icgtest_tie_"
 NONSCAN_INSTANCE_ATTR = "faultflow_nonscan"
 NONSCAN_X_ATTR = "faultflow_nonscan_x"
 # The view's hold twin (make_nonscan_free) feeds each of those ties from an input
@@ -559,6 +567,7 @@ def _mark_clock_gates(module: dict[str, Any], manifest: dict[str, Any]) -> None:
             outputs.update(
                 _all_int_bits(cell.get("connections", {}).get(pins["output_pin"]))
             )
+    next_id = _next_net_id(module)
     for name, pins in gates.items():
         cell = cells.get(name)
         if not isinstance(cell, dict):
@@ -578,8 +587,27 @@ def _mark_clock_gates(module: dict[str, Any], manifest: dict[str, Any]) -> None:
         test = pins.get("test_pin")
         if test and set(_all_int_bits(conns.get(test))) & scan_enable_bits:
             # The scan enable is 0 in every capture (and no input of the view):
-            # the gate is open on its enable alone.
-            conns[test] = ["0"]
+            # the gate is open on its enable alone. A tie of its own: the design's
+            # constant-0 net is a fault site, and the real gate doesn't read it.
+            cells[f"{GATE_TEST_TIE_PREFIX}{name}"] = _tie(0, next_id, {})
+            conns[test] = [next_id]
+            next_id += 1
+
+
+def _read_clock_cells(module: dict[str, Any], manifest: dict[str, Any]) -> None:
+    """Give each cell a clock path passes through with its other inputs fixed (a mux
+    a hold steers, an AND a hold keeps open) a dangling reader of its output, as
+    _model_nonscan does a non-scan flop's pins. The flops that read a clock path are
+    gone from the view, so a fault only the path reads is UNSAT here though it
+    changes the scan clock, or would once the hold lifts. The hold twin observes the
+    reader (make_nonscan_free), and such a fault, testable there, isn't redundant."""
+    cells = module.get("cells", {})
+    next_id = _next_net_id(module)
+    for net in sorted(clock_cell_outputs(manifest)):
+        _add_internal_buf_cell(
+            cells, f"{NONSCAN_SINK_PREFIX}clock_{net}", OBSERVE_BUF_CELL, net, next_id
+        )
+        next_id += 1
 
 
 def _resolve_d_observe_boundary(
@@ -782,6 +810,48 @@ def _model_nonscan(module: dict[str, Any], nonscan: NonscanSetup) -> None:
         cells[f"{HOLD_TIE_PREFIX}{port}"] = _tie(value, entry["bits"][0], {})
 
 
+def _clock_read_as_data(module: dict[str, Any], manifest: dict[str, Any]) -> bool:
+    """Whether an output port or a cell off the clock paths reads a net on one. The
+    view's own cells don't count: they read a gate's output as its enable."""
+    clocks = clock_path_nets(manifest) | set(manifest_clock_net_ids(manifest))
+    for port in module.get("ports", {}).values():
+        if port.get("direction") == "output" and clocks & set(port.get("bits", [])):
+            return True
+    on_path = clock_path_cells(manifest)
+    for name, cell in module.get("cells", {}).items():
+        if name in on_path or cell.get("attributes", {}).get("faultflow_internal"):
+            continue
+        for bits in cell.get("connections", {}).values():
+            if clocks & set(_all_int_bits(bits)):
+                return True
+    return False
+
+
+def _tie_clocks_read_as_data(module: dict[str, Any], manifest: dict[str, Any]) -> None:
+    """A scan clock is 0 whenever logic settles for a capture or an output is
+    strobed: it pulses after the strobe. Left an input of the view, ATPG would find
+    patterns with it at 1 that no scan test can apply, so when something reads one
+    as data its port goes and a tie drives its net, as a held input's does. The hold
+    twin frees that tie: a fault only a clock at 1 could test isn't redundant. A bus
+    with a clock bit stays as the patterns name its bits: one port each."""
+    if not _clock_read_as_data(module, manifest):
+        return
+    clocks = set(manifest_clock_net_ids(manifest))
+    ports = module.get("ports", {})
+    cells = module.get("cells", {})
+    for name, port in list(ports.items()):
+        bits = port.get("bits", [])
+        if port.get("direction") != "input" or not clocks & set(bits):
+            continue
+        ports.pop(name)
+        for index, bit in enumerate(bits):
+            bit_name = name if len(bits) == 1 else f"{name}[{index}]"
+            if bit in clocks:
+                cells[f"{HOLD_TIE_PREFIX}{bit_name}"] = _tie(0, bit, {})
+            else:
+                ports[bit_name] = {"direction": "input", "bits": [bit]}
+
+
 def _branch_flop_outputs(
     module: dict[str, Any], pseudo_port_map: dict[str, dict[str, Any]]
 ) -> None:
@@ -881,16 +951,16 @@ def make_nonscan_free(view: dict[str, Any], top: str) -> bool:
     """Turn a scan ATPG view that models non-scan cells (_model_nonscan) into its
     hold twin, in place: every non-scan tie -- a forced flop's output, an X
     source's, a held input's -- becomes a buffer fed by its own new input port, so
-    SAT may give it any value, and every non-scan flop pin's reader drives a new
-    output port, so SAT may observe it. An X source's tie stops being one; what
-    else is unknown, the caller masks. Returns False, leaving the view untouched,
-    if the view models no non-scan cell.
+    SAT may give it any value, and every non-scan flop pin's reader, and clock
+    cell's (_read_clock_cells), drives a new output port, so SAT may observe it. An
+    X source's tie stops being one; what else is unknown, the caller masks. Returns
+    False, leaving the view untouched, if the view has neither.
 
     Only ties and ports change, so every fault site keeps its site key. A fault
     UNSAT in the view but SAT in its hold twin has a test only if the held inputs,
-    and the non-scan flops they keep in reset, were free: it is untestable because
-    of [scan] hold (Tessent's AU.PC), not redundant. Like the blackbox twin, it
-    serves that classification alone.
+    and the non-scan flops they keep in reset, were free, or the clock paths read:
+    it is untestable because of [scan] hold (Tessent's AU.PC), not redundant. Like
+    the blackbox twin, it serves that classification alone.
     """
     _, module = _top_module(view, top)
     cells = module.get("cells", {})
@@ -1166,10 +1236,12 @@ def build_scan_atpg_view(
         }
 
     _mark_clock_gates(module, manifest)
+    _read_clock_cells(module, manifest)
     _drop_dangling_scan_ports(module, manifest)
     _model_blackboxes_opaque(module, blackbox_instances)
     if nonscan is not None:
         _model_nonscan(module, nonscan)
+    _tie_clocks_read_as_data(module, manifest)
     _branch_flop_outputs(module, pseudo_port_map)
 
     attrs = module.setdefault("attributes", {})

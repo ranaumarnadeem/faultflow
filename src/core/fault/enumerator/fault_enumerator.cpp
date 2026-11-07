@@ -6,12 +6,14 @@ std::vector<CompactFault> enumerate_faults(const NormalizedGraph& ng,
                                            const CompiledSimGraph& cg,
                                            EnumeratorOptions opt) {
   std::vector<CompactFault> faults;
+  const bool by_site = !opt.clock_sites.empty() || !opt.reset_sites.empty();
   for (uint32_t cidx = 0; cidx < static_cast<uint32_t>(cg.net_count); ++cidx) {
     const int yid = cg.compiled_to_yosys[cidx];
     const NormNet* net = nullptr;
     if (ng.nets.count(yid)) {
       net = &ng.nets.at(yid);
     }
+    const std::string site = by_site ? canonical_site_key(cg, cidx) : std::string();
 
     for (int t = 0; t < 2; ++t) {
       CompactFault f;
@@ -28,6 +30,12 @@ std::vector<CompactFault> enumerate_faults(const NormalizedGraph& ng,
         } else if (net->is_blackboxed) {
           f.exclusion = FaultExclusion::BLACKBOX;
         }
+      }
+      if (opt.clock_sites.count(site) != 0) {
+        f.exclusion = FaultExclusion::CLOCK;
+      } else if (f.exclusion == FaultExclusion::NONE &&
+                 opt.reset_sites.count(site) != 0) {
+        f.exclusion = FaultExclusion::RESET;
       }
       faults.push_back(f);
     }

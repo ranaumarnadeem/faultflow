@@ -135,6 +135,94 @@ def test_clock_as_data_flagged(tmp_path: Path) -> None:
     assert not report.passed(strict=True)
 
 
+XOR2 = "sky130_fd_sc_hd__xor2_1"
+MUX2 = "sky130_fd_sc_hd__mux2_1"
+ICG = "sky130_fd_sc_hd__dlclkp_1"
+
+
+# Each cell reads CLK (net 2) as data, u_ff1 clocked by it directly.
+@pytest.mark.parametrize(
+    "reader,pin",
+    [
+        # A gate making another flop's clock from CLK and an enable.
+        (_cell(AND2, {"A": [2], "B": [3], "X": [5]}), "A"),
+        (_cell(XOR2, {"A": [2], "B": [3], "X": [5]}), "A"),
+        # A clock mux nothing holds.
+        (_cell(MUX2, {"A0": [2], "A1": [3], "S": [4], "X": [5]}), "A0"),
+        # A flop sampling CLK, its output a divided clock.
+        (_cell(DFF, {"CLK": [3], "D": [2], "Q": [5]}), "D"),
+    ],
+    ids=["and", "xor", "unheld_mux", "flop_d"],
+)
+def test_clock_read_by_the_cell_making_another_clock_is_flagged(
+    tmp_path: Path, reader: dict[str, object], pin: str
+) -> None:
+    design = _module(
+        "made",
+        {
+            "CLK": _port("input", 2),
+            "EN": _port("input", 3),
+            "SEL": _port("input", 4),
+            "D": _port("input", 6),
+            "Q1": _port("output", 7),
+            "Q2": _port("output", 8),
+        },
+        {
+            "u_ff1": _cell(DFF, {"CLK": [2], "D": [6], "Q": [7]}),
+            "u_reader": reader,
+            "u_ff2": _cell(DFF, {"CLK": [5], "D": [6], "Q": [8]}),
+        },
+    )
+    report = run_rule_check(_write(tmp_path, "made", design), CELL_MAP, "made")
+    found = [v.message for v in report.violations if v.rule_id == "CLK002"]
+    assert any(f"u_reader.{pin}" in message for message in found), found
+
+
+def test_clock_on_a_gates_enable_is_flagged(tmp_path: Path) -> None:
+    # u_cg passes CLK1 on, as it should, but reads CLK2 as its enable.
+    design = _module(
+        "icg",
+        {
+            "CLK1": _port("input", 2),
+            "CLK2": _port("input", 3),
+            "D": _port("input", 4),
+            "Q1": _port("output", 6),
+            "Q2": _port("output", 7),
+        },
+        {
+            "u_cg": _cell(ICG, {"CLK": [2], "GATE": [3], "GCLK": [5]}),
+            "u_ff1": _cell(DFF, {"CLK": [5], "D": [4], "Q": [6]}),
+            "u_ff2": _cell(DFF, {"CLK": [3], "D": [4], "Q": [7]}),
+        },
+    )
+    report = run_rule_check(_write(tmp_path, "icg", design), CELL_MAP, "icg")
+    found = [v.message for v in report.violations if v.rule_id == "CLK002"]
+    assert len(found) == 1 and "u_cg.GATE" in found[0], found
+    assert not report.passed(strict=True)
+
+
+def test_clock_passed_on_by_a_clock_gate_or_held_mux_is_not_data(
+    tmp_path: Path,
+) -> None:
+    design = _module(
+        "passed",
+        {
+            "CLK": _port("input", 2),
+            "EN": _port("input", 3),
+            "D": _port("input", 4),
+            "Q1": _port("output", 6),
+            "Q2": _port("output", 7),
+        },
+        {
+            "u_cg": _cell(ICG, {"CLK": [2], "GATE": [3], "GCLK": [5]}),
+            "u_ff1": _cell(DFF, {"CLK": [5], "D": [4], "Q": [6]}),
+            "u_ff2": _cell(DFF, {"CLK": [2], "D": [4], "Q": [7]}),
+        },
+    )
+    report = run_rule_check(_write(tmp_path, "passed", design), CELL_MAP, "passed")
+    assert "CLK002" not in _rule_ids(report)
+
+
 def test_multiple_clock_domains_flagged(tmp_path: Path) -> None:
     design = _module(
         "multiclk",

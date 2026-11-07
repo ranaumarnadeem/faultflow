@@ -11,7 +11,14 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from faultflow.pdk.roles import LIBRARY_KEY
-from faultflow.scan.clock_gates import ClockGate, ClockPath, clock_gates, clock_path
+from faultflow.scan.clock_gates import (
+    ClockGate,
+    ClockPath,
+    clock_gates,
+    clock_path,
+    path_cell_outputs,
+    path_cells,
+)
 from faultflow.scan.errors import ScanError
 
 SCAN_CELL_TYPE = "$scanff_faultflow"
@@ -165,19 +172,28 @@ class ScanStitchResult(ScanPlan):
 
 def _clock_paths(flops: Sequence["_EligibleFF"]) -> dict[str, dict[str, Any]]:
     """Each root clock port's paths to its scan flops' pins, merged: the nets on
-    them (clock nets, Policy 3) and the held inputs that keep them passing the
-    clock on ([scan] hold; scan-check re-traces them)."""
+    them (clock nets, Policy 3), the held inputs that keep them passing the clock
+    on ([scan] hold; scan-check re-traces them), the cells driving those nets (any
+    other reader reads the clock as data: atpg_view._tie_clocks_read_as_data), and the
+    nets among them a cell with other inputs drives (the scan view reads those:
+    atpg_view._read_clock_cells)."""
     nets: dict[str, set[int]] = {}
     holds: dict[str, set[tuple[str, int]]] = {}
+    outputs: dict[str, set[int]] = {}
+    cells: dict[str, set[str]] = {}
     for ff in flops:
         nets.setdefault(ff.clock_port, set()).update(ff.clock_path_nets)
         holds.setdefault(ff.clock_port, set()).update(ff.clock_holds)
+        outputs.setdefault(ff.clock_port, set()).update(ff.clock_cell_outputs)
+        cells.setdefault(ff.clock_port, set()).update(ff.clock_cells)
     return {
         port: {
             "nets": sorted(nets[port]),
             "holds": [
                 {"port": name, "value": value} for name, value in sorted(holds[port])
             ],
+            "cell_outputs": sorted(outputs[port]),
+            "cells": sorted(cells[port]),
         }
         for port in sorted(nets)
     }
@@ -223,6 +239,8 @@ class _EligibleFF:
     clock_port: str = ""
     clock_path_nets: tuple[int, ...] = ()
     clock_holds: tuple[tuple[str, int], ...] = ()
+    clock_cell_outputs: tuple[int, ...] = ()
+    clock_cells: tuple[str, ...] = ()
 
 
 def _truthy_attr(value: object) -> bool:
@@ -661,6 +679,8 @@ def _collect_ffs(
                     for net, _cell, _pin, value in found.holds
                     if net in netlist.input_net_names
                 ),
+                clock_cells=path_cells(found, netlist),
+                clock_cell_outputs=path_cell_outputs(found, gates, netlist),
                 data_net=data_net,
                 q_net=_one_bit(conns.get(q_pin), f"{instance}.{q_pin}"),
                 async_kind=async_kind,

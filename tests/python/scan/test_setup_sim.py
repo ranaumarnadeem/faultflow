@@ -193,22 +193,97 @@ def test_what_the_program_doesnt_set_is_unknown(
 
 
 @pytest.mark.unit
-def test_an_edge_into_the_test_is_seen() -> None:
+def test_an_edge_into_the_test_is_seen(tmp_path: Path, require_cpp_core: None) -> None:
     # The program ends with clk... clk is a scan clock and always ends off. A
     # level clock the program leaves high falls into the test when the test holds
-    # it low: a falling-edge flop on it takes its D.
+    # it low: a falling-edge flop on it takes the D the program's last step settled,
+    # whatever the test's first step does to it.
     design = _module(
         {"tck": 2, "d": 4, "rst_n": 6},
         {"q_out": 12},
         {"r": _cell(DFBBN, CLK_N=2, D=4, RESET_B=6, SET_B="1", Q=12)},
     )
-    program = _program(({"rst_n": 0}, False), ({"rst_n": 1, "tck": 1}, False))
+    program = _program(({"rst_n": 0}, False), ({"rst_n": 1, "tck": 1, "d": 1}, False))
     sim = SetupSimulator(Netlist(design["modules"][TOP], CELL_MAP), ("r",))
+    # tck stays high: r keeps its reset.
     assert sim.run(program, {}, {"rst_n": 1, "tck": 1})[0] == {"r": 0}
-    # tck falls into the test with d free: unknown.
-    assert sim.run(program, {}, {"rst_n": 1, "tck": 0})[0] == {"r": None}
-    # ... with d held at 1: 1.
-    assert sim.run(program, {}, {"rst_n": 1, "tck": 0, "d": 1})[0] == {"r": 1}
+    # tck falls into the test: r takes that 1, with d free or held at 0.
+    assert sim.run(program, {}, {"rst_n": 1, "tck": 0})[0] == {"r": 1}
+    assert sim.run(program, {}, {"rst_n": 1, "tck": 0, "d": 0})[0] == {"r": 1}
+    for initial in (False, True):
+        for free in (0, 1):
+            assert _core_values(
+                tmp_path,
+                design,
+                program,
+                {},
+                {"rst_n": 1, "tck": 0},
+                ["q_out"],
+                free,
+                initial,
+            ) == [True]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "cell,pins,before,at_edge,expected",
+    [
+        # d rises with the clock: the edge takes the d settled before it.
+        (DFXTP, {"D": 4}, {"d": 0}, {"d": 1}, 0),
+        # Scan enable rises with the clock: the edge still takes D, not SCD.
+        (
+            "sky130_fd_sc_hd__sdfxtp_1",
+            {"D": 4, "SCD": 5, "SCE": 3},
+            {"d": 1, "si": 0, "se": 0},
+            {"d": 1, "si": 0, "se": 1},
+            1,
+        ),
+        # Scan enable falls with the clock: the edge still takes SCD, not D.
+        (
+            "sky130_fd_sc_hd__sdfxtp_1",
+            {"D": 4, "SCD": 5, "SCE": 3},
+            {"d": 1, "si": 0, "se": 1},
+            {"d": 1, "si": 0, "se": 0},
+            0,
+        ),
+        # The enable rises with the clock: off before the edge, the flop holds
+        # what it powered up in.
+        (
+            "sky130_fd_sc_hd__edfxtp_1",
+            {"D": 4, "DE": 3},
+            {"d": 1, "en": 0},
+            {"d": 1, "en": 1},
+            None,
+        ),
+    ],
+    ids=["data", "scan_enable_rising", "scan_enable_falling", "enable"],
+)
+def test_a_level_clock_moving_with_its_inputs_latches_what_settled_before_the_edge(
+    tmp_path: Path,
+    require_cpp_core: None,
+    cell: str,
+    pins: dict[str, int],
+    before: dict[str, int],
+    at_edge: dict[str, int],
+    expected: int | None,
+) -> None:
+    design = _module(
+        {"tck": 2, "en": 3, "se": 3, "d": 4, "si": 5},
+        {"q_out": 12},
+        {"r": _cell(cell, CLK=2, Q=12, **pins)},
+    )
+    # en and se name net 3: only the one the cell reads is in a program.
+    design["modules"][TOP]["ports"].pop("en" if "se" in before else "se")
+    program = _program((before, False), ({**at_edge, "tck": 1}, False))
+    sim = SetupSimulator(Netlist(design["modules"][TOP], CELL_MAP), ("r",))
+    holds = {"tck": 0}
+    assert sim.run(program, {}, holds)[0] == {"r": expected}
+    # The core agrees, from either power-up value.
+    from_core = {
+        _core_values(tmp_path, design, program, {}, holds, ["q_out"], 0, initial)[0]
+        for initial in (False, True)
+    }
+    assert from_core == ({False, True} if expected is None else {bool(expected)})
 
 
 @pytest.mark.unit

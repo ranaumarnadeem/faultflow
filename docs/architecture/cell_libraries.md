@@ -222,7 +222,9 @@ drives, and that net must be an input port: the port the scan test pulses. A flo
 whose clock comes from logic instead (a divider, a clock mux nothing holds) stays
 out of scan (`clock_not_from_port`), and so does one the port reaches through an
 odd number of inverters (`inverted_clock`): it would capture on the pulse's
-trailing edge, as a negedge flop does. Flops behind any number of buffers from one
+trailing edge, as a negedge flop does. So does a flop behind a clock gate that runs
+on the inverted clock, an inverter on each side of it: the flop's edge is right, but
+the gate's latch holds over the pulse. Flops behind any number of buffers from one
 port are one clock domain and share its chains; each keeps its pin on its own
 buffer's net, and simulation treats the clocks as ideal (every flop of the domain
 takes the value its inputs held before the edge, however deep its buffer).
@@ -230,9 +232,18 @@ takes the value its inputs held before the edge, however deep its buffer).
 The manifest records each domain's port (`clock_ports`) and its paths
 (`clock_paths`): the nets on them and the holds that keep them open. Every net on
 a clock path is a clock net (Policy 3, `excluded_clock` unless
-`include_clock_faults`); the core also tags every net a clock net reads through
-buffers and inverters, in every flow. A held side input (the mux's select, the
-AND's enable) is not a clock, and its faults are graded. `scan-check` traces every
+`include_clock_faults`); the core also tags, in every flow, a net that only the
+buffers and inverters of a flop's or clock gate's clock tree read (one also read as
+data, or driving an output, stays data). A held side input (the mux's select, the
+AND's enable) is not a clock, and its faults are graded. The scan view has no flops
+to read a clock path, so a fault only the path reads, there or on a mux's unselected
+input, that could change the clock counts as `hold_unresolved` and stays in the
+denominator: not redundant, and not credited, even if it would stop the scan clock.
+A clock read as data, directly or through the path's cells, is 0 in every pattern:
+logic settles for a capture, and an output is strobed, with the clocks low. The view
+ties it there, as it does a held input, so a fault only a clock at 1 could test is
+`hold_unresolved` too. The rule checker's CLK002 warns of it.
+`scan-check` traces every
 scan flop's clock again with `[scan] hold` as it is and refuses one that no longer
 reaches its port, and the rule checker's CLK001 uses the same trace.
 

@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <map>
+#include <string>
 #include <vector>
 
 #include "fault/effect/fault_batch.hpp"
@@ -40,6 +42,45 @@ TEST_CASE("GoldenRefSim tiny_inv detection", "[golden_ref][tiny_fixtures]") {
   const auto ff1 = sim.simulate_fault_free(cg, v1);
   const auto faulty1b = sim.simulate_with_fault(cg, v1, sa1);
   REQUIRE(sim.is_detected(cg, ff1, faulty1b));
+}
+
+TEST_CASE("Two pins of a gate on one net are a fault site each",
+          "[golden_ref][tiny_fixtures]") {
+  // Y = NAND(X, X). A stuck-at on one pin leaves the other reading X.
+  const ParsedGraph pg = test::load_parsed("tiny_tied_gate_pins.json");
+  const CompiledSimGraph cg = test::load_compiled("tiny_tied_gate_pins.json");
+  const int x = pg.net_id_by_name("X");
+  std::map<std::string, uint32_t> branch_of_pin;
+  for (uint32_t cidx = 0; cidx < static_cast<uint32_t>(cg.net_count); ++cidx) {
+    if (cg.compiled_to_yosys[cidx] == x &&
+        cg.net_sites[cidx].kind == SiteKind::BRANCH) {
+      CHECK(cg.net_sites[cidx].consumer_instance == "g0");
+      branch_of_pin[cg.net_sites[cidx].input_pin] = cidx;
+    }
+  }
+  REQUIRE(branch_of_pin.size() == 2);
+  REQUIRE(branch_of_pin.count("A") == 1);
+  REQUIRE(branch_of_pin.count("B") == 1);
+
+  GoldenRefSim golden;
+  const auto detected = [&](uint32_t net, FaultType type, bool value) {
+    TestVector vec;
+    vec.inputs[x] = value;
+    CompactFault fault;
+    fault.net_index = net;
+    fault.type = type;
+    return golden.is_detected(cg, golden.simulate_fault_free(cg, vec),
+                              golden.simulate_with_fault(cg, vec, fault));
+  };
+  for (const auto& [pin, net] : branch_of_pin) {
+    INFO(pin);
+    // Stuck at 1: ~(1 & X) = ~X, the fault-free output on either value.
+    CHECK_FALSE(detected(net, FaultType::SA1, false));
+    CHECK_FALSE(detected(net, FaultType::SA1, true));
+    // Stuck at 0: the output is 1, which X = 1 tells from the fault-free 0.
+    CHECK(detected(net, FaultType::SA0, true));
+    CHECK_FALSE(detected(net, FaultType::SA0, false));
+  }
 }
 
 TEST_CASE("GoldenRefSim reads an observed stem's own value rather than its branch's",

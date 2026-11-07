@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -64,7 +65,9 @@ void ensure_faults_enumerated(
     const std::string& db_path, int64_t campaign_id, bool include_clock_faults,
     bool include_reset_faults, bool collapsing,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances = {});
+    const std::vector<std::string>& blackbox_instances = {},
+    const std::set<std::string>& clock_sites = {},
+    const std::set<std::string>& reset_sites = {});
 
 // Scan compression: PI name -> the decompressor seed bits whose XOR it loads
 // (SatSolveOptions::seeded_inputs, resolved by name; a name that is not a PI of

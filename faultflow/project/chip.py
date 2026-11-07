@@ -20,12 +20,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from faultflow.control_trace import Netlist, one_net, port_bits
 from faultflow.project.manifest import ProjectError
+from faultflow.scan.clock_gates import (
+    ClockGate,
+    ClockPath,
+    clock_gates,
+    clock_path,
+    path_cell_outputs,
+    path_cells,
+)
 from faultflow.scan.reports import hash_file
-from faultflow.scan.stitch import SCAN_CELL_TYPES
+from faultflow.scan.stitch import SCAN_CELL_TYPES, _data_net
 from faultflow.wrap.cell import ROLE_ATTR
 
 
@@ -166,6 +174,56 @@ def trace_chains(
     return chains
 
 
+def _gate_pins(paths: Iterable[ClockPath]) -> dict[str, dict[str, str]]:
+    """Each clock gate on `paths`, by instance, as stitching records it."""
+    found: dict[str, dict[str, str]] = {}
+    for path in paths:
+        for near, gate in enumerate(path.gates):
+            upstream = path.gates[near + 1 :]
+            found[gate.instance] = {
+                "clock_pin": gate.clock_pin,
+                "enable_pin": gate.enable_pin,
+                "test_pin": gate.test_pin,
+                "output_pin": gate.output_pin,
+                "edge": gate.edge,
+                "clocked_by": upstream[0].instance if upstream else "",
+            }
+    return found
+
+
+def _clock_paths(
+    paths: Iterable[ClockPath],
+    gates: Mapping[int, ClockGate],
+    netlist: Netlist,
+    inputs: Mapping[int, str],
+) -> dict[str, dict[str, Any]]:
+    """Each root clock port's paths to its scan flops' pins, merged, as stitching
+    records them."""
+    nets: dict[str, set[int]] = {}
+    holds: dict[str, set[tuple[str, int]]] = {}
+    outputs: dict[str, set[int]] = {}
+    cells: dict[str, set[str]] = {}
+    for path in paths:
+        port = inputs[path.root]
+        nets.setdefault(port, set()).update(path.nets)
+        holds.setdefault(port, set()).update(
+            (inputs[net], value) for net, _, _, value in path.holds if net in inputs
+        )
+        outputs.setdefault(port, set()).update(path_cell_outputs(path, gates, netlist))
+        cells.setdefault(port, set()).update(path_cells(path, netlist))
+    return {
+        port: {
+            "nets": sorted(nets[port]),
+            "holds": [
+                {"port": name, "value": value} for name, value in sorted(holds[port])
+            ],
+            "cell_outputs": sorted(outputs[port]),
+            "cells": sorted(cells[port]),
+        }
+        for port in sorted(nets)
+    }
+
+
 def chip_manifest(
     module: Mapping[str, Any],
     top: str,
@@ -174,12 +232,14 @@ def chip_manifest(
     *,
     original_types: Mapping[str, str] | None = None,
     known: Mapping[int, int] | None = None,
+    holds: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """The scan manifest of the composed chip `module` (written at `generic_json`),
     its chains traced (trace_chains): the shape ``ff.py scan`` writes. The one
     scan enable must reach every scan cell, through gates the `known` values make
-    pass it on (trace_chains). `original_types`: each scan cell's type before
-    scan, by its name in the chip."""
+    pass it on (trace_chains). Each scan cell's clock is traced to the chip input
+    pulsing it (clock_path), through what `holds` ([scan] hold) keeps passing it on.
+    `original_types`: each scan cell's type before scan, by its name in the chip."""
     chains = trace_chains(module, cell_map, known)
     if not chains:
         raise ProjectError("the chip has no scan chain")
@@ -198,27 +258,41 @@ def chip_manifest(
             "every scan cell's scan enable must be the one chip input; found "
             f"{sorted(map(str, enables))}"
         )
+    gates = clock_gates(module, cell_map)
+    paths: dict[Any, ClockPath] = {}  # by pin net: flops on one leaf share it
     records: list[dict[str, Any]] = []
     chain_rows: list[dict[str, Any]] = []
     for index, chain in enumerate(chains):
         rows = []
         for position, name in enumerate(chain.cells):
             conns = cells[name]["connections"]
-            rows.append(
-                {
-                    "instance": name,
-                    "original_type": (original_types or {}).get(
-                        name, str(cells[name].get("type", ""))
-                    ),
-                    "chain_index": index,
-                    "chain_position": position,
-                    "clock_net": one_net(conns.get("CLK")),
-                    "data_net": one_net(conns.get("D")),
-                    "scan_in_net": one_net(conns.get("SDI")),
-                    "scan_enable_net": one_net(conns.get("SE")),
-                    "q_net": one_net(conns.get("Q")),
-                }
-            )
+            pin = one_net(conns.get("CLK"))
+            if pin not in paths:
+                paths[pin] = clock_path(pin, gates, netlist, holds)
+            found = paths[pin]
+            if found.inverted or found.root not in inputs:
+                why = "inverted" if found.inverted else f"stops at net {found.root}"
+                raise ProjectError(
+                    f"scan cell {name}'s clock reaches no chip input as it is: {why}"
+                )
+            row = {
+                "instance": name,
+                "original_type": (original_types or {}).get(
+                    name, str(cells[name].get("type", ""))
+                ),
+                "chain_index": index,
+                "chain_position": position,
+                "clock_net": found.root,
+                "data_net": _data_net(conns.get("D")),
+                "scan_in_net": one_net(conns.get("SDI")),
+                "scan_enable_net": one_net(conns.get("SE")),
+                "q_net": one_net(conns.get("Q")),
+            }
+            if pin != found.root:
+                row["pin_clock_net"] = pin
+            if found.gates:
+                row["clock_gates"] = [gate.instance for gate in found.gates]
+            rows.append(row)
         records += rows
         chain_rows.append(
             {
@@ -232,6 +306,8 @@ def chip_manifest(
             }
         )
     lengths = [len(chain.cells) for chain in chains]
+    clock_nets = sorted({int(r["clock_net"]) for r in records})
+    gate_pins = _gate_pins(paths.values())
     return {
         "version": 2,
         "top": top,
@@ -243,7 +319,10 @@ def chip_manifest(
         "chain_order_policy": "traced from the chip's inputs, in port order",
         "chain_count": len(chains),
         "cell_count": len(records),
-        "clock_nets": sorted({int(r["clock_net"]) for r in records}),
+        "clock_nets": clock_nets,
+        "clock_ports": [inputs[net] for net in clock_nets],
+        "clock_paths": _clock_paths(paths.values(), gates, netlist, inputs),
+        **({"clock_gates": gate_pins} if gate_pins else {}),
         "scan_inputs": [chain.scan_in for chain in chains],
         "scan_outputs": [chain.scan_out for chain in chains],
         "scan_enable": enable_ports[0],

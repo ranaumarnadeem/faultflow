@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -302,11 +303,13 @@ void ensure_faults_enumerated_py(
     const std::string& db_path, int64_t campaign_id, bool include_clock_faults,
     bool include_reset_faults, bool collapsing,
     const std::string& unsupported_policy,
-    const std::vector<std::string>& blackbox_instances) {
+    const std::vector<std::string>& blackbox_instances,
+    const std::set<std::string>& clock_sites,
+    const std::set<std::string>& reset_sites) {
   atpg::ensure_faults_enumerated(json_path, cell_map_path, db_path, campaign_id,
                                  include_clock_faults, include_reset_faults,
                                  collapsing, unsupported_policy,
-                                 blackbox_instances);
+                                 blackbox_instances, clock_sites, reset_sites);
 }
 
 py::dict solve_fault_atpg(
@@ -1202,7 +1205,9 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("campaign_id"), py::arg("include_clock_faults") = false,
         py::arg("include_reset_faults") = false, py::arg("collapsing") = false,
         py::arg("unsupported_policy") = "fail",
-        py::arg("blackbox_instances") = std::vector<std::string>{});
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("clock_sites") = std::set<std::string>{},
+        py::arg("reset_sites") = std::set<std::string>{});
   m.def("solve_fault_atpg", &faultflow::solve_fault_atpg, py::arg("json_path"),
         py::arg("cell_map_path"), py::arg("db_path"), py::arg("fault_id"),
         py::arg("blocked_patterns"), py::arg("conflict_limit") = 100000,
