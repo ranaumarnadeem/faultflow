@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections import defaultdict
 from collections.abc import Collection
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from faultflow.jtag.verify import _stubs
 from faultflow.scan.stil import write_stil
@@ -247,6 +249,9 @@ def parser_verdict(path: Path) -> str:
         from Semi_ATE.STIL.parsers.STILParser import (  # type: ignore[import-untyped]
             STILParser,
         )
+        from Semi_ATE.STIL.parsers.WFCUtils import (  # type: ignore[import-untyped]
+            WFCUtils,
+        )
     except ImportError as error:
         raise RuntimeError(
             f"the STIL check needs Semi-ATE-STIL and lark ({error}): "
@@ -255,7 +260,17 @@ def parser_verdict(path: Path) -> str:
     parser = STILParser(str(path))
     parser.parse_syntax()
     if parser.err_msg == "":
-        parser.parse_semantic()  # always returns None: the verdict is err_msg
+        # Semi-ATE-STIL 0.3.2 crashes on a `#` for one signal (a one-signal "_pi") in
+        # a condition before a procedure's first vector: it looks the signal up among
+        # last waveform characters it wasn't given. A wider group's `##` skips that
+        # lookup, so give it unknown ones and it takes the one signal the same way.
+        collect = WFCUtils.collect_sig2wfc
+
+        def collect_sig2wfc(*arguments: Any) -> Any:
+            return collect(*arguments, defaultdict(lambda: ["?"]), {})
+
+        with mock.patch.object(WFCUtils, "collect_sig2wfc", collect_sig2wfc):
+            parser.parse_semantic()  # always returns None: the verdict is err_msg
     if parser.is_parsing_done and parser.err_msg == "":
         return ""
     return str(parser.err_msg).strip() or "not parsed"
