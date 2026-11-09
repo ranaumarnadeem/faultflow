@@ -2974,6 +2974,12 @@ class Runner:
                 [flop.q for flop in nonscan.flops] if nonscan is not None else ()
             ),
             blocking_instances=blocking,
+            holds=nonscan.holds if nonscan is not None else None,
+            known=(
+                {f.q: f.value for f in nonscan.flops if f.value is not None}
+                if nonscan is not None
+                else None
+            ),
         )
 
     def _user_test_setup(self) -> tuple[SetupCycle, ...]:

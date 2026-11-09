@@ -34,11 +34,12 @@ A wrapped block's INTEST environment (faultflow.wrap.environment) is unknown too
 but the held mode pins keep it out: each input cell's mux, its select held,
 passes its flop and not the port bit. Masking structurally would mask the whole
 core. So an unknown value whose every reader is a gate the held inputs make
-indifferent to it is blocked (blocked_sources) and leaves the masking reach. Only
-a stuck-at on what holds such a gate -- the select's net back to the held input
--- lets it through, so those faults (XMask.release_faults) are
-blackbox_unresolved before any test is graded; a transition fault can't, since
-a held net never transitions.
+indifferent to it is blocked (blocked_sources) and leaves the masking reach. The
+mode pins hold in shift too, so it is off the scan path as well: a clock gate a
+wrapped input enables (check_x_off_scan_path). Only a stuck-at on what holds such
+a gate -- the select's net back to the held input -- lets it through, so those
+faults (XMask.release_faults) are blackbox_unresolved before any test is graded; a
+transition fault can't, since a held net never transitions.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ import itertools
 import json
 import re
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +137,8 @@ def blocked_sources(
     cell_map: Mapping[str, Any],
     sources: Collection[int],
     unknown: Collection[int],
+    values: Mapping[str, int] | None = None,
+    known: Mapping[int, int] | None = None,
 ) -> tuple[frozenset[int], frozenset[tuple[str, str]]]:
     """The `sources` (nets of the view) every reader of which keeps out: a gate
     whose other inputs, where the view holds them -- traced back through its ties
@@ -143,8 +146,11 @@ def blocked_sources(
     forced) -- leave its output the same for both values of the source, whatever
     its free inputs are (the C++ core's eval_gate). And the stuck-ats on those
     holding paths that would let one in (control_trace.release_faults). `unknown`
-    are every unknown value's nets, whose ties are no constants."""
+    are every unknown value's nets, whose ties are no constants. On a netlist that
+    has no such ties, `values` (input port bits by name) and `known` (nets of flops
+    sitting still) are what holds."""
     unknown_nets = set(unknown)
+    ports_held = dict(values or {})
     trace_module = dict(module)
     trace_module["cells"] = {
         name: cell
@@ -183,7 +189,7 @@ def blocked_sources(
                 continue
             if one_net(connections.get(other)) == source:
                 return None  # the source on two inputs at once
-            found = netlist.forced(instance, other, {})
+            found = netlist.forced(instance, other, ports_held, known)
             if found is not None:
                 held[other] = found
         free = [p for p in inputs if p != pin and p not in held]
@@ -337,6 +343,8 @@ def mask_scan_view(
     nonscan_x_nets: Collection[int] = (),
     nonscan_q_nets: Collection[int] = (),
     blocking_instances: Collection[str] = (),
+    holds: Mapping[str, int] | None = None,
+    known: Mapping[int, int] | None = None,
 ) -> XMask:
     """Mask every observation point an unknown value reaches -- a blackbox
     output's, or a non-scan flop's (`nonscan_x_nets`, its output nets) -- for a
@@ -344,13 +352,14 @@ def mask_scan_view(
     `view_path` that holds it. Refuses a design where such a value reaches the
     scan path of the scanned netlist `generic_json`; `nonscan_q_nets` are the
     non-scan flops, whose own pins are off it. What the held inputs keep out of
-    `blocking_instances`' outputs is no unknown (compute_x_mask)."""
+    `blocking_instances`' outputs is no unknown (compute_x_mask; on the scan path,
+    check_x_off_scan_path with the `holds` and the still flops' `known` values)."""
     x_instances = cfg.blackbox_x_instances
     if not x_instances and not nonscan_x_nets:
         return XMask(launch_mode=launch_mode)
     cell_map = str(resolve_scan_cell_map(cfg))
     unsupported = cfg.simulation.unsupported_cells
-    check_x_off_scan_path(
+    shift_release = check_x_off_scan_path(
         core,
         generic_json,
         manifest,
@@ -360,6 +369,9 @@ def mask_scan_view(
         x_instances=x_instances,
         extra_sources=nonscan_x_nets,
         off_path_q_nets=nonscan_q_nets,
+        blocking_instances=blocking_instances,
+        holds=holds,
+        known=known,
     )
     mask = compute_x_mask(
         core,
@@ -372,6 +384,7 @@ def mask_scan_view(
         functional_output_order=functional_output_order,
         blocking_instances=blocking_instances,
     )
+    mask = replace(mask, release_faults=mask.release_faults | shift_release)
     apply_x_mask(view, cfg.top, mask)
     view_path.write_text(
         json.dumps(view, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -390,23 +403,51 @@ def check_x_off_scan_path(
     x_instances: Collection[str],
     extra_sources: Collection[int] = (),
     off_path_q_nets: Collection[int] = (),
-) -> None:
+    blocking_instances: Collection[str] = (),
+    holds: Mapping[str, int] | None = None,
+    known: Mapping[int, int] | None = None,
+) -> frozenset[tuple[str, str]]:
     """Raise ScanError if an unknown blackbox output, or one of
     `extra_sources`, reaches a scan flop's clock, scan-in or scan-enable in
     the scanned netlist. There it would corrupt the shift, and the per-bit
     mask assumes a clean one. The flops `off_path_q_nets` name (by output net)
-    are off the scan path whatever reaches them."""
+    are off the scan path whatever reaches them.
+
+    An output of `blocking_instances` the held inputs keep out (blocked_sources)
+    reaches nothing: `holds` (input port bits) and `known` (outputs of non-scan
+    flops sitting still) hold in shift as in capture. Not the view's other ties --
+    a scan enable or a clock at its capture value. The stuck-ats that would let one
+    in are returned: under one the shift itself is unknown."""
     top = str(manifest["top"])
     _, module = _top_module(json.loads(generic_json.read_text(encoding="utf-8")), top)
-    sources: set[int] = set(extra_sources)
-    for inst in x_instances:
-        cell = module.get("cells", {}).get(inst, {})
-        directions = cell.get("port_directions", {})
-        for pin, bits in cell.get("connections", {}).items():
-            if directions.get(pin) == "output":
-                sources.update(b for b in bits if isinstance(b, int))
+    cells = module.get("cells", {})
+
+    def outputs(instances: Collection[str]) -> set[int]:
+        nets: set[int] = set()
+        for inst in instances:
+            cell = cells.get(inst, {})
+            directions = cell.get("port_directions", {})
+            for pin, bits in cell.get("connections", {}).items():
+                if directions.get(pin) == "output":
+                    nets.update(b for b in bits if isinstance(b, int))
+        return nets
+
+    sources = set(extra_sources) | outputs(x_instances)
+    release: frozenset[tuple[str, str]] = frozenset()
+    kept_out = sources & outputs(blocking_instances)
+    if kept_out:
+        blocked, release = blocked_sources(
+            core,
+            module,
+            json.loads(Path(cell_map).read_text(encoding="utf-8")),
+            sorted(kept_out),
+            sources,
+            holds,
+            known,
+        )
+        sources -= blocked
     if not sources:
-        return
+        return release
     found = core.combinational_reach(
         str(generic_json),
         cell_map,
@@ -433,3 +474,4 @@ def check_x_off_scan_path(
             + ": it would corrupt the scan shift. If the design guarantees the "
             "output's value in test mode, declare it with [blackbox] output_value."
         )
+    return release

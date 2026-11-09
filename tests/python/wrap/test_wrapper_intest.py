@@ -23,6 +23,21 @@ from wrap_flow import ACCUMULATOR, run_mode
 
 ENVIRONMENT = ["d0", "d1"]
 
+# The accumulator's flops behind a clock gate a wrapped input enables.
+CLOCK_GATED = """\
+module accg (input clk, input en, input [1:0] a, input [1:0] b,
+             output [1:0] sum, output carry);
+  wire gclk;
+  sky130_fd_sc_hd__dlclkp_1 u_cg (.CLK(clk), .GATE(en), .GCLK(gclk));
+  reg [1:0] r;
+  reg c;
+  always @(posedge gclk)
+    {c, r} <= r + a + b;
+  assign sum = r ^ b;
+  assign carry = c & en;
+endmodule
+"""
+
 
 @pytest.fixture
 def flow_tools() -> None:
@@ -183,3 +198,35 @@ def test_a_synthesized_blocks_intest_patterns_hold_whatever_drives_it(
             loc = model == "loc"
             assert credit_not_reproduced(cfg, patterns, loc=loc) == []
             assert environment_dependent(cfg, patterns, environment, loc=loc) == []
+
+
+@pytest.mark.integration
+def test_intest_takes_a_clock_gate_a_wrapped_input_enables(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """The environment reaches the gate's enable only through en's input cell, whose
+    held mode pin keeps it out in shift as in capture: no unknown value on the scan
+    path, and the core behind the gate is tested."""
+    rtl = tmp_path / "accg.v"
+    rtl.write_text(CLOCK_GATED, encoding="utf-8")
+    environment = ["en", "a[0]", "a[1]", "b[0]", "b[1]"]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(tmp_path)
+        cfg, patterns = run_mode(tmp_path, "intest", netlist=rtl, top="accg")
+        manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+        assert [c["label"] for c in manifest["wrapper"]["cells"]][:5] == environment
+        assert any(
+            "u_cg" in cell
+            for path in manifest["clock_paths"].values()
+            for cell in path["cells"]
+        )
+        problems = replay_on_cells(
+            cfg, patterns, tmp_path / "replay", unknown_inputs=environment
+        )
+        assert problems == []
+        assert credit_not_reproduced(cfg, patterns) == []
+        assert environment_dependent(cfg, patterns, environment) == []
+        report = json.loads(
+            (cfg.intermediate_dir / "coverage_report.json").read_text("utf-8")
+        )
+    assert report["wrapper"]["parts"]["core"]["detected"] > 0
