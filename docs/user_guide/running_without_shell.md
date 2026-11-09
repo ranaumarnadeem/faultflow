@@ -120,7 +120,8 @@ wrapped inputs is unknown, and nothing observes its wrapped outputs. FaultFlow m
 that surroundings as a blackbox whose outputs are unknown, X:
 - A pattern sets no wrapped input and compares no wrapped output, and every credit
   holds whatever the surroundings drive. The input cells' held muxes keep their
-  value out of the core, so it costs nothing.
+  value out of the core, in shift as in capture, so it costs nothing: a clock gate a
+  wrapped input enables is tested like any other.
 - A stuck-at that would let it in -- the INTEST mode pin, or an input cell's mux
   select, stuck at 0 -- is `blackbox_unresolved` from the start. So is any fault
   only the surroundings could test.

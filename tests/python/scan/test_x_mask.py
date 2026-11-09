@@ -278,6 +278,55 @@ def test_an_unknown_output_on_the_scan_path_is_an_error(
         _check(tmp_path, *_design(ff0_type, **{pin: [DOUT[1]]}))
 
 
+ENV, TM, CK = 400, 401, 402
+
+
+@pytest.mark.unit
+def test_an_unknown_output_a_held_input_keeps_off_the_scan_path_passes(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """ff0 is clocked through a mux: the scan clock with tm at 0, u_env's output with
+    tm at 1, as a wrapped block's INTEST environment reaches a clock gate's enable
+    through an input cell whose mode pin is held. Held in shift as in capture, tm
+    keeps it out; a stuck-at on that hold lets it in, so no test may credit one."""
+    generic, manifest = _design(CLK=[CK])
+    module = generic["modules"][TOP]
+    module["ports"]["tm"] = {"direction": "input", "bits": [TM]}
+    module["cells"]["u_env"] = {
+        "type": "env_like",
+        "port_directions": {"x": "output"},
+        "connections": {"x": [ENV]},
+    }
+    module["cells"]["g_ck"] = {
+        "type": "sky130_fd_sc_hd__mux2_1",
+        "port_directions": {"A0": "input", "A1": "input", "S": "input", "X": "output"},
+        "connections": {"A0": [CLK], "A1": [ENV], "S": [TM], "X": [CK]},
+    }
+    path = tmp_path / "generic.json"
+    path.write_text(json.dumps(generic), encoding="utf-8")
+
+    def check(holds: dict[str, int]) -> frozenset[tuple[str, str]]:
+        return check_x_off_scan_path(
+            _load_core(),
+            path,
+            manifest,
+            cell_map=CELL_MAP,
+            unsupported="fail",
+            blackbox_instances=["u_mem", "u_env"],
+            x_instances=["u_mem", "u_env"],
+            blocking_instances=["u_env"],
+            holds=holds,
+        )
+
+    assert check({"tm": 0}) == {
+        (f"net:{TM}:stem", "sa1"),
+        (f"net:{TM}:branch:g_ck:S", "sa1"),
+    }
+    for holds in ({}, {"tm": 1}):
+        with pytest.raises(ScanError, match=r"ff0\.clock\b"):
+            check(holds)
+
+
 @pytest.mark.unit
 def test_combinational_reach_names_a_clear_apart_from_an_enable(
     tmp_path: Path, require_cpp_core: None
