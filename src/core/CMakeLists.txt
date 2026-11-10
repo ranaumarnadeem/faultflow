@@ -26,6 +26,7 @@ add_library(
   sim/xsim/golden_ref_sim_x.cpp
   sim/xsim/dual.cpp
   sim/xsim/bit_parallel_sim_x.cpp
+  sim/xsim/sequence_grade_x.cpp
 )
 
 target_include_directories(faultflow_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

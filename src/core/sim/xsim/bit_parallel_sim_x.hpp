@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -34,6 +35,19 @@ class BitParallelSimX {
   XBatchDetection detect_batch(const CompiledSimGraph& cg, const TestVector& vec,
                                const FaultBatch& batch,
                                const XRunOptions& options) const;
+
+  // detect_batch on `observe` (compiled net indices) only, per lane the first
+  // sampled cycle of each kind (-1: none), and lane 0's observed values per
+  // sampled cycle.
+  struct Observed {
+    std::array<int32_t, 64> first_definite;
+    std::array<int32_t, 64> first_possible;
+    std::vector<std::vector<Logic>> lane0;
+  };
+  Observed detect_batch_observed(const CompiledSimGraph& cg, const TestVector& vec,
+                                 const FaultBatch& batch,
+                                 const std::vector<uint32_t>& observe,
+                                 const XRunOptions& options) const;
 };
 
 }  // namespace faultflow

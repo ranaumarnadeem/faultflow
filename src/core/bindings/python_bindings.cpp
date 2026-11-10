@@ -26,6 +26,7 @@
 #include "sim/gate_eval.hpp"
 #include "sim/golden_ref/golden_ref_sim.hpp"
 #include "sim/state/test_vector.hpp"
+#include "sim/xsim/sequence_grade_x.hpp"
 #include "scan/scan_pattern_sim.hpp"
 
 namespace py = pybind11;
@@ -952,6 +953,60 @@ py::dict simulate_sequence_faults_py(
   return out;
 }
 
+// simulate_sequence_faults with unknown values (grade_sequence_faults_x): flops
+// and clock-gate latches X before cycle 0 unless initial_unknown is false, and
+// inputs X where `unknown[cycle][input]` says. Returns {"golden": per sampled
+// cycle the good machine's observed values, 0, 1 or None for X; "first_definite"
+// and "first_possible": per fault, the first sampled cycle with a 0 against a 1,
+// or with the good machine known and the faulty one X, or -1}.
+py::dict simulate_sequence_faults_x_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::vector<std::string>& input_order,
+    const std::vector<std::vector<bool>>& cycles, const std::vector<bool>& sample,
+    const std::vector<std::string>& observe_outputs,
+    const std::vector<std::pair<uint32_t, uint8_t>>& faults,
+    const std::vector<std::vector<bool>>& unknown, bool initial_unknown,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances, int sim_threads,
+    bool reference, bool initial_ff_value, const std::vector<bool>& fault_active) {
+  XSequenceGradeRequest request;
+  request.base.input_order = input_order;
+  request.base.cycles = cycles;
+  request.base.sample = sample;
+  request.base.observe_outputs = observe_outputs;
+  request.base.initial_ff_value = initial_ff_value;
+  request.base.fault_active = fault_active;
+  for (const auto& [net_index, fault_type] : faults) {
+    request.base.faults.push_back(SequenceFaultSpec{net_index, fault_type});
+  }
+  request.unknown = unknown;
+  request.initial_unknown = initial_unknown;
+  XSequenceGradeResult result;
+  {
+    py::gil_scoped_release release;
+    result = grade_sequence_faults_x(json_path, cell_map_path, request,
+                                     unsupported_policy, blackbox_instances,
+                                     sim_threads, reference);
+  }
+  py::list golden;
+  for (const auto& row : result.golden) {
+    py::list values;
+    for (Logic v : row) {
+      if (is_known(v)) {
+        values.append(v == Logic::ONE ? 1 : 0);
+      } else {
+        values.append(py::none());
+      }
+    }
+    golden.append(values);
+  }
+  py::dict out;
+  out["golden"] = golden;
+  out["first_definite"] = result.first_definite;
+  out["first_possible"] = result.first_possible;
+  return out;
+}
+
 // The cells unsupported_cells = blackbox left out of the netlist's model
 // (NormalizedGraph::unknown_cells), sorted.
 std::vector<std::string> unknown_cell_instances_py(
@@ -1399,6 +1454,16 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("input_order"),
         py::arg("cycles"), py::arg("sample"), py::arg("observe_outputs"),
         py::arg("faults"), py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("sim_threads") = 1, py::arg("reference") = false,
+        py::arg("initial_ff_value") = false,
+        py::arg("fault_active") = std::vector<bool>{});
+  m.def("simulate_sequence_faults_x", &faultflow::simulate_sequence_faults_x_py,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("input_order"),
+        py::arg("cycles"), py::arg("sample"), py::arg("observe_outputs"),
+        py::arg("faults"),
+        py::arg("unknown") = std::vector<std::vector<bool>>{},
+        py::arg("initial_unknown") = true, py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("sim_threads") = 1, py::arg("reference") = false,
         py::arg("initial_ff_value") = false,

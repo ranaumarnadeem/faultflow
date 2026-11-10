@@ -221,6 +221,27 @@ std::vector<std::vector<Dual>> BitParallelSimX::simulate_batch_samples(
   return samples;
 }
 
+namespace {
+
+// One observed net's detections: lanes showing a 0 against the good lane's 1 (or
+// the reverse), and lanes X where the good lane is known.
+XBatchDetection detections_at(Dual f) {
+  // The good machine (lane 0) broadcast: g1 where it is 1, g0 where it is 0.
+  const uint64_t g1 = ((f.h & 1ULL) && !(f.l & 1ULL)) ? ~0ULL : 0ULL;
+  const uint64_t g0 = ((f.l & 1ULL) && !(f.h & 1ULL)) ? ~0ULL : 0ULL;
+  const uint64_t f1 = f.h & ~f.l;
+  const uint64_t f0 = f.l & ~f.h;
+  return {(g1 & f0) | (g0 & f1), (g1 | g0) & f.h & f.l};
+}
+
+Logic lane0(Dual d) {
+  const bool h = (d.h & 1ULL) != 0;
+  const bool l = (d.l & 1ULL) != 0;
+  return h && l ? Logic::X : logic_of(h);
+}
+
+}  // namespace
+
 XBatchDetection BitParallelSimX::detect_batch(const CompiledSimGraph& cg,
                                               const TestVector& vec,
                                               const FaultBatch& batch,
@@ -228,18 +249,49 @@ XBatchDetection BitParallelSimX::detect_batch(const CompiledSimGraph& cg,
   XBatchDetection out;
   for_each_sample(cg, vec, batch, options, [&](const std::vector<Dual>& nv) {
     for (int obs : cg.observable) {
-      const Dual f = nv[static_cast<size_t>(obs)];
-      // The good machine (lane 0) broadcast: g1 where it is 1, g0 where it is 0.
-      const uint64_t g1 = ((f.h & 1ULL) && !(f.l & 1ULL)) ? ~0ULL : 0ULL;
-      const uint64_t g0 = ((f.l & 1ULL) && !(f.h & 1ULL)) ? ~0ULL : 0ULL;
-      const uint64_t f1 = f.h & ~f.l;
-      const uint64_t f0 = f.l & ~f.h;
-      out.definite |= (g1 & f0) | (g0 & f1);
-      out.possible |= (g1 | g0) & f.h & f.l;
+      const XBatchDetection d = detections_at(nv[static_cast<size_t>(obs)]);
+      out.definite |= d.definite;
+      out.possible |= d.possible;
     }
   });
   out.definite &= batch.mask;
   out.possible &= batch.mask & ~out.definite;
+  return out;
+}
+
+BitParallelSimX::Observed BitParallelSimX::detect_batch_observed(
+    const CompiledSimGraph& cg, const TestVector& vec, const FaultBatch& batch,
+    const std::vector<uint32_t>& observe, const XRunOptions& options) const {
+  Observed out;
+  out.first_definite.fill(-1);
+  out.first_possible.fill(-1);
+  uint64_t seen_definite = 0ULL;
+  uint64_t seen_possible = 0ULL;
+  int32_t index = 0;
+  const auto record = [&](uint64_t lanes, uint64_t& seen, std::array<int32_t, 64>& first) {
+    const uint64_t fresh = lanes & batch.mask & ~seen;
+    for (int lane = 1; lane < 64; ++lane) {
+      if ((fresh >> lane) & 1ULL) {
+        first[static_cast<size_t>(lane)] = index;
+      }
+    }
+    seen |= fresh;
+  };
+  for_each_sample(cg, vec, batch, options, [&](const std::vector<Dual>& nv) {
+    XBatchDetection here;
+    std::vector<Logic> values;
+    values.reserve(observe.size());
+    for (uint32_t obs : observe) {
+      const XBatchDetection d = detections_at(nv[obs]);
+      here.definite |= d.definite;
+      here.possible |= d.possible;
+      values.push_back(lane0(nv[obs]));
+    }
+    record(here.definite, seen_definite, out.first_definite);
+    record(here.possible, seen_possible, out.first_possible);
+    out.lane0.push_back(std::move(values));
+    ++index;
+  });
   return out;
 }
 
