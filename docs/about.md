@@ -54,8 +54,8 @@ The following capabilities are **implemented and working today**:
 | Interfaces | Interactive Tcl shell (the primary interface); the `ff.py` / `faultflow` batch CLI; an OpenTestability "oracle" mode |
 
 The following are **planned** and described in the [Roadmap](roadmap.md):
-three-valued (X-state) simulation, a general latch model, and tristate/TBUF handling
-(currently a hard error by policy).
+simulation with unknown values (0, 1, X and Z), level-sensitive latches, combinational
+loops, and tristate buffers. Until then, latch and tristate cells are a hard error.
 
 ## License
 

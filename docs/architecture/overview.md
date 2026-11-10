@@ -95,8 +95,8 @@ flowchart LR
 
 Gate evaluation (`src/core/sim/gate_eval.cpp`) is a branch-free bitwise table with no
 virtual calls — one `uint64_t` operation evaluates 64 universes at once. The engine is
-strictly **binary**; there is no X/Z value (a deliberate design decision, with
-three-valued simulation on the [roadmap](../roadmap.md)).
+strictly **binary**; there is no X/Z value. A second engine with X and Z, chosen per run
+and leaving this one unchanged, is on the [roadmap](../roadmap.md).
 
 Every result is cross-checked against a scalar **golden-reference simulator**
 (`src/core/sim/golden_ref/`) that simulates one fault at a time with plain maps. If the

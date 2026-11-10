@@ -145,8 +145,8 @@ encountered depends on `[simulation] unsupported_cells`:
   there, redundant only if not. Scan runs model it like a `[blackbox]` instance
   whose outputs are `x`.
 
-Tristate (`TBUF`) and latch cells are currently a hard error by policy; see the
-[Roadmap](../roadmap.md).
+Tristate (`TBUF`) and latch cells are a hard error until the engine with unknown values
+lands; see the [Roadmap](../roadmap.md).
 
 ## Generated cell maps
 

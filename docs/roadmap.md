@@ -1,7 +1,7 @@
 # Roadmap
 
-This is faultflow's forward plan: what is implemented today, and the permanent scope
-boundaries beyond which no further core-engine work is planned.
+This is faultflow's forward plan: what is implemented today, what is planned next, and what
+stays out of scope.
 
 ## Done
 
@@ -63,12 +63,24 @@ Implemented today:
 
 ## Planned
 
-No further core-simulation-engine features are planned. faultflow's scope is now considered
-complete for flip-flop-only synchronous designs with no tristate — see Scope boundaries
-below for what's permanently excluded and why.
+- **Unknown values: X, Z and latches.** A second simulation engine that carries 0, 1, X and
+  Z, chosen per run. The two-valued engine stays as it is, so every result it gives today is
+  unchanged. Every cell input reads Z as X, as Verilog gate primitives do. In order:
+  1. A scalar reference simulator with X, every gate type checked against the existing
+     truth tables.
+  2. The bit-parallel engine with X (two words per net), checked lane by lane against the
+     reference. With no X in a run, it must give exactly the two-valued engine's results.
+  3. Unknown power-up state of flops, and a fault's detections split into definite (a 0
+     against a 1 at an output) and possible (a known value against X). Only definite
+     detections count toward coverage.
+  4. Level-sensitive latches: transparent while enabled, holding otherwise, starting at X.
+  5. Combinational loops, each settled to a fixed point starting from X; a loop that does
+     not settle reads X.
+  6. Tristate buffers and buses driving Z: one enabled driver gives its value, none gives
+     Z, a conflict gives X.
 
-Planned outside the engine:
-
+  SAT test generation stays two-valued: an unknown source is masked, and every pattern is
+  graded by the simulator, which decides definite against possible.
 - **Visualization** (`ff.py viz`): scan chains, the cone around a fault, and where
   undetected faults cluster, as one self-contained HTML file built from a run's outputs,
   with no change to the simulator. Static views come first: scan chains coloured by
@@ -77,20 +89,14 @@ Planned outside the engine:
 
 ## Scope boundaries
 
-The following are permanent, deliberate exclusions — decided against, not deferred pending
-future capacity. Revisiting any of these would be a scope change, not a backlog item.
+Until the engine above lands, the simulator is two-valued: a latch or tristate cell is a
+hard error, and an `x` or `z` bit in a netlist is tied to 0. These were once listed as
+permanent exclusions. That decision was reversed on 2026-11-10: latches need an unknown
+state, and the earlier reason (that Verilator took years to get X-state right) does not hold,
+since Verilator is a two-state simulator by design.
 
-- **X-state (three-valued simulation) — decided against.** Would have been the most
-  invasive possible change: the gate-evaluation table, the bit-parallel word layout, and the
-  fault records were all built two-valued on purpose. The deciding factor: even mature tools
-  with far larger contributor bases (Verilator, for one) took years to get X-state right
-  despite heavy investment — the cost/risk wasn't judged worth it for this project's scope.
-- **General level-sensitive latch model — excluded as a consequence of the X-state
-  decision.** A correct latch model needs X-state for its uninitialized hold state and
-  transparent-phase behavior, so excluding X-state excludes latches with it, not as a
-  separate call.
-- **TBUF / tristate — deferred indefinitely; remains a hard error by policy.** High-Z is
-  itself an X-like third value, so this was already downstream of the X-state decision.
+These stay out of scope:
+
 - **Clock-domain-crossing (CDC) verification is out of scope.** Metastability and
   synchronizer checking are a separate signoff concern, not a fault-testing one. Multi-
   clock *fault testing* (modeling more than one clock so flip-flops clock correctly
@@ -98,10 +104,6 @@ future capacity. Revisiting any of these would be a scope change, not a backlog 
 - **OpenSTA is an optional, later timing source only** — real path delays for the
   at-speed capture window — never a CDC provider. Transition testing ships on metadata
   timing first.
-
-**Net effect**: faultflow's permanent scope is flip-flop-only synchronous designs, no
-tristate. This is the tool's intended, final scope for its core simulation/ATPG engine, not
-an interim state.
 
 See [External tools](external_tools.md) for the autoMBIST integration and the planned
 OpenSTA direction.

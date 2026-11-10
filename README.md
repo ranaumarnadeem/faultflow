@@ -173,6 +173,9 @@ Yes. faultflow reads technology-mapped Yosys output for sky130 HD and OSU035 cel
 **Does faultflow support scan chains?**
 Yes. It inserts full scan, validates chains structurally and runs scan ATPG, including launch-on-capture and launch-on-shift for transition faults.
 
+**Does it handle latches, tristates or unknown (X) values?**
+Not yet. The simulator is two-valued today, so latch and tristate cells are refused. A second engine with 0, 1, X and Z is planned, for unknown power-up state, latches, combinational loops and tristate buses; the two-valued engine stays as it is. See [docs/roadmap.md](docs/roadmap.md).
+
 **What fault coverage does it reach?**
 See Results above and [docs/benchmarking.md](docs/benchmarking.md); for example, 99.969% stuck-at test coverage on picorv32a with 2,441 patterns.
 
