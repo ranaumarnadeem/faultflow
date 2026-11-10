@@ -67,6 +67,14 @@ No further core-simulation-engine features are planned. faultflow's scope is now
 complete for flip-flop-only synchronous designs with no tristate — see Scope boundaries
 below for what's permanently excluded and why.
 
+Planned outside the engine:
+
+- **Visualization** (`ff.py viz`): scan chains, the cone around a fault, and where
+  undetected faults cluster, as one self-contained HTML file built from a run's outputs,
+  with no change to the simulator. Static views come first: scan chains coloured by
+  coverage, one fault's cone, and coverage by instance. An interactive viewer follows only
+  if those prove useful.
+
 ## Scope boundaries
 
 The following are permanent, deliberate exclusions — decided against, not deferred pending
