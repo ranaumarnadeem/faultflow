@@ -44,6 +44,8 @@ add_executable(
   sim/test_golden_ref_tiny.cpp
   sim/test_logic_eval.cpp
   sim/test_golden_ref_x.cpp
+  sim/test_dual_eval.cpp
+  sim/test_bit_parallel_x.cpp
   helpers/test_helpers.cpp
 )
 
