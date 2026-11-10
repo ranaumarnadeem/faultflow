@@ -42,6 +42,8 @@ add_executable(
   fixtures/test_tiny_fixtures.cpp
   benchmarks/test_c17.cpp
   sim/test_golden_ref_tiny.cpp
+  sim/test_logic_eval.cpp
+  sim/test_golden_ref_x.cpp
   helpers/test_helpers.cpp
 )
 
