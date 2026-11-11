@@ -466,7 +466,10 @@ the run and writes nothing. The proof: every TAP flop is reset by `trst_n` at 0;
 other flop sits still at a known reset value, or its output can't reach TDO; blackbox
 outputs can't either. A reset is followed through buffers, inverters and any AND/OR-type
 gate an input holds at its controlling value (`trst_n & clr_n` at `trst_n` = 0), and up
-a chain of flops (a reset synchronizer resetting a collar).
+a chain of flops (a reset synchronizer resetting a collar). The grade then simulates with
+every flop powered up unknown (X), so it checks the proof too: the netlist's TDO must be
+known at every shift, and a fault that leaves TDO unknown where the good TDO is known
+refuses the run.
 
 The inputs the program doesn't drive are held, at 0 or at the level that keeps a flop's
 reset active (`[jtag] hold` overrides) -- except the chip reset of a manifest whose
@@ -528,10 +531,12 @@ record (the codes its decode was built with). The PDL is written beside the ICL,
 
 Before the netlist is touched the program is replayed on faultflow's own model of the WSP,
 independent of warptap's, and refused if the two disagree at any care bit. Then the
-netlist's own outputs must be the program's at every care bit, from all-0 and all-1 flop
-states alike; otherwise the run is refused and writes nothing. A
-fault is credited when it changes a care bit from both initial states; one only one of
-them shows is counted `init_dependent` and not credited. The result is written to
+netlist's own outputs must be the program's at every care bit, simulated with every flop
+powered up unknown (X), so whatever the flops power up to; otherwise the run is refused
+and writes nothing. A fault is credited when it changes a care bit whatever the flops
+power up to (a 0 against a 1); one that only may change it (the good output known, the
+faulty one unknown) is counted `init_dependent` and not credited.
+The result is written to
 `wsp_report.json` in the intermediate directory, kept beside the scan campaign, and
 reported as the coverage report's `wsp` block: what the program detected, and with the
 scan's credit, the combined coverage over the scan's faults and the WSP's.

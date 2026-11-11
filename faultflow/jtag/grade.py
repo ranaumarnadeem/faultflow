@@ -6,11 +6,13 @@ rising edge). Every other input is held (:mod:`faultflow.jtag.xcheck` settles th
 and proves TDO X-free), except a chip reset the setup pulses: active through the
 program's TRST lead-in, inactive after it.
 
-The golden gate comes first: the netlist's own fault-free TDO must match the program on
-every care bit, and be the same from all-0 and all-1 initial flop states. Faults are
-then graded on every shifted bit, don't-care or not, against the netlist's own
-fault-free TDO -- as a scan unload is -- from both initial states, which must agree
-fault for fault.
+Everything runs on the X engine with every flop and clock-gate latch powered up unknown
+(X), so a result holds whatever they power up to. The golden gate comes first: the
+netlist's own fault-free TDO must be known at every shift and match the program on
+every care bit. Faults are then graded on every shifted bit, don't-care or not, against
+the netlist's own fault-free TDO -- as a scan unload is -- and credited at their first
+definite difference (a 0 against a 1). A faulty TDO that is unknown where the good one
+is known contradicts the X-isolation proof, and refuses the grade.
 """
 
 from __future__ import annotations
@@ -106,10 +108,12 @@ def _simulate(
     blackbox: Sequence[str],
     sim_threads: int,
     reference: bool,
-    initial: bool,
 ) -> dict[str, Any]:
+    """The X engine's grade, every flop and clock-gate latch powered up X: the good
+    TDO at each shift (0, 1 or None), and per fault its first definite and first
+    possible detection (-1: none)."""
     cycles, sample = sim_cycles(program, setup)
-    result: dict[str, Any] = core.simulate_sequence_faults(
+    result: dict[str, Any] = core.simulate_sequence_faults_x(
         str(netlist),
         str(cell_map),
         list(setup.input_order),
@@ -117,11 +121,11 @@ def _simulate(
         sample,
         [setup.ports.tdo],
         faults,
-        unsupported,
-        list(blackbox),
-        sim_threads,
-        reference,
-        initial,
+        initial_unknown=True,
+        unsupported_policy=unsupported,
+        blackbox_instances=list(blackbox),
+        sim_threads=sim_threads,
+        reference=reference,
     )
     return result
 
@@ -137,41 +141,29 @@ def golden_gate(
     blackbox: Sequence[str] = (),
 ) -> list[int]:
     """The netlist's fault-free TDO at each shift. Raises :class:`JtagGradeError` if it
-    depends on the initial flop state or disagrees with the program on a care bit."""
-    runs = [
-        _simulate(
-            core,
-            netlist,
-            cell_map,
-            program,
-            setup,
-            [],
-            unsupported,
-            blackbox,
-            1,
-            False,
-            init,
-        )
-        for init in (False, True)
-    ]
-    zero = [int(row[0]) for row in runs[0]["golden"]]
-    one = [int(row[0]) for row in runs[1]["golden"]]
+    depends on the initial flop state (is unknown with the flops powered up X) or
+    disagrees with the program on a care bit."""
+    run = _simulate(
+        core, netlist, cell_map, program, setup, [], unsupported, blackbox, 1, False
+    )
     periods = program.shift_periods()
-    for sample, (a, b) in enumerate(zip(zero, one)):
-        if a != b:
+    tdo: list[int] = []
+    for sample, row in enumerate(run["golden"]):
+        if row[0] is None:
             period = periods[sample]
             raise JtagGradeError(
                 f"TDO at TCK period {period} (test {program.test_of(period)}) "
                 "depends on the flops' initial state"
             )
+        tdo.append(int(row[0]))
     for sample, period in enumerate(periods):
-        if program.care[period] == "1" and zero[sample] != int(program.tdo[period]):
+        if program.care[period] == "1" and tdo[sample] != int(program.tdo[period]):
             raise JtagGradeError(
                 f"the netlist's TDO disagrees with the TCK program in test "
                 f"{program.test_of(period)} at TCK period {period}: the program "
-                f"expects {program.tdo[period]}, the netlist gives {zero[sample]}"
+                f"expects {program.tdo[period]}, the netlist gives {tdo[sample]}"
             )
-    return zero
+    return tdo
 
 
 def grade_faults(
@@ -197,35 +189,31 @@ def grade_faults(
         f.id for f in faults if (f.site_key, f.fault_type) in setup.reset_path_faults
     )
     specs = [(f.compiled_net_index, 0 if f.fault_type == "sa0" else 1) for f in graded]
-    runs = [
-        _simulate(
-            core,
-            netlist,
-            cell_map,
-            program,
-            setup,
-            specs,
-            unsupported,
-            blackbox,
-            sim_threads,
-            reference,
-            init,
-        )
-        for init in (False, True)
-    ]
-    if runs[0]["first_sample"] != runs[1]["first_sample"]:
-        diverging = next(
-            f.site_key
-            for f, a, b in zip(graded, runs[0]["first_sample"], runs[1]["first_sample"])
-            if a != b
-        )
+    run = _simulate(
+        core,
+        netlist,
+        cell_map,
+        program,
+        setup,
+        specs,
+        unsupported,
+        blackbox,
+        sim_threads,
+        reference,
+    )
+    unknown = next(
+        (f for f, possible in zip(graded, run["first_possible"]) if possible >= 0),
+        None,
+    )
+    if unknown is not None:
         raise JtagGradeError(
-            f"fault {diverging}'s detection depends on the flops' initial state, which "
-            "the X-isolation proof rules out"
+            f"fault {unknown.site_key} {unknown.fault_type}'s detection depends on the "
+            "flops' initial state (TDO unknown where the good TDO is known), which the "
+            "X-isolation proof rules out"
         )
     periods = program.shift_periods()
     detected: dict[int, tuple[str, int]] = {}
-    for fault, first in zip(graded, runs[0]["first_sample"]):
+    for fault, first in zip(graded, run["first_definite"]):
         if first >= 0:
             period = periods[first]
             detected[fault.id] = (program.test_of(period), period)

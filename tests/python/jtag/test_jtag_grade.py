@@ -171,6 +171,81 @@ def test_golden_gate_refuses_tdo_that_depends_on_the_initial_state(
         )
 
 
+def _masked(tmp_path: Path) -> Path:
+    """The shift register with TDO = t1 | (m & (u0 XNOR u1)): u0 and u1 hold their
+    power-up values (clocked from clk, held), so their XNOR is 1 from all-0 and from
+    all-1 flops and 0 from either mixed state."""
+    path = _netlist(tmp_path)
+    design = json.loads(path.read_text(encoding="utf-8"))
+    module = design["modules"][TOP]
+    for name, net in (("clk", 6), ("m", 7)):
+        module["ports"][name] = {"direction": "input", "bits": [net]}
+        module["netnames"][name] = {"bits": [net]}
+    del module["cells"]["b0"]
+    module["cells"] |= {
+        "u0": _cell("dfxtp_1", CLK=6, D=11, Q=11),
+        "u1": _cell("dfxtp_1", CLK=6, D=12, Q=12),
+        "xn": _cell("xnor2_1", A=11, B=12, Y=13),
+        "o": _cell("a21o_1", A1=7, A2=13, B1=9, X=10),
+    }
+    path.write_text(json.dumps(design), encoding="utf-8")
+    return path
+
+
+def _masked_setup(m: int) -> JtagSetup:
+    """Hand-built: analyze would refuse the design (u0 and u1 reach TDO)."""
+    return JtagSetup(
+        ports=JtagPorts(),
+        input_order=("tck", "tms", "tdi", "trst_n", "clk", "m"),
+        holds={"clk": 0, "m": m},
+        tap_flops=("t0", "t1"),
+        frozen_known=(),
+        x_sources=(11, 12),
+        reset_path_faults=frozenset(),
+    )
+
+
+def test_golden_gate_refuses_tdo_only_all_0_and_all_1_flops_agree_on(
+    tmp_path, require_cpp_core
+):
+    """m held at 1: TDO is 1 from all-0 and from all-1 flops, as the program says, but
+    0 where t1 is 0 from a mixed state. The flops power up unknown, not to one of two
+    states, so the gate refuses."""
+    netlist = _masked(tmp_path)
+    with pytest.raises(JtagGradeError, match="depends on the flops' initial state"):
+        golden_gate(
+            _load_core(),
+            netlist,
+            CELL_MAP,
+            _program(expected=[1] * (3 + len(TDI_BITS))),
+            _masked_setup(1),
+            unsupported="fail",
+        )
+
+
+def test_a_fault_that_only_all_0_and_all_1_flops_detect_is_refused(
+    tmp_path, require_cpp_core
+):
+    """m held at 0 hides u0 and u1; m stuck at 1 shows them. From all-0 and all-1
+    flops TDO is then 1 where t1 is 0, the same detection both times, but from a mixed
+    state it is TDO's good value: the fault's detection depends on the power-up state,
+    which the X-isolation proof rules out, so the grade refuses."""
+    netlist = _masked(tmp_path)
+    setup = _masked_setup(0)
+    core = _load_core()
+    assert golden_gate(core, netlist, CELL_MAP, _program(), setup, unsupported="fail")
+    stuck = [
+        f
+        for f in _faults(netlist)
+        if (f.site_key, f.fault_type) == ("net:7:stem", "sa1")
+    ]
+    assert len(stuck) == 1
+    with pytest.raises(JtagGradeError, match="depends on the flops' initial state"):
+        grade_faults(
+            core, netlist, CELL_MAP, _program(), setup, stuck, unsupported="fail"
+        )
+
+
 def test_faults_are_credited_to_their_first_detecting_test(tmp_path, require_cpp_core):
     netlist = _netlist(tmp_path)
     setup = _setup(netlist)

@@ -2,9 +2,9 @@
 network with IJTAG_ACCESS, its control TDRs also clear on the chip reset, and each
 shell resets its collar through a reset synchronizer. The program, the chip-reset
 pulse and the IDCODE come from the manifest, as ff.py jtag takes them; the X-isolation
-proof knows every flop by induction, the program passes, and a fault grade comes out
-the same from both initial flop states. (The command end to end, after a scan
-campaign, is M5d's.)"""
+proof knows every flop by induction, the program passes, and a fault grade with every
+flop powered up unknown finds no fault whose detection depends on the power-up state.
+(The command end to end, after a scan campaign, is M5d's.)"""
 
 from __future__ import annotations
 
@@ -153,9 +153,9 @@ def test_the_program_passes_and_the_grade_doesnt_depend_on_the_start_state(
     graded: Graded, tmp_path: Path
 ) -> None:
     """The golden gate, then the gate-level replay -- four-state, every flop X, the
-    memories floating -- and a fault grade from all-0 and all-1 flops, which must
-    agree fault for fault: every fault on a reset or clock path, and a sample of the
-    rest."""
+    memories floating -- and a fault grade with every flop powered up X, which
+    refuses a fault whose TDO is X where the good TDO is known: every fault on a
+    reset or clock path, and a sample of the rest."""
     golden = graded.golden(graded.setup)
     replay_on_gate_level(
         gate_verilog(graded.chip.composed_json, tmp_path),

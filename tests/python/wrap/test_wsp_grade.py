@@ -44,6 +44,150 @@ def test_the_boundary_register_runs_chain_by_chain_each_from_its_head() -> None:
     assert [c["label"] for c in serial_cells(RECORD)] == ["a", "b", "y"]
 
 
+ROOT = Path(__file__).resolve().parents[3]
+CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
+WSP_PORTS = {
+    role: role
+    for role in ("wrck", "wrstn", "selectwir", "shiftwr", "capturewr", "updatewr")
+} | {"wsi": "wsi", "wso": "wso"}
+WSI_BITS = [1, 0, 1, 1, 0]
+
+
+def _masked(tmp_path: Path) -> tuple[Path, list[str]]:
+    """A one-flop WSI -> WSO path (t, cleared by WRSTN) with WSO = t | (m & xn),
+    where xn = u0 XNOR u1, two flops that hold their power-up values (clocked from
+    clk, held at 0), also the output o. xn is 1 from all-0 and from all-1 flops and
+    0 from either mixed state. m is 0: every input but the WSP's is."""
+    nets = {
+        "wrck": 2,
+        "wrstn": 3,
+        "selectwir": 4,
+        "shiftwr": 5,
+        "capturewr": 6,
+        "updatewr": 7,
+        "wsi": 8,
+        "m": 9,
+        "clk": 15,
+    }
+
+    def cell(kind: str, **conns: int) -> dict[str, Any]:
+        return {
+            "type": f"sky130_fd_sc_hd__{kind}",
+            "port_directions": {
+                p: "output" if p in ("Q", "X", "Y") else "input" for p in conns
+            },
+            "connections": {p: [n] for p, n in conns.items()},
+        }
+
+    ports = {name: {"direction": "input", "bits": [net]} for name, net in nets.items()}
+    ports |= {
+        "wso": {"direction": "output", "bits": [20]},
+        "o": {"direction": "output", "bits": [21]},
+    }
+    design = {
+        "modules": {
+            "masked": {
+                "attributes": {"top": "00000000000000000000000000000001"},
+                "ports": ports,
+                "cells": {
+                    "t": cell("dfrtp_1", CLK=2, D=8, RESET_B=3, Q=10),
+                    "u0": cell("dfxtp_1", CLK=15, D=11, Q=11),
+                    "u1": cell("dfxtp_1", CLK=15, D=12, Q=12),
+                    "xn": cell("xnor2_1", A=11, B=12, Y=13),
+                    "g": cell("a21o_1", A1=9, A2=13, B1=10, X=20),
+                    "ob": cell("buf_1", A=13, X=21),
+                },
+                "netnames": {n: {"bits": p["bits"]} for n, p in ports.items()},
+            }
+        }
+    }
+    path = tmp_path / "masked.json"
+    path.write_text(json.dumps(design), encoding="utf-8")
+    return path, list(nets)
+
+
+def _masked_steps(o: int | None = None) -> list[Any]:
+    """WRSTN low for a cycle, then WSI_BITS shifted in, WSO strobed before each
+    pulse: t, the bit before. `o`: the value expected of output o there too."""
+    from faultflow.wrap.wsp_model import WspCycle
+    from faultflow.wrap.wsp_program import WspStep
+
+    expected = () if o is None else (("o", o),)
+    steps = [WspStep(WspCycle(wrstn=0), (), "reset", None)]
+    for k, bit in enumerate(WSI_BITS):
+        before = 0 if k == 0 else WSI_BITS[k - 1]
+        steps.append(WspStep(WspCycle(wsi=bit), (), "shift", before, expected))
+    return steps
+
+
+@pytest.mark.unit
+def test_the_golden_gate_refuses_an_output_only_all_0_and_all_1_flops_agree_on(
+    tmp_path: Path,
+) -> None:
+    """o is 1 from all-0 and from all-1 flops, as expected, but 0 from a mixed
+    state: the flops power up unknown, so the gate refuses."""
+    from faultflow.runner.runner import _load_core
+    from faultflow.wrap.wsp_grade import WspGradeError, benches, compared, golden_gate
+
+    core = _load_core()
+    if core is None:
+        pytest.skip("needs the C++ core")
+    netlist, inputs = _masked(tmp_path)
+    steps = _masked_steps(o=1)
+    expected = compared(steps, "wso")
+    bench = benches(
+        core,
+        str(netlist),
+        str(CELL_MAP),
+        steps,
+        inputs,
+        WSP_PORTS,
+        expected,
+        unsupported="fail",
+        blackbox=[],
+    )
+    with pytest.raises(WspGradeError, match="depends on the flops' initial state"):
+        golden_gate(bench, steps, expected)
+
+
+@pytest.mark.unit
+def test_a_fault_only_all_0_and_all_1_flops_detect_is_not_credited(
+    tmp_path: Path,
+) -> None:
+    """m stuck at 1 shows xn at WSO: from all-0 and all-1 flops WSO is then 1 where t
+    is 0, but from a mixed state it is t, WSO's good value. The detection depends on
+    the power-up state: init_dependent, not credited. WSI stuck at 0 is detected
+    whatever the flops power up to."""
+    from faultflow.runner.runner import _load_core
+    from faultflow.wrap.wsp_grade import benches, compared, golden_gate, grade_faults
+
+    core = _load_core()
+    if core is None:
+        pytest.skip("needs the C++ core")
+    netlist, inputs = _masked(tmp_path)
+    steps = _masked_steps()
+    expected = compared(steps, "wso")
+    bench = benches(
+        core,
+        str(netlist),
+        str(CELL_MAP),
+        steps,
+        inputs,
+        WSP_PORTS,
+        expected,
+        unsupported="fail",
+        blackbox=[],
+    )
+    golden_gate(bench, steps, expected)
+    rows = core.list_site_keys(str(netlist), str(CELL_MAP), "fail")
+    index = {str(r["site_key"]): int(r["compiled_net_index"]) for r in rows}
+    grade = grade_faults(
+        bench, steps, [(1, index["net:9:stem"], 1), (2, index["net:8:stem"], 0)]
+    )
+    assert grade.init_dependent == (1,)
+    assert grade.detected == {2: ("shift", 2)}  # WSI's first 1, a cycle later
+
+
 @pytest.fixture
 def flow_tools() -> None:
     import shutil

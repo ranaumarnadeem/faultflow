@@ -59,8 +59,10 @@ def run_key(
     program: TckProgram, netlist_hash: str, setup: JtagSetup, blackbox: list[str]
 ) -> str:
     """What makes two JTAG grades the same grade: the program, the netlist, the ports,
-    holds and pulsed chip reset, and the blackboxes."""
+    holds and pulsed chip reset, the blackboxes, and how the flops power up (X: a
+    grade from before, run from all-0 and all-1 flops, is graded again)."""
     key: dict[str, Any] = {
+        "power_up": "x",
         "program": program.digest(),
         "netlist": netlist_hash,
         "ports": list(setup.ports.driven()) + [setup.ports.tdo],

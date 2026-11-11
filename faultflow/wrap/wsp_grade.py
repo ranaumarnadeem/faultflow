@@ -12,12 +12,13 @@ WRCK, three: WRCK low, high and low again with the same inputs, the falling edge
 the WIR's update stage takes. Every input but the WSP's and the wrapped data inputs
 is 0.
 
-The golden gate comes first: the netlist's fault-free outputs are the model's at
-every care bit, from all-0 and all-1 flop states alike. Outputs that care at the
-same cycles are simulated together, sampled at those cycles alone. A fault is
-credited when a compared output differs from the fault-free one at a care bit from
-both initial states; one that does from one of them only is left uncredited
-(``init_dependent``). The credit
+Everything runs on the X engine with every flop and clock-gate latch powered up
+unknown (X), so a result holds whatever they power up to. The golden gate comes
+first: the netlist's fault-free outputs are known and the model's at every care bit.
+Outputs that care at the same cycles are simulated together, sampled at those cycles
+alone. A fault is credited when a compared output definitely differs from the
+fault-free one at a care bit (a 0 against a 1); one that only possibly does (the good
+output known, the faulty one X) is left uncredited (``init_dependent``). The credit
 lands in side tables beside the scan campaign (``wsp_runs``, ``wsp_detections``),
 and the coverage report gains a ``wsp`` block (:func:`report_block`) -- with the
 scan's credit, the combined coverage.
@@ -56,7 +57,7 @@ class WspGradeError(RuntimeError):
 class WspGrade:
     graded: int
     detected: dict[int, tuple[str, int]]  # fault id -> (test, program cycle)
-    init_dependent: tuple[int, ...]  # detected from one initial flop state only
+    init_dependent: tuple[int, ...]  # only possibly detected: depends on the power-up
 
 
 @dataclass(frozen=True)
@@ -169,10 +170,11 @@ class _Bench:
     unsupported: str
     blackbox: list[str]
 
-    def run(
-        self, faults: list[tuple[int, int]], initial: bool, threads: int = 1
-    ) -> dict[str, Any]:
-        result: dict[str, Any] = self.core.simulate_sequence_faults(
+    def run(self, faults: list[tuple[int, int]], threads: int = 1) -> dict[str, Any]:
+        """The X engine's grade, every flop and clock-gate latch powered up X: the
+        good outputs at each sample (0, 1 or None), and per fault its first definite
+        and first possible detection (-1: none)."""
+        result: dict[str, Any] = self.core.simulate_sequence_faults_x(
             self.netlist,
             self.cell_map,
             self.inputs,
@@ -180,11 +182,10 @@ class _Bench:
             self.sample,
             self.observe,
             faults,
-            self.unsupported,
-            self.blackbox,
-            threads,
-            False,
-            initial,
+            initial_unknown=True,
+            unsupported_policy=self.unsupported,
+            blackbox_instances=self.blackbox,
+            sim_threads=threads,
         )
         return result
 
@@ -235,20 +236,23 @@ def golden_gate(
     expected: Mapping[str, Sequence[int | None]],
 ) -> None:
     """Refuse a netlist whose fault-free outputs aren't the model's at a care bit,
-    from either initial flop state."""
+    or depend on the flops' power-up state there (are X)."""
     for bench in benches:
-        for initial in (False, True):
-            golden = bench.run([], initial)["golden"]
-            for sample, number in enumerate(bench.at):
-                for column, name in enumerate(bench.observe):
-                    want, got = expected[name][number], int(golden[sample][column])
-                    if got != want:
-                        raise WspGradeError(
-                            f"the netlist's {name} disagrees with the WSP's model in "
-                            f"test {steps[number].test} at program cycle {number}: "
-                            f"the model gives {want}, the netlist {got} (flops "
-                            f"starting at {int(initial)})"
-                        )
+        golden = bench.run([])["golden"]
+        for sample, number in enumerate(bench.at):
+            for column, name in enumerate(bench.observe):
+                want, got = expected[name][number], golden[sample][column]
+                if got is None:
+                    raise WspGradeError(
+                        f"the netlist's {name} in test {steps[number].test} at "
+                        f"program cycle {number} depends on the flops' initial state"
+                    )
+                if int(got) != want:
+                    raise WspGradeError(
+                        f"the netlist's {name} disagrees with the WSP's model in "
+                        f"test {steps[number].test} at program cycle {number}: "
+                        f"the model gives {want}, the netlist {int(got)}"
+                    )
 
 
 def grade_faults(
@@ -259,26 +263,28 @@ def grade_faults(
 ) -> WspGrade:
     """Grade `faults` -- (fault id, compiled net index, stuck value) -- after the
     golden gate: each one's first program cycle at which a compared output
-    differs at a care bit, from both initial flop states."""
+    definitely differs at a care bit, whatever the flops power up to; one that only
+    possibly differs somewhere is ``init_dependent``."""
     specs = [(index, stuck) for _, index, stuck in faults]
-    first: list[list[int | None]] = []
-    for initial in (False, True):
-        cycles: list[int | None] = [None] * len(faults)
-        for bench in benches:
-            found = bench.run(specs, initial, threads)["first_sample"]
-            for k, sample in enumerate(found):
-                if sample >= 0:
-                    number = bench.at[sample]
-                    if cycles[k] is None or number < int(cycles[k] or 0):
-                        cycles[k] = number
-        first.append(cycles)
+    definite: list[int | None] = [None] * len(faults)
+    possible = [False] * len(faults)
+    for bench in benches:
+        run = bench.run(specs, threads)
+        for k, (first, maybe) in enumerate(
+            zip(run["first_definite"], run["first_possible"])
+        ):
+            if first >= 0:
+                number = bench.at[first]
+                known = definite[k]
+                if known is None or number < known:
+                    definite[k] = number
+            possible[k] = possible[k] or maybe >= 0
     detected: dict[int, tuple[str, int]] = {}
     dependent: list[int] = []
-    for (fault_id, _, _), zero, one in zip(faults, *first):
-        if zero is not None and one is not None:
-            number = max(zero, one)
+    for (fault_id, _, _), number, maybe in zip(faults, definite, possible):
+        if number is not None:
             detected[fault_id] = (steps[number].test, number)
-        elif zero is not None or one is not None:
+        elif maybe:
             dependent.append(fault_id)
     return WspGrade(len(faults), detected, tuple(dependent))
 
@@ -576,9 +582,12 @@ def run_wsp(
     start = time.perf_counter()
     golden_gate(benched, steps, expected)
     netlist_digest = hashlib.sha256(netlist.read_bytes()).hexdigest()
+    # "x": the flops power up X; a grade from before, run from all-0 and all-1
+    # flops, has another key and is graded again.
     key = hashlib.sha256(
         json.dumps(
-            [program_digest(steps), netlist_digest, sorted(blackbox)], sort_keys=True
+            [program_digest(steps), netlist_digest, sorted(blackbox), "x"],
+            sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
     campaign_type = "scan_extest" if cfg.test_mode == "extest" else "scan"
