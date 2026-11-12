@@ -67,6 +67,31 @@ void seed_ff_outputs(const CompiledSimGraph& cg, const std::vector<Logic>& ff_st
   }
 }
 
+Logic control_active(Logic value, Polarity polarity);
+
+// A latch (GateType LATCH): transparent (D) while its enable is active, the held
+// value otherwise, clear and preset forcing it as a flop's do -- each an exact
+// mux, so an unknown enable keeps a value only where D and the held one agree.
+Logic eval_latch(const CompiledSimGraph& cg, const SimNode& sn,
+                 const std::vector<Logic>& values, Logic& state) {
+  const CompiledFFConfig& cfg = cg.latch_configs.at(sn.ff_cfg);
+  const auto at = [&](uint32_t slot) {
+    return slot != UNUSED_INPUT ? values[slot] : Logic::ZERO;
+  };
+  const Logic enable = control_active(at(sn.in1), cfg.enable_polarity);
+  const Logic clear = (cfg.has_clear && sn.in2 != UNUSED_INPUT)
+                          ? control_active(at(sn.in2), cfg.clear_polarity)
+                          : Logic::ZERO;
+  const Logic preset = (cfg.has_preset && sn.in3 != UNUSED_INPUT)
+                           ? control_active(at(sn.in3), cfg.preset_polarity)
+                           : Logic::ZERO;
+  const Logic open = logic_mux(enable, state, at(sn.in0));
+  state = logic_mux(clear, logic_mux(preset, open, logic_of(cfg.preset_value != 0)),
+                    logic_mux(preset, logic_of(cfg.clear_value != 0),
+                              logic_of(cfg.clear_preset_conflict_value != 0)));
+  return state;
+}
+
 void evaluate_combinational(const CompiledSimGraph& cg, std::vector<Logic>& values,
                             const CompactFault* fault, std::vector<Logic>& latches) {
   std::vector<Logic> ins;
@@ -82,6 +107,11 @@ void evaluate_combinational(const CompiledSimGraph& cg, std::vector<Logic>& valu
     }
     if (sn.type == GateType::CONSTX) {
       values[sn.out] = Logic::X;
+      apply_fault(values, fault, sn.out);
+      return;
+    }
+    if (sn.type == GateType::LATCH) {
+      values[sn.out] = eval_latch(cg, sn, values, latches[sn.out]);
       apply_fault(values, fault, sn.out);
       return;
     }

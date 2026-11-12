@@ -145,8 +145,13 @@ encountered depends on `[simulation] unsupported_cells`:
   there, redundant only if not. Scan runs model it like a `[blackbox]` instance
   whose outputs are `x`.
 
-Tristate (`TBUF`) and latch cells are a hard error until the engine with unknown values
-lands; see the [Roadmap](../roadmap.md).
+A latch (`LATCH` entry with an `ff` block whose `trigger` is a level, `HIGH` or `LOW`,
+its `clock` the enable pin; `clear`, `preset` and `outputs.QN` as a flop's) is modelled by
+the X engine only (`[simulation] engine = x`): transparent while its enable is at that
+level, holding otherwise, clear and preset forcing it, powered up unknown. A two-valued
+run treats it as a cell it does not model (`unsupported_cells`). Its enable is a clock
+net and its clear and preset reset nets, as a flop's are. Tristate (`TBUF`) cells are a
+hard error until the X engine's tristate stage lands; see the [Roadmap](../roadmap.md).
 
 ## Generated cell maps
 
@@ -168,8 +173,13 @@ still reads only the map.
   `latch_negedge`, `_precontrol` with a test enable) is an `ICG` entry, its pins
   from their `clock_gate_{clock,enable,test,out}_pin` attributes: Sky130's
   `dlclkp`/`sdlclkp`, GF180MCU's `icgtp`/`icgtn`, IHP's `lgcp`/`slgcp`.
-- Every other cell is listed, with why, never guessed: latches (`unsupported`),
-  tristates (`TBUF`), tie and physical cells, and functions no gate type has.
+- A latch comes from its `latch` group (`enable`, `data_in`, `clear`, `preset`): a
+  `LATCH` entry for the X engine. It stays in the report (kind `x_engine`), so
+  synthesis never picks it; the X engine's synthesis puts a design's latches on the
+  library's own latch cells (`faultflow/pdk/x_synth.py`: `dfflegalize`, then a techmap
+  -- `dfflibmap` maps flops only).
+- Every other cell is listed, with why, never guessed: tristates (`TBUF`), tie and
+  physical cells, and functions no gate type has.
 - Drive strengths share a `<name>_*` pattern, whose `variants` name the cells, unless
   the pattern would match another cell.
 

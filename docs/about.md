@@ -55,7 +55,9 @@ The following capabilities are **implemented and working today**:
 
 The following are **planned** and described in the [Roadmap](roadmap.md):
 simulation with unknown values (0, 1, X and Z), level-sensitive latches, combinational
-loops, and tristate buffers. Until then, latch and tristate cells are a hard error.
+loops, and tristate buffers. The opt-in X engine (`[simulation] engine = x`) already
+carries unknown values and models latches; the default two-valued engine refuses a
+latch, and every engine a tristate cell, until those stages land.
 
 ## License
 

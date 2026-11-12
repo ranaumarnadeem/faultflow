@@ -131,7 +131,13 @@ CellFFMetadata parse_ff_metadata(const nlohmann::json& node) {
   ff.clock = node.at("clock").get<std::string>();
   ff.data = node.at("data").get<std::string>();
   ff.output = node.value("output", std::string("Q"));
-  ff.trigger = parse_trigger(node.at("trigger").get<std::string>());
+  const std::string trigger = node.at("trigger").get<std::string>();
+  if (trigger == "HIGH" || trigger == "LOW") {
+    ff.level_sensitive = true;  // a latch, enabled at this level
+    ff.level = parse_polarity(trigger);
+  } else {
+    ff.trigger = parse_trigger(trigger);
+  }
   if (node.contains("clear")) {
     ff.clear = parse_ff_control(node.at("clear"));
   }
@@ -222,6 +228,18 @@ CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node)
   }
   if (entry.node_type == NodeType::FF && !entry.ff.present) {
     throw ParseError("FF cell map entry missing ff metadata: " + pattern);
+  }
+  if (entry.node_type == NodeType::FF && entry.ff.level_sensitive) {
+    throw ParseError("an FF's trigger is an edge, not a level: " + pattern);
+  }
+  // A bare LATCH entry (no ff block) stays as the older maps wrote it: refused
+  // in every engine, as unsupported.
+  if (entry.node_type == NodeType::LATCH && entry.ff.present &&
+      (!entry.ff.level_sensitive || entry.ff.has_scan || entry.ff.enable.present)) {
+    throw ParseError(
+        "a LATCH's ff block needs a level trigger (HIGH or LOW), and no scan or "
+        "data enable: " +
+        pattern);
   }
   return entry;
 }

@@ -391,6 +391,45 @@ std::string transition_pattern_key(const std::map<std::string, bool>& v1,
   return pattern_key(v1, pis) + pattern_key(v2, pis);
 }
 
+namespace {
+
+// out <-> sel ? if1 : if0.
+void add_mux_cnf(CaDiCaL::Solver& solver, int sel, int if0, int if1, int out) {
+  add_clause(solver, {sel, -if0, out});
+  add_clause(solver, {sel, if0, -out});
+  add_clause(solver, {-sel, -if1, out});
+  add_clause(solver, {-sel, if1, -out});
+}
+
+// An X-mode graph's latch in one frame (the two-valued CNF): clear and preset
+// forcing it, else D while the enable is active, else `state` -- a variable for
+// its unknown power-up value, which the good and the faulty machine share. A
+// missing clear or preset is 0. `truth` is a literal fixed true.
+void add_latch_cnf(CaDiCaL::Solver& solver, int& next, int truth,
+                   const CompiledFFConfig& cfg, int d, int enable, int clear,
+                   int preset, int state, int out) {
+  const auto active = [&](int lit, Polarity polarity) {
+    if (lit == 0) {
+      return -truth;
+    }
+    return polarity == Polarity::ACTIVE_HIGH ? lit : -lit;
+  };
+  const auto constant = [&](uint8_t v) { return v != 0 ? truth : -truth; };
+  const int en = active(enable, cfg.enable_polarity);
+  const int clr = active(clear, cfg.clear_polarity);
+  const int pre = active(preset, cfg.preset_polarity);
+  const int open = next++;
+  add_mux_cnf(solver, en, state, d, open);
+  const int unforced = next++;
+  add_mux_cnf(solver, pre, open, constant(cfg.preset_value), unforced);
+  const int cleared = next++;
+  add_mux_cnf(solver, pre, constant(cfg.clear_value),
+              constant(cfg.clear_preset_conflict_value), cleared);
+  add_mux_cnf(solver, clr, unforced, cleared, out);
+}
+
+}  // namespace
+
 SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
                                     const std::vector<AtpgPiInfo>& pis,
                                     const CompactFault& fault,
@@ -412,6 +451,7 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
     return SatSolveResult::UNSAT;  // fault reaches no observable -> redundant
   }
 
+  int latch_truth = 0;  // a literal fixed true, made for the first latch
   for (const SimNode& node : cg.nodes) {
     if (node.type == GateType::INPUT) {
       continue;
@@ -422,6 +462,35 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
       // found through it is graded by the X engine, which alone credits it.
       if (masks.in_outcone[node.out] && node.out != fault.net_index) {
         add_equiv(solver, vars.free_vars.at(node.out), vars.faulty_vars.at(node.out));
+      }
+      continue;
+    }
+    if (node.type == GateType::LATCH) {
+      if (latch_truth == 0) {
+        latch_truth = vars.next++;
+        add_unit(solver, latch_truth);
+      }
+      const CompiledFFConfig& cfg = cg.latch_configs.at(node.ff_cfg);
+      const int state = vars.next++;  // its power-up value, shared
+      const auto pins = [&](bool faulty) {
+        std::array<int, 4> lits{};
+        const std::array<uint32_t, 4> slots{node.in0, node.in1, node.in2, node.in3};
+        for (size_t i = 0; i < slots.size(); ++i) {
+          lits[i] = slots[i] == UNUSED_INPUT ? 0
+                    : faulty                 ? faulty_input_lit(vars, masks, slots[i])
+                                             : vars.free_vars.at(slots[i]);
+        }
+        return lits;
+      };
+      if (masks.in_support[node.out]) {
+        const auto p = pins(false);
+        add_latch_cnf(solver, vars.next, latch_truth, cfg, p[0], p[1], p[2], p[3], state,
+                      vars.free_vars.at(node.out));
+      }
+      if (masks.in_outcone[node.out] && node.out != fault.net_index) {
+        const auto p = pins(true);
+        add_latch_cnf(solver, vars.next, latch_truth, cfg, p[0], p[1], p[2], p[3], state,
+                      vars.faulty_vars.at(node.out));
       }
       continue;
     }
@@ -512,22 +581,17 @@ struct Rails {
   int l = 0;
 };
 
-// The nodes whose value an X-mode graph cannot know: an x/z bit of the netlist.
-bool is_x_source(const SimNode& node) { return node.type == GateType::CONSTX; }
+// The nodes whose value an X-mode graph cannot know in one frame: an x/z bit of
+// the netlist, a latch (holding its unknown power-up value while closed).
+bool is_x_source(const SimNode& node) {
+  return node.type == GateType::CONSTX || node.type == GateType::LATCH;
+}
 
-// out <-> OR over `cubes` of AND of the input literals each cube cares about
-// (input i at 1 reads its h rail, at 0 its l rail): eval_gate_dual's own rule.
-void add_cube_cover(CaDiCaL::Solver& solver, int& next, const std::vector<DualCube>& cubes,
-                    const std::array<Rails, 6>& in, int out) {
+// out <-> OR over `terms` of the AND of each term's literals.
+void add_or_of_ands(CaDiCaL::Solver& solver, int& next,
+                    const std::vector<std::vector<int>>& terms, int out) {
   std::vector<int> any{-out};
-  for (const DualCube& c : cubes) {
-    std::vector<int> lits;
-    for (int i = 0; i < 6; ++i) {
-      if (((c.care >> i) & 1) != 0) {
-        lits.push_back(((c.value >> i) & 1) != 0 ? in[static_cast<size_t>(i)].h
-                                                 : in[static_cast<size_t>(i)].l);
-      }
-    }
+  for (const std::vector<int>& lits : terms) {
     const int term = next++;
     std::vector<int> all{term};
     for (int lit : lits) {
@@ -539,6 +603,31 @@ void add_cube_cover(CaDiCaL::Solver& solver, int& next, const std::vector<DualCu
     any.push_back(term);
   }
   add_clause(solver, any);
+}
+
+// out <-> OR over `cubes` of AND of the input literals each cube cares about
+// (input i at 1 reads its h rail, at 0 its l rail): eval_gate_dual's own rule.
+void add_cube_cover(CaDiCaL::Solver& solver, int& next, const std::vector<DualCube>& cubes,
+                    const std::array<Rails, 6>& in, int out) {
+  std::vector<std::vector<int>> terms;
+  for (const DualCube& c : cubes) {
+    std::vector<int> lits;
+    for (int i = 0; i < 6; ++i) {
+      if (((c.care >> i) & 1) != 0) {
+        lits.push_back(((c.value >> i) & 1) != 0 ? in[static_cast<size_t>(i)].h
+                                                 : in[static_cast<size_t>(i)].l);
+      }
+    }
+    terms.push_back(std::move(lits));
+  }
+  add_or_of_ands(solver, next, terms, out);
+}
+
+// out <-> sel ? if1 : if0 on rails: dual_mux, exact for an unknown select.
+void add_mux_rails(CaDiCaL::Solver& solver, int& next, Rails sel, Rails if0, Rails if1,
+                   Rails out) {
+  add_or_of_ands(solver, next, {{sel.l, if0.h}, {sel.h, if1.h}}, out.h);
+  add_or_of_ands(solver, next, {{sel.l, if0.l}, {sel.h, if1.l}}, out.l);
 }
 
 }  // namespace
@@ -624,6 +713,31 @@ SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
     return bad[net];
   };
   const auto encode = [&](const SimNode& node, Rails outr, const auto& rails_of) {
+    if (node.type == GateType::LATCH) {
+      // GoldenRefSimX's eval_latch in one frame from power-up: the held value
+      // unknown.
+      const CompiledFFConfig& cfg = cg.latch_configs.at(node.ff_cfg);
+      const auto act = [](Rails r, Polarity p) {
+        return p == Polarity::ACTIVE_HIGH ? r : Rails{r.l, r.h};
+      };
+      const auto constant = [&](uint8_t v) { return v != 0 ? one : zero; };
+      const Rails en = act(rails_of(node.in1), cfg.enable_polarity);
+      const Rails clr = (cfg.has_clear && node.in2 != UNUSED_INPUT)
+                            ? act(rails_of(node.in2), cfg.clear_polarity)
+                            : zero;
+      const Rails pre = (cfg.has_preset && node.in3 != UNUSED_INPUT)
+                            ? act(rails_of(node.in3), cfg.preset_polarity)
+                            : zero;
+      const Rails open{next++, next++};
+      add_mux_rails(solver, next, en, unknown, rails_of(node.in0), open);
+      const Rails unforced{next++, next++};
+      add_mux_rails(solver, next, pre, open, constant(cfg.preset_value), unforced);
+      const Rails cleared{next++, next++};
+      add_mux_rails(solver, next, pre, constant(cfg.clear_value),
+                    constant(cfg.clear_preset_conflict_value), cleared);
+      add_mux_rails(solver, next, clr, unforced, cleared, outr);
+      return;
+    }
     const DualCubes& cubes = dual_cubes(node.type);
     if (!cubes.valid) {
       throw std::runtime_error("dual-rail SAT ATPG: a node with no combinational function");
@@ -640,7 +754,7 @@ SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
 
   for (const SimNode& node : cg.nodes) {
     if (node.type == GateType::INPUT || node.type == GateType::CONST0 ||
-        node.type == GateType::CONST1 || is_x_source(node)) {
+        node.type == GateType::CONST1 || node.type == GateType::CONSTX) {
       continue;
     }
     if (masks.in_support[node.out] != 0) {

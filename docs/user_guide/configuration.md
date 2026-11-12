@@ -191,6 +191,12 @@ detection in both coverage percentages, 50% by default (the usual vendor
 convention); the denominator is unchanged. Where the good output is unknown,
 nothing is credited.
 
+The X engine also models level-sensitive latches: transparent while enabled,
+holding otherwise, powered up unknown (a combinational run grades each vector
+from power-up, so a closed latch reads unknown). Its synthesis puts a design's
+latches on the library's latch cells; a two-valued run treats a latch as a cell
+it does not model (`unsupported_cells`).
+
 SAT test generation follows the same rules: it looks for a test that detects a
 fault definitely, and with none, for one that may (`POSSIBLE`); it proves a
 fault redundant only when no value of the unknowns lets any test show it.

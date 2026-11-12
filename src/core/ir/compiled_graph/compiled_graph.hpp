@@ -31,6 +31,10 @@ struct SimNode {
 struct CompiledSimGraph {
   std::vector<SimNode> nodes;
   std::vector<CompiledFFConfig> ff_configs;
+  // An X-mode graph's latches (GateType LATCH, SimNode::ff_cfg): the enable's
+  // level (enable_polarity), clear and preset. Never in ff_configs, which
+  // pairs with ff_nodes.
+  std::vector<CompiledFFConfig> latch_configs;
   std::vector<int> ff_nodes;
   std::vector<uint32_t> fanout_offsets;
   std::vector<uint32_t> fanout_targets;

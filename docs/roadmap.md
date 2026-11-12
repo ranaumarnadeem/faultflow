@@ -92,8 +92,10 @@ Implemented today:
 
 ## Scope boundaries
 
-Until the engine above lands, the simulator is two-valued: a latch or tristate cell is a
-hard error, and an `x` or `z` bit in a netlist is tied to 0. These were once listed as
+The default engine stays two-valued: a latch is a cell it does not model, a tristate
+cell is a hard error, and an `x` or `z` bit in a netlist is tied to 0. The X engine
+(`[simulation] engine = x`) already reads `x`/`z` bits as unknown, credits possible
+detections and models latches; the stages after it are still to come. These were once listed as
 permanent exclusions. That decision was reversed on 2026-11-10: latches need an unknown
 state, and the earlier reason (that Verilator took years to get X-state right) does not hold,
 since Verilator is a two-state simulator by design.

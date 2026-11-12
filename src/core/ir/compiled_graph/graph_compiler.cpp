@@ -588,7 +588,40 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
   for (const auto& [nid, node] : ordered) {
     (void)nid;
     if (node->type != NodeType::GATE && node->type != NodeType::CONST &&
-        node->type != NodeType::FF) {
+        node->type != NodeType::FF && node->type != NodeType::LATCH) {
+      continue;
+    }
+
+    if (node->type == NodeType::LATCH) {
+      // An X-mode graph's latch (NormalizedGraph refuses one otherwise): a
+      // stateful node in level order, as a clock gate is, its levels in
+      // latch_configs. in0 D, in1 the enable, in2 clear, in3 preset.
+      SimNode sn;
+      sn.type = GateType::LATCH;
+      sn.in0 = map_net(node->ff_config.data_net, y2c, c2y);
+      sn.in1 = map_net(node->ff_config.clock_net, y2c, c2y);
+      if (node->ff_config.clear.present) {
+        sn.in2 = map_net(node->ff_config.clear.net, y2c, c2y);
+      }
+      if (node->ff_config.preset.present) {
+        sn.in3 = map_net(node->ff_config.preset.net, y2c, c2y);
+      }
+      sn.out = map_net(node->ff_config.output_net, y2c, c2y);
+      sn.ff_cfg = static_cast<uint32_t>(cg.latch_configs.size());
+      CompiledFFConfig cfg;
+      cfg.has_enable = true;
+      cfg.enable_polarity = node->ff_config.latch_enable_level;
+      cfg.has_clear = node->ff_config.clear.present;
+      cfg.clear_polarity = node->ff_config.clear.polarity;
+      cfg.clear_value = node->ff_config.clear.value;
+      cfg.has_preset = node->ff_config.preset.present;
+      cfg.preset_polarity = node->ff_config.preset.polarity;
+      cfg.preset_value = node->ff_config.preset.value;
+      cfg.clear_preset_conflict_value = node->ff_config.clear_preset_conflict_value;
+      cg.latch_configs.push_back(cfg);
+      node_levels.push_back(node->level);
+      cg.nodes.push_back(sn);
+      sim_owner_norm_id.push_back(nid);
       continue;
     }
 

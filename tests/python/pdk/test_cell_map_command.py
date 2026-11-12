@@ -40,19 +40,22 @@ def test_cell_map_writes_the_map_and_its_report(
     assert rc == 0
     cm = json.loads(out.read_text(encoding="utf-8"))
     assert cm["demo__nand2_*"]["gate_type"] == "NAND2"
-    assert cm["demo__dlxtp_*"]["unsupported"] is True
+    # A latch: modelled by the X engine only, still in the report (synthesis
+    # keeps it don't-use).
+    assert cm["demo__dlxtp_*"]["node_type"] == "LATCH"
     # FaultFlow's own cells, from the default internal-cell source.
     assert "$scanff_faultflow" in cm
     listed = json.loads(report.read_text(encoding="utf-8"))
     assert listed == [
         {
             "cell": "demo__dlxtp_1",
-            "kind": "latch",
-            "detail": "latch (out of scope: no X-state)",
+            "kind": "x_engine",
+            "detail": "latch (the X engine only: [simulation] engine = x)",
         }
     ]
     printed = capsys.readouterr().out
-    assert "2 cells" in printed and "1 modelled" in printed and "1 listed" in printed
+    assert "2 cells" in printed and "1 modelled" in printed
+    assert "1 X engine only" in printed and "0 listed" in printed
 
 
 @pytest.mark.unit

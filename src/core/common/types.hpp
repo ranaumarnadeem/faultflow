@@ -133,6 +133,11 @@ enum class GateType {
   // X engine only (an X-mode compile, never a two-valued graph): none has a
   // two-valued function, so eval_gate and the cell maps never see them.
   CONSTX,  // an x or z bit of the netlist: unknown
+  // A level-sensitive latch (node_type LATCH): in0 D, in1 the enable, in2
+  // clear, in3 preset (CompiledSimGraph::latch_configs[ff_cfg] has their
+  // levels). Stateful: transparent while the enable is active, holding
+  // otherwise, clear and preset forcing it; it powers up as a flop does.
+  LATCH,
 };
 
 enum class NodeType { GATE, FF, LATCH, CONST, TBUF, ICG };
@@ -150,6 +155,8 @@ struct FFControlConfig {
 
 struct FFConfig {
   TriggerType trigger = TriggerType::POSEDGE;
+  // A latch (NodeType LATCH): clock_net is its enable, active at this level.
+  Polarity latch_enable_level = Polarity::ACTIVE_HIGH;
   int clock_net = -1;
   int data_net = -1;
   int output_net = -1;

@@ -65,14 +65,18 @@ def cell_map_command(
             encoding="utf-8",
         )
     cells = len(library.all("cell"))
-    listed = len({r.cell for r in result.report if r.kind != "tristate"})
+    kinds = ("tristate", "x_engine")
+    listed = len({r.cell for r in result.report if r.kind not in kinds})
     tristate = len({r.cell for r in result.report if r.kind == "tristate"})
-    modelled = cells - listed - tristate
+    # Latches: modelled, by the X engine only ([simulation] engine = x).
+    x_only = len({r.cell for r in result.report if r.kind == "x_engine"})
+    modelled = cells - listed - tristate - x_only
     lines = [
         f"cell-map {library.args[0] if library.args else liberty}: {cells} cells, "
-        f"{modelled} modelled, {listed} listed, {tristate} tristate -> {out}"
+        f"{modelled} modelled, {x_only} X engine only, {listed} listed, "
+        f"{tristate} tristate -> {out}"
     ]
     for r in result.report:
-        if r.kind not in ("tristate",):
+        if r.kind not in kinds:
             lines.append(f"  {r.cell}: {r.detail}")
     return "\n".join(lines)

@@ -1,0 +1,55 @@
+{
+  "creator": "Yosys 0.61+129 (faultflow fixture generator)",
+  "modules": {
+    "tiny_xlatch": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "d": { "direction": "input", "bits": [2] },
+        "g": { "direction": "input", "bits": [3] },
+        "rn": { "direction": "input", "bits": [4] },
+        "q": { "direction": "output", "bits": [6] },
+        "qn": { "direction": "output", "bits": [8] }
+      },
+      "cells": {
+        "u1": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dlxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "D": "input", "GATE": "input", "Q": "output" },
+          "connections": { "D": [2], "GATE": [3], "Q": [5] }
+        },
+        "u3": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__buf_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "X": "output" },
+          "connections": { "A": [5], "X": [6] }
+        },
+        "u2": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__dlrbn_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "D": "input", "GATE_N": "input", "RESET_B": "input",
+            "Q": "output", "Q_N": "output"
+          },
+          "connections": { "D": [2], "GATE_N": [3], "RESET_B": [4], "Q": [7], "Q_N": [8] }
+        }
+      },
+      "netnames": {
+        "d": { "hide_name": 0, "bits": [2], "attributes": {} },
+        "g": { "hide_name": 0, "bits": [3], "attributes": {} },
+        "rn": { "hide_name": 0, "bits": [4], "attributes": {} },
+        "n1": { "hide_name": 0, "bits": [5], "attributes": {} },
+        "q": { "hide_name": 0, "bits": [6], "attributes": {} },
+        "n2": { "hide_name": 0, "bits": [7], "attributes": {} },
+        "qn": { "hide_name": 0, "bits": [8], "attributes": {} }
+      }
+    }
+  }
+}

@@ -307,6 +307,44 @@ class LibraryRoles:
         pins["q"] = str(entry["outputs"][ff["output"]])
         return RoleCell(_concrete(pattern, entry), pins, ties)
 
+    def latch(self, level: str) -> RoleCell | None:
+        """The library's latch open while its enable is at ``level`` (HIGH or
+        LOW), for the X engine's synthesis (a design's latches): one without a
+        clear or preset first (a control it has is held inactive, ``ties``), one
+        without an inverted output first. None: the library has no such latch.
+        Not a role: a two-valued run never instantiates one."""
+        fits = []
+        for pattern, entry in self._entries("LATCH"):
+            ff = entry.get("ff") or {}
+            outputs = entry.get("outputs") or {}
+            if ff.get("trigger") != level or ff.get("output") not in outputs:
+                continue
+            ties = {
+                str(ff[extra]["pin"]): "1" if ff[extra].get("level") == "LOW" else "0"
+                for extra in ("clear", "preset")
+                if extra in ff
+            }
+            fits.append(
+                (
+                    len(ties),
+                    not _sized(pattern, entry),
+                    "QN" in outputs,
+                    pattern,
+                    entry,
+                    ties,
+                )
+            )
+        if not fits:
+            return None
+        *_, pattern, entry, ties = sorted(fits, key=lambda f: f[:4])[0]
+        ff = entry["ff"]
+        pins = {
+            "d": str(ff["data"]),
+            "en": str(ff["clock"]),
+            "q": str(entry["outputs"][ff["output"]]),
+        }
+        return RoleCell(_concrete(pattern, entry), pins, ties)
+
 
 def library_roles(
     cell_map: Mapping[str, Any], *, name: str | None = None

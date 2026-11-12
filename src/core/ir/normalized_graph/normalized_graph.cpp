@@ -331,7 +331,9 @@ NormalizedGraph NormalizedGraph::from_parsed(
       throw UnsupportedCellError(cell.type);
     }
 
-    if (entry->unsupported) {
+    // A latch needs unknown values (it powers up holding X): a two-valued graph
+    // treats it as a cell it does not model, as before the X engine.
+    if (entry->unsupported || (entry->node_type == NodeType::LATCH && !x_mode)) {
       if (policy == "blackbox") {
         ng.unknown_cells.insert(inst);
         if (!entry->outputs.empty()) {
@@ -362,7 +364,9 @@ NormalizedGraph NormalizedGraph::from_parsed(
       throw UnsupportedCellError(cell.type);
     }
 
-    if (entry->node_type == NodeType::LATCH || entry->node_type == NodeType::TBUF) {
+    // The X engine models a latch from an entry with its pins (an ff block).
+    if ((entry->node_type == NodeType::LATCH && !entry->ff.present) ||
+        entry->node_type == NodeType::TBUF) {
       throw UnsupportedCellError(cell.type);
     }
 
@@ -449,8 +453,11 @@ NormalizedGraph NormalizedGraph::from_parsed(
     node.id = next_node_id++;
     node.instance = inst;
     node.type = entry->node_type;
-    node.gate_type =
-        entry->node_type == NodeType::FF ? GateType::DFF : entry->gate_type;
+    node.gate_type = entry->node_type == NodeType::FF      ? GateType::DFF
+                     : entry->node_type == NodeType::LATCH ? GateType::LATCH
+                                                           : entry->gate_type;
+    const bool stateful = entry->node_type == NodeType::FF ||
+                          entry->node_type == NodeType::LATCH;
 
     if (entry->node_type == NodeType::GATE) {
       node.input_order = entry->inputs;
@@ -474,8 +481,9 @@ NormalizedGraph NormalizedGraph::from_parsed(
     int qn_net = -1;
     for (const auto& [logical, lib_pin] : entry->outputs) {
       auto it = cell.conns.find(lib_pin);
-      if (entry->node_type == NodeType::FF && logical == "QN") {
-        // A flop's inverted output: driven by an inverter reading Q, below.
+      if (stateful && logical == "QN") {
+        // A flop's (or latch's) inverted output: driven by an inverter reading
+        // Q, below.
         if (it != cell.conns.end() && !it->second.empty()) {
           qn_net = it->second.front();
         }
@@ -491,10 +499,12 @@ NormalizedGraph NormalizedGraph::from_parsed(
       }
     }
 
-    if (entry->node_type == NodeType::FF) {
+    if (stateful) {
       node.ff_config = build_ff_config(*entry, cell);
+      node.ff_config.latch_enable_level = entry->ff.level;
       // A constant on a pin (a tied-off reset) clocks and resets nothing, and
-      // whatever else reads it keeps its faults.
+      // whatever else reads it keeps its faults. A latch's enable is its clock,
+      // as a flop's is.
       if (node.ff_config.clock_net >= 0) {
         tag_clock_net(ng, node.ff_config.clock_net);
         clock_pins.insert(node.ff_config.clock_net);
@@ -508,7 +518,7 @@ NormalizedGraph NormalizedGraph::from_parsed(
       node.level = 0;
     }
 
-    const int q_net = node.type == NodeType::FF ? node.ff_config.output_net : -1;
+    const int q_net = stateful ? node.ff_config.output_net : -1;
     const std::string node_instance = node.instance;
     ng.nodes[node.id] = std::move(node);
     if (qn_net >= 0) {

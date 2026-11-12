@@ -24,6 +24,9 @@ struct CellFFMetadata {
   std::string scan_in;
   std::string scan_enable;
   TriggerType trigger = TriggerType::POSEDGE;
+  // A latch's "trigger" is a level, HIGH or LOW: `clock` is its enable pin.
+  bool level_sensitive = false;
+  Polarity level = Polarity::ACTIVE_HIGH;
   Polarity scan_enable_polarity = Polarity::ACTIVE_HIGH;
   CellFFControl clear;
   CellFFControl preset;

@@ -795,7 +795,26 @@
     }
   },
   "sky130_fd_sc_hd__dlrtp_*": {
-    "node_type": "LATCH"
+    "node_type": "LATCH",
+    "inputs": [
+      "D",
+      "GATE",
+      "RESET_B"
+    ],
+    "outputs": {
+      "Q": "Q"
+    },
+    "ff": {
+      "clock": "GATE",
+      "data": "D",
+      "output": "Q",
+      "trigger": "HIGH",
+      "clear": {
+        "pin": "RESET_B",
+        "level": "LOW",
+        "value": 0
+      }
+    }
   },
   "sky130_fd_sc_hd__ebufn_*": {
     "node_type": "TBUF"
@@ -1722,32 +1741,138 @@
     ]
   },
   "sky130_fd_sc_hd__dlrbn_*": {
-    "unsupported": true,
-    "reason": "latch (out of scope: no X-state)"
+    "node_type": "LATCH",
+    "inputs": [
+      "D",
+      "GATE_N",
+      "RESET_B"
+    ],
+    "outputs": {
+      "Q": "Q",
+      "QN": "Q_N"
+    },
+    "ff": {
+      "clock": "GATE_N",
+      "data": "D",
+      "output": "Q",
+      "trigger": "LOW",
+      "clear": {
+        "pin": "RESET_B",
+        "level": "LOW",
+        "value": 0
+      }
+    }
   },
   "sky130_fd_sc_hd__dlrbp_*": {
-    "unsupported": true,
-    "reason": "latch (out of scope: no X-state)"
+    "node_type": "LATCH",
+    "inputs": [
+      "D",
+      "GATE",
+      "RESET_B"
+    ],
+    "outputs": {
+      "Q": "Q",
+      "QN": "Q_N"
+    },
+    "ff": {
+      "clock": "GATE",
+      "data": "D",
+      "output": "Q",
+      "trigger": "HIGH",
+      "clear": {
+        "pin": "RESET_B",
+        "level": "LOW",
+        "value": 0
+      }
+    }
   },
   "sky130_fd_sc_hd__dlrtn_*": {
-    "unsupported": true,
-    "reason": "latch (out of scope: no X-state)"
+    "node_type": "LATCH",
+    "inputs": [
+      "D",
+      "GATE_N",
+      "RESET_B"
+    ],
+    "outputs": {
+      "Q": "Q"
+    },
+    "ff": {
+      "clock": "GATE_N",
+      "data": "D",
+      "output": "Q",
+      "trigger": "LOW",
+      "clear": {
+        "pin": "RESET_B",
+        "level": "LOW",
+        "value": 0
+      }
+    }
   },
   "sky130_fd_sc_hd__dlxbn_*": {
-    "unsupported": true,
-    "reason": "latch (out of scope: no X-state)"
+    "node_type": "LATCH",
+    "inputs": [
+      "D",
+      "GATE_N"
+    ],
+    "outputs": {
+      "Q": "Q",
+      "QN": "Q_N"
+    },
+    "ff": {
+      "clock": "GATE_N",
+      "data": "D",
+      "output": "Q",
+      "trigger": "LOW"
+    }
   },
   "sky130_fd_sc_hd__dlxbp_*": {
-    "unsupported": true,
-    "reason": "latch (out of scope: no X-state)"
+    "node_type": "LATCH",
+    "inputs": [
+      "D",
+      "GATE"
+    ],
+    "outputs": {
+      "Q": "Q",
+      "QN": "Q_N"
+    },
+    "ff": {
+      "clock": "GATE",
+      "data": "D",
+      "output": "Q",
+      "trigger": "HIGH"
+    }
   },
   "sky130_fd_sc_hd__dlxtn_*": {
-    "unsupported": true,
-    "reason": "latch (out of scope: no X-state)"
+    "node_type": "LATCH",
+    "inputs": [
+      "D",
+      "GATE_N"
+    ],
+    "outputs": {
+      "Q": "Q"
+    },
+    "ff": {
+      "clock": "GATE_N",
+      "data": "D",
+      "output": "Q",
+      "trigger": "LOW"
+    }
   },
   "sky130_fd_sc_hd__dlxtp_*": {
-    "unsupported": true,
-    "reason": "latch (out of scope: no X-state)"
+    "node_type": "LATCH",
+    "inputs": [
+      "D",
+      "GATE"
+    ],
+    "outputs": {
+      "Q": "Q"
+    },
+    "ff": {
+      "clock": "GATE",
+      "data": "D",
+      "output": "Q",
+      "trigger": "HIGH"
+    }
   },
   "sky130_fd_sc_hd__edfxbp_*": {
     "node_type": "FF",
@@ -1891,8 +2016,20 @@
     ]
   },
   "sky130_fd_sc_hd__lpflow_inputisolatch_*": {
-    "unsupported": true,
-    "reason": "latch (out of scope: no X-state)"
+    "node_type": "LATCH",
+    "inputs": [
+      "D",
+      "SLEEP_B"
+    ],
+    "outputs": {
+      "Q": "Q"
+    },
+    "ff": {
+      "clock": "SLEEP_B",
+      "data": "D",
+      "output": "Q",
+      "trigger": "HIGH"
+    }
   },
   "sky130_fd_sc_hd__lpflow_isobufsrckapwr_*": {
     "node_type": "GATE",

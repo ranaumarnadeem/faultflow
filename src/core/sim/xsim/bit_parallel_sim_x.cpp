@@ -68,6 +68,28 @@ Dual gather(const std::vector<Dual>& nv, uint32_t slot) {
   return slot == UNUSED_INPUT ? dual_known(0ULL) : nv[slot];
 }
 
+Dual active(Dual v, Polarity polarity);
+
+// GoldenRefSimX's eval_latch over 64 lanes.
+Dual eval_latch_dual(const CompiledSimGraph& cg, const SimNode& sn,
+                     const std::array<Dual, 6>& ins, Dual& state) {
+  const CompiledFFConfig& cfg = cg.latch_configs.at(sn.ff_cfg);
+  const Dual zero = dual_known(0ULL);
+  const Dual enable = active(ins[1], cfg.enable_polarity);
+  const Dual clear = (cfg.has_clear && sn.in2 != UNUSED_INPUT)
+                         ? active(ins[2], cfg.clear_polarity)
+                         : zero;
+  const Dual preset = (cfg.has_preset && sn.in3 != UNUSED_INPUT)
+                          ? active(ins[3], cfg.preset_polarity)
+                          : zero;
+  const Dual open = dual_mux(enable, state, ins[0]);
+  const auto constant = [](uint8_t v) { return dual_known(v != 0 ? ~0ULL : 0ULL); };
+  state = dual_mux(clear, dual_mux(preset, open, constant(cfg.preset_value)),
+                   dual_mux(preset, constant(cfg.clear_value),
+                            constant(cfg.clear_preset_conflict_value)));
+  return state;
+}
+
 void evaluate_combinational(XState& st, const CompiledSimGraph& cg,
                             const FaultBatch& batch) {
   auto& nv = st.values;
@@ -93,7 +115,9 @@ void evaluate_combinational(XState& st, const CompiledSimGraph& cg,
         ins[3] = gather(nv, sn.in3);
         ins[4] = gather(nv, sn.in4);
         ins[5] = gather(nv, sn.in5);
-        nv[sn.out] = is_icg(sn.type)
+        nv[sn.out] = sn.type == GateType::LATCH
+                         ? eval_latch_dual(cg, sn, ins, st.latches[sn.out])
+                     : is_icg(sn.type)
                          ? eval_icg_dual(sn.type, ins[0], dual_or(ins[1], ins[2]),
                                          st.latches[sn.out])
                          : eval_gate_dual(sn.type, ins);

@@ -257,6 +257,44 @@ def test_clear_and_preset_together_take_the_librarys_conflict_value(core: Any) -
     assert entry["outputs"] == {"Q": "Q", "QN": "Q_N"}
 
 
+def test_a_latch_is_read_from_its_latch_group(core: Any) -> None:
+    """Enable, data, clear and the inverted output, as sky130's dlrbn has them;
+    a latch whose data_in is no single pin is listed instead."""
+    dlrbn = _cell(
+        "demo__dlrbn_1",
+        ' latch ("IQ","IQ_N") { data_in : "D"; enable : "!GATE_N";'
+        ' clear : "!RESET_B"; }\n'
+        + _pin("D")
+        + _pin("GATE_N")
+        + _pin("RESET_B")
+        + _pin("Q", "output", function="IQ")
+        + _pin("Q_N", "output", function="IQ_N"),
+    )
+    odd = _cell(
+        "demo__dlodd_1",
+        ' latch ("IQ","IQ_N") { data_in : "D&E"; enable : "GATE"; }\n'
+        + _pin("D")
+        + _pin("E")
+        + _pin("GATE")
+        + _pin("Q", "output", function="IQ"),
+    )
+    result = _generate(_lib(dlrbn, odd))
+    entry = result.cell_map["demo__dlrbn_*"]
+    assert entry["node_type"] == "LATCH"
+    assert entry["inputs"] == ["D", "GATE_N", "RESET_B"]
+    assert entry["outputs"] == {"Q": "Q", "QN": "Q_N"}
+    assert entry["ff"] == {
+        "clock": "GATE_N",
+        "data": "D",
+        "output": "Q",
+        "trigger": "LOW",
+        "clear": {"pin": "RESET_B", "level": "LOW", "value": 0},
+    }
+    assert result.cell_map["demo__dlodd_*"]["unsupported"] is True
+    kinds = {r.cell: r.kind for r in result.report}
+    assert kinds == {"demo__dlrbn_1": "x_engine", "demo__dlodd_1": "latch"}
+
+
 def test_cells_the_engine_does_not_model_are_listed_explicitly(core: Any) -> None:
     latch = _cell(
         "demo__dlxtp_1",
@@ -289,8 +327,14 @@ def test_cells_the_engine_does_not_model_are_listed_explicitly(core: Any) -> Non
     odd = _comb("demo__odd_1", ["A", "B", "C", "D"], {"Y": "!(A&B&C) ^ D"})
     result = _generate(_lib(latch, icg, tbuf, muxb, probe, decap, odd))
     cm = result.cell_map
-    assert cm["demo__dlxtp_*"]["unsupported"] is True
-    assert "latch" in cm["demo__dlxtp_*"]["reason"]
+    # A latch is modelled, by the X engine only.
+    assert cm["demo__dlxtp_*"] == {
+        "node_type": "LATCH",
+        "inputs": ["D", "GATE"],
+        "outputs": {"Q": "Q"},
+        "ff": {"clock": "GATE", "data": "D", "output": "Q", "trigger": "HIGH"},
+        "variants": ["demo__dlxtp_1"],
+    }
     assert cm["demo__dlclkp_*"]["unsupported"] is True
     assert "clock-gating" in cm["demo__dlclkp_*"]["reason"]
     assert cm["demo__ebufn_*"] == {"node_type": "TBUF", "reason": "tristate output"}
@@ -302,7 +346,7 @@ def test_cells_the_engine_does_not_model_are_listed_explicitly(core: Any) -> Non
     # The report names every cell that isn't modelled, with why.
     listed = {r.cell: r.kind for r in result.report}
     assert listed["demo__odd_1"] == "no_gate_type"
-    assert listed["demo__dlxtp_1"] == "latch"
+    assert listed["demo__dlxtp_1"] == "x_engine"
     assert listed["demo__decap_4"] == "physical"
     # A probe buffer is physical by policy, whatever its function.
     assert listed["demo__probe_p_8"] == "physical"

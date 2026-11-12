@@ -553,8 +553,9 @@ class Netlist:
             entry = self.entry(instance)
             if entry is None:
                 continue
-            if entry.get("node_type") == "LATCH":
-                raise TraceError(f"{instance} is a latch; faultflow has no latches")
+            # A latch is no flop: the two-valued flows leave it out of the model
+            # as an unknown cell (unsupported_cells = blackbox), as before the X
+            # engine modeled it.
             if entry.get("node_type") != "FF":
                 continue
             ff = entry.get("ff", {})

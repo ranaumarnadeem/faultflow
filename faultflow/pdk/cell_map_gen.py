@@ -9,7 +9,10 @@
   ``test_scan_in`` / ``test_scan_enable``). ``next_state`` must be the engine's model --
   scan mux, then an optional enable that holds ``IQ``, then the data pin -- checked by
   truth table, or the cell is listed.
-- Every other cell is listed, never guessed: latches, tristates, clock-gating cells,
+- A latch is read from its ``latch`` group (``enable``, ``data_in``, ``clear``,
+  ``preset``): a LATCH entry, modelled by the X engine only, and still listed (kind
+  x_engine) so synthesis never picks it.
+- Every other cell is listed, never guessed: tristates, clock-gating cells,
   physical cells (no logic output), and functions no gate type has.
 
 Drive strengths of one cell (``<name>_1``, ``<name>_4``) share a ``<name>_*`` pattern
@@ -44,7 +47,8 @@ class CellReport:
     """A library cell the map does not model as a gate or a flop, and why."""
 
     cell: str
-    # latch | icg | tristate | physical | tie | no_gate_type | multi_output | ff
+    # latch | icg | tristate | physical | tie | no_gate_type | multi_output | ff |
+    # x_engine (modelled, by the X engine only: a latch)
     kind: str
     detail: str
 
@@ -414,6 +418,83 @@ class _Generator:
             outputs["QN"] = qn[0]
         return {"node_type": "FF", "inputs": inputs, "outputs": outputs, "ff": meta}
 
+    # ---------------------------------------------------------------- latches
+    def latch(self, name: str, cell: Group, group: Group) -> dict[str, Any]:
+        """A level-sensitive latch, from its Liberty ``latch`` group: ``enable``
+        one pin at a level, ``data_in`` one pin, ``clear`` and ``preset`` each one
+        pin at a level. Only the X engine ([simulation] engine = x) models it; a
+        two-valued run leaves it out as a cell it does not model. It stays in the
+        report (kind x_engine), so synthesis keeps it a don't-use cell."""
+
+        def fail(detail: str) -> dict[str, Any]:
+            return self.listed(name, "latch", f"latch not modelled: {detail}")
+
+        iq = str(group.args[0]) if group.args else "IQ"
+        iqn = str(group.args[1]) if len(group.args) > 1 else "IQ_N"
+        pins = _pins(cell)
+        try:
+            enable = parse_expr(group.attrs["enable"])
+            data_in = parse_expr(group.attrs["data_in"])
+            clear = parse_expr(group.attrs["clear"]) if "clear" in group.attrs else None
+            preset = (
+                parse_expr(group.attrs["preset"]) if "preset" in group.attrs else None
+            )
+        except (KeyError, LibertyError) as exc:
+            return fail(f"latch group: {exc}")
+        en = _single_var(enable)
+        if en is None:
+            return fail(f"enable {group.attrs['enable']!r}")
+        data = _single_var(data_in)
+        if data is None or not data[1]:
+            return fail(f"data_in {group.attrs['data_in']!r}")
+        controls: dict[str, dict[str, Any]] = {}
+        for key, expr, value in (("clear", clear, 0), ("preset", preset, 1)):
+            if expr is None:
+                continue
+            ctl = _single_var(expr)
+            if ctl is None:
+                return fail(f"{key} {group.attrs[key]!r}")
+            controls[key] = {
+                "pin": ctl[0],
+                "level": "HIGH" if ctl[1] else "LOW",
+                "value": value,
+            }
+        q = [p for p, g in pins.items() if g.attrs.get("function", "").strip() == iq]
+        qn = [p for p, g in pins.items() if g.attrs.get("function", "").strip() == iqn]
+        others = [
+            p
+            for p, g in pins.items()
+            if g.attrs.get("direction") == "output" and p not in q + qn
+        ]
+        if len(q) != 1 or len(qn) > 1 or others:
+            return fail(f"outputs Q={q} QN={qn} other={others}")
+        meta: dict[str, Any] = {
+            "clock": en[0],
+            "data": data[0],
+            "output": q[0],
+            "trigger": "HIGH" if en[1] else "LOW",
+            **controls,
+        }
+        if "clear" in controls and "preset" in controls:
+            both = group.attrs.get("clear_preset_var1", "L")
+            if both not in ("L", "H"):
+                return fail(f"clear_preset_var1 {both!r}")
+            meta["clear_preset_conflict_value"] = 1 if both == "H" else 0
+        outputs = {"Q": q[0]}
+        if qn:
+            outputs["QN"] = qn[0]
+        self.report.append(
+            CellReport(
+                name, "x_engine", "latch (the X engine only: [simulation] engine = x)"
+            )
+        )
+        return {
+            "node_type": "LATCH",
+            "inputs": [data[0], en[0], *(controls[k]["pin"] for k in controls)],
+            "outputs": outputs,
+            "ff": meta,
+        }
+
     # ---------------------------------------------------------------- clock gates
     def icg(self, name: str, cell: Group) -> dict[str, Any]:
         """An integrated clock gate, from its Liberty: ``latch_posedge`` (a latch
@@ -461,8 +542,9 @@ class _Generator:
             return self.listed(name, "physical", "probe cell (physical, by policy)")
         if "clock_gating_integrated_cell" in cell.attrs:
             return self.icg(name, cell)
-        if cell.find("latch") is not None:
-            return self.listed(name, "latch", "latch (out of scope: no X-state)")
+        latch = cell.find("latch")
+        if latch is not None:
+            return self.latch(name, cell, latch)
         ff = cell.find("ff")
         if ff is not None:
             return self.flop(name, cell, ff)
@@ -524,7 +606,7 @@ def generate_cell_map(
         sized = all(_DRIVE.search(m) for m in members)
         if same and sized and not clash:
             entry = dict(entries[members[0]])
-            if entry.get("node_type") in ("GATE", "FF", "CONST", "ICG"):
+            if entry.get("node_type") in ("GATE", "FF", "CONST", "ICG", "LATCH"):
                 # The concrete cells the pattern stands for: what FaultFlow
                 # instantiates when it adds one (faultflow.pdk.roles).
                 entry["variants"] = list(members)

@@ -150,7 +150,7 @@ opt_expr
 opt_clean
 synth -top {top}
 dfflibmap -liberty {liberty}{dont_use}
-abc -liberty {liberty}{dont_use}
+{x_map}abc -liberty {liberty}{dont_use}
 delete t:$scopeinfo
 delete =A:faultflow_liberty_cell
 clean
@@ -509,9 +509,26 @@ class Runner:
             liberty=self.cfg.liberty or "",
             # Cells the library's map doesn't model (faultflow.pdk.resolve).
             dont_use="".join(f" -dont_use {cell}" for cell in self.cfg.dont_use),
+            # The X engine's latches as library cells (empty two-valued).
+            x_map=self._x_map_lines(),
             json=self.cfg.intermediate_dir / f"{self.cfg.top}.json",
             gate_verilog=self.cfg.intermediate_dir / f"{self.cfg.top}_gate.v",
         )
+
+    def _x_map_path(self) -> Path:
+        return self.cfg.generated_scripts_dir / "x_latch_map.v"
+
+    def _x_latch_cells(self) -> dict[str, Any]:
+        if self.cfg.simulation.engine != "x" or not self.cfg.cell_lib.exists():
+            return {}
+        from faultflow.pdk.x_synth import latch_cells
+
+        return latch_cells(_load_json_object(self.cfg.cell_lib))
+
+    def _x_map_lines(self) -> str:
+        from faultflow.pdk.x_synth import x_map_lines
+
+        return x_map_lines(self._x_latch_cells(), self._x_map_path())
 
     def _existing_verilog_source(self) -> Path | None:
         candidates = []
@@ -650,6 +667,11 @@ class Runner:
         source = self._find_verilog_source()
         json_path = self.cfg.intermediate_dir / f"{self.cfg.top}.json"
         script = self.cfg.generated_scripts_dir / "yosys_synth.tcl"
+        latch_cells = self._x_latch_cells()
+        if latch_cells:
+            from faultflow.pdk.x_synth import latch_techmap
+
+            self._x_map_path().write_text(latch_techmap(latch_cells), encoding="utf-8")
         script.write_text(self._rendered_yosys_script(source), encoding="utf-8")
         proc = subprocess.run(
             ["yosys", "-s", str(script)],
