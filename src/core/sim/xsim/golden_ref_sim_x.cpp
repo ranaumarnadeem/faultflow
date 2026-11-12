@@ -80,6 +80,11 @@ void evaluate_combinational(const CompiledSimGraph& cg, std::vector<Logic>& valu
       apply_fault(values, fault, sn.out);
       return;
     }
+    if (sn.type == GateType::CONSTX) {
+      values[sn.out] = Logic::X;
+      apply_fault(values, fault, sn.out);
+      return;
+    }
     if (is_icg(sn.type)) {
       const auto at = [&](uint32_t slot) {
         return slot != UNUSED_INPUT ? values[slot] : Logic::ZERO;

@@ -11,6 +11,10 @@ using CompiledNetIndex = uint32_t;
 
 inline constexpr YosysNetID CONST0_NET_ID = -1;
 inline constexpr YosysNetID CONST1_NET_ID = -2;
+// An x or z bit of the netlist, kept apart only by an X-mode parse (ParsedGraph
+// keep_x): the X engine reads it as an unknown constant (GateType CONSTX). The
+// two-valued path ties x and z to CONST0_NET_ID.
+inline constexpr YosysNetID XZ_NET_ID = -3;
 
 inline constexpr CompiledNetIndex UNUSED_INPUT =
     std::numeric_limits<CompiledNetIndex>::max();
@@ -126,6 +130,9 @@ enum class GateType {
   // whether it lets its flops capture -- what their capture holds on.
   ICG_EN,        // in1 | in2: the root gate of its clock
   ICG_EN_CHAIN,  // in0 & (in1 | in2): in0 the enable of the gate before it
+  // X engine only (an X-mode compile, never a two-valued graph): none has a
+  // two-valued function, so eval_gate and the cell maps never see them.
+  CONSTX,  // an x or z bit of the netlist: unknown
 };
 
 enum class NodeType { GATE, FF, LATCH, CONST, TBUF, ICG };
@@ -182,6 +189,9 @@ enum class FaultStatus : uint8_t {
   DETECTED = 1,
   UNDETECTED = 2,
   REDUNDANT = 3,
+  // The X engine saw the faulty output unknown where the good one is known, and
+  // never a definite difference: credited by [fault_model] possible_credit.
+  POSSIBLE = 4,
 };
 
 enum class FaultExclusion : uint8_t {

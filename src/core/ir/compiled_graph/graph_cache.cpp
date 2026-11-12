@@ -8,6 +8,7 @@
 #include <system_error>
 #include <utility>
 
+#include "ir/graph_policy.hpp"
 #include "ir/normalized_graph/cell_map.hpp"
 
 namespace faultflow {
@@ -60,13 +61,16 @@ CachedGraph build_graph(const std::string& json_path,
                         const std::string& cell_map_path,
                         const std::string& unsupported_policy,
                         const std::vector<std::string>& blackbox_instances) {
+  // The policy string may ask for an X-mode graph (graph_policy.hpp); it keys
+  // the cache whole, so the two modes never share an entry.
+  const GraphPolicy gp = parse_graph_policy(unsupported_policy);
   CachedGraph graph;
-  graph.parsed = ParsedGraph::from_file(json_path);
+  graph.parsed = ParsedGraph::from_file(json_path, gp.x_mode);
   const CellMap cell_map = CellMap::load(cell_map_path);
   const std::set<std::string> bb(blackbox_instances.begin(),
                                  blackbox_instances.end());
-  graph.ng = NormalizedGraph::from_parsed(graph.parsed, cell_map,
-                                          unsupported_policy, bb);
+  graph.ng = NormalizedGraph::from_parsed(graph.parsed, cell_map, gp.unsupported, bb,
+                                          gp.x_mode);
   graph.cg = GraphCompiler::compile(graph.ng);
   return graph;
 }

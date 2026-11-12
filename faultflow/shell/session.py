@@ -522,6 +522,23 @@ class ProjectSession:
                 )
             elif key == "report.threshold":
                 cfg = replace(cfg, report=replace(cfg.report, threshold=float(value)))
+            elif key == "simulation.engine":
+                if value not in {"two_valued", "x"}:
+                    raise ShellError(
+                        "engine must be two_valued or x", "CONFIG", "INVALID_VALUE"
+                    )
+                cfg = replace(cfg, simulation=replace(cfg.simulation, engine=value))
+            elif key == "fault_model.possible_credit":
+                credit = float(value)
+                if not 0.0 <= credit <= 100.0:
+                    raise ShellError(
+                        "possible_credit must be a percent, 0 to 100",
+                        "CONFIG",
+                        "INVALID_VALUE",
+                    )
+                cfg = replace(
+                    cfg, fault_model=replace(cfg.fault_model, possible_credit=credit)
+                )
             elif key == "simulation.unsupported_cells":
                 if value not in {"fail", "blackbox"}:
                     raise ShellError(
@@ -901,7 +918,9 @@ class ProjectSession:
             "fault_model.collapsing",
             "fault_model.include_reset_faults",
             "fault_model.include_clock_faults",
+            "fault_model.possible_credit",
             "report.threshold",
+            "simulation.engine",
             "simulation.sim_threads",
             "simulation.unsupported_cells",
             # Deliberately NOT here, even though config.ofs has them:

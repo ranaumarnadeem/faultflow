@@ -141,6 +141,7 @@ libraries) and the decompressor's and compactor's, each mapping only onto
 | `collapsing` | bool | `true` (see note) | Enable equivalence-only fault collapsing — never dominance, so coverage is provably unchanged (see [Collapsing rules](../collapsing_rules.md)). `transition` + `collapsing=true` is an error |
 | `include_clock_faults` | bool | `false` | Count clock-net faults in the denominator |
 | `include_reset_faults` | bool | `false` | Grade async reset/set-tree faults via implication instead of excluding them. In a scan test a pattern may then set a reset input active, in the capture only: the input stays inactive while the chains shift (`shift_pi_values` in exported patterns). Fingerprinted — toggling it forces a fresh campaign |
+| `possible_credit` | 0 to 100 | `50` | With `[simulation] engine = x`: the coverage credit, in percent of a detection, of a fault only possibly detected (see below). Changes the percentages only, never a fault's status, so it is not fingerprinted |
 
 ```{important}
 `collapsing` defaults to **true** (on) when the key is omitted entirely.
@@ -154,6 +155,7 @@ line rather than setting it turns collapsing back on.
 | Key | Allowed values | Default | Meaning |
 |---|---|---|---|
 | `unsupported_cells` | `fail`, `blackbox` | `fail` | Policy when a cell is not in the cell map (see below) |
+| `engine` | `two_valued`, `x` | `two_valued` | The simulation engine. `x` carries an unknown value as well as 0 and 1 (see below). Fingerprinted: a campaign never resumes across engines |
 | `verify` | bool | `false` | Run the optional iverilog verification gate |
 | `verify_tool` | `iverilog` | `iverilog` | Verification backend |
 | `verify_use_power_pins` | bool | `false` | Drive `VPWR=1`/`VGND=0` and pass `-DUSE_POWER_PINS` in the generated testbench, for behavioral models that need it |
@@ -173,6 +175,28 @@ never redundant. A scan run masks it like a `[blackbox]` instance whose
 `output_value` is `x`, and refuses one whose output reaches a scan flop's clock,
 scan-in, scan-enable or async set/reset. The report lists the cells
 (`policy.unknown_cells`). There is no silent-skip option.
+```
+
+```{admonition} The X engine (engine = x)
+:class: note
+The default engine is two-valued: an `x` or `z` bit of the netlist reads as 0.
+`engine = x` runs the X engine instead, which also carries an unknown value: an
+`x` or `z` bit is unknown, and every cell computes exactly what its inputs
+determine (a cell's output is known when every value of its unknown inputs
+gives the same one). A fault is **detected** where the test shows a 0 against a
+1 at an output. It is **possibly detected** (status `possible`) where the good
+output is known but the faulty one is unknown, and no test shows it
+definitely. Such a fault counts `[fault_model] possible_credit` percent of a
+detection in both coverage percentages, 50% by default (the usual vendor
+convention); the denominator is unchanged. Where the good output is unknown,
+nothing is credited.
+
+SAT test generation follows the same rules: it looks for a test that detects a
+fault definitely, and with none, for one that may (`POSSIBLE`); it proves a
+fault redundant only when no value of the unknowns lets any test show it.
+`engine = x` grades stuck-at faults in combinational runs (`ff.py sim`, also
+`--ext`); transition faults, scan runs (`--scan`, `intest`, `extest`) and the
+iverilog gate (`verify`) stay two-valued and refuse it.
 ```
 
 ## `[atpg]`

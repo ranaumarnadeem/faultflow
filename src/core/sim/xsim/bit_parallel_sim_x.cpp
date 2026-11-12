@@ -84,6 +84,8 @@ void evaluate_combinational(XState& st, const CompiledSimGraph& cg,
       }
       if (sn.type == GateType::CONST0 || sn.type == GateType::CONST1) {
         nv[sn.out] = dual_known(sn.type == GateType::CONST1 ? ~0ULL : 0ULL);
+      } else if (sn.type == GateType::CONSTX) {
+        nv[sn.out] = dual_x();
       } else {
         ins[0] = gather(nv, sn.in0);
         ins[1] = gather(nv, sn.in1);

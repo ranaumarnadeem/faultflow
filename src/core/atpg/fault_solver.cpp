@@ -3,6 +3,7 @@
 #include <cadical.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <functional>
@@ -19,6 +20,7 @@
 #include "common/types.hpp"
 #include "ir/compiled_graph/compiled_graph.hpp"
 #include "sim/gate_eval.hpp"
+#include "sim/xsim/dual.hpp"
 
 namespace faultflow::atpg {
 namespace {
@@ -414,6 +416,15 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
     if (node.type == GateType::INPUT) {
       continue;
     }
+    if (node.type == GateType::CONSTX) {
+      // An x/z bit of an X-mode graph: an input the test cannot set, free in
+      // the good machine and the same variable in the faulty one. A candidate
+      // found through it is graded by the X engine, which alone credits it.
+      if (masks.in_outcone[node.out] && node.out != fault.net_index) {
+        add_equiv(solver, vars.free_vars.at(node.out), vars.faulty_vars.at(node.out));
+      }
+      continue;
+    }
     const auto input_nets = inputs_of(node);
     if (masks.in_support[node.out]) {
       std::vector<int> free_inputs;
@@ -491,6 +502,210 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
   }
   read_seed(solver, options, free_seed);
   return SatSolveResult::SAT;
+}
+
+namespace {
+
+// One net in the dual-rail CNF: literal h (the net can be 1) and l (can be 0).
+struct Rails {
+  int h = 0;
+  int l = 0;
+};
+
+// The nodes whose value an X-mode graph cannot know: an x/z bit of the netlist.
+bool is_x_source(const SimNode& node) { return node.type == GateType::CONSTX; }
+
+// out <-> OR over `cubes` of AND of the input literals each cube cares about
+// (input i at 1 reads its h rail, at 0 its l rail): eval_gate_dual's own rule.
+void add_cube_cover(CaDiCaL::Solver& solver, int& next, const std::vector<DualCube>& cubes,
+                    const std::array<Rails, 6>& in, int out) {
+  std::vector<int> any{-out};
+  for (const DualCube& c : cubes) {
+    std::vector<int> lits;
+    for (int i = 0; i < 6; ++i) {
+      if (((c.care >> i) & 1) != 0) {
+        lits.push_back(((c.value >> i) & 1) != 0 ? in[static_cast<size_t>(i)].h
+                                                 : in[static_cast<size_t>(i)].l);
+      }
+    }
+    const int term = next++;
+    std::vector<int> all{term};
+    for (int lit : lits) {
+      add_clause(solver, {-term, lit});
+      all.push_back(-lit);
+    }
+    add_clause(solver, all);
+    add_clause(solver, {-term, out});
+    any.push_back(term);
+  }
+  add_clause(solver, any);
+}
+
+}  // namespace
+
+SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
+                                      const std::vector<AtpgPiInfo>& pis,
+                                      const CompactFault& fault,
+                                      const SatSolveOptions& options,
+                                      std::map<std::string, bool>& out) {
+  const std::vector<uint32_t> observable_set(cg.observable.begin(), cg.observable.end());
+  const ConeMasks masks =
+      build_cone_masks(cg, fault.net_index, observable_set, options.cone_restrict);
+  if (masks.redundant) {
+    return SatSolveResult::UNSAT;  // reaches no observable, whatever the unknowns
+  }
+  bool unknown_in_cone = false;
+  for (const SimNode& node : cg.nodes) {
+    if (is_x_source(node) && (masks.in_support[node.out] || masks.in_outcone[node.out])) {
+      unknown_in_cone = true;
+      break;
+    }
+  }
+  if (!unknown_in_cone) {
+    return solve_stuck_at_fault(cg, pis, fault, options, out);
+  }
+  if (options.cnf_export != nullptr || options.seed_width > 0) {
+    throw std::runtime_error(
+        "an X-mode graph's dual-rail SAT ATPG has no CNF export or seeded inputs");
+  }
+
+  CaDiCaL::Solver solver;
+  const auto time_guard = apply_solver_limits(solver, options);
+  const size_t n = static_cast<size_t>(cg.net_count);
+  int next = 1;
+  const int truth = next++;
+  add_unit(solver, truth);
+  const Rails zero{-truth, truth};
+  const Rails one{truth, -truth};
+  const Rails unknown{truth, truth};
+
+  // The good machine's rails, made on first use from the net's driver: a PI one
+  // variable (h = v, l = ~v), a constant fixed, an unknown (1,1), a gate a pair.
+  std::vector<Rails> good(n);
+  std::vector<char> have_good(n, 0);
+  const auto good_of = [&](uint32_t net) -> Rails {
+    if (have_good[net] == 0) {
+      have_good[net] = 1;
+      const int d = cg.driver_index[net];
+      const GateType type =
+          d >= 0 ? cg.nodes[static_cast<size_t>(d)].type : GateType::INPUT;
+      if (type == GateType::INPUT) {
+        const int v = next++;
+        good[net] = {v, -v};
+      } else if (type == GateType::CONST0) {
+        good[net] = zero;
+      } else if (type == GateType::CONST1) {
+        good[net] = one;
+      } else if (type == GateType::CONSTX) {
+        good[net] = unknown;
+      } else {
+        good[net].h = next++;
+        good[net].l = next++;
+      }
+    }
+    return good[net];
+  };
+  // The faulty machine's: the fault net forced, the rest of its out-cone a pair
+  // of its own, everything else the good machine's.
+  std::vector<Rails> bad(n);
+  std::vector<char> have_bad(n, 0);
+  const auto bad_of = [&](uint32_t net) -> Rails {
+    if (net == fault.net_index) {
+      return fault.type == FaultType::SA1 ? one : zero;
+    }
+    if (masks.in_outcone[net] == 0) {
+      return good_of(net);
+    }
+    if (have_bad[net] == 0) {
+      have_bad[net] = 1;
+      bad[net].h = next++;
+      bad[net].l = next++;
+    }
+    return bad[net];
+  };
+  const auto encode = [&](const SimNode& node, Rails outr, const auto& rails_of) {
+    const DualCubes& cubes = dual_cubes(node.type);
+    if (!cubes.valid) {
+      throw std::runtime_error("dual-rail SAT ATPG: a node with no combinational function");
+    }
+    std::array<Rails, 6> in{};
+    const std::array<uint32_t, 6> slots{node.in0, node.in1, node.in2,
+                                        node.in3, node.in4, node.in5};
+    for (size_t i = 0; i < slots.size(); ++i) {
+      in[i] = slots[i] == UNUSED_INPUT ? zero : rails_of(slots[i]);  // unused reads 0
+    }
+    add_cube_cover(solver, next, cubes.ones, in, outr.h);
+    add_cube_cover(solver, next, cubes.zeros, in, outr.l);
+  };
+
+  for (const SimNode& node : cg.nodes) {
+    if (node.type == GateType::INPUT || node.type == GateType::CONST0 ||
+        node.type == GateType::CONST1 || is_x_source(node)) {
+      continue;
+    }
+    if (masks.in_support[node.out] != 0) {
+      encode(node, good_of(node.out), good_of);
+    }
+    if (masks.in_outcone[node.out] != 0 && node.out != fault.net_index) {
+      encode(node, bad_of(node.out), bad_of);
+    }
+  }
+
+  std::vector<int> pi_literals;
+  pi_literals.reserve(pis.size());
+  for (const AtpgPiInfo& pi : pis) {
+    pi_literals.push_back(good_of(pi.compiled).h);
+  }
+  for (const std::string& blocked : options.blocked_patterns) {
+    if (blocked.size() != pis.size()) {
+      throw std::runtime_error("blocked pattern length mismatch");
+    }
+    add_blocking_clause(solver, pi_literals, assignment_from_pattern(blocked));
+  }
+
+  // A definite difference: the good machine known and the faulty one the
+  // other known value, at some observed net.
+  std::vector<int> differs;
+  for (uint32_t obs : masks.observed) {
+    if (masks.in_outcone[obs] == 0) {
+      continue;
+    }
+    const Rails g = good_of(obs);
+    const Rails f = bad_of(obs);
+    const int d = next++;
+    const int rise = next++;  // good 0, faulty 1
+    const int fall = next++;  // good 1, faulty 0
+    for (int lit : {g.l, -g.h, f.h, -f.l}) {
+      add_clause(solver, {-rise, lit});
+    }
+    for (int lit : {g.h, -g.l, f.l, -f.h}) {
+      add_clause(solver, {-fall, lit});
+    }
+    add_clause(solver, {-d, rise, fall});
+    differs.push_back(d);
+  }
+  if (differs.empty()) {
+    return SatSolveResult::UNSAT;
+  }
+  add_clause(solver, differs);
+
+  const int status = solver.solve();
+  const SatSolveResult mapped =
+      map_cadical_result(status, status == 0 && had_solver_limits(options));
+  if (mapped == SatSolveResult::SAT) {
+    out.clear();
+    for (const AtpgPiInfo& pi : pis) {
+      out[pi.name] = solver.val(good_of(pi.compiled).h) > 0;
+    }
+    return SatSolveResult::SAT;
+  }
+  if (mapped != SatSolveResult::UNSAT) {
+    return mapped;
+  }
+  // No vector detects it definitely. The two-valued CNF says whether any shows
+  // it for some value of the unknowns (POSSIBLE at best) or none can (redundant).
+  const SatSolveResult two = solve_stuck_at_fault(cg, pis, fault, options, out);
+  return two == SatSolveResult::SAT ? SatSolveResult::POSSIBLE : two;
 }
 
 // Incremental Fan-in Cones (IFC) stuck-at solver (Tille/Eggersgluess/Drechsler,
@@ -610,7 +825,9 @@ SatSolveResult solve_stuck_at_fault_incremental(
         continue;  // net with no driver (should not occur post-compile)
       }
       const SimNode& node = cg.nodes[static_cast<size_t>(d)];
-      if (node.type == GateType::INPUT) {
+      // A PI, or an x/z bit of an X-mode graph (CONSTX: an input the test cannot
+      // set, graded by the X engine): free, the same in both machines.
+      if (node.type == GateType::INPUT || node.type == GateType::CONSTX) {
         if (in_outcone[net] && net != fault_net) {
           add_equiv(solver, vars.free_vars.at(net), vars.faulty_vars.at(net));
         }

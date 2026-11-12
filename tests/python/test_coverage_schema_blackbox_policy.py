@@ -127,6 +127,8 @@ def _minimal_valid_report() -> dict[str, Any]:
             "denominator": 1,
             "detected": 1,
             "undetected": 0,
+            "possible": 0,
+            "possible_credit_percent": 50.0,
             "redundant": 0,
             "collapsed": 0,
             "excluded_blackbox": 0,

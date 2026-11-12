@@ -51,7 +51,9 @@
         "blackbox_output_values": {
           "type": "object",
           "additionalProperties": { "enum": ["x", "0"] }
-        }
+        },
+        "engine": { "enum": ["x"] },
+        "possible_credit_percent": { "type": "number", "minimum": 0, "maximum": 100 }
       }
     },
     "summary": {
@@ -62,6 +64,8 @@
         "denominator",
         "detected",
         "undetected",
+        "possible",
+        "possible_credit_percent",
         "redundant",
         "collapsed",
         "excluded_blackbox",
@@ -90,6 +94,8 @@
         "denominator": { "type": "integer", "minimum": 1 },
         "detected": { "type": "integer", "minimum": 0 },
         "undetected": { "type": "integer", "minimum": 0 },
+        "possible": { "type": "integer", "minimum": 0 },
+        "possible_credit_percent": { "type": "number", "minimum": 0, "maximum": 100 },
         "redundant": { "type": "integer", "minimum": 0 },
         "collapsed": { "type": "integer", "minimum": 0 },
         "excluded_blackbox": { "type": "integer", "minimum": 0 },
@@ -167,6 +173,7 @@
           "total_faults": { "type": "integer", "minimum": 0 },
           "detected": { "type": "integer", "minimum": 0 },
           "undetected": { "type": "integer", "minimum": 0 },
+          "possible": { "type": "integer", "minimum": 1 },
           "collapsed": { "type": "integer", "minimum": 0 },
           "excluded": { "type": "integer", "minimum": 0 },
           "coverage_percent": {
@@ -181,6 +188,21 @@
     "reason_summary": {
       "type": "object",
       "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "possible_faults": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "net_id", "net_name", "fault_type", "fault_site_key"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "integer", "minimum": 1 },
+          "net_id": { "type": "integer" },
+          "net_name": { "type": "string" },
+          "fault_type": { "enum": ["sa0", "sa1"] },
+          "fault_site_key": { "type": "string" }
+        }
+      }
     },
     "undetected_faults": {
       "type": "array",

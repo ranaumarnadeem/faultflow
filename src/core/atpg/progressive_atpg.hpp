@@ -25,6 +25,14 @@ struct ProgressiveDetection {
   }
 };
 
+// simulate_incremental_x's: a definite detection, or (possible) the first vector
+// that only possibly detects a still-undetected fault.
+struct XProgressiveDetection {
+  int64_t fault_id = 0;
+  int64_t vector_index = 0;
+  bool possible = false;
+};
+
 struct SolveFaultResult {
   std::string result;
   std::map<std::string, bool> vector;
@@ -120,10 +128,33 @@ bool verify_fault_vector(
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {});
 
+// verify_fault_vector on the X engine (an X-mode graph, flops and latches
+// powered up unknown): 2 when the vector detects the fault definitely, 1 when
+// only possibly, 0 when not at all.
+int verify_fault_vector_x(const std::string& json_path, const std::string& cell_map_path,
+                          const std::string& db_path, int64_t fault_id,
+                          const std::map<std::string, bool>& vector,
+                          const std::string& unsupported_policy,
+                          const std::vector<std::string>& blackbox_instances = {});
+
 // `sim_threads` parallelizes fault grading: <= 0 means auto (hardware
 // concurrency), 1 is serial, N uses N threads. The result is bit-identical for
 // any thread count (DB writes + merge happen serially after join).
 std::vector<ProgressiveDetection> simulate_incremental(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t campaign_id, int64_t run_id,
+    const std::vector<std::map<std::string, bool>>& new_vectors,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {},
+    int sim_threads = 1);
+
+// simulate_incremental on the X engine (an X-mode graph, flops and latches
+// powered up unknown). A definite detection marks a fault detected and drops
+// it; a possible one marks a still-undetected fault 'possible' and keeps it a
+// target, so a later vector may still detect it definitely.
+std::vector<XProgressiveDetection> simulate_incremental_x(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t campaign_id, int64_t run_id,
     const std::vector<std::map<std::string, bool>>& new_vectors,

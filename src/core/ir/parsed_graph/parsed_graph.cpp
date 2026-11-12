@@ -50,7 +50,7 @@ std::string attr_to_string(const nlohmann::json& v) {
   return v.dump();
 }
 
-int parse_bit(const nlohmann::json& b) {
+int parse_bit(const nlohmann::json& b, bool keep_x) {
   if (b.is_number_integer()) {
     return b.get<int>();
   }
@@ -63,30 +63,30 @@ int parse_bit(const nlohmann::json& b) {
       return CONST1_NET_ID;
     }
     if (s == "x" || s == "z") {
-      // Post-synthesis x/z means "unconnected/don't-care input pin". Tie to
-      // CONST0: the core is two-valued by design, X-state is permanently out
-      // of scope.
-      return CONST0_NET_ID;
+      // Post-synthesis x/z means "unconnected/don't-care input pin". The
+      // two-valued engine ties it to CONST0; an X-mode parse keeps it apart,
+      // an unknown constant to the X engine.
+      return keep_x ? XZ_NET_ID : CONST0_NET_ID;
     }
     throw ParseError("Unknown constant bit: " + s);
   }
   throw ParseError("Invalid bit entry in JSON");
 }
 
-std::vector<int> parse_bits(const nlohmann::json& arr) {
+std::vector<int> parse_bits(const nlohmann::json& arr, bool keep_x) {
   std::vector<int> out;
   if (!arr.is_array()) {
     return out;
   }
   for (const auto& b : arr) {
-    out.push_back(parse_bit(b));
+    out.push_back(parse_bit(b, keep_x));
   }
   return out;
 }
 
 }  // namespace
 
-ParsedGraph ParsedGraph::from_json(const nlohmann::json& j) {
+ParsedGraph ParsedGraph::from_json(const nlohmann::json& j, bool keep_x) {
   ParsedGraph g;
   if (!j.contains("modules") || !j["modules"].is_object()) {
     throw ParseError("JSON missing modules object");
@@ -124,7 +124,7 @@ ParsedGraph ParsedGraph::from_json(const nlohmann::json& j) {
       for (auto p = mod_j["ports"].begin(); p != mod_j["ports"].end(); ++p) {
         ParsedPort port;
         port.direction = p.value().value("direction", "");
-        port.bits = parse_bits(p.value()["bits"]);
+        port.bits = parse_bits(p.value()["bits"], keep_x);
         mod.ports[p.key()] = std::move(port);
       }
     }
@@ -137,7 +137,7 @@ ParsedGraph ParsedGraph::from_json(const nlohmann::json& j) {
         if (c.value().contains("connections")) {
           for (auto conn = c.value()["connections"].begin();
                conn != c.value()["connections"].end(); ++conn) {
-            cell.conns[conn.key()] = parse_bits(conn.value());
+            cell.conns[conn.key()] = parse_bits(conn.value(), keep_x);
           }
         }
         // FaultFlow's own cell attributes (a scan ATPG view's clock gates:
@@ -170,7 +170,7 @@ ParsedGraph ParsedGraph::from_json(const nlohmann::json& j) {
            ++n) {
         ParsedNet net;
         net.name = n.key();
-        net.bits = parse_bits(n.value()["bits"]);
+        net.bits = parse_bits(n.value()["bits"], keep_x);
         if (n.value().contains("hide_name")) {
           net.hide = attr_truthy(n.value()["hide_name"]);
         } else {
@@ -197,7 +197,7 @@ ParsedGraph ParsedGraph::from_json_string(const std::string& s) {
   }
 }
 
-ParsedGraph ParsedGraph::from_file(const std::string& path) {
+ParsedGraph ParsedGraph::from_file(const std::string& path, bool keep_x) {
   std::ifstream in(path);
   if (!in) {
     throw ParseError("Cannot open file: " + path);
@@ -205,7 +205,7 @@ ParsedGraph ParsedGraph::from_file(const std::string& path) {
   try {
     nlohmann::json j;
     in >> j;
-    return from_json(j);
+    return from_json(j, keep_x);
   } catch (const nlohmann::json::exception& e) {
     throw ParseError(std::string("Malformed JSON: ") + e.what());
   }

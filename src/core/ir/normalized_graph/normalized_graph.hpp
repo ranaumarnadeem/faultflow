@@ -78,11 +78,14 @@ struct NormalizedGraph {
   // set of instance names blackboxed by name (boundary test interface).
   std::set<int> pseudo_inputs;
   std::set<std::string> blackbox_instances;
+  // Built for the X engine (graph_policy.hpp): x/z bits (XZ_NET_ID, from a
+  // keep_x parse) are a CONSTX node.
+  bool x_mode = false;
 
   static NormalizedGraph from_parsed(
       const ParsedGraph& parsed, const CellMap& cell_map,
       const std::string& unsupported_policy = "fail",
-      const std::set<std::string>& blackbox_instances = {});
+      const std::set<std::string>& blackbox_instances = {}, bool x_mode = false);
 };
 
 }  // namespace faultflow

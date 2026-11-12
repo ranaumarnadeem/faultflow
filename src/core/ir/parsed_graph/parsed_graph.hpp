@@ -43,9 +43,11 @@ struct ParsedGraph {
   std::string top;
   std::set<std::string> lib_cells;
 
-  static ParsedGraph from_json(const nlohmann::json& j);
+  // keep_x: an X-mode parse, x and z bits become XZ_NET_ID instead of
+  // CONST0_NET_ID (types.hpp).
+  static ParsedGraph from_json(const nlohmann::json& j, bool keep_x = false);
   static ParsedGraph from_json_string(const std::string& s);
-  static ParsedGraph from_file(const std::string& path);
+  static ParsedGraph from_file(const std::string& path, bool keep_x = false);
 
   const ParsedModule& top_module() const;
 

@@ -115,4 +115,25 @@ Dual eval_gate_dual(GateType type, const std::array<Dual, 6>& inputs) {
   return {any_consistent(table[g].ones, inputs), any_consistent(table[g].zeros, inputs)};
 }
 
+const DualCubes& dual_cubes(GateType type) {
+  static const std::vector<DualCubes> views = [] {
+    std::vector<DualCubes> out;
+    for (const GateCubes& g : cube_table()) {
+      DualCubes v;
+      v.valid = g.valid;
+      for (const Cube& c : g.ones) {
+        v.ones.push_back({c.care, c.value});
+      }
+      for (const Cube& c : g.zeros) {
+        v.zeros.push_back({c.care, c.value});
+      }
+      out.push_back(std::move(v));
+    }
+    return out;
+  }();
+  static const DualCubes kNone;
+  const size_t g = static_cast<size_t>(type);
+  return g < views.size() ? views[g] : kNone;
+}
+
 }  // namespace faultflow

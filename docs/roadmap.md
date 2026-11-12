@@ -71,11 +71,14 @@ Implemented today:
   2. The bit-parallel engine with X (two words per net), checked lane by lane against the
      reference. With no X in a run, it must give exactly the two-valued engine's results.
   3. Unknown power-up state of flops, and a fault's detections split into definite (a 0
-     against a 1 at an output) and possible (a known value against X). Only definite
-     detections count toward coverage.
+     against a 1 at an output) and possible (a known value against X). A possibly
+     detected fault has its own status and counts a settable share of a detection,
+     50% by default (`[fault_model] possible_credit`); `[simulation] engine = x`
+     grades combinational stuck-at campaigns this way.
   4. Level-sensitive latches: transparent while enabled, holding otherwise, starting at X.
-  5. Combinational loops, each settled to a fixed point starting from X; a loop that does
-     not settle reads X.
+  5. Combinational loops, each settled from its last values by two-phase ternary
+     simulation, so a loop of gates that holds a value keeps it; a loop that does not
+     settle reads X. The two-valued engine refuses a netlist with a loop.
   6. Tristate buffers and buses driving Z: one enabled driver gives its value, none gives
      Z, a conflict gives X.
 

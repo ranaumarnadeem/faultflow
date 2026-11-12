@@ -37,6 +37,21 @@ std::vector<int64_t> detect_with_vector(
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {});
 
+// detect_with_vector on the X engine (an X-mode graph): the targets the vector
+// detects definitely, and those it only possibly detects (the good output
+// known, the faulty one unknown), flops and latches powered up unknown.
+struct XDetections {
+  std::vector<int64_t> definite;
+  std::vector<int64_t> possible;
+};
+XDetections detect_with_vector_x(const std::string& json_path,
+                                 const std::string& cell_map_path,
+                                 const std::map<std::string, bool>& vector,
+                                 const std::vector<std::string>& input_order,
+                                 const std::vector<FaultTarget>& targets,
+                                 const std::string& unsupported_policy,
+                                 const std::vector<std::string>& blackbox_instances = {});
+
 // Two-frame (transition) analogue of detect_with_vector: simulate one
 // launch/capture PAIR against pre-resolved fault targets via the qualified
 // two-frame transition sim. No DB access. See detect_with_vector for when to

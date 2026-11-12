@@ -4,10 +4,11 @@ import logging
 import random
 import sqlite3
 import time
-from typing import NamedTuple, Sequence
+from typing import Any, Callable, NamedTuple, Sequence
 
 from faultflow.atpg import VectorSet
 from faultflow.db import connect, init_schema, summary
+from faultflow.db.sqlite import DEFAULT_POSSIBLE_CREDIT
 from faultflow.runner.runner import RunnerError, _load_core
 from faultflow.scan.site_resolution import fault_type_to_sa_code
 
@@ -49,26 +50,30 @@ class _FaultTarget(NamedTuple):
 
 
 def _detected_fault_targets(
-    conn: sqlite3.Connection, campaign_id: int
+    conn: sqlite3.Connection,
+    campaign_id: int,
+    statuses: tuple[str, ...] = ("detected",),
 ) -> dict[int, _FaultTarget]:
     """Same WHERE clause as _detected_fault_ids, plus the (net_index, type)
     every compaction_detections_preloaded call needs. Loaded ONCE per
     compact_run* call and reused across every vector in its loop -- the C++
     side (atpg::detect_with_vector/detect_with_pair) does no DB access at all
     given these, unlike core.compaction_detections/compaction_pair_detections
-    (which re-open the DB and re-fetch the whole target set on every call)."""
+    (which re-open the DB and re-fetch the whole target set on every call).
+    The X engine's compaction also keeps its 'possible' faults."""
+    marks = ", ".join("?" for _ in statuses)
     rows = conn.execute(
-        """
+        f"""
         SELECT id, COALESCE(atpg_compiled_net_index, compiled_net_index) AS net_index,
                fault_type
         FROM faults
         WHERE campaign_id = ?
-          AND status = 'detected'
+          AND status IN ({marks})
           AND exclusion = 'none'
           AND collapsed_into IS NULL
         ORDER BY id
         """,
-        (campaign_id,),
+        (campaign_id, *statuses),
     ).fetchall()
     return {
         int(row["id"]): _FaultTarget(
@@ -78,6 +83,77 @@ def _detected_fault_targets(
         )
         for row in rows
     }
+
+
+def _possible_fault_ids(conn: sqlite3.Connection, campaign_id: int) -> set[int]:
+    rows = conn.execute(
+        "SELECT id FROM faults WHERE campaign_id = ? AND status = 'possible' "
+        "AND exclusion = 'none' AND collapsed_into IS NULL",
+        (campaign_id,),
+    ).fetchall()
+    return {int(row["id"]) for row in rows}
+
+
+def _compaction_targets(
+    conn: sqlite3.Connection, campaign_id: int, unsupported: str
+) -> tuple[dict[int, _FaultTarget], set[int]]:
+    """The faults a compacted set must keep, and those of them only possibly
+    detected: the X engine's ('+x' graph policy) keep their possible detections
+    too, so their credit survives compaction."""
+    if not unsupported.endswith("+x"):
+        return _detected_fault_targets(conn, campaign_id), set()
+    return (
+        _detected_fault_targets(conn, campaign_id, ("detected", "possible")),
+        _possible_fault_ids(conn, campaign_id),
+    )
+
+
+def _detector(
+    core: Any,
+    *,
+    json_path: str,
+    cell_map_path: str,
+    input_order: list[str],
+    targets_by_id: dict[int, _FaultTarget],
+    possible_ids: set[int],
+    unsupported: str,
+    blackbox_instances: Sequence[str],
+) -> Callable[[dict[str, bool], set[int]], set[int]]:
+    """detect(vector, targets): the targets the vector keeps. Two-valued: the
+    ones it detects. The X engine: a detected target only by a definite
+    detection, a possible one by either kind."""
+    blackbox = list(blackbox_instances)
+
+    if unsupported.endswith("+x"):
+
+        def detect_x(vector: dict[str, bool], targets: set[int]) -> set[int]:
+            found = core.compaction_detections_preloaded_x(
+                json_path,
+                cell_map_path,
+                vector,
+                input_order,
+                _triples(targets, targets_by_id),
+                unsupported,
+                blackbox,
+            )
+            return set(found["definite"]) | (set(found["possible"]) & possible_ids)
+
+        return detect_x
+
+    def detect(vector: dict[str, bool], targets: set[int]) -> set[int]:
+        return set(
+            core.compaction_detections_preloaded(
+                json_path,
+                cell_map_path,
+                vector,
+                input_order,
+                _triples(targets, targets_by_id),
+                unsupported,
+                blackbox,
+            )
+        )
+
+    return detect
 
 
 def _triples(
@@ -133,13 +209,15 @@ def compact_run(
     vectors: VectorSet,
     unsupported: str,
     blackbox_instances: Sequence[str] = (),
+    possible_credit: float = DEFAULT_POSSIBLE_CREDIT,
 ) -> tuple[VectorSet, int, int]:
     """Reverse-order fault-simulation static compaction.
 
     Produces a coverage-preserving subset of ``vectors`` and writes it as a new
     "compacted" run (the raw run is kept for provenance). Returns
     ``(compacted_vectors, new_run_id, raw_count)``. Coverage is unchanged because
-    every fault detected by the full set is still detected by the kept subset.
+    every fault detected by the full set is still detected by the kept subset
+    (with the X engine, every possibly detected one still possibly detected).
     """
     raw_count = vectors.count
     input_order = vectors.input_order
@@ -156,8 +234,20 @@ def compact_run(
     started = time.perf_counter()
     with connect(db_path) as conn:
         init_schema(conn)
-        targets_by_id = _detected_fault_targets(conn, campaign_id)
+        targets_by_id, possible_ids = _compaction_targets(
+            conn, campaign_id, unsupported
+        )
         remaining: set[int] = set(targets_by_id)
+    detect = _detector(
+        core,
+        json_path=json_path,
+        cell_map_path=cell_map_path,
+        input_order=input_order,
+        targets_by_id=targets_by_id,
+        possible_ids=possible_ids,
+        unsupported=unsupported,
+        blackbox_instances=blackbox_instances,
+    )
 
     kept_indices: list[int] = []
     for idx in range(raw_count - 1, -1, -1):
@@ -165,16 +255,8 @@ def compact_run(
             # Everything is already covered by a later (kept) vector; every
             # earlier vector is redundant.
             break
-        detected = core.compaction_detections_preloaded(
-            json_path,
-            cell_map_path,
-            vectors.vectors[idx],
-            input_order,
-            _triples(remaining, targets_by_id),
-            unsupported,
-            list(blackbox_instances),
-        )
-        newly = [fid for fid in detected if fid in remaining]
+        detected = detect(vectors.vectors[idx], remaining)
+        newly = [fid for fid in sorted(detected) if fid in remaining]
         if newly:
             kept_indices.append(idx)
             remaining.difference_update(newly)
@@ -192,7 +274,9 @@ def compact_run(
 
     with connect(db_path) as conn:
         init_schema(conn)
-        coverage = summary(conn, campaign_id=campaign_id)["coverage_percent"]
+        coverage = summary(
+            conn, campaign_id=campaign_id, possible_credit=possible_credit
+        )["coverage_percent"]
 
     log.info(
         "compact  %d -> %d vectors  (-%d)  %.2fs  coverage=%.3f%%",
@@ -302,6 +386,7 @@ def compact_run_dynamic(
     unsupported: str,
     pack_orders: int = 1,
     blackbox_instances: Sequence[str] = (),
+    possible_credit: float = DEFAULT_POSSIBLE_CREDIT,
 ) -> tuple[VectorSet, int, int]:
     """Dynamic compaction via sim-verified cube packing.
 
@@ -331,21 +416,20 @@ def compact_run_dynamic(
     started = time.perf_counter()
     with connect(db_path) as conn:
         init_schema(conn)
-        targets_by_id = _detected_fault_targets(conn, campaign_id)
-        all_detected = set(targets_by_id)
-
-    def detect(vector: dict[str, bool], targets: set[int]) -> set[int]:
-        return set(
-            core.compaction_detections_preloaded(
-                json_path,
-                cell_map_path,
-                vector,
-                input_order,
-                _triples(targets, targets_by_id),
-                unsupported,
-                list(blackbox_instances),
-            )
+        targets_by_id, possible_ids = _compaction_targets(
+            conn, campaign_id, unsupported
         )
+        all_detected = set(targets_by_id)
+    detect = _detector(
+        core,
+        json_path=json_path,
+        cell_map_path=cell_map_path,
+        input_order=input_order,
+        targets_by_id=targets_by_id,
+        possible_ids=possible_ids,
+        unsupported=unsupported,
+        blackbox_instances=blackbox_instances,
+    )
 
     # 1. Contributing vectors (same selection as reverse), each with the faults it
     #    newly covers.
@@ -396,6 +480,7 @@ def compact_run_dynamic(
             vectors=vectors,
             unsupported=unsupported,
             blackbox_instances=blackbox_instances,
+            possible_credit=possible_credit,
         )
 
     # 5. Write the packed set as a new compacted run (mirrors compact_run).
@@ -410,7 +495,9 @@ def compact_run_dynamic(
 
     with connect(db_path) as conn:
         init_schema(conn)
-        coverage = summary(conn, campaign_id=campaign_id)["coverage_percent"]
+        coverage = summary(
+            conn, campaign_id=campaign_id, possible_credit=possible_credit
+        )["coverage_percent"]
 
     log.info(
         "compact(dynamic)  %d -> %d vectors  (-%d)  %.2fs  coverage=%.3f%%",

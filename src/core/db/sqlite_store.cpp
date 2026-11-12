@@ -35,6 +35,8 @@ const char* status_name(FaultStatus status, FaultExclusion exclusion) {
       return "undetected";
     case FaultStatus::REDUNDANT:
       return "redundant";
+    case FaultStatus::POSSIBLE:
+      return "possible";
   }
   return "undetected";
 }
@@ -45,6 +47,9 @@ FaultStatus status_from_name(const std::string& name) {
   }
   if (name == "redundant") {
     return FaultStatus::REDUNDANT;
+  }
+  if (name == "possible") {
+    return FaultStatus::POSSIBLE;
   }
   return FaultStatus::UNDETECTED;
 }
@@ -551,9 +556,12 @@ void mark_fault_detected(const std::string& db_path, int64_t campaign_id,
   SQLite::Database db = open_db(db_path);
   require_v3_schema(db);
   SQLite::Transaction txn(db);
+  // A possibly detected fault (the X engine) is still upgraded by a definite
+  // detection.
   SQLite::Statement q(db,
                       "UPDATE faults SET status='detected', detected_by_vector=?, "
-                      "protocol_unresolved=0 WHERE id=? AND status='undetected'");
+                      "protocol_unresolved=0 WHERE id=? AND status IN "
+                      "('undetected', 'possible')");
   q.bind(1, vector_index);
   q.bind(2, fault_id);
   q.exec();
@@ -580,7 +588,8 @@ void mark_faults_detected(const std::string& db_path, int64_t campaign_id,
   SQLite::Transaction txn(db);
   SQLite::Statement q(db,
                       "UPDATE faults SET status='detected', detected_by_vector=?, "
-                      "protocol_unresolved=0 WHERE id=? AND status='undetected'");
+                      "protocol_unresolved=0 WHERE id=? AND status IN "
+                      "('undetected', 'possible')");
   SQLite::Statement det(
       db,
       "INSERT OR IGNORE INTO fault_detections(fault_id, campaign_id, run_id, "
@@ -600,6 +609,27 @@ void mark_faults_detected(const std::string& db_path, int64_t campaign_id,
   txn.commit();
 }
 
+void mark_faults_possible(const std::string& db_path,
+                          const std::vector<int64_t>& fault_ids) {
+  if (fault_ids.empty()) {
+    return;
+  }
+  SQLite::Database db = open_db(db_path);
+  require_v3_schema(db);
+  SQLite::Transaction txn(db);
+  // Only an undetected fault: a definite detection (or a redundancy proof)
+  // outranks a possible one. No fault_detections row and no detected_by_vector:
+  // those mean a definite detection.
+  SQLite::Statement q(db, "UPDATE faults SET status='possible' WHERE id=? AND "
+                          "status='undetected'");
+  for (const int64_t fault_id : fault_ids) {
+    q.reset();
+    q.bind(1, fault_id);
+    q.exec();
+  }
+  txn.commit();
+}
+
 void mark_fault_redundant(const std::string& db_path, int64_t fault_id,
                           const std::string& redundancy_model_id) {
   SQLite::Database db = open_db(db_path);
@@ -609,10 +639,13 @@ void mark_fault_redundant(const std::string& db_path, int64_t fault_id,
   // UNSAT verdict (e.g. the dynamic fault-drop path detected it mid-wave) must
   // never overwrite it (the old unguarded UPDATE also NULLed
   // detected_by_vector, silently shrinking coverage). Mirrors the guard on
-  // mark_fault_protocol_unresolved below.
+  // mark_fault_protocol_unresolved below. A possible fault (the X engine) is
+  // not a detection: a redundancy proof outranks it (its unknowns can mislead
+  // the X engine, never the proof).
   SQLite::Statement q(
       db, "UPDATE faults SET status='redundant', redundancy_model_id=?, "
-          "detected_by_vector=NULL WHERE id=? AND status='undetected'");
+          "detected_by_vector=NULL WHERE id=? AND status IN "
+          "('undetected', 'possible')");
   q.bind(1, redundancy_model_id);
   q.bind(2, fault_id);
   q.exec();
@@ -697,7 +730,8 @@ void update_run_vector_count(const std::string& db_path, int64_t run_id,
   q.exec();
 }
 
-CoverageSummary summarize(const std::string& db_path, int64_t campaign_id) {
+CoverageSummary summarize(const std::string& db_path, int64_t campaign_id,
+                          double possible_credit) {
   SQLite::Database db = open_db(db_path);
   require_v3_schema(db);
   SQLite::Statement q(db, R"sql(
@@ -716,7 +750,8 @@ SELECT
   SUM(CASE WHEN exclusion = 'scan_internal'
            THEN 1 ELSE 0 END) AS excluded_scan_internal,
   SUM(CASE WHEN exclusion = 'scan_chain'
-           THEN 1 ELSE 0 END) AS excluded_scan_chain
+           THEN 1 ELSE 0 END) AS excluded_scan_chain,
+  SUM(CASE WHEN status = 'possible' AND exclusion = 'none' AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS possible
 FROM faults
 WHERE campaign_id = ?
 )sql");
@@ -737,10 +772,13 @@ WHERE campaign_id = ?
   s.excluded_scan = q.getColumn(9).getInt64();
   s.excluded_scan_internal = q.getColumn(10).getInt64();
   s.excluded_scan_chain = q.getColumn(11).getInt64();
+  s.possible = q.getColumn(12).getInt64();
+  // A possibly detected fault counts possible_credit of a detection (the X
+  // engine's; none exist in a two-valued campaign).
+  const double credited =
+      static_cast<double>(s.detected) + possible_credit * static_cast<double>(s.possible);
   s.coverage_percent =
-      s.denominator == 0 ? 0.0
-                         : 100.0 * static_cast<double>(s.detected) /
-                               static_cast<double>(s.denominator);
+      s.denominator == 0 ? 0.0 : 100.0 * credited / static_cast<double>(s.denominator);
   return s;
 }
 

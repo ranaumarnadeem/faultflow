@@ -487,6 +487,14 @@ class Runner:
             # not resume into this one; a design under "fail" keeps its
             # config_hash.
             payload["unknown_cells"] = "x"
+        if self.cfg.simulation.engine != "two_valued":
+            # The X engine grades other faults detected (and some only
+            # possibly), reads x/z bits as unknown and builds another graph, so
+            # a two-valued campaign must not resume into an X one or back.
+            # Keyed only off the default, so a two-valued design keeps its
+            # config_hash. The possible credit is not keyed: it changes no
+            # fault's status, only how a report counts it.
+            payload["engine"] = self.cfg.simulation.engine
         return payload
 
     def _rendered_yosys_script(self, source: Path | None = None) -> str:
@@ -549,6 +557,7 @@ class Runner:
             "fault_model": self.cfg.fault_model.model,
             "blackbox_instances": list(self.cfg.blackbox_instances),
             "test_mode": self.cfg.test_mode,
+            "engine": self.cfg.simulation.engine,
         }
 
     def _stored_fingerprint(
@@ -1318,7 +1327,7 @@ class Runner:
             str(output),
             transition=transition,
             sat_timeout_seconds=self.cfg.atpg.sat_timeout_seconds,
-            unsupported_policy=self.cfg.simulation.unsupported_cells,
+            unsupported_policy=self.cfg.simulation.graph_policy,
             blackbox_instances=list(self.cfg.blackbox_instances),
             cone_restrict=self.cfg.atpg.cone_restrict,
         )
@@ -2361,22 +2370,27 @@ class Runner:
                 "C++ extension _faultflow_core is required. "
                 "Run: cmake --build build -- -j2"
             )
-        return dict(
-            core.simulate_to_db(
-                str(netlist),
-                str(self.cfg.cell_lib),
-                str(self.cfg.db_path),
-                campaign_id,
-                vectors.vectors,
-                vectors.input_order,
-                vector_source,
-                self.cfg.fault_model.include_clock_faults,
-                self.cfg.fault_model.include_reset_faults,
-                self.cfg.fault_model.collapsing,
-                self.cfg.simulation.unsupported_cells,
-                list(self.cfg.blackbox_instances),
-            )
+        args = (
+            str(netlist),
+            str(self.cfg.cell_lib),
+            str(self.cfg.db_path),
+            campaign_id,
+            vectors.vectors,
+            vectors.input_order,
+            vector_source,
+            self.cfg.fault_model.include_clock_faults,
+            self.cfg.fault_model.include_reset_faults,
+            self.cfg.fault_model.collapsing,
+            self.cfg.simulation.graph_policy,
+            list(self.cfg.blackbox_instances),
         )
+        if self.cfg.simulation.engine == "x":
+            return dict(
+                core.simulate_to_db_x(
+                    *args, self.cfg.fault_model.possible_credit / 100.0
+                )
+            )
+        return dict(core.simulate_to_db(*args))
 
     def _core(self) -> Any:
         core = _load_core()
@@ -2694,6 +2708,12 @@ class Runner:
                 f"{mode.upper()} is a scan test of the IEEE 1500 wrapper: run it "
                 f"with --scan (ff.py {mode})"
             )
+        x_engine = self.cfg.simulation.engine == "x"
+        if x_engine and scan:
+            raise RunnerError(
+                "simulation.engine = x grades combinational designs only; scan "
+                "ATPG stays two-valued (run --scan with engine = two_valued)"
+            )
         if scan:
             return self._sim_scan(
                 purge=purge,
@@ -2709,6 +2729,13 @@ class Runner:
         removed = self._purge_transients() if purge else 0
         netlist = self._find_netlist()
         verify_enabled = self.cfg.simulation.verify if verify is None else verify
+        if verify_enabled and x_engine:
+            # The iverilog gate needs every sampled output known; the X engine's
+            # golden outputs may be X.
+            raise RunnerError(
+                "simulation.verify (the iverilog gate) needs known outputs; it does "
+                "not run with simulation.engine = x"
+            )
         # iverilog cannot drive/observe blackbox pseudo-ports, and the blackbox
         # instance has no behavioral model to simulate. Skip the gate rather than
         # mis-verify; the internal GoldenRef/bit-parallel oracle remains the
@@ -2845,7 +2872,8 @@ class Runner:
                             campaign_id=campaign_id,
                             run_id=run_id,
                             vectors=vectors,
-                            unsupported=self.cfg.simulation.unsupported_cells,
+                            unsupported=self.cfg.simulation.graph_policy,
+                            possible_credit=self.cfg.fault_model.possible_credit,
                             pack_orders=self.cfg.atpg.pack_orders,
                             blackbox_instances=self.cfg.blackbox_instances,
                         )
@@ -2857,7 +2885,8 @@ class Runner:
                             campaign_id=campaign_id,
                             run_id=run_id,
                             vectors=vectors,
-                            unsupported=self.cfg.simulation.unsupported_cells,
+                            unsupported=self.cfg.simulation.graph_policy,
+                            possible_credit=self.cfg.fault_model.possible_credit,
                             blackbox_instances=self.cfg.blackbox_instances,
                         )
                 vector_source = vectors.source
@@ -3356,7 +3385,11 @@ class Runner:
             campaign_id = latest_campaign_id(conn, self._campaign_type(scan))
             if campaign_id is None:
                 return f"top={self.cfg.top} scan_mode={str(scan).lower()} coverage=n/a"
-            data = summary(conn, campaign_id=campaign_id)
+            data = summary(
+                conn,
+                campaign_id=campaign_id,
+                possible_credit=self.cfg.fault_model.possible_credit,
+            )
             cov = data["coverage_percent"]
             cov_text = "n/a" if cov is None else f"{cov:.3f}%"
             run = conn.execute(
@@ -3406,7 +3439,14 @@ class Runner:
                 f"top={self.cfg.top} scan_mode={str(scan).lower()} coverage={cov_text} "
                 f"detected={data['detected']} denominator={data['denominator']} "
                 f"undetected={data['undetected']} redundant={data.get('redundant', 0)} "
-                f"protocol_unresolved={data.get('protocol_unresolved', 0)} "
+                + (
+                    # The X engine's possibly detected faults (none two-valued).
+                    f"possible={data['possible']} "
+                    f"possible_credit={data['possible_credit_percent']:g}% "
+                    if data.get("possible")
+                    else ""
+                )
+                + f"protocol_unresolved={data.get('protocol_unresolved', 0)} "
                 f"compression_unresolved={data.get('compression_unresolved', 0)} "
                 f"blackbox_unresolved={data.get('blackbox_unresolved', 0)} "
                 f"collapsed={data['collapsed']} "

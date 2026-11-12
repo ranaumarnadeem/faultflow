@@ -26,6 +26,7 @@ struct CoverageSummary {
   int64_t excluded_scan = 0;
   int64_t excluded_scan_internal = 0;
   int64_t excluded_scan_chain = 0;
+  int64_t possible = 0;  // the X engine's possibly detected faults
   double coverage_percent = 0.0;
 };
 
@@ -105,6 +106,12 @@ void mark_faults_detected(const std::string& db_path, int64_t campaign_id,
                           int64_t run_id, int64_t vector_index,
                           const std::vector<int64_t>& fault_ids);
 
+// The X engine's possible detections: each still-undetected fault in
+// `fault_ids` becomes 'possible' (one transaction). A detected or redundant
+// fault is left as it is; a later definite detection upgrades a possible one.
+void mark_faults_possible(const std::string& db_path,
+                          const std::vector<int64_t>& fault_ids);
+
 void mark_fault_redundant(const std::string& db_path, int64_t fault_id,
                           const std::string& redundancy_model_id);
 
@@ -164,7 +171,11 @@ void invalidate_stale_redundant(const std::string& db_path,
 void update_run_vector_count(const std::string& db_path, int64_t run_id,
                              int64_t vector_count);
 
-CoverageSummary summarize(const std::string& db_path, int64_t campaign_id);
+// coverage_percent credits each possibly detected fault (status 'possible')
+// with possible_credit (0..1) of a detection; [fault_model] possible_credit's
+// default is 50%. A two-valued campaign has none, so the credit changes nothing.
+CoverageSummary summarize(const std::string& db_path, int64_t campaign_id,
+                          double possible_credit = 0.5);
 
 void complete_run(const std::string& db_path, int64_t run_id,
                   double coverage_percent);

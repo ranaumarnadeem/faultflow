@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <vector>
 
 #include "common/types.hpp"
 
@@ -37,6 +38,21 @@ inline uint64_t dual_known_lanes(Dual a) { return a.h ^ a.l; }
 // two-valued function, derived once from eval_gate_scalar, so this engine has no
 // gate formulas of its own. Unused inputs read 0.
 Dual eval_gate_dual(GateType type, const std::array<Dual, 6>& inputs);
+
+// The cubes eval_gate_dual evaluates, for a dual-rail CNF of the same cell (the
+// X-mode SAT ATPG): a product of the inputs in `care`, each at its bit in
+// `value` (bit i = input i). `ones` cover the function, `zeros` its
+// complement. Empty and invalid for a type with no combinational function.
+struct DualCube {
+  uint8_t care = 0;
+  uint8_t value = 0;
+};
+struct DualCubes {
+  bool valid = false;
+  std::vector<DualCube> ones;
+  std::vector<DualCube> zeros;
+};
+const DualCubes& dual_cubes(GateType type);
 
 // eval_icg_x over 64 lanes.
 inline Dual eval_icg_dual(GateType type, Dual clk, Dual enable, Dual& latch) {

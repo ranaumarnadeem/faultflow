@@ -301,7 +301,11 @@ class FlowService:
             campaign_id = latest_campaign_id(conn, campaign_type)
             if campaign_id is None:
                 return {"campaign_state": "not_run"}
-            data = summary(conn, campaign_id=campaign_id)
+            data = summary(
+                conn,
+                campaign_id=campaign_id,
+                possible_credit=cfg.fault_model.possible_credit,
+            )
             row = conn.execute(
                 """
                 SELECT vector_count, atpg_terminal_reason, atpg_rounds,
@@ -321,6 +325,9 @@ class FlowService:
             "structural_eligible": data["structural_eligible"],
             "effective_denominator": data["denominator"],
             "detected": data["detected"],
+            # The X engine's possibly detected faults (credited in both
+            # percentages); none two-valued.
+            "possible": data.get("possible", 0),
             "redundant": data.get("redundant", 0),
             "protocol_unresolved": data.get("protocol_unresolved", 0),
             "compression_unresolved": data.get("compression_unresolved", 0),

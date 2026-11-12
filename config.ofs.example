@@ -27,9 +27,15 @@ launch               = loc
 collapsing           = false
 include_clock_faults = false
 include_reset_faults = false
+# With [simulation] engine = x: the credit (percent of a detection) of a fault
+# only possibly detected (good output known, faulty output unknown).
+possible_credit      = 50
 
 [simulation]
 unsupported_cells = fail
+# two_valued (0/1, default) | x (0/1/X: x/z netlist bits unknown; stuck-at,
+# combinational runs only).
+engine            = two_valued
 verify            = false
 verify_tool       = iverilog
 verilog_models    = cells/sky130/sky130_fd_sc_hd.v

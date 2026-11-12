@@ -47,6 +47,7 @@ add_executable(
   sim/test_dual_eval.cpp
   sim/test_bit_parallel_x.cpp
   sim/test_sequence_grade_x.cpp
+  sim/test_x_mode.cpp
   helpers/test_helpers.cpp
 )
 

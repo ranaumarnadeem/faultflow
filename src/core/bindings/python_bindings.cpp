@@ -26,6 +26,7 @@
 #include "sim/gate_eval.hpp"
 #include "sim/golden_ref/golden_ref_sim.hpp"
 #include "sim/state/test_vector.hpp"
+#include "sim/xsim/bit_parallel_sim_x.hpp"
 #include "sim/xsim/sequence_grade_x.hpp"
 #include "scan/scan_pattern_sim.hpp"
 
@@ -134,6 +135,7 @@ py::dict summary_to_dict(const db::CoverageSummary& s) {
   d["excluded_scan"] = s.excluded_scan;
   d["excluded_scan_internal"] = s.excluded_scan_internal;
   d["excluded_scan_chain"] = s.excluded_scan_chain;
+  d["possible"] = s.possible;
   d["coverage_percent"] = s.coverage_percent;
   return d;
 }
@@ -1223,6 +1225,143 @@ py::dict combinational_reach_py(const std::string& json_path,
   return out;
 }
 
+// --- The X engine's counterparts ([simulation] engine = x, an X-mode graph:
+// the policy string ends in "+x"). Each powers flops and latches up unknown and
+// tells a definite detection (a 0 against a 1) from a possible one (the good
+// output known, the faulty one unknown).
+
+// compaction_detections_preloaded on the X engine: {"definite": [...],
+// "possible": [...]} fault ids.
+py::dict compaction_detections_preloaded_x_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::map<std::string, bool>& vector,
+    const std::vector<std::string>& input_order,
+    const std::vector<std::tuple<int64_t, uint32_t, uint8_t>>& targets,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const atpg::XDetections d = atpg::detect_with_vector_x(
+      json_path, cell_map_path, vector, input_order, targets_from_triples(targets),
+      unsupported_policy, blackbox_instances);
+  py::dict out;
+  out["definite"] = d.definite;
+  out["possible"] = d.possible;
+  return out;
+}
+
+// simulate_incremental on the X engine: rows {fault_id, vector_index, possible}.
+py::list simulate_incremental_x_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t campaign_id, int64_t run_id,
+    const std::vector<std::map<std::string, bool>>& new_vectors,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances, int sim_threads) {
+  std::vector<atpg::XProgressiveDetection> detections;
+  {
+    py::gil_scoped_release release;
+    detections = atpg::simulate_incremental_x(
+        json_path, cell_map_path, db_path, campaign_id, run_id, new_vectors,
+        input_order, fault_ids, vector_start_index, unsupported_policy,
+        blackbox_instances, sim_threads);
+  }
+  py::list out;
+  for (const auto& det : detections) {
+    py::dict row;
+    row["fault_id"] = det.fault_id;
+    row["vector_index"] = det.vector_index;
+    row["possible"] = det.possible;
+    out.append(row);
+  }
+  return out;
+}
+
+// simulate_to_db on the X engine. A definite detection drops a fault; a
+// possible one marks it 'possible' and keeps it graded by the later vectors,
+// which may still detect it definitely. coverage_percent credits each possible
+// fault with possible_credit (0..1) of a detection.
+py::dict simulate_to_db_x(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t campaign_id,
+    const std::vector<std::map<std::string, bool>>& raw_vectors,
+    const std::vector<std::string>& input_order, const std::string& vector_source,
+    bool include_clock_faults, bool include_reset_faults, bool collapsing,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances, double possible_credit) {
+  const CachedGraph& graph = load_cached_graph(
+      json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  const ParsedGraph& parsed = graph.parsed;
+  const NormalizedGraph& ng = graph.ng;
+  const CompiledSimGraph& cg = graph.cg;
+
+  EnumeratorOptions options;
+  options.include_clock_faults = include_clock_faults;
+  options.include_reset_faults = include_reset_faults;
+  std::vector<CompactFault> faults = enumerate_faults(ng, cg, options);
+  if (collapsing) {
+    faults = collapse_primitive_faults(ng, cg, std::move(faults));
+  }
+
+  const std::vector<TestVector> vectors = convert_vectors(parsed, raw_vectors);
+  const BitParallelSimX sim;
+  XRunOptions run_options;
+  run_options.initial_state = Logic::X;
+  std::vector<size_t> active;
+  active.reserve(faults.size());
+  for (size_t i = 0; i < faults.size(); ++i) {
+    CompactFault& fault = faults[i];
+    fault.status = FaultStatus::UNDETECTED;
+    if (fault.exclusion == FaultExclusion::NONE &&
+        fault.collapsed_into == UINT32_MAX) {
+      active.push_back(i);
+    }
+  }
+  for (size_t vi = 0; vi < vectors.size() && !active.empty(); ++vi) {
+    std::vector<size_t> still_active;
+    still_active.reserve(active.size());
+    for (size_t begin = 0; begin < active.size(); begin += kBatchSize) {
+      const size_t end = std::min(begin + kBatchSize, active.size());
+      FaultBatch batch;
+      batch.size = static_cast<int>(end - begin);
+      for (size_t i = begin; i < end; ++i) {
+        CompactFault lane = faults[active[i]];
+        lane.bit = static_cast<uint8_t>((i - begin) + 1);
+        lane.sa_mask = 1ULL << lane.bit;
+        batch.faults[i - begin] = lane;
+        batch.mask |= lane.sa_mask;
+      }
+      const XBatchDetection d = sim.detect_batch(cg, vectors[vi], batch, run_options);
+      for (size_t i = begin; i < end; ++i) {
+        const CompactFault& lane = batch.faults[i - begin];
+        CompactFault& fault = faults[active[i]];
+        if ((d.definite & lane.sa_mask) != 0) {
+          fault.status = FaultStatus::DETECTED;
+          fault.detected_by_vector = static_cast<uint32_t>(vi + 1);
+        } else {
+          if ((d.possible & lane.sa_mask) != 0) {
+            fault.status = FaultStatus::POSSIBLE;
+          }
+          still_active.push_back(active[i]);
+        }
+      }
+    }
+    active = std::move(still_active);
+  }
+
+  db::init_database(db_path);
+  const int64_t run_id = db::start_run(
+      db_path, campaign_id, vector_source, static_cast<int64_t>(vectors.size()));
+  db::write_vectors(db_path, campaign_id, run_id, vector_source,
+                    vector_patterns(raw_vectors, input_order));
+  db::write_faults(db_path, campaign_id, run_id, ng, cg, faults);
+  const db::CoverageSummary summary =
+      db::summarize(db_path, campaign_id, possible_credit);
+  db::complete_run(db_path, run_id, summary.coverage_percent);
+  py::dict result = summary_to_dict(summary);
+  result["run_id"] = run_id;
+  return result;
+}
+
 }  // namespace faultflow
 
 PYBIND11_MODULE(_faultflow_core, m) {
@@ -1380,6 +1519,33 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("cell_map_path"), py::arg("vector"), py::arg("input_order"),
         py::arg("targets"), py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{});
+  m.def("compaction_detections_preloaded_x",
+        &faultflow::compaction_detections_preloaded_x_py, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("vector"), py::arg("input_order"),
+        py::arg("targets"), py::arg("unsupported_policy") = "fail+x",
+        py::arg("blackbox_instances") = std::vector<std::string>{});
+  m.def("simulate_incremental_x", &faultflow::simulate_incremental_x_py,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
+        py::arg("campaign_id"), py::arg("run_id"), py::arg("new_vectors"),
+        py::arg("input_order"), py::arg("fault_ids"),
+        py::arg("vector_start_index"), py::arg("unsupported_policy") = "fail+x",
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("sim_threads") = 1);
+  m.def("verify_fault_candidate_x", &faultflow::atpg::verify_fault_vector_x,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
+        py::arg("fault_id"), py::arg("vector"),
+        py::arg("unsupported_policy") = "fail+x",
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        "2 when the vector detects the fault definitely on the X engine, 1 when "
+        "only possibly, 0 when not.");
+  m.def("simulate_to_db_x", &faultflow::simulate_to_db_x, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("db_path"), py::arg("campaign_id"),
+        py::arg("vectors"), py::arg("input_order"), py::arg("vector_source"),
+        py::arg("include_clock_faults") = false,
+        py::arg("include_reset_faults") = false, py::arg("collapsing") = false,
+        py::arg("unsupported_policy") = "fail+x",
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("possible_credit") = 0.5);
   m.def("compaction_pair_detections_preloaded",
         &faultflow::compaction_pair_detections_preloaded_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("launch"),

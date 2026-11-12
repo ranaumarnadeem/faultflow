@@ -36,6 +36,21 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
                                     const SatSolveOptions& options,
                                     std::map<std::string, bool>& out);
 
+// solve_stuck_at_fault for an X-mode graph, on the X engine's semantics. Where
+// the fault's cone holds no unknown (an x/z bit, CONSTX) it is
+// solve_stuck_at_fault. Otherwise a dual-rail CNF -- each net a pair (can be 1,
+// can be 0) whose gates are eval_gate_dual's own cubes, an unknown (1,1) --
+// finds a vector that detects the fault definitely (SAT). With none, the
+// two-valued CNF (an unknown free, the same in both machines) decides: UNSAT
+// proves the fault redundant (no value of the unknowns lets any vector show
+// it); SAT gives a vector that shows it for some value of them, returned as
+// POSSIBLE. The X engine grades every vector.
+SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
+                                      const std::vector<AtpgPiInfo>& pis,
+                                      const CompactFault& fault,
+                                      const SatSolveOptions& options,
+                                      std::map<std::string, bool>& out);
+
 // Incremental Fan-in Cones (IFC) variant of solve_stuck_at_fault: encodes one
 // reached observable's fan-in cone at a time and re-solves under a per-solve
 // "differ at >= 1 observed-so-far" constraint, so most testable faults build only

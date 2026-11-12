@@ -48,6 +48,9 @@ struct CompiledSimGraph {
   // function of the (immutable) topology, so it is computed once at compile and
   // reused by the ATPG cone extraction instead of being rebuilt per fault.
   std::vector<int> driver_index;
+  // Compiled for the X engine (NormalizedGraph::x_mode): it may hold nodes no
+  // two-valued engine evaluates (GateType CONSTX).
+  bool x_mode = false;
 };
 
 std::string canonical_site_key(const CompiledSimGraph& cg, uint32_t cidx);

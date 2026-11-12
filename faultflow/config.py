@@ -213,11 +213,22 @@ class FaultModelConfig:
     collapsing: bool = True
     include_clock_faults: bool = False
     include_reset_faults: bool = False
+    # The coverage credit of a fault the X engine ([simulation] engine = x) only
+    # possibly detected -- the good output known, the faulty one unknown -- in
+    # percent of a detection. 50 is the usual vendor convention.
+    possible_credit: float = 50.0
+
+
+ENGINES = ("two_valued", "x")
 
 
 @dataclass(frozen=True)
 class SimulationConfig:
     unsupported_cells: str = "fail"
+    # two_valued: the 0/1 engine. x: the X engine (0/1/X): an x or z bit of the
+    # netlist is unknown, a fault seen only through an unknown is possibly
+    # detected ([fault_model] possible_credit).
+    engine: str = "two_valued"
     verify: bool = False
     verify_tool: str = "iverilog"
     # Sky130 behavioral models are `ifdef USE_POWER_PINS`-gated: the default (this
@@ -233,6 +244,13 @@ class SimulationConfig:
     # detected-set merge and the single SQLite writer stay on the calling thread,
     # so coverage is bit-identical for any value. See resolve_sim_threads().
     sim_threads: int = 1
+
+    @property
+    def graph_policy(self) -> str:
+        """The policy string the core builds a netlist's graph by: the
+        unsupported-cell policy, plus "+x" for the X engine's graph
+        (src/core/ir/graph_policy.hpp)."""
+        return self.unsupported_cells + ("+x" if self.engine == "x" else "")
 
 
 def resolve_sim_threads(sim_threads: int) -> int:
@@ -1080,6 +1098,16 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     if verify_tool != "iverilog":
         raise ConfigError("verify_tool must be 'iverilog'")
 
+    engine = parser.get("simulation", "engine", fallback="two_valued").strip()
+    if engine not in ENGINES:
+        raise ConfigError("simulation.engine must be 'two_valued' or 'x'")
+    try:
+        possible_credit = _float(parser, "fault_model", "possible_credit", 50.0)
+    except ValueError:
+        raise ConfigError("fault_model.possible_credit must be a number (a percent)")
+    if not 0.0 <= possible_credit <= 100.0:
+        raise ConfigError("fault_model.possible_credit must be a percent, 0 to 100")
+
     try:
         sim_threads = parser.getint("simulation", "sim_threads", fallback=1)
     except ValueError:
@@ -1121,6 +1149,12 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     if fault_launch not in {"loc", "los"}:
         raise ConfigError("fault_model.launch must be 'loc' or 'los'")
 
+    if engine == "x" and fault_model != "stuck_at":
+        raise ConfigError(
+            "simulation.engine = x grades stuck-at faults only; transition faults "
+            "are graded by the two-valued engine"
+        )
+
     fault_collapsing = _bool(parser, "fault_model", "collapsing", True)
     if fault_model == "transition" and fault_collapsing:
         raise ConfigError(
@@ -1161,9 +1195,11 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             include_reset_faults=_bool(
                 parser, "fault_model", "include_reset_faults", False
             ),
+            possible_credit=possible_credit,
         ),
         simulation=SimulationConfig(
             unsupported_cells=unsupported,
+            engine=engine,
             verify=_bool(parser, "simulation", "verify", False),
             verify_tool=verify_tool,
             verify_use_power_pins=_bool(

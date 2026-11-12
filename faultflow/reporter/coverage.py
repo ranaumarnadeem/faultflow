@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from faultflow.config import FaultflowConfig
 from faultflow.db import latest_campaign_id, summary
+from faultflow.db.sqlite import DEFAULT_POSSIBLE_CREDIT
 
 # The coverage schema ships with the package; resolve it relative to this file so
 # validation works from ANY working directory. A cwd-relative Path("schemas/...")
@@ -29,7 +30,11 @@ def _fingerprint(conn: sqlite3.Connection, campaign_id: int) -> dict[str, Any]:
     return dict(row) if row is not None else {}
 
 
-def _per_node(conn: sqlite3.Connection, campaign_id: int) -> list[dict[str, Any]]:
+def _per_node(
+    conn: sqlite3.Connection,
+    campaign_id: int,
+    possible_credit: float = DEFAULT_POSSIBLE_CREDIT,
+) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT
@@ -39,6 +44,8 @@ def _per_node(conn: sqlite3.Connection, campaign_id: int) -> list[dict[str, Any]
           SUM(CASE WHEN status = 'detected' THEN 1 ELSE 0 END) AS detected,
           SUM(CASE WHEN status = 'undetected' AND exclusion = 'none'
                     AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS undetected,
+          SUM(CASE WHEN status = 'possible' AND exclusion = 'none'
+                    AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS possible,
           SUM(CASE WHEN collapsed_into IS NOT NULL THEN 1 ELSE 0 END) AS collapsed,
           SUM(CASE WHEN exclusion != 'none' THEN 1 ELSE 0 END) AS excluded
         FROM faults
@@ -52,21 +59,54 @@ def _per_node(conn: sqlite3.Connection, campaign_id: int) -> list[dict[str, Any]
     for row in rows:
         total = int(row["total_faults"] or 0)
         detected = int(row["detected"] or 0)
+        possible = int(row["possible"] or 0)
         eligible = total - int(row["collapsed"] or 0) - int(row["excluded"] or 0)
-        coverage = None if eligible == 0 else 100.0 * detected / eligible
-        nodes.append(
-            {
-                "net_id": int(row["net_id"]),
-                "net_name": row["net_name"],
-                "total_faults": total,
-                "detected": detected,
-                "undetected": int(row["undetected"] or 0),
-                "collapsed": int(row["collapsed"] or 0),
-                "excluded": int(row["excluded"] or 0),
-                "coverage_percent": coverage,
-            }
-        )
+        credited = detected + possible * possible_credit / 100.0
+        coverage = None if eligible == 0 else 100.0 * credited / eligible
+        node: dict[str, Any] = {
+            "net_id": int(row["net_id"]),
+            "net_name": row["net_name"],
+            "total_faults": total,
+            "detected": detected,
+            "undetected": int(row["undetected"] or 0),
+            "collapsed": int(row["collapsed"] or 0),
+            "excluded": int(row["excluded"] or 0),
+            "coverage_percent": coverage,
+        }
+        if possible:
+            # The X engine's possibly detected faults (credited in coverage).
+            node["possible"] = possible
+        nodes.append(node)
     return nodes
+
+
+def _possible_faults(
+    conn: sqlite3.Connection, campaign_id: int
+) -> list[dict[str, Any]]:
+    """The faults the X engine only possibly detected: the good output known,
+    the faulty one unknown, never a definite difference."""
+    rows = conn.execute(
+        """
+        SELECT id, net_id, net_name, fault_type, fault_site_key
+        FROM faults
+        WHERE campaign_id = ?
+          AND status = 'possible'
+          AND exclusion = 'none'
+          AND collapsed_into IS NULL
+        ORDER BY net_id, fault_type
+        """,
+        (campaign_id,),
+    ).fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "net_id": int(row["net_id"]),
+            "net_name": row["net_name"],
+            "fault_type": row["fault_type"],
+            "fault_site_key": row["fault_site_key"],
+        }
+        for row in rows
+    ]
 
 
 def _blackbox_boundary(
@@ -96,6 +136,8 @@ def _policy(
     blackbox_instances: tuple[str, ...] = (),
     blackbox_output_values: tuple[tuple[str, str], ...] = (),
     unknown_cells: Sequence[str] = (),
+    engine: str = "two_valued",
+    possible_credit: float = DEFAULT_POSSIBLE_CREDIT,
 ) -> dict[str, Any]:
     policy: dict[str, Any] = {
         "unsupported_cells": fp.get("unsupported_cells", "fail"),
@@ -112,6 +154,11 @@ def _policy(
         # What each opaque blackbox's outputs hold in the scan test: "x"
         # (unknown) or "0" ([blackbox] output_value).
         policy["blackbox_output_values"] = dict(blackbox_output_values)
+    if engine != "two_valued":
+        # The X engine: x/z bits unknown, and each possibly detected fault
+        # credited this percent of a detection.
+        policy["engine"] = engine
+        policy["possible_credit_percent"] = possible_credit
     return policy
 
 
@@ -424,6 +471,8 @@ def _validate_report_shape(report: dict[str, Any]) -> None:
         "denominator",
         "detected",
         "undetected",
+        "possible",
+        "possible_credit_percent",
         "redundant",
         "collapsed",
         "excluded_blackbox",
@@ -597,7 +646,8 @@ def write_reports(
         if resolved is None:
             raise CoverageError(f"no {campaign_type} campaign in database")
         campaign_id = resolved
-    data = summary(conn, campaign_id=campaign_id)
+    possible_credit = cfg.fault_model.possible_credit
+    data = summary(conn, campaign_id=campaign_id, possible_credit=possible_credit)
     if data["denominator"] == 0:
         raise CoverageError("denominator is zero")
     invariant = (
@@ -622,8 +672,9 @@ def write_reports(
     fp = _fingerprint(conn, campaign_id)
     fault_model = str(fp.get("fault_model", "stuck_at"))
     data["fault_model"] = fault_model
-    per_node = _per_node(conn, campaign_id)
+    per_node = _per_node(conn, campaign_id, possible_credit)
     undetected = _undetected_faults(conn, campaign_id)
+    possible = _possible_faults(conn, campaign_id)
     if fault_model == "transition":
         # STR/STF reuse the SA0/SA1 fault rows; relabel for the transition report.
         _str_stf = {"sa0": "str", "sa1": "stf"}
@@ -639,9 +690,11 @@ def write_reports(
     else:
         # Combinational only: refine never-resolved faults into
         # structurally_uncontrollable via native cone reachability (best-effort).
-        _annotate_structural_reasons(
-            conn, cfg, campaign_id, undetected, str(fp.get("unsupported_cells", "fail"))
+        # The campaign's own graph (the X engine's builds another).
+        policy_string = str(fp.get("unsupported_cells", "fail")) + (
+            "+x" if cfg.simulation.engine == "x" else ""
         )
+        _annotate_structural_reasons(conn, cfg, campaign_id, undetected, policy_string)
 
     report = {
         "metadata": {
@@ -655,7 +708,12 @@ def write_reports(
             "template_hash": fp.get("template_hash", ""),
         },
         "policy": _policy(
-            fp, cfg.blackbox_instances, cfg.blackbox_output_values, unknown_cells
+            fp,
+            cfg.blackbox_instances,
+            cfg.blackbox_output_values,
+            unknown_cells,
+            engine=cfg.simulation.engine,
+            possible_credit=possible_credit,
         ),
         "summary": data,
         "run": _latest_run(conn, campaign_id),
@@ -663,6 +721,8 @@ def write_reports(
         "reason_summary": _reason_summary(data, undetected),
         "undetected_faults": undetected,
     }
+    if possible:
+        report["possible_faults"] = possible
     if scan_context is not None:
         run = cast(dict[str, Any], report["run"])
         run["scan_mode"] = True
@@ -732,6 +792,15 @@ def write_reports(
             f"denominator:         {data['denominator']}",
             f"detected:            {data['detected']}",
             f"undetected:          {data['undetected']}",
+        ]
+    )
+    if cfg.simulation.engine == "x" or data.get("possible"):
+        txt.append(
+            f"possible:            {data['possible']}  (credited "
+            f"{data['possible_credit_percent']:g}% each)"
+        )
+    txt.extend(
+        [
             f"redundant:           {data.get('redundant', 0)}",
             f"collapsed:           {data['collapsed']}",
             f"excluded_blackbox:   {data['excluded_blackbox']}",
@@ -812,6 +881,18 @@ def write_reports(
             f" site={fault.get('fault_site_key', '')}"
             f" reason={fault.get('reason', '')}"
         )
+    if "possible_faults" in report:
+        txt.append("")
+        txt.append(
+            "possibly detected faults (good output known, faulty unknown; "
+            f"credited {data['possible_credit_percent']:g}%):"
+        )
+        for fault in cast(list[dict[str, Any]], report["possible_faults"]):
+            txt.append(
+                f"- id={fault['id']} net={fault['net_id']} "
+                f"name={fault['net_name']} type={fault['fault_type']}"
+                f" site={fault.get('fault_site_key', '')}"
+            )
     txt.append("")
     txt_path.write_text("\n".join(txt), encoding="utf-8")
     return json_path, txt_path, report

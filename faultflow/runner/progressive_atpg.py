@@ -189,6 +189,8 @@ class AtpgStats:
     generated_vectors: int = 0
     accepted_vectors: int = 0
     protocol_no_progress_rounds: int = 0
+    # X engine: SAT results with no definite test, only a possible one.
+    possible: int = 0
     terminal_reason: str = "COMPLETE"
 
 
@@ -238,17 +240,43 @@ def redundancy_model_id(fp: dict[str, Any]) -> str:
             # INTEST or EXTEST.
             str(fp.get("test_mode", "functional")),
         ]
+        # The X engine's graph reads x/z bits as unknown (two-valued: 0), so a
+        # fault redundant there need not be here. Only off the default, so a
+        # two-valued campaign keeps its redundant faults.
+        + (
+            [f"engine={fp['engine']}"]
+            if fp.get("engine", "two_valued") != "two_valued"
+            else []
+        )
     )
 
 
+def _x_mode(policy: str) -> bool:
+    """A graph policy of the X engine ([simulation] engine = x): see
+    SimulationConfig.graph_policy."""
+    return policy.endswith("+x")
+
+
+def _possible_count(conn: sqlite3.Connection, campaign_id: int) -> int:
+    """The faults the X engine only possibly detected (none two-valued)."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM faults WHERE campaign_id = ? AND status = "
+        "'possible' AND exclusion = 'none' AND collapsed_into IS NULL",
+        (campaign_id,),
+    ).fetchone()
+    return int(row["n"] or 0)
+
+
 def _active_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[sqlite3.Row]:
+    # A possibly detected fault (the X engine's) is still a target: a later
+    # vector may detect it definitely.
     return conn.execute(
         """
         SELECT id,
                COALESCE(atpg_compiled_net_index, compiled_net_index) AS net_index
         FROM faults
         WHERE campaign_id = ?
-          AND status = 'undetected'
+          AND status IN ('undetected', 'possible')
           AND exclusion = 'none'
           AND collapsed_into IS NULL
           AND protocol_unresolved = 0
@@ -282,7 +310,7 @@ class _UnknownCellTwin:
                     json_path, cell_map, unsupported, blackbox_instances
                 )
             )
-            if unsupported == "blackbox"
+            if unsupported.removesuffix("+x") == "blackbox"
             else []
         )
         self.unknown_cells = unknown
@@ -431,7 +459,14 @@ def _accept_and_simulate(
     core.append_vectors(
         db_path, campaign_id, run_id, vector_source, [key], vector_index
     )
-    detections = core.simulate_incremental(
+    # The X engine marks definite detections detected and possible ones
+    # 'possible' (still targets); only the definite ones are returned.
+    simulate = (
+        core.simulate_incremental_x
+        if _x_mode(unsupported)
+        else core.simulate_incremental
+    )
+    detections = simulate(
         json_path,
         cell_map_path,
         db_path,
@@ -446,7 +481,9 @@ def _accept_and_simulate(
         sim_threads,
     )
     core.update_run_vector_count(db_path, run_id, vector_index)
-    return {int(row["fault_id"]) for row in detections}
+    return {
+        int(row["fault_id"]) for row in detections if not row.get("possible", False)
+    }
 
 
 def transition_pattern_key(
@@ -540,8 +577,15 @@ def _should_stall(
     prev_detected: int,
     prev_redundant: int,
     round_outcomes: list[str],
+    possible: int = 0,
+    prev_possible: int = 0,
 ) -> bool:
-    if detected != prev_detected or redundant != prev_redundant:
+    # A fault the X engine newly possibly detected is progress too.
+    if (
+        detected != prev_detected
+        or redundant != prev_redundant
+        or possible != prev_possible
+    ):
         return False
     if not round_outcomes:
         return True
@@ -554,7 +598,9 @@ def _should_stall(
     # stall-eligible let a single non-progress round abandon faults that were
     # never actually exhausted, just collision-blocked once. max_rounds is the
     # honest backstop for a fault that keeps colliding round after round.
-    allowed = {"TIMEOUT", "UNKNOWN"}
+    # POSSIBLE (the X engine): no definite test exists; the fault is not
+    # targeted again, so a round of only those has nothing left to try.
+    allowed = {"TIMEOUT", "UNKNOWN", "POSSIBLE"}
     return all(outcome in allowed for outcome in round_outcomes)
 
 
@@ -602,6 +648,11 @@ def run_progressive_native_atpg(
 ) -> tuple[VectorSet, AtpgStats, int, float, float]:
     from faultflow.runner.runner import _atpg_pi_names, _load_core
 
+    if cfg.simulation.engine == "x" and campaign_type != CAMPAIGN_TYPE_COMB:
+        raise RunnerError(
+            "simulation.engine = x grades combinational designs only; scan ATPG "
+            "stays two-valued"
+        )
     if campaign_type == CAMPAIGN_TYPE_SCAN:
         if scan_ctx is None:
             raise RunnerError("scan_ctx is required for scan progressive ATPG")
@@ -649,7 +700,10 @@ def run_progressive_native_atpg(
     effective_cell_map = str(
         cell_map_path if cell_map_path is not None else cfg.cell_lib
     )
-    unsupported = cfg.simulation.unsupported_cells
+    # The graph policy: the unsupported-cell policy, "+x" for the X engine.
+    unsupported = cfg.simulation.graph_policy
+    x_mode = _x_mode(unsupported)
+    possible_credit = cfg.fault_model.possible_credit
 
     bb_instances = list(cfg.blackbox_instances)
     unknown_twin = _UnknownCellTwin(
@@ -658,6 +712,12 @@ def run_progressive_native_atpg(
     sim_threads = resolve_sim_threads(cfg.simulation.sim_threads)
     if sim_threads > 1:
         log.info("parallel fault grading across %d threads", sim_threads)
+    if x_mode:
+        log.info(
+            "atpg   X engine: x/z bits unknown, possibly detected faults credited "
+            "%.0f%%",
+            possible_credit,
+        )
     core.ensure_faults_enumerated(
         json_path,
         effective_cell_map,
@@ -673,7 +733,7 @@ def run_progressive_native_atpg(
 
     with connect(effective_db_path) as conn:
         init_schema(conn)
-        _pre = summary(conn, campaign_id=campaign_id)
+        _pre = summary(conn, campaign_id=campaign_id, possible_credit=possible_credit)
         _initial_active = _active_fault_rows(conn, campaign_id)
     log.info(
         "atpg   %d active faults  %d denominator  target=%.1f%%  max_rounds=%d",
@@ -687,6 +747,9 @@ def run_progressive_native_atpg(
     vectors: list[dict[str, bool]] = []
     seen_patterns: set[str] = set()
     rejected_patterns: dict[int, set[str]] = {}
+    # X engine: faults SAT proved no vector detects definitely (a POSSIBLE
+    # result). Neither SAT nor grading targets them again this run.
+    x_bounded: set[int] = set()
 
     atpg_seconds = 0.0
     fault_sim_seconds = 0.0
@@ -817,8 +880,11 @@ def run_progressive_native_atpg(
         with connect(effective_db_path) as conn:
             init_schema(conn)
             prev_detected, prev_redundant = _fault_counts(conn, campaign_id)
+            prev_possible = _possible_count(conn, campaign_id)
             active_rows = _active_fault_rows(conn, campaign_id)
-            active_ids = [int(row["id"]) for row in active_rows]
+            active_ids = [
+                int(row["id"]) for row in active_rows if int(row["id"]) not in x_bounded
+            ]
 
         if not active_ids:
             terminal = "COMPLETE"
@@ -910,7 +976,11 @@ def run_progressive_native_atpg(
 
         with connect(effective_db_path) as conn:
             init_schema(conn)
-            active_rows = _active_fault_rows(conn, campaign_id)
+            active_rows = [
+                row
+                for row in _active_fault_rows(conn, campaign_id)
+                if int(row["id"]) not in x_bounded
+            ]
             active_ids = [int(row["id"]) for row in active_rows]
 
         # O(N) dict for per-wave row lookup without re-scanning active_rows.
@@ -1103,14 +1173,28 @@ def run_progressive_native_atpg(
                     stats.protocol_no_progress_rounds += 1
                     continue
                 sim_started = time.perf_counter()
-                verified = core.verify_fault_candidate(
-                    json_path,
-                    effective_cell_map,
-                    effective_db_path,
-                    fault_id,
-                    candidate,
-                    unsupported,
-                    bb_instances,
+                # The X engine accepts a definite detection only (2).
+                verified = (
+                    core.verify_fault_candidate_x(
+                        json_path,
+                        effective_cell_map,
+                        effective_db_path,
+                        fault_id,
+                        candidate,
+                        unsupported,
+                        bb_instances,
+                    )
+                    == 2
+                    if x_mode
+                    else core.verify_fault_candidate(
+                        json_path,
+                        effective_cell_map,
+                        effective_db_path,
+                        fault_id,
+                        candidate,
+                        unsupported,
+                        bb_instances,
+                    )
                 )
                 fault_sim_seconds += time.perf_counter() - sim_started
                 if verified:
@@ -1161,6 +1245,57 @@ def run_progressive_native_atpg(
                     rejected_patterns.setdefault(fault_id, set()).add(key)
                     round_tracker.sat_outcomes.append("protocol_no_progress")
                     stats.protocol_no_progress_rounds += 1
+            elif result == "POSSIBLE":
+                # X engine: no vector detects this fault definitely, so it is
+                # not a target again this run. The vector shows it for some
+                # value of the unknowns; it is kept when the X engine grades it a
+                # possible detection (the credit of [fault_model] possible_credit).
+                stats.possible += 1
+                round_tracker.sat_outcomes.append("POSSIBLE")
+                x_bounded.add(fault_id)
+                candidate = dict(solved["vector"])
+                key = pattern_key(candidate, input_order)
+                if (
+                    key not in seen_patterns
+                    and core.verify_fault_candidate_x(
+                        json_path,
+                        effective_cell_map,
+                        effective_db_path,
+                        fault_id,
+                        candidate,
+                        unsupported,
+                        bb_instances,
+                    )
+                    >= 1
+                ):
+                    seen_patterns.add(key)
+                    vectors.append(candidate)
+                    stats.generated_vectors += 1
+                    stats.accepted_vectors += 1
+                    sim_started = time.perf_counter()
+                    newly = _accept_and_simulate(
+                        core,
+                        json_path=json_path,
+                        cell_map_path=effective_cell_map,
+                        db_path=effective_db_path,
+                        campaign_id=campaign_id,
+                        run_id=run_id,
+                        vector_source=vector_source,
+                        vector=candidate,
+                        input_order=input_order,
+                        fault_ids=(
+                            sorted(remaining | {fault_id}) if drop_sat else [fault_id]
+                        ),
+                        vector_index=len(vectors),
+                        unsupported=unsupported,
+                        blackbox_instances=bb_instances,
+                        sim_threads=sim_threads,
+                        on_vector_accepted=on_vector_accepted,
+                    )
+                    fault_sim_seconds += time.perf_counter() - sim_started
+                    if drop_sat:
+                        remaining.difference_update(newly)
+                remaining.discard(fault_id)
             elif result == "UNSAT":
                 stats.unsat += 1
                 # UNSAT with patterns blocked isn't a proof to classify.
@@ -1201,8 +1336,11 @@ def run_progressive_native_atpg(
             init_schema(conn)
             record_sat_outcomes(conn, campaign_id, _sat_outcomes, round_idx)
             conn.commit()
-            data = summary(conn, campaign_id=campaign_id)
+            data = summary(
+                conn, campaign_id=campaign_id, possible_credit=possible_credit
+            )
             detected, redundant = _fault_counts(conn, campaign_id)
+            possible = _possible_count(conn, campaign_id)
             active_rows_end = _active_fault_rows(conn, campaign_id)
             active_remaining = len(active_rows_end)
             active_ids_end = [int(row["id"]) for row in active_rows_end]
@@ -1234,6 +1372,8 @@ def run_progressive_native_atpg(
             redundant=redundant,
             prev_detected=prev_detected,
             prev_redundant=prev_redundant,
+            possible=possible,
+            prev_possible=prev_possible,
             round_outcomes=round_tracker.sat_outcomes,
         ) and not _escalation_headroom(
             active_ids_end, prior_timeout_count, timeout_tiers
@@ -1248,7 +1388,7 @@ def run_progressive_native_atpg(
 
     with connect(effective_db_path) as conn:
         init_schema(conn)
-        data = summary(conn, campaign_id=campaign_id)
+        data = summary(conn, campaign_id=campaign_id, possible_credit=possible_credit)
         if data["denominator"] == 0:
             raise RunnerError("denominator is zero after progressive ATPG")
         core.complete_run_with_atpg(

@@ -685,6 +685,7 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
   }
   cg.yosys_to_compiled = std::move(y2c);
   cg.compiled_to_yosys = std::move(c2y);
+  cg.x_mode = ng.x_mode;
 
   for (int po : ng.POs) {
     if (cg.yosys_to_compiled.count(po) && !ng.unobserved.count(po)) {

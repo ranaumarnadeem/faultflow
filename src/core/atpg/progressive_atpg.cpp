@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <thread>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
 #include "atpg/fault_solver.hpp"
@@ -23,11 +24,19 @@
 #include "sim/engine/bit_parallel_sim.hpp"
 #include "sim/golden_ref/golden_ref_sim.hpp"
 #include "sim/state/test_vector.hpp"
+#include "sim/xsim/bit_parallel_sim_x.hpp"
+#include "sim/xsim/golden_ref_sim_x.hpp"
 
 namespace faultflow::atpg {
 namespace {
 
 constexpr size_t kFaultLanesPerWord = kBatchSize;
+
+// Still a grading and ATPG target: undetected, or only possibly detected (the X
+// engine's), which a later vector may still detect definitely.
+bool is_active_status(FaultStatus status) {
+  return status == FaultStatus::UNDETECTED || status == FaultStatus::POSSIBLE;
+}
 
 SimulationInstrumentation g_simulation_instrumentation;
 
@@ -192,7 +201,7 @@ std::vector<ActiveFaultRecord> load_active_fault_records(
     }
     const db::FaultRecord& rec = it->second;
     if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
-        rec.status != FaultStatus::UNDETECTED ||
+        !is_active_status(rec.status) ||
         (skip_protocol_unresolved && rec.protocol_unresolved)) {
       continue;
     }
@@ -228,6 +237,9 @@ FaultBatch make_batch(const std::vector<ActiveFaultRecord>& active, size_t begin
 
 struct GradeRangeResult {
   std::vector<size_t> detected_indices;         // indices into `active`, ascending
+  // The X engine's: indices into `active` (ascending) only possibly detected;
+  // they stay in still_active.
+  std::vector<size_t> possible_indices;
   std::vector<ActiveFaultRecord> still_active;  // carry-forward, ascending
   int64_t batch_fault_calls = 0;                // thread-local instrumentation tally
 };
@@ -247,12 +259,25 @@ GradeRangeResult grade_batch_range(const std::vector<ActiveFaultRecord>& active,
     const size_t end = std::min(begin + kFaultLanesPerWord, range_end);
     const FaultBatch batch = make_batch(active, begin, end);
     ++r.batch_fault_calls;
-    const uint64_t detected_mask = grade(batch);
+    // A two-valued grade returns the detected lanes; the X engine's returns
+    // definite and possible ones.
+    const auto graded = grade(batch);
+    uint64_t detected_mask = 0ULL;
+    uint64_t possible_mask = 0ULL;
+    if constexpr (std::is_same_v<std::decay_t<decltype(graded)>, XBatchDetection>) {
+      detected_mask = graded.definite;
+      possible_mask = graded.possible;
+    } else {
+      detected_mask = graded;
+    }
     for (size_t i = begin; i < end; ++i) {
       const CompactFault& lane = batch.faults[i - begin];
       if ((detected_mask & lane.sa_mask) != 0) {
         r.detected_indices.push_back(i);
       } else {
+        if ((possible_mask & lane.sa_mask) != 0) {
+          r.possible_indices.push_back(i);
+        }
         r.still_active.push_back(active[i]);
       }
     }
@@ -361,6 +386,8 @@ std::string solve_result_name(SatSolveResult result) {
       return "TIMEOUT";
     case SatSolveResult::UNKNOWN:
       return "UNKNOWN";
+    case SatSolveResult::POSSIBLE:
+      return "POSSIBLE";
   }
   return "UNKNOWN";
 }
@@ -468,7 +495,7 @@ SolveFaultResult solve_fault_for_db(
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
   if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
-      rec.status != FaultStatus::UNDETECTED) {
+      !is_active_status(rec.status)) {
     throw std::runtime_error("fault is not active for SAT ATPG");
   }
   const auto pis = ordered_pis(ctx.parsed, ctx.cg);
@@ -488,13 +515,17 @@ SolveFaultResult solve_fault_for_db(
   std::map<std::string, bool> vector;
   options.cone_restrict = cone_restrict;
   options.incremental = incremental;
+  // An X-mode graph: the X engine's semantics (solve_stuck_at_fault_x, which
+  // falls back to the two-valued solver where the fault's cone holds no
+  // unknown).
   const SatSolveResult result =
-      options.incremental
+      ctx.cg.x_mode ? solve_stuck_at_fault_x(ctx.cg, pis, fault, options, vector)
+      : options.incremental
           ? solve_stuck_at_fault_incremental(ctx.cg, pis, fault, options, vector)
           : solve_stuck_at_fault(ctx.cg, pis, fault, options, vector);
 
   out.result = solve_result_name(result);
-  if (result == SatSolveResult::SAT) {
+  if (result == SatSolveResult::SAT || result == SatSolveResult::POSSIBLE) {
     out.vector = std::move(vector);
   }
   return out;
@@ -520,6 +551,28 @@ bool verify_fault_vector(
   }();
   return golden.is_detected(ctx.cg, golden.simulate_fault_free(ctx.cg, vec),
                             golden.simulate_with_fault(ctx.cg, vec, fault));
+}
+
+int verify_fault_vector_x(const std::string& json_path, const std::string& cell_map_path,
+                          const std::string& db_path, int64_t fault_id,
+                          const std::map<std::string, bool>& vector,
+                          const std::string& unsupported_policy,
+                          const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  const db::FaultRecord rec = db::load_fault(db_path, fault_id);
+  const CompactFault fault = fault_from_record(rec);
+  TestVector vec;
+  for (const auto& [name, value] : vector) {
+    vec.inputs[ctx.parsed.net_id_by_name(name)] = value;
+  }
+  const GoldenRefSimX ref;
+  XRunOptions options;
+  options.initial_state = Logic::X;
+  const XDetection d =
+      classify_detection(ctx.cg, ref.simulate_sequence(ctx.cg, vec, nullptr, options),
+                         ref.simulate_sequence(ctx.cg, vec, &fault, options));
+  return d == XDetection::DEFINITE ? 2 : (d == XDetection::POSSIBLE ? 1 : 0);
 }
 
 std::vector<ProgressiveDetection> simulate_incremental(
@@ -578,6 +631,75 @@ std::vector<ProgressiveDetection> simulate_incremental(
     active = std::move(still_active);
   }
   return detections;
+}
+
+std::vector<XProgressiveDetection> simulate_incremental_x(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t campaign_id, int64_t run_id,
+    const std::vector<std::map<std::string, bool>>& new_vectors,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances, int sim_threads) {
+  if (new_vectors.empty() || fault_ids.empty()) {
+    return {};
+  }
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  std::vector<TestVector> vectors;
+  vectors.reserve(new_vectors.size());
+  for (const auto& raw : new_vectors) {
+    vectors.push_back(vector_from_map(ctx.parsed, raw, input_order));
+  }
+  const BitParallelSimX sim;  // stateless, as BitParallelSim
+  XRunOptions options;
+  options.initial_state = Logic::X;
+  std::vector<XProgressiveDetection> out;
+  std::vector<ActiveFaultRecord> active =
+      load_active_fault_records(db_path, fault_ids, false);
+  for (size_t vi = 0; vi < vectors.size() && !active.empty(); ++vi) {
+    const TestVector& vec = vectors[vi];
+    const auto grade = [&](const FaultBatch& batch) -> XBatchDetection {
+      return sim.detect_batch(ctx.cg, vec, batch, options);
+    };
+    const std::vector<GradeRangeResult> slices =
+        grade_active_parallel(active, sim_threads, grade);
+    const int64_t vector_index = vector_start_index + static_cast<int64_t>(vi);
+    std::vector<ActiveFaultRecord> still_active;
+    still_active.reserve(active.size());
+    std::vector<int64_t> detected_this_vector;
+    std::vector<int64_t> possible_this_vector;
+    std::set<int64_t> newly_possible;
+    for (const GradeRangeResult& sr : slices) {
+      for (const size_t idx : sr.detected_indices) {
+        detected_this_vector.push_back(active[idx].fault_id);
+        out.push_back({active[idx].fault_id, vector_index, false});
+      }
+      // A definite detection drops the fault; a possible one keeps it a target
+      // (a later vector may detect it definitely) and is reported once.
+      for (const size_t idx : sr.possible_indices) {
+        if (active[idx].fault.status == FaultStatus::UNDETECTED) {
+          possible_this_vector.push_back(active[idx].fault_id);
+          newly_possible.insert(active[idx].fault_id);
+          out.push_back({active[idx].fault_id, vector_index, true});
+        }
+      }
+      for (const ActiveFaultRecord& rec : sr.still_active) {
+        still_active.push_back(rec);
+      }
+      g_simulation_instrumentation.batch_fault_calls += sr.batch_fault_calls;
+    }
+    for (ActiveFaultRecord& rec : still_active) {
+      if (newly_possible.count(rec.fault_id) != 0) {
+        rec.fault.status = FaultStatus::POSSIBLE;
+      }
+    }
+    db::mark_faults_detected(db_path, campaign_id, run_id, vector_index,
+                             detected_this_vector);
+    db::mark_faults_possible(db_path, possible_this_vector);
+    active = std::move(still_active);
+  }
+  return out;
 }
 
 std::vector<int64_t> simulate_tentative_detections(
@@ -678,7 +800,7 @@ SolveTransitionResult solve_transition_fault_for_db(
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
   if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
-      rec.status != FaultStatus::UNDETECTED) {
+      !is_active_status(rec.status)) {
     throw std::runtime_error("fault is not active for transition SAT ATPG");
   }
   const auto pis = ordered_pis(ctx.parsed, ctx.cg);
@@ -720,7 +842,7 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
   if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
-      rec.status != FaultStatus::UNDETECTED) {
+      !is_active_status(rec.status)) {
     throw std::runtime_error("fault is not active for transition SAT ATPG");
   }
   const auto pis = ordered_pis(ctx.parsed, ctx.cg);
@@ -769,7 +891,7 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
       load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
   const db::FaultRecord rec = db::load_fault(db_path, fault_id);
   if (rec.exclusion != FaultExclusion::NONE || rec.collapsed_into != UINT32_MAX ||
-      rec.status != FaultStatus::UNDETECTED) {
+      !is_active_status(rec.status)) {
     throw std::runtime_error("fault is not active for transition SAT ATPG");
   }
   const auto pis = ordered_pis(ctx.parsed, ctx.cg);

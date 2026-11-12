@@ -14,6 +14,10 @@ enum class SatSolveResult : uint8_t {
   UNSAT = 1,
   TIMEOUT = 2,
   UNKNOWN = 3,
+  // An X-mode graph only (solve_stuck_at_fault_x): no vector detects the fault
+  // definitely on the X engine, but the returned one detects it for some value
+  // of the netlist's unknowns -- at best a possible detection.
+  POSSIBLE = 4,
 };
 
 // A (pseudo-)PI a scan-compression decompressor drives: its value is the XOR of

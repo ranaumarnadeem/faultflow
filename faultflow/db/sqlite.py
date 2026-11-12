@@ -370,7 +370,18 @@ def record_reconvergent_stems(
     )
 
 
-def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[str, Any]:
+DEFAULT_POSSIBLE_CREDIT = 50.0
+
+
+def summary(
+    conn: sqlite3.Connection,
+    campaign_id: int | None = None,
+    possible_credit: float = DEFAULT_POSSIBLE_CREDIT,
+) -> dict[str, Any]:
+    """The campaign's coverage. `possible` counts the faults the X engine only
+    possibly detected; each counts `possible_credit` percent of a detection
+    ([fault_model] possible_credit) in both percentages. A two-valued campaign
+    has none, so the credit changes nothing there."""
     # summary() sits on read paths (status, reports) that may run beside a live
     # ATPG writer: only touch DDL when the schema is genuinely absent or stale,
     # so on any current DB this is a pure read that never contends for the
@@ -389,6 +400,8 @@ def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[st
                 "denominator": 0,
                 "detected": 0,
                 "undetected": 0,
+                "possible": 0,
+                "possible_credit_percent": possible_credit,
                 "redundant": 0,
                 "collapsed": 0,
                 "excluded_blackbox": 0,
@@ -424,6 +437,8 @@ def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[st
                     AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS detected,
           SUM(CASE WHEN status = 'undetected' AND exclusion = 'none'
                     AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS undetected,
+          SUM(CASE WHEN status = 'possible' AND exclusion = 'none'
+                    AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS possible,
           SUM(CASE WHEN status = 'redundant' AND exclusion = 'none'
                     AND collapsed_into IS NULL THEN 1 ELSE 0 END) AS redundant,
           SUM(CASE WHEN collapsed_into IS NOT NULL THEN 1 ELSE 0 END) AS collapsed,
@@ -467,10 +482,11 @@ def summary(conn: sqlite3.Connection, campaign_id: int | None = None) -> dict[st
     data: dict[str, Any] = {key: int(row[key] or 0) for key in row.keys()}
     structural = data["structural_eligible"]
     denom = data["denominator"]
-    detected = data["detected"]
+    data["possible_credit_percent"] = possible_credit
+    credited = data["detected"] + data["possible"] * possible_credit / 100.0
     data["fault_coverage_percent"] = (
-        100.0 * detected / structural if structural else None
+        100.0 * credited / structural if structural else None
     )
-    data["test_coverage_percent"] = 100.0 * detected / denom if denom else None
+    data["test_coverage_percent"] = 100.0 * credited / denom if denom else None
     data["coverage_percent"] = data["test_coverage_percent"]
     return data

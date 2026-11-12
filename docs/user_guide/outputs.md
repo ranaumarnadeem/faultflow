@@ -78,6 +78,7 @@ Its top-level structure is:
 | `run` | Per-run statistics, including ATPG round counts and timing |
 | `per_node` | Per-net fault counts and detection status |
 | `undetected_faults` | The remaining undetected/redundant faults |
+| `possible_faults` | Only with `[simulation] engine = x` and some possibly detected faults: those faults (id, net, type, site). `policy` then also gives `engine` and `possible_credit_percent`, and a `per_node` entry with any gives its `possible` count, its coverage credited |
 | `autombist_categories` | Only with `[autombist] manifest`: `detected`, `denominator`, `blackbox_unresolved`, `hold_unresolved` and `coverage_percent` per autoMBIST instance category, `glue` holding what no instance owns; they add up to the `summary` totals. After `ff.py jtag`, also `combined_detected`, `combined_denominator` and `combined_coverage_percent` (scan and JTAG credit together). `coverage.rpt` shows the same as a table. See [External tools](../external_tools.md) |
 | `graded_by` | Scan campaigns: which test grades which faults -- `scan` (its faults and `detected`), `jtag` and `wsp` (the faults scan leaves to those test instruments' own tests, and what each detected: `null` where the test hasn't run), `reset`, the `memories` MBIST tests, and `combined`, every population together once `ff.py jtag` or `ff.py wsp` has run. Each `autombist_categories` entry has the same split as `graded_by` (`scan`, `jtag`, `wsp` fault counts) |
 | `jtag` | Only after `ff.py jtag`: the latest JTAG network-integrity grade of this campaign's faults -- the program (`program_digest`, `tck_periods`, `tests`), `graded`, `detected`, `detected_by_test` (each fault credited to the first test that detects it), `detected_only_by_jtag`, `reset_path_ungraded` (faults that could keep a flop out of reset, which a two-valued grade can't judge), `scan_redundant_conflicts` (scan-redundant faults JTAG detects; expected empty) and the `holds` used. The `summary` block is unchanged |
@@ -93,7 +94,9 @@ Its top-level structure is:
 | `structural_eligible` | Faults eligible by structure: supported cell, not collapsed, not clock/reset (the structural denominator) |
 | `denominator` | The effective (testable) denominator: `structural_eligible` minus proven-redundant faults |
 | `detected` | Faults detected by the test set |
-| `undetected` | Faults neither detected nor proven redundant |
+| `undetected` | Faults neither detected nor proven redundant (nor, with `engine = x`, possibly detected) |
+| `possible` | With `[simulation] engine = x`: faults only possibly detected -- the good output known, the faulty one unknown -- and never detected definitely. Always `0` two-valued |
+| `possible_credit_percent` | The credit of each `possible` fault in both percentages, in percent of a detection (`[fault_model] possible_credit`, default 50) |
 | `redundant` | Faults proven untestable (SAT UNSAT) under the current model |
 | `collapsed` | Faults removed by collapsing |
 | `excluded_blackbox` | Faults on blackboxed-cell outputs |
@@ -104,8 +107,8 @@ Its top-level structure is:
 | `excluded_wsp` | Scan campaigns of a wrapper an IEEE 1500 WSP controls (`[wrap] control = wsp`): the WSP's own faults -- its ports', its instruction and bypass registers', its decode's and its serial path's -- which a scan test, the instruction programmed and held, leaves to the WSP's own test |
 | `blackbox_unresolved` | Scan campaigns: faults, counted in `undetected`, that have a test only if a `[blackbox]` instance could be driven, observed or known, which no scan test can do (Tessent's AU.BB) |
 | `hold_unresolved` | Scan campaigns with `[scan] hold`: faults, counted in `undetected`, that have a test only if the held inputs, and the non-scan flops they keep in reset, were free (Tessent's AU.PC) |
-| `test_coverage_percent` | `detected / denominator x 100` — credits proven-redundant faults by removing them from the denominator; the **headline** figure |
-| `fault_coverage_percent` | `detected / structural_eligible x 100` — counts proven-redundant faults against you; the **conservative** figure |
+| `test_coverage_percent` | `(detected + possible x possible_credit_percent / 100) / denominator x 100` — credits proven-redundant faults by removing them from the denominator; the **headline** figure. Two-valued, `possible` is 0 and this is `detected / denominator x 100` |
+| `fault_coverage_percent` | The same credited count over `structural_eligible` — counts proven-redundant faults against you; the **conservative** figure |
 | `coverage_percent` | The headline coverage figure (equal to `test_coverage_percent`) |
 
 ```{note}

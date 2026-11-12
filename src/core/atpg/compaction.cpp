@@ -11,6 +11,7 @@
 #include "ir/parsed_graph/parsed_graph.hpp"
 #include "sim/engine/bit_parallel_sim.hpp"
 #include "sim/state/test_vector.hpp"
+#include "sim/xsim/bit_parallel_sim_x.hpp"
 
 namespace faultflow::atpg {
 namespace {
@@ -145,6 +146,41 @@ std::vector<int64_t> detect_with_vector(
                         blackbox_instances);
   const TestVector tv = build_vector(ctx.parsed, vector, input_order);
   return simulate_targets(ctx, tv, targets_from_preloaded(targets));
+}
+
+XDetections detect_with_vector_x(const std::string& json_path,
+                                 const std::string& cell_map_path,
+                                 const std::map<std::string, bool>& vector,
+                                 const std::vector<std::string>& input_order,
+                                 const std::vector<FaultTarget>& targets,
+                                 const std::string& unsupported_policy,
+                                 const std::vector<std::string>& blackbox_instances) {
+  XDetections out;
+  if (targets.empty()) {
+    return out;
+  }
+  const CachedGraph& ctx =
+      load_cached_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  const TestVector tv = build_vector(ctx.parsed, vector, input_order);
+  const std::vector<Target> resolved = targets_from_preloaded(targets);
+  const BitParallelSimX sim;
+  XRunOptions options;
+  options.initial_state = Logic::X;
+  const size_t lanes = static_cast<size_t>(kBatchSize);
+  for (size_t begin = 0; begin < resolved.size(); begin += lanes) {
+    const size_t end = std::min(begin + lanes, resolved.size());
+    const FaultBatch batch = make_batch(resolved, begin, end);
+    const XBatchDetection d = sim.detect_batch(ctx.cg, tv, batch, options);
+    for (size_t i = begin; i < end; ++i) {
+      const uint64_t lane = batch.faults[i - begin].sa_mask;
+      if ((d.definite & lane) != 0) {
+        out.definite.push_back(resolved[i].fault_id);
+      } else if ((d.possible & lane) != 0) {
+        out.possible.push_back(resolved[i].fault_id);
+      }
+    }
+  }
+  return out;
 }
 
 std::vector<int64_t> detect_with_pair(

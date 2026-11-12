@@ -201,8 +201,9 @@ std::set<int> parse_unobserved_nets(const ParsedModule& mod,
 NormalizedGraph NormalizedGraph::from_parsed(
     const ParsedGraph& parsed, const CellMap& cell_map,
     const std::string& policy,
-    const std::set<std::string>& blackbox_instances) {
+    const std::set<std::string>& blackbox_instances, bool x_mode) {
   NormalizedGraph ng;
+  ng.x_mode = x_mode;
   const ParsedModule& mod = parsed.top_module();
   std::map<int, int> parent;
   int next_node_id = 1;
@@ -574,6 +575,12 @@ NormalizedGraph NormalizedGraph::from_parsed(
   }
   if (ng.nets.count(CONST1_NET_ID)) {
     add_const(CONST1_NET_ID, GateType::CONST1);
+  }
+  if (ng.nets.count(XZ_NET_ID)) {
+    if (!x_mode) {
+      throw ParseError("an x/z bit (XZ_NET_ID) in a two-valued graph");
+    }
+    add_const(XZ_NET_ID, GateType::CONSTX);
   }
 
   // Apply aliases
