@@ -56,7 +56,7 @@ def test_the_x_engine_finds_the_library_latch_of_each_enable_level() -> None:
     )
     assert x_map_lines(cells, Path("m.v")) == (
         "dfflegalize -cell $_DLATCH_N_ x -cell $_DLATCH_P_ x t:$_DLATCH*\n"
-        "techmap -map m.v\n"
+        "techmap -map m.v\nsimplemap\n"
     )
 
 

@@ -457,6 +457,156 @@ void split_fanout_branches(CompiledSimGraph& cg, const NormalizedGraph& ng,
   }
 }
 
+// The strongly connected components of the nodes: an edge from a net's driver to
+// each node reading it, none into a flop (a loop through one is sequential, not
+// combinational). `comp[i]` numbers node i's component in topological order (an
+// edge never goes to a lower number); `cyclic[c]`: c is a loop -- more than one
+// node, or one reading its own output. Iterative Tarjan.
+struct Components {
+  std::vector<int> comp;
+  std::vector<char> cyclic;
+  int count = 0;
+  std::vector<std::vector<int>> succ;
+};
+
+Components strongly_connected(const CompiledSimGraph& cg, size_t net_count) {
+  const size_t n = cg.nodes.size();
+  Components out;
+  std::vector<int> driver(net_count, -1);
+  for (size_t i = 0; i < n; ++i) {
+    if (cg.nodes[i].out < net_count) {
+      driver[cg.nodes[i].out] = static_cast<int>(i);
+    }
+  }
+  out.succ.assign(n, {});
+  std::vector<char> self(n, 0);
+  for (size_t v = 0; v < n; ++v) {
+    const SimNode& sn = cg.nodes[v];
+    if (sn.type == GateType::DFF || sn.type == GateType::INPUT) {
+      continue;
+    }
+    for (uint32_t slot : {sn.in0, sn.in1, sn.in2, sn.in3, sn.in4, sn.in5}) {
+      if (slot == UNUSED_INPUT || slot >= net_count || driver[slot] < 0) {
+        continue;
+      }
+      const auto u = static_cast<size_t>(driver[slot]);
+      out.succ[u].push_back(static_cast<int>(v));
+      self[v] = static_cast<char>(self[v] || u == v);
+    }
+  }
+  std::vector<int> index(n, -1);
+  std::vector<int> low(n, 0);
+  std::vector<char> on_stack(n, 0);
+  std::vector<int> stack;
+  std::vector<std::vector<int>> found;  // components, sinks first
+  int next = 0;
+  for (size_t root = 0; root < n; ++root) {
+    if (index[root] >= 0) {
+      continue;
+    }
+    std::vector<std::pair<int, size_t>> work{{static_cast<int>(root), 0}};
+    index[root] = low[root] = next++;
+    stack.push_back(static_cast<int>(root));
+    on_stack[root] = 1;
+    while (!work.empty()) {
+      auto& [v, edge] = work.back();
+      if (edge < out.succ[static_cast<size_t>(v)].size()) {
+        const int w = out.succ[static_cast<size_t>(v)][edge++];
+        if (index[static_cast<size_t>(w)] < 0) {
+          index[static_cast<size_t>(w)] = low[static_cast<size_t>(w)] = next++;
+          stack.push_back(w);
+          on_stack[static_cast<size_t>(w)] = 1;
+          work.emplace_back(w, 0);
+        } else if (on_stack[static_cast<size_t>(w)] != 0) {
+          low[static_cast<size_t>(v)] =
+              std::min(low[static_cast<size_t>(v)], index[static_cast<size_t>(w)]);
+        }
+        continue;
+      }
+      const int done = v;
+      work.pop_back();
+      if (!work.empty()) {
+        const int parent = work.back().first;
+        low[static_cast<size_t>(parent)] =
+            std::min(low[static_cast<size_t>(parent)], low[static_cast<size_t>(done)]);
+      }
+      if (low[static_cast<size_t>(done)] == index[static_cast<size_t>(done)]) {
+        std::vector<int> members;
+        int w = -1;
+        do {
+          w = stack.back();
+          stack.pop_back();
+          on_stack[static_cast<size_t>(w)] = 0;
+          members.push_back(w);
+        } while (w != done);
+        found.push_back(std::move(members));
+      }
+    }
+  }
+  out.count = static_cast<int>(found.size());
+  out.comp.assign(n, 0);
+  out.cyclic.assign(found.size(), 0);
+  for (size_t k = 0; k < found.size(); ++k) {
+    const int c = out.count - 1 - static_cast<int>(k);  // topological number
+    for (int v : found[k]) {
+      out.comp[static_cast<size_t>(v)] = c;
+    }
+    out.cyclic[static_cast<size_t>(c)] =
+        static_cast<char>(found[k].size() > 1 || self[static_cast<size_t>(found[k][0])]);
+  }
+  return out;
+}
+
+// An X-mode graph with a loop: every node's level from its component -- a
+// component's level one above the highest it reads from, a loop all in one level,
+// which the X engines settle to a fixed point. Leaves an acyclic graph's levels
+// as they are (returns false).
+bool loop_levels_for(const CompiledSimGraph& cg, size_t net_count,
+                     std::vector<int>& node_levels) {
+  const Components c = strongly_connected(cg, net_count);
+  if (std::none_of(c.cyclic.begin(), c.cyclic.end(), [](char x) { return x != 0; })) {
+    return false;
+  }
+  std::vector<std::vector<int>> members(static_cast<size_t>(c.count));
+  for (size_t v = 0; v < c.comp.size(); ++v) {
+    members[static_cast<size_t>(c.comp[v])].push_back(static_cast<int>(v));
+  }
+  std::vector<int> level(static_cast<size_t>(c.count), 0);
+  for (int k = 0; k < c.count; ++k) {  // topological order
+    for (int u : members[static_cast<size_t>(k)]) {
+      for (int v : c.succ[static_cast<size_t>(u)]) {
+        const int cv = c.comp[static_cast<size_t>(v)];
+        if (cv != k) {
+          level[static_cast<size_t>(cv)] =
+              std::max(level[static_cast<size_t>(cv)], level[static_cast<size_t>(k)] + 1);
+        }
+      }
+    }
+  }
+  for (size_t v = 0; v < node_levels.size(); ++v) {
+    node_levels[v] = level[static_cast<size_t>(c.comp[v])];
+  }
+  return true;
+}
+
+// After the nodes are in level order: which node is on a loop, and which level
+// holds one (CompiledSimGraph::in_loop, loop_levels).
+void flag_loops(CompiledSimGraph& cg, size_t net_count) {
+  const Components c = strongly_connected(cg, net_count);
+  cg.in_loop.assign(cg.nodes.size(), 0);
+  for (size_t v = 0; v < cg.nodes.size(); ++v) {
+    cg.in_loop[v] = static_cast<uint8_t>(c.cyclic[static_cast<size_t>(c.comp[v])]);
+  }
+  cg.loop_levels.assign(cg.level_starts.empty() ? 0 : cg.level_starts.size() - 1, 0);
+  for (size_t l = 0; l < cg.loop_levels.size(); ++l) {
+    for (int i = cg.level_starts[l]; i < cg.level_starts[l + 1]; ++i) {
+      if (cg.in_loop[static_cast<size_t>(i)] != 0) {
+        cg.loop_levels[l] = 1;
+      }
+    }
+  }
+}
+
 void rebuild_level_starts(CompiledSimGraph& cg,
                           const std::vector<int>& node_levels) {
   cg.level_starts.clear();
@@ -711,7 +861,13 @@ CompiledSimGraph GraphCompiler::compile(const NormalizedGraph& ng) {
   }
 
   split_fanout_branches(cg, ng, sim_owner_norm_id, y2c, c2y, node_levels);
+  // An X-mode graph may hold combinational loops (a two-valued one never does:
+  // NormalizedGraph refuses them): level it by its strongly connected components.
+  const bool cyclic = ng.x_mode && loop_levels_for(cg, c2y.size(), node_levels);
   rebuild_level_starts(cg, node_levels);
+  if (cyclic) {
+    flag_loops(cg, c2y.size());
+  }
   cg.net_count = static_cast<int>(c2y.size());
   if (cg.net_sites.size() < static_cast<size_t>(cg.net_count)) {
     cg.net_sites.resize(static_cast<size_t>(cg.net_count));

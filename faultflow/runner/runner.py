@@ -145,7 +145,7 @@ TRANSIENT_NAMES = {
 YOSYS_TEMPLATE = """{read_libraries}read_verilog -sv {verilog}
 hierarchy -check -top {top}
 proc
-flatten
+{x_tribuf}flatten
 opt_expr
 opt_clean
 synth -top {top}
@@ -509,7 +509,9 @@ class Runner:
             liberty=self.cfg.liberty or "",
             # Cells the library's map doesn't model (faultflow.pdk.resolve).
             dont_use="".join(f" -dont_use {cell}" for cell in self.cfg.dont_use),
-            # The X engine's latches as library cells (empty two-valued).
+            # The X engine's tristates and latches as library cells (both empty
+            # two-valued: the script is the one it always was).
+            x_tribuf="tribuf\n" if self.cfg.simulation.engine == "x" else "",
             x_map=self._x_map_lines(),
             json=self.cfg.intermediate_dir / f"{self.cfg.top}.json",
             gate_verilog=self.cfg.intermediate_dir / f"{self.cfg.top}_gate.v",
@@ -525,10 +527,19 @@ class Runner:
 
         return latch_cells(_load_json_object(self.cfg.cell_lib))
 
+    def _x_tristate_cell(self) -> Any:
+        if self.cfg.simulation.engine != "x" or not self.cfg.cell_lib.exists():
+            return None
+        from faultflow.pdk.x_synth import tristate_cell
+
+        return tristate_cell(_load_json_object(self.cfg.cell_lib))
+
     def _x_map_lines(self) -> str:
         from faultflow.pdk.x_synth import x_map_lines
 
-        return x_map_lines(self._x_latch_cells(), self._x_map_path())
+        return x_map_lines(
+            self._x_latch_cells(), self._x_map_path(), self._x_tristate_cell()
+        )
 
     def _existing_verilog_source(self) -> Path | None:
         candidates = []
@@ -668,10 +679,13 @@ class Runner:
         json_path = self.cfg.intermediate_dir / f"{self.cfg.top}.json"
         script = self.cfg.generated_scripts_dir / "yosys_synth.tcl"
         latch_cells = self._x_latch_cells()
-        if latch_cells:
+        tristate = self._x_tristate_cell()
+        if latch_cells or tristate is not None:
             from faultflow.pdk.x_synth import latch_techmap
 
-            self._x_map_path().write_text(latch_techmap(latch_cells), encoding="utf-8")
+            self._x_map_path().write_text(
+                latch_techmap(latch_cells, tristate), encoding="utf-8"
+            )
         script.write_text(self._rendered_yosys_script(source), encoding="utf-8")
         proc = subprocess.run(
             ["yosys", "-s", str(script)],

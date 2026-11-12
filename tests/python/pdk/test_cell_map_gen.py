@@ -257,6 +257,29 @@ def test_clear_and_preset_together_take_the_librarys_conflict_value(core: Any) -
     assert entry["outputs"] == {"Q": "Q", "QN": "Q_N"}
 
 
+def test_a_tristate_buffer_is_read_from_its_three_state(core: Any) -> None:
+    """Sky130's einvp: Z = !A while TE is high (three_state TE')."""
+    einvp = _cell(
+        "demo__einvp_1",
+        _pin("A")
+        + _pin("TE")
+        + _pin("Z", "output", function="(!A)", three_state="(TE')"),
+    )
+    result = _generate(_lib(einvp))
+    entry = result.cell_map["demo__einvp_*"]
+    assert entry["node_type"] == "TBUF"
+    assert entry["inputs"] == ["A", "TE"]
+    assert entry["outputs"] == {"Z": "Z"}
+    assert entry["tbuf"] == {
+        "data": "A",
+        "enable": "TE",
+        "output": "Z",
+        "level": "HIGH",
+        "invert": True,
+    }
+    assert {r.cell: r.kind for r in result.report} == {"demo__einvp_1": "tristate"}
+
+
 def test_a_latch_is_read_from_its_latch_group(core: Any) -> None:
     """Enable, data, clear and the inverted output, as sky130's dlrbn has them;
     a latch whose data_in is no single pin is listed instead."""
@@ -337,7 +360,15 @@ def test_cells_the_engine_does_not_model_are_listed_explicitly(core: Any) -> Non
     }
     assert cm["demo__dlclkp_*"]["unsupported"] is True
     assert "clock-gating" in cm["demo__dlclkp_*"]["reason"]
-    assert cm["demo__ebufn_*"] == {"node_type": "TBUF", "reason": "tristate output"}
+    # A tristate buffer is modelled (by the X engine); a bus mux with no function
+    # is a bare TBUF, refused. Both stay in the report.
+    assert cm["demo__ebufn_*"]["tbuf"] == {
+        "data": "A",
+        "enable": "TE_B",
+        "output": "Z",
+        "level": "LOW",
+        "invert": False,
+    }
     assert cm["demo__muxb4to1_*"] == {"node_type": "TBUF", "reason": "tristate output"}
     assert cm["demo__decap_*"]["unsupported"] is True
     assert "physical" in cm["demo__decap_*"]["reason"]

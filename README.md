@@ -174,7 +174,7 @@ Yes. faultflow reads technology-mapped Yosys output for sky130 HD and OSU035 cel
 Yes. It inserts full scan, validates chains structurally and runs scan ATPG, including launch-on-capture and launch-on-shift for transition faults.
 
 **Does it handle latches, tristates or unknown (X) values?**
-Partly. The default engine is two-valued and refuses latch and tristate cells. An opt-in second engine (`[simulation] engine = x`) carries 0, 1 and X: it reads `x`/`z` netlist bits as unknown, models latches, and credits a fault it only possibly detects (good output known, faulty one unknown) at 50% by default. Combinational loops and tristate buses are the stages still to come; the two-valued engine stays as it is. See [docs/roadmap.md](docs/roadmap.md).
+Yes, with the opt-in X engine (`[simulation] engine = x`), in combinational runs. It carries 0, 1 and X: it reads `x`/`z` netlist bits as unknown, models latches, combinational loops and tristate buses, and credits a fault it only possibly detects (good output known, faulty one unknown) at 50% by default. The default engine stays two-valued, exactly as it was, and refuses latches, loops and tristate cells; scan runs are two-valued. See [docs/roadmap.md](docs/roadmap.md). See [docs/roadmap.md](docs/roadmap.md).
 
 **What fault coverage does it reach?**
 See Results above and [docs/benchmarking.md](docs/benchmarking.md); for example, 99.969% stuck-at test coverage on picorv32a with 2,441 patterns.

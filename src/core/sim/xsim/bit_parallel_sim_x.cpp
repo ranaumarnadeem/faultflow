@@ -1,5 +1,7 @@
 #include "sim/xsim/bit_parallel_sim_x.hpp"
 
+#include <stdexcept>
+
 #include "sim/gate_eval.hpp"
 
 namespace faultflow {
@@ -90,6 +92,40 @@ Dual eval_latch_dual(const CompiledSimGraph& cg, const SimNode& sn,
   return state;
 }
 
+// A tristate driver (GoldenRefSimX's eval_tbuf): its data (inverted for TINV)
+// while enabled, Z -- (0,0), only ever on its private net -- while disabled, X
+// while the enable is unknown.
+Dual eval_tbuf_dual(GateType type, Dual data, Dual enable) {
+  if (type == GateType::TINV_P || type == GateType::TINV_N) {
+    data = dual_not(data);
+  }
+  if (type == GateType::TBUF_N || type == GateType::TINV_N) {
+    enable = dual_not(enable);
+  }
+  const uint64_t on = enable.h & ~enable.l;
+  const uint64_t unknown = enable.h & enable.l;
+  return {(on & data.h) | unknown, (on & data.l) | unknown};
+}
+
+// A bus (eval_bus): the union of its drivers' rails -- Z yields, 0 with 1 is X;
+// BUS_RES reads a floating bus as X.
+Dual eval_bus_dual(const SimNode& sn, const std::array<Dual, 6>& ins) {
+  Dual out{0ULL, 0ULL};
+  const std::array<uint32_t, 6> slots{sn.in0, sn.in1, sn.in2, sn.in3, sn.in4, sn.in5};
+  for (size_t i = 0; i < slots.size(); ++i) {
+    if (slots[i] != UNUSED_INPUT) {
+      out.h |= ins[i].h;
+      out.l |= ins[i].l;
+    }
+  }
+  if (sn.type == GateType::BUS_RES) {
+    const uint64_t floating = ~(out.h | out.l);
+    out.h |= floating;
+    out.l |= floating;
+  }
+  return out;
+}
+
 void evaluate_combinational(XState& st, const CompiledSimGraph& cg,
                             const FaultBatch& batch) {
   auto& nv = st.values;
@@ -98,38 +134,113 @@ void evaluate_combinational(XState& st, const CompiledSimGraph& cg,
     fp[batch.faults[i].net_index] = 1;
   }
   std::array<Dual, 6> ins{};
+  // A node's value from its inputs now (a latch's or clock gate's state moves).
+  const auto value_of = [&](const SimNode& sn) -> Dual {
+    if (sn.type == GateType::CONST0 || sn.type == GateType::CONST1) {
+      return dual_known(sn.type == GateType::CONST1 ? ~0ULL : 0ULL);
+    }
+    if (sn.type == GateType::CONSTX) {
+      return dual_x();
+    }
+    ins[0] = gather(nv, sn.in0);
+    ins[1] = gather(nv, sn.in1);
+    ins[2] = gather(nv, sn.in2);
+    ins[3] = gather(nv, sn.in3);
+    ins[4] = gather(nv, sn.in4);
+    ins[5] = gather(nv, sn.in5);
+    if (sn.type == GateType::LATCH) {
+      return eval_latch_dual(cg, sn, ins, st.latches[sn.out]);
+    }
+    if (sn.type == GateType::TBUF_P || sn.type == GateType::TBUF_N ||
+        sn.type == GateType::TINV_P || sn.type == GateType::TINV_N) {
+      return eval_tbuf_dual(sn.type, ins[0], ins[1]);
+    }
+    if (sn.type == GateType::BUS_MERGE || sn.type == GateType::BUS_RES) {
+      return eval_bus_dual(sn, ins);
+    }
+    if (is_icg(sn.type)) {
+      return eval_icg_dual(sn.type, ins[0], dual_or(ins[1], ins[2]), st.latches[sn.out]);
+    }
+    return eval_gate_dual(sn.type, ins);
+  };
+  // Writes a node's output, its faults on top.
+  const auto write = [&](const SimNode& sn, Dual v) {
+    nv[sn.out] = v;
+    if (fp[sn.out]) {
+      inject_faults(nv, batch, sn.out);
+    }
+  };
+  const auto skipped = [](const SimNode& sn) {
+    return sn.type == GateType::INPUT || sn.type == GateType::DFF;
+  };
   const auto eval_level = [&](int start, int end) {
     for (int i = start; i < end; ++i) {
       const SimNode& sn = cg.nodes[i];
-      if (sn.type == GateType::INPUT || sn.type == GateType::DFF) {
-        continue;
+      if (!skipped(sn)) {
+        write(sn, value_of(sn));
       }
-      if (sn.type == GateType::CONST0 || sn.type == GateType::CONST1) {
-        nv[sn.out] = dual_known(sn.type == GateType::CONST1 ? ~0ULL : 0ULL);
-      } else if (sn.type == GateType::CONSTX) {
-        nv[sn.out] = dual_x();
-      } else {
-        ins[0] = gather(nv, sn.in0);
-        ins[1] = gather(nv, sn.in1);
-        ins[2] = gather(nv, sn.in2);
-        ins[3] = gather(nv, sn.in3);
-        ins[4] = gather(nv, sn.in4);
-        ins[5] = gather(nv, sn.in5);
-        nv[sn.out] = sn.type == GateType::LATCH
-                         ? eval_latch_dual(cg, sn, ins, st.latches[sn.out])
-                     : is_icg(sn.type)
-                         ? eval_icg_dual(sn.type, ins[0], dual_or(ins[1], ins[2]),
-                                         st.latches[sn.out])
-                         : eval_gate_dual(sn.type, ins);
+    }
+  };
+  // A level holding a combinational loop: two-phase ternary simulation from the
+  // nets' last values (Seger and Brzozowski), so a loop that holds a value keeps
+  // it. Phase A only adds unknowns (each net the union of its old value and its
+  // new one) until nothing changes; phase B, from there, only removes them. Each
+  // lane settles at most once per net per phase; a level that would not (a
+  // stateful cell on the loop) reads X.
+  const auto settle_loop = [&](int start, int end) {
+    const int cap = 2 * (end - start) + 4;
+    for (int pass = 0;; ++pass) {
+      bool changed = false;
+      for (int i = start; i < end; ++i) {
+        const SimNode& sn = cg.nodes[i];
+        if (skipped(sn)) {
+          continue;
+        }
+        const Dual old = nv[sn.out];
+        const Dual now = value_of(sn);
+        // The union; Z (a tristate driver's (0,0)) with a driven value is X.
+        const uint64_t mixed = ~(old.h | old.l) ^ ~(now.h | now.l);
+        write(sn, {old.h | now.h | mixed, old.l | now.l | mixed});
+        changed = changed || nv[sn.out].h != old.h || nv[sn.out].l != old.l;
       }
-      if (fp[sn.out]) {
-        inject_faults(nv, batch, sn.out);
+      if (!changed) {
+        break;
+      }
+      if (pass > cap) {
+        throw std::logic_error("X engine: a loop's first phase did not settle");
+      }
+    }
+    for (int pass = 0;; ++pass) {
+      bool changed = false;
+      for (int i = start; i < end; ++i) {
+        const SimNode& sn = cg.nodes[i];
+        if (skipped(sn)) {
+          continue;
+        }
+        const Dual old = nv[sn.out];
+        write(sn, value_of(sn));
+        changed = changed || nv[sn.out].h != old.h || nv[sn.out].l != old.l;
+      }
+      if (!changed) {
+        return;
+      }
+      if (pass > cap) {
+        for (int i = start; i < end; ++i) {
+          if (!skipped(cg.nodes[i])) {
+            write(cg.nodes[i], dual_x());
+          }
+        }
+        return;
       }
     }
   };
   if (cg.level_starts.size() >= 2) {
     for (size_t lvl = 0; lvl + 1 < cg.level_starts.size(); ++lvl) {
-      eval_level(cg.level_starts[lvl], cg.level_starts[lvl + 1]);
+      if (lvl < cg.loop_levels.size() && cg.loop_levels[lvl] != 0) {
+        settle_loop(cg.level_starts[lvl], cg.level_starts[lvl + 1]);
+      } else {
+        eval_level(cg.level_starts[lvl], cg.level_starts[lvl + 1]);
+      }
     }
   } else {
     eval_level(0, static_cast<int>(cg.nodes.size()));
@@ -198,6 +309,12 @@ void for_each_sample(const CompiledSimGraph& cg, const TestVector& vec,
   st.ff_states.assign(cg.ff_configs.size(), broadcast(options.initial_state));
   st.latches.assign(cg.net_count, broadcast(options.initial_state));
   st.fault_present.assign(cg.net_count, 0);
+  // A combinational loop's nets power up as a flop does.
+  for (size_t i = 0; i < cg.in_loop.size(); ++i) {
+    if (cg.in_loop[i] != 0) {
+      st.values[cg.nodes[i].out] = broadcast(options.initial_state);
+    }
+  }
   for (const auto& [idx, value] : vec.initial_ff_state) {
     if (idx < st.ff_states.size()) {
       st.ff_states[idx] = dual_known(value ? ~0ULL : 0ULL);

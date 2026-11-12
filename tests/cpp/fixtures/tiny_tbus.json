@@ -1,0 +1,66 @@
+{
+  "creator": "Yosys 0.61+129 (faultflow fixture generator)",
+  "modules": {
+    "tiny_tbus": {
+      "attributes": {
+        "top": "00000000000000000000000000000001"
+      },
+      "ports": {
+        "a": { "direction": "input", "bits": [2] },
+        "b": { "direction": "input", "bits": [3] },
+        "oe1_n": { "direction": "input", "bits": [4] },
+        "oe2_n": { "direction": "input", "bits": [5] },
+        "c": { "direction": "input", "bits": [6] },
+        "e3": { "direction": "input", "bits": [7] },
+        "bus": { "direction": "output", "bits": [10] },
+        "y": { "direction": "output", "bits": [11] },
+        "z2": { "direction": "output", "bits": [12] }
+      },
+      "cells": {
+        "u1": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__ebufn_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "TE_B": "input", "Z": "output" },
+          "connections": { "A": [2], "TE_B": [4], "Z": [10] }
+        },
+        "u2": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__ebufn_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "TE_B": "input", "Z": "output" },
+          "connections": { "A": [3], "TE_B": [5], "Z": [10] }
+        },
+        "u3": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__and2_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "B": "input", "X": "output" },
+          "connections": { "A": [10], "B": [6], "X": [11] }
+        },
+        "u4": {
+          "hide_name": 0,
+          "type": "sky130_fd_sc_hd__einvp_1",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": { "A": "input", "TE": "input", "Z": "output" },
+          "connections": { "A": [6], "TE": [7], "Z": [12] }
+        }
+      },
+      "netnames": {
+        "a": { "hide_name": 0, "bits": [2], "attributes": {} },
+        "b": { "hide_name": 0, "bits": [3], "attributes": {} },
+        "oe1_n": { "hide_name": 0, "bits": [4], "attributes": {} },
+        "oe2_n": { "hide_name": 0, "bits": [5], "attributes": {} },
+        "c": { "hide_name": 0, "bits": [6], "attributes": {} },
+        "e3": { "hide_name": 0, "bits": [7], "attributes": {} },
+        "bus": { "hide_name": 0, "bits": [10], "attributes": {} },
+        "y": { "hide_name": 0, "bits": [11], "attributes": {} },
+        "z2": { "hide_name": 0, "bits": [12], "attributes": {} }
+      }
+    }
+  }
+}

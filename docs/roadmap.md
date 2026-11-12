@@ -60,30 +60,29 @@ Implemented today:
   mode pins or an IEEE 1500 wrapper serial port (WIR, WBY, test setup programs); INTEST,
   EXTEST, the SoC project flow and retargeting as scan tests that replay on the cells;
   the WSP's own faults graded by its integrity program (`wsp`).
+- **A second simulation engine with unknown values** (`[simulation] engine = x`,
+  opt-in; the two-valued engine stays as it is, every result it gives unchanged). Two
+  words per net carry 0, 1 and X, checked lane by lane against a scalar reference that
+  enumerates the existing truth tables; with no unknown in a run it gives exactly the
+  two-valued engine's results. An `x` or `z` bit of the netlist is unknown, a fault
+  shown only through an unknown is possibly detected (its own status, credited
+  `[fault_model] possible_credit`, 50% by default), and the engine models
+  level-sensitive latches, combinational loops (settled from their last values by
+  two-phase ternary simulation, so a loop of gates that holds a value keeps it) and
+  tristate buffers and buses (one enabled driver gives its value, a conflict or none
+  X). SAT test generation solves on the same semantics (a dual-rail CNF) and proves a
+  fault redundant only when no value of the unknowns lets any test show it. It grades
+  combinational stuck-at campaigns (`ff.py sim`, `--ext`), and JTAG and WSP
+  network-integrity grading run on it with every flop powered up unknown. Its synthesis
+  maps a design's latches and `1'bz` drivers onto the library's own cells.
 
 ## Planned
 
-- **Unknown values: X, Z and latches.** A second simulation engine that carries 0, 1, X and
-  Z, chosen per run. The two-valued engine stays as it is, so every result it gives today is
-  unchanged. Every cell input reads Z as X, as Verilog gate primitives do. In order:
-  1. A scalar reference simulator with X, every gate type checked against the existing
-     truth tables.
-  2. The bit-parallel engine with X (two words per net), checked lane by lane against the
-     reference. With no X in a run, it must give exactly the two-valued engine's results.
-  3. Unknown power-up state of flops, and a fault's detections split into definite (a 0
-     against a 1 at an output) and possible (a known value against X). A possibly
-     detected fault has its own status and counts a settable share of a detection,
-     50% by default (`[fault_model] possible_credit`); `[simulation] engine = x`
-     grades combinational stuck-at campaigns this way.
-  4. Level-sensitive latches: transparent while enabled, holding otherwise, starting at X.
-  5. Combinational loops, each settled from its last values by two-phase ternary
-     simulation, so a loop of gates that holds a value keeps it; a loop that does not
-     settle reads X. The two-valued engine refuses a netlist with a loop.
-  6. Tristate buffers and buses driving Z: one enabled driver gives its value, none gives
-     Z, a conflict gives X.
-
-  SAT test generation stays two-valued: an unknown source is masked, and every pattern is
-  graded by the simulator, which decides definite against possible.
+- **Unknown values in scan flows** (the X engine, `[simulation] engine = x`, today
+  combinational only): in place of the scan flows' structural masking (`x_mask` cone masking of blackbox outputs, non-scan flops
+  and the JTAG X-isolation proof), so a scan run can model latches, loops, tristate
+  buses and unknown power-up state too. The highest-risk stage: the scan flows'
+  grading and their equivalence checks would all move to the X engine.
 - **Visualization** (`ff.py viz`): scan chains, the cone around a fault, and where
   undetected faults cluster, as one self-contained HTML file built from a run's outputs,
   with no change to the simulator. Static views come first: scan chains coloured by
@@ -92,10 +91,11 @@ Implemented today:
 
 ## Scope boundaries
 
-The default engine stays two-valued: a latch is a cell it does not model, a tristate
-cell is a hard error, and an `x` or `z` bit in a netlist is tied to 0. The X engine
-(`[simulation] engine = x`) already reads `x`/`z` bits as unknown, credits possible
-detections and models latches; the stages after it are still to come. These were once listed as
+The default engine stays two-valued: a latch is a cell it does not model, a netlist
+with a combinational loop is refused, a tristate cell is a hard error, and an `x` or
+`z` bit in a netlist is tied to 0. The X engine (`[simulation] engine = x`) models all
+of them, in combinational runs; scan runs stay two-valued (see Planned). These were
+once listed as
 permanent exclusions. That decision was reversed on 2026-11-10: latches need an unknown
 state, and the earlier reason (that Verilator took years to get X-state right) does not hold,
 since Verilator is a two-state simulator by design.

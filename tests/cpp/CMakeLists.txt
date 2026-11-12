@@ -49,6 +49,8 @@ add_executable(
   sim/test_sequence_grade_x.cpp
   sim/test_x_mode.cpp
   sim/test_x_latch.cpp
+  sim/test_x_loop.cpp
+  sim/test_x_tristate.cpp
   helpers/test_helpers.cpp
 )
 

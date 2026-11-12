@@ -13,6 +13,9 @@ std::vector<CompactFault> enumerate_faults(const NormalizedGraph& ng,
     if (ng.nets.count(yid)) {
       net = &ng.nets.at(yid);
     }
+    if (net != nullptr && net->is_internal) {
+      continue;  // a tristate driver's own net: its bus carries the faults
+    }
     const std::string site = by_site ? canonical_site_key(cg, cidx) : std::string();
 
     for (int t = 0; t < 2; ++t) {

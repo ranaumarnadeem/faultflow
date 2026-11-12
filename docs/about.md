@@ -40,7 +40,7 @@ The following capabilities are **implemented and working today**:
 | Area | Capability |
 |---|---|
 | Fault models | Stuck-at (SA0/SA1); transition (slow-to-rise / slow-to-fall) — combinational broadside plus scan launch-on-capture (LOC) and launch-on-shift (LOS) |
-| Simulation | 64-lane bit-parallel engine; scalar golden-reference cross-check; binary (two-valued) signals |
+| Simulation | 64-lane bit-parallel engine; scalar golden-reference cross-check; binary (two-valued) signals by default, and an opt-in X engine (0/1/X, Z on tristate buses) with latches, combinational loops and possible-detection credit |
 | ATPG | Native SAT (CaDiCaL); progressive loop; simulator-verified vectors; redundancy (UNSAT) classification |
 | Fault handling | Checkpoint enumeration; equivalence-only collapsing (never dominance, so coverage is provably unchanged); reverse-order and dynamic test-set compaction |
 | Sequential | Posedge and negedge D flip-flops; asynchronous set/reset (clear/preset with polarity) |
@@ -53,11 +53,10 @@ The following capabilities are **implemented and working today**:
 | Verification | Optional iverilog gate that re-simulates the gate-level netlist against golden outputs |
 | Interfaces | Interactive Tcl shell (the primary interface); the `ff.py` / `faultflow` batch CLI; an OpenTestability "oracle" mode |
 
-The following are **planned** and described in the [Roadmap](roadmap.md):
-simulation with unknown values (0, 1, X and Z), level-sensitive latches, combinational
-loops, and tristate buffers. The opt-in X engine (`[simulation] engine = x`) already
-carries unknown values and models latches; the default two-valued engine refuses a
-latch, and every engine a tristate cell, until those stages land.
+An opt-in second engine (`[simulation] engine = x`) simulates with unknown values (0, 1,
+X, and Z on tristate buses), level-sensitive latches and combinational loops, in
+combinational runs; the default two-valued engine is unchanged and refuses them. Unknown
+values in scan runs are **planned**; see the [Roadmap](roadmap.md).
 
 ## License
 

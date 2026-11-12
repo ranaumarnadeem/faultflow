@@ -213,6 +213,15 @@ CellMapEntry parse_entry(const std::string& pattern, const nlohmann::json& node)
     entry.icg.output = icg.at("output").get<std::string>();
     entry.icg.edge = parse_trigger(icg.value("edge", std::string("POSEDGE")));
   }
+  if (entry.node_type == NodeType::TBUF && node.contains("tbuf")) {
+    const auto& tbuf = node.at("tbuf");
+    entry.tbuf.present = true;
+    entry.tbuf.data = tbuf.at("data").get<std::string>();
+    entry.tbuf.enable = tbuf.at("enable").get<std::string>();
+    entry.tbuf.output = tbuf.at("output").get<std::string>();
+    entry.tbuf.level = parse_polarity(tbuf.value("level", std::string("HIGH")));
+    entry.tbuf.invert = tbuf.value("invert", false);
+  }
   if (node.contains("constants")) {
     for (auto it = node.at("constants").begin(); it != node.at("constants").end();
          ++it) {

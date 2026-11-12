@@ -55,6 +55,11 @@ struct CompiledSimGraph {
   // Compiled for the X engine (NormalizedGraph::x_mode): it may hold nodes no
   // two-valued engine evaluates (GateType CONSTX).
   bool x_mode = false;
+  // An X-mode graph with combinational loops (empty otherwise): in_loop[i] when
+  // node i is on one; loop_levels[l] when level l holds one, which the X engines
+  // settle to a fixed point (every loop is all in one level).
+  std::vector<uint8_t> in_loop;
+  std::vector<uint8_t> loop_levels;
 };
 
 std::string canonical_site_key(const CompiledSimGraph& cg, uint32_t cidx);

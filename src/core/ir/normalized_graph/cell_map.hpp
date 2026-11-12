@@ -47,6 +47,18 @@ struct CellICGMetadata {
   TriggerType edge = TriggerType::POSEDGE;
 };
 
+// A tristate buffer's pins (node_type TBUF, its "tbuf" block): it drives `data`
+// (inverted with `invert`) onto `output` while `enable` is at `level`, Z
+// otherwise. Absent (`present` false): a bare TBUF entry, refused.
+struct CellTbufMetadata {
+  std::string data;
+  std::string enable;
+  std::string output;
+  Polarity level = Polarity::ACTIVE_HIGH;
+  bool invert = false;
+  bool present = false;
+};
+
 struct CellMapEntry {
   NodeType node_type = NodeType::GATE;
   GateType gate_type = GateType::BUF;
@@ -54,6 +66,7 @@ struct CellMapEntry {
   std::map<std::string, std::string> outputs;
   CellFFMetadata ff;
   CellICGMetadata icg;
+  CellTbufMetadata tbuf;
   // A tie cell with several outputs (Sky130's conb: HI and LO): each logical
   // output's constant. Empty for a one-output CONST entry (its gate_type says).
   std::map<std::string, int> constants;

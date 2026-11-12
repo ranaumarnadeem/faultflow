@@ -1,6 +1,7 @@
 #include "sim/xsim/golden_ref_sim_x.hpp"
 
 #include <algorithm>
+#include <stdexcept>
 
 #include "sim/gate_eval.hpp"
 
@@ -69,6 +70,39 @@ void seed_ff_outputs(const CompiledSimGraph& cg, const std::vector<Logic>& ff_st
 
 Logic control_active(Logic value, Polarity polarity);
 
+// A tristate driver: its data (inverted for TINV) while enabled, Z while
+// disabled, X while the enable is unknown.
+Logic eval_tbuf(GateType type, Logic data, Logic enable) {
+  if (type == GateType::TINV_P || type == GateType::TINV_N) {
+    data = logic_not(data);
+  }
+  const Polarity level = (type == GateType::TBUF_N || type == GateType::TINV_N)
+                             ? Polarity::ACTIVE_LOW
+                             : Polarity::ACTIVE_HIGH;
+  const Logic on = control_active(enable, level);
+  if (on == Logic::ONE) {
+    return is_known(data) ? data : Logic::X;
+  }
+  return on == Logic::ZERO ? Logic::Z : Logic::X;
+}
+
+// A bus: Z yields to a driven value, two different values (or an unknown) are
+// X; BUS_RES reads a floating bus (every driver Z) as X, BUS_MERGE keeps Z.
+Logic eval_bus(GateType type, const std::vector<Logic>& drivers) {
+  Logic out = Logic::Z;
+  for (Logic v : drivers) {
+    if (v == Logic::Z) {
+      continue;
+    }
+    if (out == Logic::Z) {
+      out = is_known(v) ? v : Logic::X;
+    } else if (!(is_known(v) && v == out)) {
+      out = Logic::X;
+    }
+  }
+  return (type == GateType::BUS_RES && out == Logic::Z) ? Logic::X : out;
+}
+
 // A latch (GateType LATCH): transparent (D) while its enable is active, the held
 // value otherwise, clear and preset forcing it as a flop's do -- each an exact
 // mux, so an unknown enable keeps a value only where D and the held one agree.
@@ -96,45 +130,111 @@ void evaluate_combinational(const CompiledSimGraph& cg, std::vector<Logic>& valu
                             const CompactFault* fault, std::vector<Logic>& latches) {
   std::vector<Logic> ins;
   ins.reserve(6);
-  const auto eval_node = [&](const SimNode& sn) {
-    if (sn.type == GateType::INPUT || sn.type == GateType::DFF) {
-      return;
-    }
+  const auto skipped = [](const SimNode& sn) {
+    return sn.type == GateType::INPUT || sn.type == GateType::DFF;
+  };
+  // A node's value from its inputs now (a latch's or clock gate's state moves).
+  const auto value_of = [&](const SimNode& sn) -> Logic {
     if (sn.type == GateType::CONST0 || sn.type == GateType::CONST1) {
-      values[sn.out] = logic_of(sn.type == GateType::CONST1);
-      apply_fault(values, fault, sn.out);
-      return;
+      return logic_of(sn.type == GateType::CONST1);
     }
     if (sn.type == GateType::CONSTX) {
-      values[sn.out] = Logic::X;
-      apply_fault(values, fault, sn.out);
-      return;
+      return Logic::X;
     }
     if (sn.type == GateType::LATCH) {
-      values[sn.out] = eval_latch(cg, sn, values, latches[sn.out]);
-      apply_fault(values, fault, sn.out);
-      return;
+      return eval_latch(cg, sn, values, latches[sn.out]);
     }
-    if (is_icg(sn.type)) {
-      const auto at = [&](uint32_t slot) {
-        return slot != UNUSED_INPUT ? values[slot] : Logic::ZERO;
-      };
-      values[sn.out] = eval_icg_x(sn.type, at(sn.in0), logic_or(at(sn.in1), at(sn.in2)),
-                                  latches[sn.out]);
-    } else {
-      ins.clear();
+    const auto at = [&](uint32_t slot) {
+      return slot != UNUSED_INPUT ? values[slot] : Logic::ZERO;
+    };
+    if (sn.type == GateType::TBUF_P || sn.type == GateType::TBUF_N ||
+        sn.type == GateType::TINV_P || sn.type == GateType::TINV_N) {
+      return eval_tbuf(sn.type, at(sn.in0), at(sn.in1));
+    }
+    if (sn.type == GateType::BUS_MERGE || sn.type == GateType::BUS_RES) {
+      std::vector<Logic> drivers;
       for (uint32_t slot : {sn.in0, sn.in1, sn.in2, sn.in3, sn.in4, sn.in5}) {
         if (slot != UNUSED_INPUT) {
-          ins.push_back(values[slot]);
+          drivers.push_back(values[slot]);
         }
       }
-      values[sn.out] = eval_gate_x(sn.type, ins);
+      return eval_bus(sn.type, drivers);
     }
+    if (is_icg(sn.type)) {
+      return eval_icg_x(sn.type, at(sn.in0), logic_or(at(sn.in1), at(sn.in2)),
+                        latches[sn.out]);
+    }
+    ins.clear();
+    for (uint32_t slot : {sn.in0, sn.in1, sn.in2, sn.in3, sn.in4, sn.in5}) {
+      if (slot != UNUSED_INPUT) {
+        ins.push_back(values[slot]);
+      }
+    }
+    return eval_gate_x(sn.type, ins);
+  };
+  const auto write = [&](const SimNode& sn, Logic v) {
+    values[sn.out] = v;
     apply_fault(values, fault, sn.out);
+  };
+  const auto eval_node = [&](const SimNode& sn) {
+    if (!skipped(sn)) {
+      write(sn, value_of(sn));
+    }
+  };
+  // A loop's level: BitParallelSimX's settle_loop, one lane -- phase A only adds
+  // unknowns (the union of old and new: equal, or X), phase B only removes them.
+  const auto settle_loop = [&](int start, int end) {
+    const int cap = 2 * (end - start) + 4;
+    for (int pass = 0;; ++pass) {
+      bool changed = false;
+      for (int i = start; i < end; ++i) {
+        const SimNode& sn = cg.nodes[i];
+        if (skipped(sn)) {
+          continue;
+        }
+        const Logic old = values[sn.out];
+        const Logic now = value_of(sn);
+        write(sn, old == now ? old : Logic::X);
+        changed = changed || values[sn.out] != old;
+      }
+      if (!changed) {
+        break;
+      }
+      if (pass > cap) {
+        throw std::logic_error("X reference: a loop's first phase did not settle");
+      }
+    }
+    for (int pass = 0;; ++pass) {
+      bool changed = false;
+      for (int i = start; i < end; ++i) {
+        const SimNode& sn = cg.nodes[i];
+        if (skipped(sn)) {
+          continue;
+        }
+        const Logic old = values[sn.out];
+        write(sn, value_of(sn));
+        changed = changed || values[sn.out] != old;
+      }
+      if (!changed) {
+        return;
+      }
+      if (pass > cap) {
+        for (int i = start; i < end; ++i) {
+          if (!skipped(cg.nodes[i])) {
+            write(cg.nodes[i], Logic::X);
+          }
+        }
+        return;
+      }
+    }
   };
 
   if (cg.level_starts.size() >= 2) {
     for (size_t lvl = 0; lvl + 1 < cg.level_starts.size(); ++lvl) {
+      if (lvl < cg.loop_levels.size() && cg.loop_levels[lvl] != 0) {
+        settle_loop(cg.level_starts[lvl], cg.level_starts[lvl + 1]);
+        continue;
+      }
       for (int i = cg.level_starts[lvl]; i < cg.level_starts[lvl + 1]; ++i) {
         eval_node(cg.nodes[i]);
       }
@@ -212,6 +312,12 @@ std::vector<XSnapshot> GoldenRefSimX::simulate_sequence(
   std::vector<Logic> prev_values(cg.net_count, Logic::ZERO);
   std::vector<Logic> ff_states(cg.ff_configs.size(), options.initial_state);
   std::vector<Logic> latches(cg.net_count, options.initial_state);
+  // A combinational loop's nets power up as a flop does.
+  for (size_t i = 0; i < cg.in_loop.size(); ++i) {
+    if (cg.in_loop[i] != 0) {
+      values[cg.nodes[i].out] = options.initial_state;
+    }
+  }
   bool settled = false;
   for (const auto& [idx, value] : vec.initial_ff_state) {
     if (idx < ff_states.size()) {

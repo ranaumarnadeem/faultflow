@@ -393,6 +393,13 @@ std::string transition_pattern_key(const std::map<std::string, bool>& v1,
 
 namespace {
 
+// A tristate driver or bus node (an X-mode graph only).
+bool is_tristate(GateType type) {
+  return type == GateType::TBUF_P || type == GateType::TBUF_N ||
+         type == GateType::TINV_P || type == GateType::TINV_N ||
+         type == GateType::BUS_MERGE || type == GateType::BUS_RES;
+}
+
 // out <-> sel ? if1 : if0.
 void add_mux_cnf(CaDiCaL::Solver& solver, int sel, int if0, int if1, int out) {
   add_clause(solver, {sel, -if0, out});
@@ -492,6 +499,12 @@ SatSolveResult solve_stuck_at_fault(const CompiledSimGraph& cg,
         add_latch_cnf(solver, vars.next, latch_truth, cfg, p[0], p[1], p[2], p[3], state,
                       vars.faulty_vars.at(node.out));
       }
+      continue;
+    }
+    if (is_tristate(node.type)) {
+      // A bus has no two-valued value (Z, conflicts): left free in each
+      // machine. A vector found through one is a candidate the X engine grades,
+      // and an UNSAT through one proves nothing (solve_stuck_at_fault_x).
       continue;
     }
     const auto input_nets = inputs_of(node);
@@ -643,11 +656,20 @@ SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
   if (masks.redundant) {
     return SatSolveResult::UNSAT;  // reaches no observable, whatever the unknowns
   }
+  // A combinational loop in the cone is encoded as it is, cyclic equations any
+  // consistent value satisfies -- not the X engine's fixed point. Its vectors
+  // are candidates the X engine grades; an UNSAT through one proves nothing.
   bool unknown_in_cone = false;
-  for (const SimNode& node : cg.nodes) {
-    if (is_x_source(node) && (masks.in_support[node.out] || masks.in_outcone[node.out])) {
+  bool loop_in_cone = false;
+  for (size_t i = 0; i < cg.nodes.size(); ++i) {
+    const SimNode& node = cg.nodes[i];
+    if (masks.in_support[node.out] == 0 && masks.in_outcone[node.out] == 0) {
+      continue;
+    }
+    unknown_in_cone = unknown_in_cone || is_x_source(node);
+    if ((i < cg.in_loop.size() && cg.in_loop[i] != 0) || is_tristate(node.type)) {
       unknown_in_cone = true;
-      break;
+      loop_in_cone = true;  // no proof through a loop or a bus
     }
   }
   if (!unknown_in_cone) {
@@ -738,6 +760,47 @@ SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
       add_mux_rails(solver, next, clr, unforced, cleared, outr);
       return;
     }
+    if (node.type == GateType::TBUF_P || node.type == GateType::TBUF_N ||
+        node.type == GateType::TINV_P || node.type == GateType::TINV_N) {
+      // eval_tbuf_dual: the data while enabled, Z (0,0) while disabled, X while
+      // the enable is unknown.
+      Rails data = rails_of(node.in0);
+      Rails en = rails_of(node.in1);
+      if (node.type == GateType::TINV_P || node.type == GateType::TINV_N) {
+        data = Rails{data.l, data.h};
+      }
+      if (node.type == GateType::TBUF_N || node.type == GateType::TINV_N) {
+        en = Rails{en.l, en.h};
+      }
+      add_or_of_ands(solver, next, {{en.h, -en.l, data.h}, {en.h, en.l}}, outr.h);
+      add_or_of_ands(solver, next, {{en.h, -en.l, data.l}, {en.h, en.l}}, outr.l);
+      return;
+    }
+    if (node.type == GateType::BUS_MERGE || node.type == GateType::BUS_RES) {
+      // eval_bus_dual: the union of the drivers; BUS_RES floating reads X
+      // (h = some driver's h, or none can be 0; l likewise).
+      std::vector<std::vector<int>> hs;
+      std::vector<std::vector<int>> ls;
+      std::vector<int> none_low;
+      std::vector<int> none_high;
+      for (uint32_t slot : {node.in0, node.in1, node.in2, node.in3, node.in4, node.in5}) {
+        if (slot == UNUSED_INPUT) {
+          continue;
+        }
+        const Rails d = rails_of(slot);
+        hs.push_back({d.h});
+        ls.push_back({d.l});
+        none_low.push_back(-d.l);
+        none_high.push_back(-d.h);
+      }
+      if (node.type == GateType::BUS_RES) {
+        hs.push_back(none_low);
+        ls.push_back(none_high);
+      }
+      add_or_of_ands(solver, next, hs, outr.h);
+      add_or_of_ands(solver, next, ls, outr.l);
+      return;
+    }
     const DualCubes& cubes = dual_cubes(node.type);
     if (!cubes.valid) {
       throw std::runtime_error("dual-rail SAT ATPG: a node with no combinational function");
@@ -819,6 +882,9 @@ SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
   // No vector detects it definitely. The two-valued CNF says whether any shows
   // it for some value of the unknowns (POSSIBLE at best) or none can (redundant).
   const SatSolveResult two = solve_stuck_at_fault(cg, pis, fault, options, out);
+  if (two == SatSolveResult::UNSAT && loop_in_cone) {
+    return SatSolveResult::UNKNOWN;  // no proof through a loop: never redundant
+  }
   return two == SatSolveResult::SAT ? SatSolveResult::POSSIBLE : two;
 }
 

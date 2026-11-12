@@ -196,6 +196,63 @@ std::set<int> parse_unobserved_nets(const ParsedModule& mod,
   return out;
 }
 
+// Throws CombinationalLoopError naming the cells on the loop(s) among `stuck`
+// (the nodes the levelling pass never reached): those left once every node that
+// feeds no other stuck node is peeled off -- what lies downstream of a loop goes,
+// the loop and its self-loops stay.
+[[noreturn]] void throw_combinational_loop(const NormalizedGraph& ng,
+                                           std::set<int> stuck) {
+  std::map<int, std::set<int>> succ;
+  for (int nid : stuck) {
+    const NormNode& node = ng.nodes.at(nid);
+    if (node.type == NodeType::FF) {
+      continue;
+    }
+    for (const auto& [pin, in_net] : node.input_pins) {
+      (void)pin;
+      const auto net_it = ng.nets.find(in_net);
+      if (net_it != ng.nets.end() && stuck.count(net_it->second.driver) != 0) {
+        succ[net_it->second.driver].insert(nid);
+      }
+    }
+  }
+  for (bool peeled = true; peeled;) {
+    peeled = false;
+    for (auto it = stuck.begin(); it != stuck.end();) {
+      const auto s = succ.find(*it);
+      bool feeds = false;
+      if (s != succ.end()) {
+        for (int v : s->second) {
+          feeds = feeds || stuck.count(v) != 0;
+        }
+      }
+      if (feeds) {
+        ++it;
+      } else {
+        it = stuck.erase(it);
+        peeled = true;
+      }
+    }
+  }
+  std::set<std::string> cells;
+  for (int nid : stuck) {
+    cells.insert(ng.nodes.at(nid).instance);
+  }
+  std::string names;
+  int shown = 0;
+  for (const std::string& cell : cells) {
+    if (shown == 12) {
+      names += ", ... (" + std::to_string(cells.size()) + " cells)";
+      break;
+    }
+    names += (shown++ == 0 ? "" : ", ") + cell;
+  }
+  throw CombinationalLoopError(
+      "combinational loop through cells " + names +
+      ": the two-valued engine cannot simulate it; simulate it with the X engine "
+      "([simulation] engine = x)");
+}
+
 }  // namespace
 
 NormalizedGraph NormalizedGraph::from_parsed(
@@ -207,6 +264,10 @@ NormalizedGraph NormalizedGraph::from_parsed(
   const ParsedModule& mod = parsed.top_module();
   std::map<int, int> parent;
   int next_node_id = 1;
+  // X mode: the private nets of tristate drivers and bus merges (is_internal),
+  // below every sentinel id; and each bus's drivers' nets.
+  int next_internal_net = -1000;
+  std::map<int, std::vector<int>> bus_drivers;
 
   // Phase 9: validate every named blackbox instance exists (never silently
   // ignore a blackbox directive — Policy 1 spirit).
@@ -364,10 +425,38 @@ NormalizedGraph NormalizedGraph::from_parsed(
       throw UnsupportedCellError(cell.type);
     }
 
-    // The X engine models a latch from an entry with its pins (an ff block).
+    // The X engine models a latch from an entry with its pins (an ff block) and a
+    // tristate buffer from one with a tbuf block; a two-valued graph has no Z.
     if ((entry->node_type == NodeType::LATCH && !entry->ff.present) ||
-        entry->node_type == NodeType::TBUF) {
+        (entry->node_type == NodeType::TBUF && (!x_mode || !entry->tbuf.present))) {
       throw UnsupportedCellError(cell.type);
+    }
+
+    if (entry->node_type == NodeType::TBUF) {
+      // A driver of a tristate bus: onto a private net of its own (Z while
+      // disabled), the bus resolved from all its drivers after every cell.
+      const auto out_it = cell.conns.find(entry->tbuf.output);
+      if (out_it == cell.conns.end() || out_it->second.empty()) {
+        continue;  // drives nothing
+      }
+      const int own = next_internal_net--;
+      ensure_net(own);
+      ng.nets[own].is_internal = true;
+      NormNode node;
+      node.id = next_node_id++;
+      node.instance = inst;
+      node.type = NodeType::GATE;
+      const bool high = entry->tbuf.level == Polarity::ACTIVE_HIGH;
+      node.gate_type = entry->tbuf.invert ? (high ? GateType::TINV_P : GateType::TINV_N)
+                                          : (high ? GateType::TBUF_P : GateType::TBUF_N);
+      node.input_pins["A"] = first_conn_or_throw(cell, entry->tbuf.data, cell.type);
+      node.input_pins["E"] = first_conn_or_throw(cell, entry->tbuf.enable, cell.type);
+      node.input_order = {"A", "E"};
+      node.output_pins["Z"] = own;
+      ng.nets[own].driver = node.id;
+      bus_drivers[out_it->second.front()].push_back(own);
+      ng.nodes[node.id] = std::move(node);
+      continue;
     }
 
     if (entry->node_type == NodeType::ICG) {
@@ -541,6 +630,69 @@ NormalizedGraph NormalizedGraph::from_parsed(
     }
   }
 
+  // X mode: each tristate bus resolved from its drivers' private nets -- six at
+  // most per resolver, a wider bus merged six at a time first (a merge keeps Z;
+  // only the resolver reads a floating bus as X).
+  const auto bus_node = [&](GateType type, const std::vector<int>& inputs, int out,
+                            const std::string& instance) {
+    NormNode node;
+    node.id = next_node_id++;
+    node.instance = instance;
+    node.type = NodeType::GATE;
+    node.gate_type = type;
+    for (size_t i = 0; i < inputs.size(); ++i) {
+      const std::string pin = "D" + std::to_string(i);
+      node.input_pins[pin] = inputs[i];
+      node.input_order.push_back(pin);
+    }
+    node.output_pins["Y"] = out;
+    ng.nets[out].driver = node.id;
+    ng.nodes[node.id] = std::move(node);
+  };
+  for (const auto& [bus, drivers] : bus_drivers) {
+    ensure_net(bus);
+    if (ng.nets[bus].driver >= 0) {
+      throw ParseError("net " + std::to_string(bus) +
+                       " is driven by a tristate buffer and by another cell");
+    }
+    const std::string name = ng.nets[bus].names.empty() ? "net" + std::to_string(bus)
+                                                        : ng.nets[bus].names.front();
+    std::vector<int> nets = drivers;
+    for (int merge = 0; nets.size() > 6; ++merge) {
+      // Six drivers into one merged net: five fewer inputs each time.
+      const int own = next_internal_net--;
+      ensure_net(own);
+      ng.nets[own].is_internal = true;
+      bus_node(GateType::BUS_MERGE, std::vector<int>(nets.begin(), nets.begin() + 6), own,
+               "$bus$" + name + "$" + std::to_string(merge));
+      nets.erase(nets.begin(), nets.begin() + 6);
+      nets.push_back(own);
+    }
+    bus_node(GateType::BUS_RES, nets, bus, "$bus$" + name);
+  }
+  // X mode: an inout port bit a tristate bus (or any cell) drives is observed;
+  // one nothing in the netlist drives is an input.
+  if (x_mode) {
+    for (const auto& [pname, port] : mod.ports) {
+      if (port.direction != "inout") {
+        continue;
+      }
+      for (int bit : port.bits) {
+        if (bit < 0) {
+          continue;
+        }
+        ensure_net(bit);
+        if (ng.nets[bit].driver >= 0) {
+          ng.nets[bit].is_po = true;
+          ng.POs.insert(bit);
+        } else {
+          ng.nets[bit].is_pi = true;
+          ng.PIs.insert(bit);
+        }
+      }
+    }
+  }
+
   // PI source pseudo-nodes (INPUT)
   for (int pi : ng.PIs) {
     NormNode pi_node;
@@ -684,6 +836,34 @@ NormalizedGraph NormalizedGraph::from_parsed(
   }
   for (auto& [nid, node] : ng.nodes) {
     node.level = level[nid];
+  }
+
+  // A node never dequeued sits on (or after) a combinational loop; a node that
+  // reads its own output is one. The two-valued engine evaluates each node once
+  // in level order, so it would compute such a loop from stale values: refuse
+  // it. An X-mode graph is levelled by its loops in GraphCompiler.
+  if (!x_mode) {
+    std::set<int> stuck;
+    for (const auto& [nid, deg] : indeg) {
+      if (deg > 0) {
+        stuck.insert(nid);
+      }
+    }
+    for (const auto& [nid, node] : ng.nodes) {
+      if (node.type == NodeType::FF) {
+        continue;
+      }
+      for (const auto& [pin, in_net] : node.input_pins) {
+        (void)pin;
+        const auto net_it = ng.nets.find(in_net);
+        if (net_it != ng.nets.end() && net_it->second.driver == nid) {
+          stuck.insert(nid);
+        }
+      }
+    }
+    if (!stuck.empty()) {
+      throw_combinational_loop(ng, stuck);
+    }
   }
 
   return ng;

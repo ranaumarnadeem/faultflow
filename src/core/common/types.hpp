@@ -138,6 +138,19 @@ enum class GateType {
   // levels). Stateful: transparent while the enable is active, holding
   // otherwise, clear and preset forcing it; it powers up as a flop does.
   LATCH,
+  // A tristate driver (node_type TBUF): in0 the data, in1 the enable, active high
+  // (_P) or low (_N); TINV drives the data inverted. It drives Z while disabled,
+  // onto a private net only a bus resolver reads.
+  TBUF_P,
+  TBUF_N,
+  TINV_P,
+  TINV_N,
+  // A tristate bus: its drivers' private nets (up to six; BUS_MERGE combines six
+  // into one for a wider bus). Z yields to a driven value, 0 against 1 is X;
+  // BUS_RES drives the bus itself, X where no driver drives it (Z reads as X at
+  // every cell input).
+  BUS_MERGE,
+  BUS_RES,
 };
 
 enum class NodeType { GATE, FF, LATCH, CONST, TBUF, ICG };

@@ -189,7 +189,7 @@ class _Generator:
         }
         if any("three_state" in g.attrs for g in outputs.values()):
             self.report.append(CellReport(name, "tristate", "tristate output"))
-            return {"node_type": "TBUF", "reason": "tristate output"}
+            return self.tristate(inputs, outputs)
         functions: dict[str, Expr] = {}
         for pin, group in outputs.items():
             if "function" not in group.attrs:
@@ -418,6 +418,39 @@ class _Generator:
             outputs["QN"] = qn[0]
         return {"node_type": "FF", "inputs": inputs, "outputs": outputs, "ff": meta}
 
+    # ---------------------------------------------------------------- tristates
+    def tristate(self, inputs: list[str], outputs: dict[str, Group]) -> dict[str, Any]:
+        """A tristate buffer: one output whose ``function`` is one input pin
+        (inverted or not) and whose ``three_state`` (the output Z while true) is
+        another, at a level -- Sky130's ebufn / einvn / einvp. The X engine
+        models it ([simulation] engine = x); any other tristate cell (a bus mux
+        with no function, hdll's muxb4to1) is a bare TBUF entry, refused. Either
+        way it stays in the report (kind tristate), so synthesis never picks it."""
+        bare = {"node_type": "TBUF", "reason": "tristate output"}
+        if len(outputs) != 1 or len(inputs) != 2:
+            return bare
+        ((out, group),) = outputs.items()
+        try:
+            fn = _single_var(parse_expr(group.attrs.get("function", "")))
+            off = _single_var(parse_expr(group.attrs["three_state"]))
+        except (KeyError, LibertyError):
+            return bare
+        if fn is None or off is None or fn[0] == off[0]:
+            return bare
+        return {
+            "node_type": "TBUF",
+            "inputs": [fn[0], off[0]],
+            "outputs": {"Z": out},
+            "tbuf": {
+                "data": fn[0],
+                "enable": off[0],
+                "output": out,
+                # Z while three_state is true: enabled at the other level.
+                "level": "LOW" if off[1] else "HIGH",
+                "invert": not fn[1],
+            },
+        }
+
     # ---------------------------------------------------------------- latches
     def latch(self, name: str, cell: Group, group: Group) -> dict[str, Any]:
         """A level-sensitive latch, from its Liberty ``latch`` group: ``enable``
@@ -606,7 +639,10 @@ def generate_cell_map(
         sized = all(_DRIVE.search(m) for m in members)
         if same and sized and not clash:
             entry = dict(entries[members[0]])
-            if entry.get("node_type") in ("GATE", "FF", "CONST", "ICG", "LATCH"):
+            if (
+                entry.get("node_type") in ("GATE", "FF", "CONST", "ICG", "LATCH")
+                or "tbuf" in entry
+            ):
                 # The concrete cells the pattern stands for: what FaultFlow
                 # instantiates when it adds one (faultflow.pdk.roles).
                 entry["variants"] = list(members)

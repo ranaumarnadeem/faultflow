@@ -817,7 +817,21 @@
     }
   },
   "sky130_fd_sc_hd__ebufn_*": {
-    "node_type": "TBUF"
+    "node_type": "TBUF",
+    "inputs": [
+      "A",
+      "TE_B"
+    ],
+    "outputs": {
+      "Z": "Z"
+    },
+    "tbuf": {
+      "data": "A",
+      "enable": "TE_B",
+      "output": "Z",
+      "level": "LOW",
+      "invert": false
+    }
   },
   "sky130_fd_sc_hd__dfxtp": {
     "node_type": "FF",
@@ -1901,11 +1915,37 @@
   },
   "sky130_fd_sc_hd__einvn_*": {
     "node_type": "TBUF",
-    "reason": "tristate output"
+    "inputs": [
+      "A",
+      "TE_B"
+    ],
+    "outputs": {
+      "Z": "Z"
+    },
+    "tbuf": {
+      "data": "A",
+      "enable": "TE_B",
+      "output": "Z",
+      "level": "LOW",
+      "invert": true
+    }
   },
   "sky130_fd_sc_hd__einvp_*": {
     "node_type": "TBUF",
-    "reason": "tristate output"
+    "inputs": [
+      "A",
+      "TE"
+    ],
+    "outputs": {
+      "Z": "Z"
+    },
+    "tbuf": {
+      "data": "A",
+      "enable": "TE",
+      "output": "Z",
+      "level": "HIGH",
+      "invert": true
+    }
   },
   "sky130_fd_sc_hd__fah_*": {
     "node_type": "GATE",

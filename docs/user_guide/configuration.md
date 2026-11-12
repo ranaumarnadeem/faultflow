@@ -197,6 +197,18 @@ from power-up, so a closed latch reads unknown). Its synthesis puts a design's
 latches on the library's latch cells; a two-valued run treats a latch as a cell
 it does not model (`unsupported_cells`).
 
+It simulates combinational loops too: each loop is settled from its nets' last
+values by two-phase ternary simulation, so a loop of gates that holds a value
+(a cross-coupled NAND latch) keeps it, and one that does not settle (a ring
+oscillator) reads unknown. A two-valued run refuses a netlist with a loop and
+names its cells. SAT encodes a loop as it is and never proves a fault redundant
+through one.
+
+And it resolves tristate buses: one enabled driver gives the bus its value, two
+that disagree or none give unknown. Its synthesis keeps a design's `1'bz`
+drivers as the library's tristate buffers (a two-valued run's synthesis reads
+`1'bz` as a don't-care, as it always did, and refuses a tristate cell).
+
 SAT test generation follows the same rules: it looks for a test that detects a
 fault definitely, and with none, for one that may (`POSSIBLE`); it proves a
 fault redundant only when no value of the unknowns lets any test show it.

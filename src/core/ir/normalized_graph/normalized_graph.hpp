@@ -27,6 +27,10 @@ struct NormNet {
   // Phase 9: blackbox output net modeled as a controllable pseudo-PI (driven by
   // an INPUT source node). Distinct from a real PI — not a module port.
   bool is_pseudo_input = false;
+  // An X-mode graph's net of its own, no netlist wire: a tristate driver's
+  // output into its bus resolver (it may be Z). It has no fault sites -- the
+  // bus it drives has them.
+  bool is_internal = false;
 };
 
 struct NormNode {

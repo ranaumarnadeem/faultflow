@@ -26,9 +26,9 @@ GF180MCU mbist-insert with JTAG.
 
 | PDK (`pdk`) | Libraries (`std_cell_library`) | Not modelled |
 |---|---|---|
-| `sky130A` / `sky130B` | `sky130_fd_sc_hd` (shipped map), `_hdll`, `_hs`, `_ms`, `_ls`, `_lp`, `_hvl` | latches, tristates; `fahcin` / `fahcon` |
-| `gf180mcuA`..`D` | `gf180mcu_fd_sc_mcu7t5v0`, `gf180mcu_fd_sc_mcu9t5v0` | latches, tristates |
-| `ihp-sg13g2` | `sg13g2_stdcell` | latches, tristates |
+| `sky130A` / `sky130B` | `sky130_fd_sc_hd` (shipped map), `_hdll`, `_hs`, `_ms`, `_ls`, `_lp`, `_hvl` | `fahcin` / `fahcon`; latches and tristates two-valued |
+| `gf180mcuA`..`D` | `gf180mcu_fd_sc_mcu7t5v0`, `gf180mcu_fd_sc_mcu9t5v0` | latches and tristates two-valued |
+| `ihp-sg13g2` | `sg13g2_stdcell` | latches and tristates two-valued |
 | — | OSU035 (shipped map, no scan flop: generic scan) | |
 
 Install them with [ciel](https://github.com/fossi-foundation/ciel) (`--pdk-family
@@ -150,8 +150,16 @@ its `clock` the enable pin; `clear`, `preset` and `outputs.QN` as a flop's) is m
 the X engine only (`[simulation] engine = x`): transparent while its enable is at that
 level, holding otherwise, clear and preset forcing it, powered up unknown. A two-valued
 run treats it as a cell it does not model (`unsupported_cells`). Its enable is a clock
-net and its clear and preset reset nets, as a flop's are. Tristate (`TBUF`) cells are a
-hard error until the X engine's tristate stage lands; see the [Roadmap](../roadmap.md).
+net and its clear and preset reset nets, as a flop's are.
+
+A tristate buffer (`TBUF` entry with a `tbuf` block: `data`, `enable`, `output`, the
+enable's `level` and whether it drives the data inverted, `invert` -- Sky130's `ebufn`,
+`einvn`, `einvp`) is modelled by the X engine only. Each driver drives a net of its own
+(Z while disabled; no fault sites), and a resolver drives the bus: one enabled driver its
+value, two that disagree X, none X (Z reads as X at every cell input, so the X engine
+never strobes Z). The bus has the fault sites; an `inout` port bit a bus drives is
+observed. A two-valued run refuses a tristate cell, and a bare `TBUF` entry (no `tbuf`
+block) is refused by both engines.
 
 ## Generated cell maps
 
@@ -178,8 +186,14 @@ still reads only the map.
   synthesis never picks it; the X engine's synthesis puts a design's latches on the
   library's own latch cells (`faultflow/pdk/x_synth.py`: `dfflegalize`, then a techmap
   -- `dfflibmap` maps flops only).
-- Every other cell is listed, with why, never guessed: tristates (`TBUF`), tie and
-  physical cells, and functions no gate type has.
+- A tristate buffer comes from its output's `function` (one pin, inverted or not) and
+  `three_state` (one pin at a level): a `TBUF` entry with a `tbuf` block for the X
+  engine, listed (kind `tristate`) so synthesis never picks it. The X engine's
+  synthesis runs `tribuf` after `proc` (without it Yosys reads `1'bz` as a don't-care
+  and merges a bus's drivers) and puts each `$_TBUF_` on the library's buffer.
+  Another tristate cell (a bus mux with no `function`) is a bare `TBUF`, refused.
+- Every other cell is listed, with why, never guessed: tie and physical cells, and
+  functions no gate type has.
 - Drive strengths share a `<name>_*` pattern, whose `variants` name the cells, unless
   the pattern would match another cell.
 
