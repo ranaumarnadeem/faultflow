@@ -55,8 +55,8 @@ The following capabilities are **implemented and working today**:
 
 An opt-in second engine (`[simulation] engine = x`) simulates with unknown values (0, 1,
 X, and Z on tristate buses), level-sensitive latches and combinational loops, in
-combinational runs; the default two-valued engine is unchanged and refuses them. Unknown
-values in scan runs are **planned**; see the [Roadmap](roadmap.md).
+combinational and stuck-at scan runs; the default two-valued engine is unchanged and
+refuses them. Transition faults on it are **planned**; see the [Roadmap](roadmap.md).
 
 ## License
 

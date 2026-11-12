@@ -364,6 +364,21 @@ std::vector<std::vector<Dual>> BitParallelSimX::simulate_batch_samples(
   return samples;
 }
 
+std::vector<std::vector<Dual>> BitParallelSimX::simulate_batch_samples(
+    const CompiledSimGraph& cg, const TestVector& vec, const FaultBatch& batch,
+    const XRunOptions& options, const std::vector<uint32_t>& nets) const {
+  std::vector<std::vector<Dual>> samples;
+  for_each_sample(cg, vec, batch, options, [&](const std::vector<Dual>& nv) {
+    std::vector<Dual> row;
+    row.reserve(nets.size());
+    for (uint32_t net : nets) {
+      row.push_back(nv.at(net));
+    }
+    samples.push_back(std::move(row));
+  });
+  return samples;
+}
+
 namespace {
 
 // One observed net's detections: lanes showing a 0 against the good lane's 1 (or

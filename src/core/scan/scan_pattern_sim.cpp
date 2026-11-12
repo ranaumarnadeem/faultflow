@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 #include <stdexcept>
 #include <vector>
 
@@ -15,6 +16,8 @@
 #include "sim/golden_ref/golden_ref_sim.hpp"
 #include "sim/engine/bit_parallel_sim.hpp"
 #include "sim/state/test_vector.hpp"
+#include "sim/xsim/bit_parallel_sim_x.hpp"
+#include "sim/xsim/golden_ref_sim_x.hpp"
 
 namespace faultflow::scan {
 namespace {
@@ -620,6 +623,243 @@ std::vector<ScanProtocolFaultOutcome> simulate_scan_protocol_faults_reference(
     outcomes.push_back(detected
                            ? ScanProtocolFaultOutcome::PASS
                            : ScanProtocolFaultOutcome::NO_CAPTURE_OR_UNLOAD_EFFECT);
+  }
+  return outcomes;
+}
+
+// ---- The X engine's scan protocol ----
+
+namespace {
+
+void refuse_launch_x(const ScanPatternRequest& request) {
+  if (request.loc_two_capture || request.los_two_capture) {
+    throw std::runtime_error(
+        "the X engine grades stuck-at scan patterns only: no launch (LOC or LOS)");
+  }
+}
+
+// Every flop, clock-gate latch and loop net powered up X; `unknown_nets` X in
+// every cycle of `vec`.
+XRunOptions scan_x_options(const TestVector& vec, const std::vector<int>& unknown_nets) {
+  XRunOptions options;
+  options.initial_state = Logic::X;
+  const std::set<int> unknown(unknown_nets.begin(), unknown_nets.end());
+  if (!unknown.empty()) {
+    options.unknown_inputs.assign(vec.cycles.size(), unknown);
+  }
+  return options;
+}
+
+Logic lane_logic(Dual d, int lane) {
+  const bool h = ((d.h >> lane) & 1ULL) != 0;
+  const bool l = ((d.l >> lane) & 1ULL) != 0;
+  if (h != l) {
+    return logic_of(h);
+  }
+  return Logic::X;  // X, or a floating (Z) output, which reads as X
+}
+
+ScanPatternResultX extract_scan_lane_observations_x(
+    const SampleSlots& slots, const ScanPatternRequest& request,
+    const std::vector<std::vector<Dual>>& samples, int lane) {
+  if (static_cast<int>(samples.size()) != request.max_chain_length + 1) {
+    throw std::runtime_error("scan pattern sample count mismatch");
+  }
+  ScanPatternResultX result;
+  for (size_t i = 0; i < request.functional_output_ports.size(); ++i) {
+    result.real_po_values[request.functional_output_ports[i]] =
+        lane_logic(samples[0].at(slots.po_slot[i]), lane);
+  }
+  for (size_t chain_id = 0; chain_id < request.scan_output_ports.size(); ++chain_id) {
+    const size_t slot = slots.so_slot[chain_id];
+    std::vector<Logic> bits;
+    bits.reserve(static_cast<size_t>(request.max_chain_length));
+    for (int offset = 0; offset < request.max_chain_length; ++offset) {
+      bits.push_back(lane_logic(samples.at(static_cast<size_t>(1 + offset)).at(slot), lane));
+    }
+    result.unload_seqs[static_cast<int>(chain_id)] = std::move(bits);
+  }
+  return result;
+}
+
+ScanPatternResultX scan_observations_x(const ParsedGraph& parsed,
+                                       const ScanPatternRequest& request,
+                                       const std::vector<XSnapshot>& samples) {
+  if (static_cast<int>(samples.size()) != request.max_chain_length + 1) {
+    throw std::runtime_error("scan pattern sample count mismatch");
+  }
+  const auto bit = [&](const XSnapshot& sample, const std::string& port) {
+    const auto it = sample.find(parsed.net_id_by_name(port));
+    if (it == sample.end()) {
+      throw std::runtime_error("scan pattern sample missing port: " + port);
+    }
+    return is_known(it->second) ? it->second : Logic::X;
+  };
+  ScanPatternResultX result;
+  for (const auto& port : request.functional_output_ports) {
+    result.real_po_values[port] = bit(samples[0], port);
+  }
+  for (size_t chain_id = 0; chain_id < request.scan_output_ports.size(); ++chain_id) {
+    std::vector<Logic> bits;
+    for (int offset = 0; offset < request.max_chain_length; ++offset) {
+      bits.push_back(bit(samples[static_cast<size_t>(1 + offset)],
+                         request.scan_output_ports[chain_id]));
+    }
+    result.unload_seqs[static_cast<int>(chain_id)] = std::move(bits);
+  }
+  return result;
+}
+
+XDetection compare_x(Logic good, Logic faulty) {
+  if (!is_known(good)) {
+    return XDetection::NONE;  // no credit where the good machine is X
+  }
+  if (!is_known(faulty)) {
+    return XDetection::POSSIBLE;
+  }
+  return good != faulty ? XDetection::DEFINITE : XDetection::NONE;
+}
+
+XDetection stronger(XDetection a, XDetection b) {
+  return static_cast<int>(a) >= static_cast<int>(b) ? a : b;
+}
+
+// Per lane: the outcome over everything compared, over the functional outputs
+// alone, and (capture_diffs) the unload bits' definite differences and faulty Xs.
+void classify_lane_x(const ScanPatternResultX& golden, const ScanPatternResultX& faulty,
+                     const std::map<int, std::vector<bool>>& unload_mask,
+                     bool capture_diffs, ScanProtocolFaultLaneResultX& lane) {
+  for (const auto& [port, good] : golden.real_po_values) {
+    lane.po_outcome = stronger(lane.po_outcome, compare_x(good, faulty.real_po_values.at(port)));
+  }
+  lane.outcome = lane.po_outcome;
+  for (const auto& [chain_id, good_bits] : golden.unload_seqs) {
+    const std::vector<Logic>& faulty_bits = faulty.unload_seqs.at(chain_id);
+    std::vector<bool> diff(good_bits.size(), false);
+    std::vector<bool> unknown(good_bits.size(), false);
+    for (size_t t = 0; t < good_bits.size(); ++t) {
+      if (!unload_bit_compared(unload_mask, chain_id, t)) {
+        continue;
+      }
+      const XDetection here = compare_x(good_bits[t], faulty_bits[t]);
+      lane.outcome = stronger(lane.outcome, here);
+      diff[t] = here == XDetection::DEFINITE;
+      unknown[t] = !is_known(faulty_bits[t]);
+    }
+    if (capture_diffs) {
+      lane.diff_unload_seqs[chain_id] = std::move(diff);
+      lane.faulty_unknown_seqs[chain_id] = std::move(unknown);
+    }
+  }
+}
+
+}  // namespace
+
+ScanPatternResultX simulate_scan_pattern_x(
+    const std::string& json_path, const std::string& cell_map_path,
+    const ScanPatternRequest& request, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances,
+    const std::vector<int>& unknown_nets) {
+  refuse_launch_x(request);
+  const CachedGraph& graph = load_cached_graph(json_path, cell_map_path,
+                                               unsupported_policy, blackbox_instances);
+  const TestVector vec = build_scan_pattern_vector(graph.parsed, request);
+  const SampleSlots slots = scan_sample_slots(graph.parsed, graph.cg, request);
+  BitParallelSimX sim;
+  const auto samples = sim.simulate_batch_samples(
+      graph.cg, vec, FaultBatch{}, scan_x_options(vec, unknown_nets), slots.nets);
+  return extract_scan_lane_observations_x(slots, request, samples, 0);
+}
+
+ScanProtocolFaultSimResultX simulate_scan_protocol_faults_x(
+    const std::string& json_path, const std::string& cell_map_path,
+    const ScanProtocolFaultRequest& request, const std::string& unsupported_policy,
+    int sim_threads, const std::vector<std::string>& blackbox_instances,
+    const std::vector<int>& unknown_nets) {
+  refuse_launch_x(request.pattern);
+  const CachedGraph& graph = load_cached_graph(json_path, cell_map_path,
+                                               unsupported_policy, blackbox_instances);
+  const CompiledSimGraph& cg = graph.cg;
+  const TestVector vec = build_scan_pattern_vector(graph.parsed, request.pattern);
+  const SampleSlots slots = scan_sample_slots(graph.parsed, cg, request.pattern);
+  const XRunOptions options = scan_x_options(vec, unknown_nets);
+  BitParallelSimX sim;
+
+  ScanProtocolFaultSimResultX result;
+  result.golden = extract_scan_lane_observations_x(
+      slots, request.pattern,
+      sim.simulate_batch_samples(cg, vec, FaultBatch{}, options, slots.nets), 0);
+  result.lanes.resize(request.faults.size());
+
+  const size_t per_batch = static_cast<size_t>(kScanProtocolFaultBatchSize);
+  const int batch_count =
+      static_cast<int>((request.faults.size() + per_batch - 1) / per_batch);
+  // Each batch writes its own lanes' slots, so batches run concurrently and the
+  // result is the same for any thread count.
+  const auto process_batch = [&](int batch_idx) {
+    const size_t begin = static_cast<size_t>(batch_idx) * per_batch;
+    const size_t end = std::min(begin + per_batch, request.faults.size());
+    FaultBatch batch;
+    batch.size = static_cast<int>(end - begin);
+    for (size_t i = begin; i < end; ++i) {
+      if (request.faults[i].compiled_net_index >= static_cast<uint32_t>(cg.net_count)) {
+        throw std::runtime_error("scan protocol fault compiled_net_index out of range");
+      }
+      CompactFault fault = make_compact_fault(request.faults[i]);
+      const int bit = static_cast<int>(i - begin) + 1;
+      fault.bit = static_cast<uint8_t>(bit);
+      fault.sa_mask = 1ULL << bit;
+      batch.faults[i - begin] = fault;
+      batch.mask |= fault.sa_mask;
+    }
+    const auto samples = sim.simulate_batch_samples(cg, vec, batch, options, slots.nets);
+    const ScanPatternResultX good =
+        extract_scan_lane_observations_x(slots, request.pattern, samples, 0);
+    if (good.real_po_values != result.golden.real_po_values ||
+        good.unload_seqs != result.golden.unload_seqs) {
+      throw std::runtime_error("X scan protocol: a batch's good machine differs");
+    }
+    for (size_t i = begin; i < end; ++i) {
+      ScanProtocolFaultLaneResultX& lane = result.lanes[i];
+      lane.fault_index = i;
+      const ScanPatternResultX faulty = extract_scan_lane_observations_x(
+          slots, request.pattern, samples, static_cast<int>(i - begin) + 1);
+      classify_lane_x(result.golden, faulty, request.unload_mask, request.capture_diffs,
+                      lane);
+    }
+  };
+  parallel_ranges(batch_count, effective_sim_threads(sim_threads), process_batch);
+  return result;
+}
+
+std::vector<XDetection> simulate_scan_protocol_faults_x_reference(
+    const std::string& json_path, const std::string& cell_map_path,
+    const ScanProtocolFaultRequest& request, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances,
+    const std::vector<int>& unknown_nets) {
+  refuse_launch_x(request.pattern);
+  const CachedGraph& graph = load_cached_graph(json_path, cell_map_path,
+                                               unsupported_policy, blackbox_instances);
+  const CompiledSimGraph& cg = graph.cg;
+  const TestVector vec = build_scan_pattern_vector(graph.parsed, request.pattern);
+  const std::vector<int> yids = scan_sample_yids(graph.parsed, request.pattern);
+  const XRunOptions options = scan_x_options(vec, unknown_nets);
+  GoldenRefSimX sim;
+  const ScanPatternResultX golden = scan_observations_x(
+      graph.parsed, request.pattern, sim.simulate_sequence(cg, vec, nullptr, options, &yids));
+  std::vector<XDetection> outcomes;
+  outcomes.reserve(request.faults.size());
+  for (const ScanProtocolFaultSpec& spec : request.faults) {
+    if (spec.compiled_net_index >= static_cast<uint32_t>(cg.net_count)) {
+      throw std::runtime_error("scan protocol fault compiled_net_index out of range");
+    }
+    const CompactFault fault = make_compact_fault(spec);
+    const ScanPatternResultX faulty = scan_observations_x(
+        graph.parsed, request.pattern,
+        sim.simulate_sequence(cg, vec, &fault, options, &yids));
+    ScanProtocolFaultLaneResultX lane;
+    classify_lane_x(golden, faulty, request.unload_mask, false, lane);
+    outcomes.push_back(lane.outcome);
   }
   return outcomes;
 }

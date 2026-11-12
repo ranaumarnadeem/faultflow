@@ -6,6 +6,8 @@
 #include <vector>
 
 #include "common/types.hpp"
+#include "sim/xsim/golden_ref_sim_x.hpp"
+#include "sim/xsim/logic.hpp"
 
 namespace faultflow::scan {
 
@@ -162,5 +164,58 @@ std::vector<ScanProtocolFaultOutcome> simulate_scan_protocol_faults_reference(
 
 bool scan_observations_equal(const ScanPatternResult& lhs,
                              const ScanPatternResult& rhs);
+
+// ---- The X engine's scan protocol ([simulation] engine = x) ----
+//
+// The same cycles as simulate_scan_pattern / simulate_scan_protocol_faults, on
+// BitParallelSimX: every flop, clock-gate latch and loop net powered up unknown,
+// and the nets `unknown_nets` names (Yosys ids: an unknown blackbox's outputs)
+// unknown in every cycle. A stuck-at grade only: a request with a launch (LOC or
+// LOS) is refused.
+
+struct ScanPatternResultX {
+  std::map<std::string, Logic> real_po_values;
+  std::map<int, std::vector<Logic>> unload_seqs;
+};
+
+struct ScanProtocolFaultLaneResultX {
+  size_t fault_index = 0;
+  // Over the functional outputs and the compared unload bits: DEFINITE where the
+  // good and the faulty value are known and differ somewhere, POSSIBLE where none
+  // does but the good value is known and the faulty one X.
+  XDetection outcome = XDetection::NONE;
+  // capture_diffs only: the same over the functional outputs alone, and per chain
+  // and unload offset whether the bit differs definitely (good and faulty known)
+  // and whether the faulty bit is X. A masked bit is neither.
+  XDetection po_outcome = XDetection::NONE;
+  std::map<int, std::vector<bool>> diff_unload_seqs;
+  std::map<int, std::vector<bool>> faulty_unknown_seqs;
+};
+
+struct ScanProtocolFaultSimResultX {
+  ScanPatternResultX golden;
+  // One per request fault, in order.
+  std::vector<ScanProtocolFaultLaneResultX> lanes;
+};
+
+ScanPatternResultX simulate_scan_pattern_x(
+    const std::string& json_path, const std::string& cell_map_path,
+    const ScanPatternRequest& request, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances,
+    const std::vector<int>& unknown_nets);
+
+ScanProtocolFaultSimResultX simulate_scan_protocol_faults_x(
+    const std::string& json_path, const std::string& cell_map_path,
+    const ScanProtocolFaultRequest& request, const std::string& unsupported_policy,
+    int sim_threads, const std::vector<std::string>& blackbox_instances,
+    const std::vector<int>& unknown_nets);
+
+// The scalar oracle for simulate_scan_protocol_faults_x: each fault graded alone
+// through GoldenRefSimX, one outcome per request.faults entry, in order.
+std::vector<XDetection> simulate_scan_protocol_faults_x_reference(
+    const std::string& json_path, const std::string& cell_map_path,
+    const ScanProtocolFaultRequest& request, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances,
+    const std::vector<int>& unknown_nets);
 
 }  // namespace faultflow::scan

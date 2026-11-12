@@ -72,17 +72,19 @@ Implemented today:
   tristate buffers and buses (one enabled driver gives its value, a conflict or none
   X). SAT test generation solves on the same semantics (a dual-rail CNF) and proves a
   fault redundant only when no value of the unknowns lets any test show it. It grades
-  combinational stuck-at campaigns (`ff.py sim`, `--ext`), and JTAG and WSP
-  network-integrity grading run on it with every flop powered up unknown. Its synthesis
-  maps a design's latches and `1'bz` drivers onto the library's own cells.
+  combinational and scan stuck-at campaigns (`ff.py sim`, `--ext`, `--scan`, INTEST,
+  EXTEST, with compression and compaction): in a scan run a blackbox output of unknown
+  value and a frozen non-scan flop are unknown in place of the cone masking, and the
+  scan protocol powers every flop up unknown, so an observation point is unknown only
+  in the patterns that let an unknown reach it. JTAG and WSP network-integrity grading
+  run on it with every flop powered up unknown. Its synthesis maps a design's latches
+  and `1'bz` drivers onto the library's own cells.
 
 ## Planned
 
-- **Unknown values in scan flows** (the X engine, `[simulation] engine = x`, today
-  combinational only): in place of the scan flows' structural masking (`x_mask` cone masking of blackbox outputs, non-scan flops
-  and the JTAG X-isolation proof), so a scan run can model latches, loops, tristate
-  buses and unknown power-up state too. The highest-risk stage: the scan flows'
-  grading and their equivalence checks would all move to the X engine.
+- **Transition faults on the X engine** (`[simulation] engine = x` grades stuck-at
+  faults only): the launch and capture frames of combinational and scan transition
+  grading on unknown values.
 - **Visualization** (`ff.py viz`): scan chains, the cone around a fault, and where
   undetected faults cluster, as one self-contained HTML file built from a run's outputs,
   with no change to the simulator. Static views come first: scan chains coloured by
@@ -94,7 +96,8 @@ Implemented today:
 The default engine stays two-valued: a latch is a cell it does not model, a netlist
 with a combinational loop is refused, a tristate cell is a hard error, and an `x` or
 `z` bit in a netlist is tied to 0. The X engine (`[simulation] engine = x`) models all
-of them, in combinational runs; scan runs stay two-valued (see Planned). These were
+of them, in combinational and stuck-at scan runs; transition faults stay two-valued
+(see Planned). These were
 once listed as
 permanent exclusions. That decision was reversed on 2026-11-10: latches need an unknown
 state, and the earlier reason (that Verilator took years to get X-state right) does not hold,

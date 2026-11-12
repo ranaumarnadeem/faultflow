@@ -1,0 +1,31 @@
+{
+  "modules": {
+    "tiny_unknown_tie": {
+      "attributes": {"top": "1"},
+      "ports": {
+        "A": {"direction": "input", "bits": [2]},
+        "Y": {"direction": "output", "bits": [4]}
+      },
+      "cells": {
+        "$bbtie0_u_mem_dout_0": {
+          "type": "$faultflow_tie0",
+          "parameters": {},
+          "attributes": {"faultflow_blackbox": "u_mem", "faultflow_unknown": "1"},
+          "port_directions": {"Y": "output"},
+          "connections": {"Y": [3]}
+        },
+        "g0": {
+          "type": "sky130_fd_sc_hd__and2_1",
+          "parameters": {},
+          "attributes": {},
+          "connections": {"A": [3], "B": [2], "X": [4]}
+        }
+      },
+      "netnames": {
+        "A": {"hide_name": 0, "bits": [2], "attributes": {}},
+        "dout": {"hide_name": 0, "bits": [3], "attributes": {}},
+        "Y": {"hide_name": 0, "bits": [4], "attributes": {}}
+      }
+    }
+  }
+}

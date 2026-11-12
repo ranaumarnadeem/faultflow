@@ -575,7 +575,7 @@ def run_wsp(
         inputs,
         ports,
         expected,
-        unsupported=cfg.simulation.unsupported_cells,
+        unsupported=cfg.simulation.graph_policy,
         blackbox=blackbox,
         inverted=inverted,
     )
@@ -612,7 +612,7 @@ def run_wsp(
         rows_by_key = {
             str(row["site_key"]): int(row["compiled_net_index"])
             for row in core.list_site_keys(
-                str(netlist), cell_map, cfg.simulation.unsupported_cells, blackbox
+                str(netlist), cell_map, cfg.simulation.graph_policy, blackbox
             )
         }
         faults: list[tuple[int, int, int]] = []

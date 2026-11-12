@@ -213,8 +213,25 @@ SAT test generation follows the same rules: it looks for a test that detects a
 fault definitely, and with none, for one that may (`POSSIBLE`); it proves a
 fault redundant only when no value of the unknowns lets any test show it.
 `engine = x` grades stuck-at faults in combinational runs (`ff.py sim`, also
-`--ext`); transition faults, scan runs (`--scan`, `intest`, `extest`) and the
-iverilog gate (`verify`) stay two-valued and refuse it.
+`--ext`) and in scan runs (`--scan`, `intest`, `extest`, with compression and
+compaction). Transition faults and the iverilog gate (`verify`) stay two-valued
+and refuse it.
+
+In a scan run the X engine simulates what the two-valued flow masks by cone: a
+blackbox output of unknown value (`[blackbox] output_value = x`, the default) and a
+frozen non-scan flop are unknown, and the scan protocol powers every flop and
+clock-gate latch up unknown. An observation point is then unknown in a pattern only
+where an unknown value actually reaches it -- a held input, or a value the pattern
+sets, may block it -- and the exported pattern leaves exactly those bits
+don't-care. Through a compactor, a compacted bit is unknown when any chain bit it
+folds in is. What stays as in a two-valued run: the check that no unknown value
+reaches the scan path, the stuck-ats that would let one past the held inputs
+(`blackbox_unresolved`), and the classification of a fault the view can't test
+(`hold_unresolved`, `blackbox_unresolved`, redundant). `ff.py jtag` and
+`ff.py wsp`, which always run on the X engine, then read the netlist's `x`/`z`
+bits as unknown too, as the scan campaign whose faults they grade did. The SoC chip number
+(`ff.py project`), the wrapper's coverage by part, the autoMBIST categories and the
+JTAG and WSP combined numbers count definite detections only.
 ```
 
 ## `[atpg]`
@@ -317,7 +334,7 @@ before each pattern, or once, first, when the loads overlap the unloads.
 | Key | Format | Meaning |
 |---|---|---|
 | `instances` | comma list, e.g. `u_sram, u_pll` | Instances modeled as test boundaries (pseudo-PI/PO). Scan runs model them opaque instead: a scan test can neither set, know nor observe them, so their inputs are unobserved and their outputs hold `output_value` |
-| `output_value` | `x` or `0`, plus per-instance `inst:x` / `inst:0` overrides, e.g. `x, u_rom:0` | Scan runs only: what an instance's outputs hold during the scan test. `x` (the default) is unknown, like an SRAM's output, which holds whatever it last read: every scan flop capture and primary output it reaches combinationally (for launch-on-capture, also through a flop that captured it at launch) gets no detection credit and is don't-care in exported patterns. Faults seen only there count as `blackbox_unresolved`. `0` asserts the design holds the output at 0 in test mode. An unknown output that reaches a scan flop's clock, scan-in, scan-enable or async set/reset is an error |
+| `output_value` | `x` or `0`, plus per-instance `inst:x` / `inst:0` overrides, e.g. `x, u_rom:0` | Scan runs only: what an instance's outputs hold during the scan test. `x` (the default) is unknown, like an SRAM's output, which holds whatever it last read: every scan flop capture and primary output it reaches combinationally (for launch-on-capture, also through a flop that captured it at launch) gets no detection credit and is don't-care in exported patterns. Faults seen only there count as `blackbox_unresolved`. With `[simulation] engine = x` nothing is masked by cone: the X engine carries the value as unknown, so a point it reaches is unknown (no credit, don't-care) only in the patterns that let it through. `0` asserts the design holds the output at 0 in test mode. An unknown output that reaches a scan flop's clock, scan-in, scan-enable or async set/reset is an error |
 
 ## `[testmode]`
 

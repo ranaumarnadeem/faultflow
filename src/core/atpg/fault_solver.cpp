@@ -675,9 +675,8 @@ SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
   if (!unknown_in_cone) {
     return solve_stuck_at_fault(cg, pis, fault, options, out);
   }
-  if (options.cnf_export != nullptr || options.seed_width > 0) {
-    throw std::runtime_error(
-        "an X-mode graph's dual-rail SAT ATPG has no CNF export or seeded inputs");
+  if (options.cnf_export != nullptr) {
+    throw std::runtime_error("an X-mode graph's dual-rail SAT ATPG has no CNF export");
   }
 
   CaDiCaL::Solver solver;
@@ -717,7 +716,9 @@ SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
     return good[net];
   };
   // The faulty machine's: the fault net forced, the rest of its out-cone a pair
-  // of its own, everything else the good machine's.
+  // of its own, everything else the good machine's -- and so is a source (an
+  // input, a constant, an unknown), which no node of the faulty machine drives:
+  // without cone_restrict every net counts as in the out-cone.
   std::vector<Rails> bad(n);
   std::vector<char> have_bad(n, 0);
   const auto bad_of = [&](uint32_t net) -> Rails {
@@ -725,6 +726,13 @@ SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
       return fault.type == FaultType::SA1 ? one : zero;
     }
     if (masks.in_outcone[net] == 0) {
+      return good_of(net);
+    }
+    const int d = cg.driver_index[net];
+    const GateType source =
+        d >= 0 ? cg.nodes[static_cast<size_t>(d)].type : GateType::INPUT;
+    if (source == GateType::INPUT || source == GateType::CONST0 ||
+        source == GateType::CONST1 || source == GateType::CONSTX) {
       return good_of(net);
     }
     if (have_bad[net] == 0) {
@@ -839,6 +847,20 @@ SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
     }
     add_blocking_clause(solver, pi_literals, assignment_from_pattern(blocked));
   }
+  // Scan compression: each seeded input's variable the XOR of its seed bits, as
+  // in the two-valued CNF. Every input's variable exists by now, so the seed's
+  // variables continue after them.
+  CnfVarMap seed_vars(0);
+  seed_vars.next = next;
+  const NetVar seeded_var = [&](uint32_t net) {
+    if (have_good[net] == 0) {
+      throw std::runtime_error("dual-rail SAT ATPG: a seeded input is no input");
+    }
+    return good[net].h;
+  };
+  const std::vector<int> free_seed =
+      add_seed_constraints(solver, seed_vars, options, seeded_var, nullptr);
+  next = seed_vars.next;
 
   // A definite difference: the good machine known and the faulty one the
   // other known value, at some observed net.
@@ -874,6 +896,7 @@ SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
     for (const AtpgPiInfo& pi : pis) {
       out[pi.name] = solver.val(good_of(pi.compiled).h) > 0;
     }
+    read_seed(solver, options, free_seed);
     return SatSolveResult::SAT;
   }
   if (mapped != SatSolveResult::UNSAT) {

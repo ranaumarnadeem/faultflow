@@ -255,7 +255,9 @@ def run_jtag(
     manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
     netlist = Path(str(manifest["generic_json"]))
     cell_map = resolve_scan_cell_map(cfg)
-    unsupported = cfg.simulation.unsupported_cells
+    # The scan campaign's graph policy: its faults' compiled indices are that
+    # graph's ("+x" with [simulation] engine = x, whose x/z bits are unknown).
+    unsupported = cfg.simulation.graph_policy
     blackbox = list(cfg.blackbox_instances)
     access = _test_access(cfg)
     try:

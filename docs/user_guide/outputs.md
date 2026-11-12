@@ -136,7 +136,9 @@ The reliable ways to get generated vectors out are the campaign database
 [Running without the shell](running_without_shell.md)). When a `[blackbox]`
 output of unknown value reaches a scan flop, each exported pattern carries an
 `unload_mask` parallel to `expected_unload` (per chain, `true` = compare): a
-`false` bit is don't-care, since that flop captured the unknown value. When a
+`false` bit is don't-care, since that flop captured the unknown value (with
+`[simulation] engine = x`, the bits the X engine finds unknown in that pattern,
+and the unknown primary outputs left out of its values). When a
 non-scan flop settles during the test (a reset synchronizer, see `[scan]
 nonscan_cells`), each pattern carries `preamble_cycles`: the scan-clock pulses,
 scan enable off and the holds applied, to give before its load. With scan

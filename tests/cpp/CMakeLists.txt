@@ -10,6 +10,7 @@ add_executable(
   scan/test_scan_chain.cpp
   scan/test_scan_sequence.cpp
   scan/test_scan_protocol_reference.cpp
+  scan/test_scan_protocol_x.cpp
   scan/test_scan_multiclock_stagger.cpp
   scan/test_scan_setup.cpp
   sim/test_bit_parallel.cpp

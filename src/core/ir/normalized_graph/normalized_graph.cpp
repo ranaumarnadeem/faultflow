@@ -547,6 +547,18 @@ NormalizedGraph NormalizedGraph::from_parsed(
                                                            : entry->gate_type;
     const bool stateful = entry->node_type == NodeType::FF ||
                           entry->node_type == NodeType::LATCH;
+    if (cell.attrs.count(kUnknownTieAttr) != 0) {
+      if (entry->node_type != NodeType::CONST) {
+        throw ParseError("cell " + inst + " (type '" + cell.type + "') is marked " +
+                         kUnknownTieAttr + " but is no tie cell");
+      }
+      if (!x_mode) {
+        throw ParseError("tie cell " + inst + " is marked " + kUnknownTieAttr +
+                         ": an unknown value needs the X engine ([simulation] "
+                         "engine = x)");
+      }
+      node.gate_type = GateType::CONSTX;
+    }
 
     if (entry->node_type == NodeType::GATE) {
       node.input_order = entry->inputs;

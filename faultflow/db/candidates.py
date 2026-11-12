@@ -20,6 +20,9 @@ class CandidateCommit:
     protocol_sim_rejections: list[CandidateRejection] = field(default_factory=list)
     blocked_patterns: list[tuple[int, str]] = field(default_factory=list)
     reduced_view_rejections: list[CandidateRejection] = field(default_factory=list)
+    # The X engine's possible detections: marked 'possible' if still undetected
+    # (a definite detection or a redundancy proof outranks one).
+    possible: list[int] = field(default_factory=list)
 
 
 def load_blocked_patterns(
@@ -117,6 +120,14 @@ def _apply_candidate_commit(
                 run_id,
                 commit.vector_index,
             ),
+        )
+    for fault_id in commit.possible:
+        conn.execute(
+            """
+            UPDATE faults SET status = 'possible'
+            WHERE id = ? AND campaign_id = ? AND status = 'undetected'
+            """,
+            (fault_id, campaign_id),
         )
     for rejection in commit.reduced_view_rejections + commit.protocol_sim_rejections:
         conn.execute(

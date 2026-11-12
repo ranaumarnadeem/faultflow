@@ -648,11 +648,11 @@ def run_progressive_native_atpg(
 ) -> tuple[VectorSet, AtpgStats, int, float, float]:
     from faultflow.runner.runner import _atpg_pi_names, _load_core
 
-    if cfg.simulation.engine == "x" and campaign_type != CAMPAIGN_TYPE_COMB:
-        raise RunnerError(
-            "simulation.engine = x grades combinational designs only; scan ATPG "
-            "stays two-valued"
-        )
+    if cfg.simulation.engine == "x" and campaign_type not in (
+        CAMPAIGN_TYPE_COMB,
+        CAMPAIGN_TYPE_SCAN,
+    ):
+        raise RunnerError(f"simulation.engine = x grades no {campaign_type} campaign")
     if campaign_type == CAMPAIGN_TYPE_SCAN:
         if scan_ctx is None:
             raise RunnerError("scan_ctx is required for scan progressive ATPG")

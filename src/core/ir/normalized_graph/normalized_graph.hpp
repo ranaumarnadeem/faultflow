@@ -57,6 +57,10 @@ inline constexpr char kUnobservedNetsAttr[] = "faultflow_unobserved_nets";
 // "root" or "chain" -- the gate evaluates to its enable (GateType ICG_EN /
 // ICG_EN_CHAIN), which its flops' captures hold on, not to a clock.
 inline constexpr char kIcgEnableAttr[] = "faultflow_icg_enable";
+// A tie cell's attribute in a scan ATPG view (faultflow.scan.x_mask): its output is
+// unknown -- a blackbox output's, or a frozen non-scan flop's -- and an X-mode
+// graph reads it as such (GateType CONSTX). A two-valued graph refuses it.
+inline constexpr char kUnknownTieAttr[] = "faultflow_unknown";
 
 struct NormalizedGraph {
   std::map<int, NormNode> nodes;

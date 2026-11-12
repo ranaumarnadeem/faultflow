@@ -31,6 +31,12 @@ class BitParallelSimX {
                                                         const TestVector& vec,
                                                         const FaultBatch& batch,
                                                         const XRunOptions& options) const;
+  // Only `nets` (compiled indices), in that order, at each sampled cycle.
+  std::vector<std::vector<Dual>> simulate_batch_samples(const CompiledSimGraph& cg,
+                                                        const TestVector& vec,
+                                                        const FaultBatch& batch,
+                                                        const XRunOptions& options,
+                                                        const std::vector<uint32_t>& nets) const;
 
   XBatchDetection detect_batch(const CompiledSimGraph& cg, const TestVector& vec,
                                const FaultBatch& batch,

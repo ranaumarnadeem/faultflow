@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ def reduced_protocol_matches(
     los_two_capture: bool = False,
     los_launch_scan_in: dict[int, bool] | None = None,
     active_clock_ports: list[str] | None = None,
+    x_unknown_nets: Sequence[int] | None = None,
 ) -> bool:
     verify_golden_scan_protocol(
         cfg,
@@ -36,6 +38,7 @@ def reduced_protocol_matches(
         los_two_capture=los_two_capture,
         los_launch_scan_in=los_launch_scan_in,
         active_clock_ports=active_clock_ports,
+        x_unknown_nets=x_unknown_nets,
     )
     return True
 
@@ -54,7 +57,13 @@ def verify_golden_scan_protocol(
     los_two_capture: bool = False,
     los_launch_scan_in: dict[int, bool] | None = None,
     active_clock_ports: list[str] | None = None,
+    x_unknown_nets: Sequence[int] | None = None,
 ) -> None:
+    """Raise RunnerError unless the scan protocol on the generic netlist gives
+    the expected bits the reduced view computed. `x_unknown_nets` not None: on the
+    X engine, every flop powered up unknown and those nets (an unknown blackbox's
+    outputs) unknown in every cycle; an expected bit -- every one compared, not
+    the pattern's don't-cares -- must then be known and equal."""
     from faultflow.runner.runner import RunnerError, _load_core
 
     core = _load_core()
@@ -76,39 +85,66 @@ def verify_golden_scan_protocol(
     max_chain_length = int(manifest.get("max_chain_length", 0))
 
     cell_map = resolve_scan_cell_map(cfg)
-    result = dict(
-        core.simulate_scan_pattern(
-            str(generic_json),
-            str(cell_map),
-            clock_ports,
-            scan_enable_port=scan_enable,
-            scan_input_ports=scan_input_ports,
-            scan_output_ports=scan_output_ports,
-            functional_output_ports=functional_output_order,
-            max_chain_length=max_chain_length,
-            load_seqs=pattern.load_seqs,
-            capture_pi_values=pattern.capture_pi_values,
-            unsupported_policy=cfg.simulation.unsupported_cells,
-            blackbox_instances=list(cfg.blackbox_instances),
-            loc_two_capture=loc_two_capture,
-            los_two_capture=los_two_capture,
-            los_launch_scan_in=los_launch_scan_in or {},
-            active_clock_ports=active_clock_ports or [],
-            preamble_cycles=pattern.preamble_cycles,
-            shift_pi_values=pattern.shift_pi_values,
-            setup_cycles=setup_request(pattern.setup),
+    if x_unknown_nets is not None:
+        if loc_two_capture or los_two_capture:
+            raise RunnerError("the X engine grades stuck-at scan patterns only")
+        result = dict(
+            core.simulate_scan_pattern_x(
+                str(generic_json),
+                str(cell_map),
+                clock_ports,
+                scan_enable_port=scan_enable,
+                scan_input_ports=scan_input_ports,
+                scan_output_ports=scan_output_ports,
+                functional_output_ports=functional_output_order,
+                max_chain_length=max_chain_length,
+                load_seqs=pattern.load_seqs,
+                capture_pi_values=pattern.capture_pi_values,
+                unsupported_policy=cfg.simulation.graph_policy,
+                active_clock_ports=active_clock_ports or [],
+                blackbox_instances=list(cfg.blackbox_instances),
+                preamble_cycles=pattern.preamble_cycles,
+                shift_pi_values=pattern.shift_pi_values,
+                setup_cycles=setup_request(pattern.setup),
+                unknown_nets=list(x_unknown_nets),
+            )
         )
-    )
+    else:
+        result = dict(
+            core.simulate_scan_pattern(
+                str(generic_json),
+                str(cell_map),
+                clock_ports,
+                scan_enable_port=scan_enable,
+                scan_input_ports=scan_input_ports,
+                scan_output_ports=scan_output_ports,
+                functional_output_ports=functional_output_order,
+                max_chain_length=max_chain_length,
+                load_seqs=pattern.load_seqs,
+                capture_pi_values=pattern.capture_pi_values,
+                unsupported_policy=cfg.simulation.unsupported_cells,
+                blackbox_instances=list(cfg.blackbox_instances),
+                loc_two_capture=loc_two_capture,
+                los_two_capture=los_two_capture,
+                los_launch_scan_in=los_launch_scan_in or {},
+                active_clock_ports=active_clock_ports or [],
+                preamble_cycles=pattern.preamble_cycles,
+                shift_pi_values=pattern.shift_pi_values,
+                setup_cycles=setup_request(pattern.setup),
+            )
+        )
+    # The X engine: an unknown bit (None) matches no expected value.
     real_po_values = dict(result.get("real_po_values", {}))
     unload_raw = result.get("unload_seqs", {})
     unload_seqs = {
-        int(chain_id): [bool(bit) for bit in bits]
+        int(chain_id): [None if bit is None else bool(bit) for bit in bits]
         for chain_id, bits in dict(unload_raw).items()
     }
 
     for port in functional_output_order:
         expected = bool(reduced_vector.get(port, False))
-        actual = bool(real_po_values.get(port, False))
+        found = real_po_values.get(port, False)
+        actual = None if found is None else bool(found)
         if expected != actual:
             raise RunnerError(
                 "golden scan protocol mismatch on functional PO "

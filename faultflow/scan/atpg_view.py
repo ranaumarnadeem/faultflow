@@ -90,6 +90,12 @@ UNOBSERVED_NETS_ATTR = "faultflow_unobserved_nets"
 # A clock gate's cell attribute in the view (_mark_clock_gates): it evaluates to its
 # enable. Mirrors kIcgEnableAttr in src/core/ir/normalized_graph/normalized_graph.hpp.
 ICG_ENABLE_ATTR = "faultflow_icg_enable"
+# A tie cell's attribute in the view of a campaign on the X engine ([simulation]
+# engine = x, x_mask.mark_unknown_ties): its output, a blackbox output's or a frozen
+# non-scan flop's, is unknown, and the X engine reads it so (GateType CONSTX) in
+# place of the cone masking (UNOBSERVED_NETS_ATTR). Mirrors kUnknownTieAttr in
+# src/core/ir/normalized_graph/normalized_graph.hpp; a two-valued load refuses it.
+UNKNOWN_ATTR = "faultflow_unknown"
 
 
 def _ppi_name(instance: str) -> str:
@@ -1003,6 +1009,8 @@ def _free_and_observe(
         add_port(port, "input", next_id)
         tie = cells[name]
         tie["type"] = OBSERVE_BUF_CELL
+        # A buffer now, fed by its port: no unknown value (x_mask, X engine).
+        tie.get("attributes", {}).pop(UNKNOWN_ATTR, None)
         tie["port_directions"] = {"A": "input", "Y": "output"}
         tie["connections"] = {"A": [next_id], "Y": tie["connections"]["Y"]}
         next_id += 1

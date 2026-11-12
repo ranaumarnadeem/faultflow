@@ -2745,11 +2745,8 @@ class Runner:
                 f"with --scan (ff.py {mode})"
             )
         x_engine = self.cfg.simulation.engine == "x"
-        if x_engine and scan:
-            raise RunnerError(
-                "simulation.engine = x grades combinational designs only; scan "
-                "ATPG stays two-valued (run --scan with engine = two_valued)"
-            )
+        # A scan campaign on the X engine (stuck-at; config refuses transition)
+        # simulates its unknown values in place of the cone masking (scan.x_mask).
         if scan:
             return self._sim_scan(
                 purge=purge,
@@ -3021,7 +3018,7 @@ class Runner:
         )
         x_flops = nonscan.x_sources if nonscan is not None else ()
         if not cfg.blackbox_x_instances and not x_flops:
-            return XMask(launch_mode=launch_mode)
+            return XMask(launch_mode=launch_mode, x_engine=cfg.simulation.engine == "x")
         core = _load_core()
         if core is None:
             raise RunnerError("C++ extension _faultflow_core is required")
@@ -3362,6 +3359,8 @@ class Runner:
             else:
                 from faultflow.runner.compaction import compact_run
 
+                # On the X engine its view's X sources, and its possible faults
+                # kept possibly detected.
                 vectors, run_id, raw_vectors_scan = compact_run(
                     json_path=str(netlist),
                     cell_map_path=scan_cell_map,
@@ -3369,7 +3368,8 @@ class Runner:
                     campaign_id=campaign_id,
                     run_id=run_id,
                     vectors=vectors,
-                    unsupported=self.cfg.simulation.unsupported_cells,
+                    unsupported=self.cfg.simulation.graph_policy,
+                    possible_credit=self.cfg.fault_model.possible_credit,
                 )
         else:
             raw_vectors_scan = vectors.count

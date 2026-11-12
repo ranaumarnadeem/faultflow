@@ -204,7 +204,7 @@ def _undetected_reason(
     through the compressor/compactor, so it stays counted as undetected
     rather than excluded; blackbox_unresolved means it has a test only if a
     blackbox (memory) could be driven or observed, which no scan test can do
-    (see detection_pipeline._testable_on_twin; Tessent's AU.BB), and
+    (see detection_pipeline._twin_result; Tessent's AU.BB), and
     hold_unresolved that it has one only if the [scan] hold inputs, and the
     non-scan flops they keep in reset, were free (Tessent's AU.PC), both
     counted the same way;

@@ -1,0 +1,85 @@
+{
+  "modules": {
+    "tiny_scan_x": {
+      "attributes": {"top": "1"},
+      "ports": {
+        "CLK": {"direction": "input", "bits": [2]},
+        "scan_in": {"direction": "input", "bits": [3]},
+        "scan_en": {"direction": "input", "bits": [4]},
+        "D0": {"direction": "input", "bits": [5]},
+        "D1": {"direction": "input", "bits": [6]},
+        "D2": {"direction": "input", "bits": [7]},
+        "Q0": {"direction": "output", "bits": [8]},
+        "P": {"direction": "output", "bits": [13]},
+        "R": {"direction": "output", "bits": [15]},
+        "scan_out_0": {"direction": "output", "bits": [10]}
+      },
+      "cells": {
+        "u_mem": {
+          "type": "sram_like",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {"din": "input", "dout": "output"},
+          "connections": {"din": [5], "dout": [11]}
+        },
+        "g0": {
+          "type": "sky130_fd_sc_hd__and2_1",
+          "parameters": {},
+          "attributes": {},
+          "connections": {"A": [11], "B": [6], "X": [12]}
+        },
+        "g1": {
+          "type": "sky130_fd_sc_hd__or2_1",
+          "parameters": {},
+          "attributes": {},
+          "connections": {"A": [11], "B": [9], "X": [13]}
+        },
+        "g2": {
+          "type": "sky130_fd_sc_hd__xor2_1",
+          "parameters": {},
+          "attributes": {},
+          "connections": {"A": [14], "B": [5], "X": [15]}
+        },
+        "ns0": {
+          "type": "sky130_fd_sc_hd__dfxtp_1",
+          "parameters": {},
+          "attributes": {},
+          "connections": {"CLK": [2], "D": [7], "Q": [14]}
+        },
+        "ff0": {
+          "type": "$scanff_faultflow",
+          "parameters": {},
+          "attributes": {"faultflow_scan": "1"},
+          "connections": {"CLK": [2], "D": [12], "SDI": [3], "SE": [4], "Q": [8]}
+        },
+        "ff1": {
+          "type": "$scanff_faultflow",
+          "parameters": {},
+          "attributes": {"faultflow_scan": "1"},
+          "connections": {"CLK": [2], "D": [7], "SDI": [8], "SE": [4], "Q": [9]}
+        },
+        "ff2": {
+          "type": "$scanff_faultflow",
+          "parameters": {},
+          "attributes": {"faultflow_scan": "1"},
+          "connections": {"CLK": [2], "D": [8], "SDI": [9], "SE": [4], "Q": [10]}
+        }
+      },
+      "netnames": {
+        "CLK": {"hide_name": 0, "bits": [2], "attributes": {}},
+        "scan_in": {"hide_name": 0, "bits": [3], "attributes": {}},
+        "scan_en": {"hide_name": 0, "bits": [4], "attributes": {}},
+        "D0": {"hide_name": 0, "bits": [5], "attributes": {}},
+        "D1": {"hide_name": 0, "bits": [6], "attributes": {}},
+        "D2": {"hide_name": 0, "bits": [7], "attributes": {}},
+        "Q0": {"hide_name": 0, "bits": [8], "attributes": {}},
+        "Q1": {"hide_name": 0, "bits": [9], "attributes": {}},
+        "dout": {"hide_name": 0, "bits": [11], "attributes": {}},
+        "P": {"hide_name": 0, "bits": [13], "attributes": {}},
+        "nsq": {"hide_name": 0, "bits": [14], "attributes": {}},
+        "R": {"hide_name": 0, "bits": [15], "attributes": {}},
+        "scan_out_0": {"hide_name": 0, "bits": [10], "attributes": {}}
+      }
+    }
+  }
+}

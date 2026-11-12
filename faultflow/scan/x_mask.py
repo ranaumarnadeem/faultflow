@@ -40,6 +40,14 @@ wrapped input enables (check_x_off_scan_path). Only a stuck-at on what holds suc
 a gate -- the select's net back to the held input -- lets it through, so those
 faults (XMask.release_faults) are blackbox_unresolved before any test is graded; a
 transition fault can't, since a held net never transitions.
+
+On the X engine ([simulation] engine = x) none of this cone masking is done: the
+view's ties for those unknown values are marked unknown (mark_unknown_ties), the
+X engine reads them as X, and an observation point is unknown in a pattern only
+where the X it simulates reaches it -- a held input, or any controlling value the
+pattern sets, may block it. A fault seen only through such an X is possibly
+detected. What stays is the scan-path check and the stuck-ats that let an unknown
+value past the held inputs (release_faults), the view not simulating the shift.
 """
 
 from __future__ import annotations
@@ -63,6 +71,7 @@ from faultflow.scan.atpg_view import (
     PPO_PREFIX,
     TIE0_CELL,
     TIE1_CELL,
+    UNKNOWN_ATTR,
     UNOBSERVED_NETS_ATTR,
 )
 from faultflow.scan.cell_map import resolve_scan_cell_map
@@ -90,7 +99,9 @@ class XMask:
     at the launch edge: whether their Q makes a transition is unknown too.
     `blocked` are the unknown values the held inputs keep out (blocked_sources),
     and `release_faults` the (site key, "sa0"/"sa1") stuck-ats that would let one
-    in."""
+    in. `x_engine`: the X engine reads the unknown values (the view's ties are
+    marked unknown, mark_unknown_ties), so nothing is masked -- `nets`,
+    `ppo_ports`, `outputs` and `launch_ppo_ports` are empty."""
 
     launch_mode: str | None = None
     nets: frozenset[int] = frozenset()
@@ -99,6 +110,7 @@ class XMask:
     launch_ppo_ports: frozenset[str] = frozenset()
     blocked: frozenset[int] = frozenset()
     release_faults: frozenset[tuple[str, str]] = frozenset()
+    x_engine: bool = False
 
 
 def launch_mode_key(transition: bool, launch_mode: str) -> str | None:
@@ -125,6 +137,44 @@ def x_source_nets(module: dict[str, Any], x_instances: Collection[str]) -> list[
             continue
         nets.update(b for b in cell["connections"]["Y"] if isinstance(b, int))
     return sorted(nets)
+
+
+def _x_source_ties(module: dict[str, Any], x_instances: Collection[str]) -> list[str]:
+    """The tie cells x_source_nets reads its nets from."""
+    sources = set(x_source_nets(module, x_instances))
+    return sorted(
+        str(name)
+        for name, cell in module.get("cells", {}).items()
+        if isinstance(cell, dict)
+        and str(cell.get("type", "")).lstrip("\\") in (TIE0_CELL, TIE1_CELL)
+        and set(cell.get("connections", {}).get("Y", [])) & sources
+    )
+
+
+def mark_unknown_ties(
+    module: dict[str, Any], x_instances: Collection[str]
+) -> list[str]:
+    """For the X engine: mark every tie cell standing in for an unknown value --
+    the outputs of `x_instances` and the frozen non-scan flops (x_source_nets) --
+    with UNKNOWN_ATTR, which the core reads as an X source. Returns their names."""
+    names = _x_source_ties(module, x_instances)
+    cells = module.get("cells", {})
+    for name in names:
+        cells[name].setdefault("attributes", {})[UNKNOWN_ATTR] = "1"
+    return names
+
+
+def unmarked_unknown_ties(
+    module: dict[str, Any], x_instances: Collection[str]
+) -> list[str]:
+    """The tie cells standing in for an unknown value that mark_unknown_ties
+    has not marked."""
+    cells = module.get("cells", {})
+    return [
+        name
+        for name in _x_source_ties(module, x_instances)
+        if not cells[name].get("attributes", {}).get(UNKNOWN_ATTR)
+    ]
 
 
 # The widest gate a reader may be: every value of its other free inputs is tried.
@@ -353,12 +403,18 @@ def mask_scan_view(
     scan path of the scanned netlist `generic_json`; `nonscan_q_nets` are the
     non-scan flops, whose own pins are off it. What the held inputs keep out of
     `blocking_instances`' outputs is no unknown (compute_x_mask; on the scan path,
-    check_x_off_scan_path with the `holds` and the still flops' `known` values)."""
+    check_x_off_scan_path with the `holds` and the still flops' `known` values).
+
+    On the X engine nothing is masked: the ties of those unknown values are
+    marked unknown (mark_unknown_ties) -- the held inputs' blocking ones too,
+    which the X engine blocks itself -- and the mask only carries the
+    release_faults."""
+    x_engine = cfg.simulation.engine == "x"
     x_instances = cfg.blackbox_x_instances
     if not x_instances and not nonscan_x_nets:
-        return XMask(launch_mode=launch_mode)
+        return XMask(launch_mode=launch_mode, x_engine=x_engine)
     cell_map = str(resolve_scan_cell_map(cfg))
-    unsupported = cfg.simulation.unsupported_cells
+    unsupported = cfg.simulation.graph_policy
     shift_release = check_x_off_scan_path(
         core,
         generic_json,
@@ -373,23 +429,58 @@ def mask_scan_view(
         holds=holds,
         known=known,
     )
-    mask = compute_x_mask(
-        core,
-        view_path,
-        top=cfg.top,
-        cell_map=cell_map,
-        unsupported=unsupported,
-        x_instances=x_instances,
-        launch_mode=launch_mode,
-        functional_output_order=functional_output_order,
-        blocking_instances=blocking_instances,
-    )
-    mask = replace(mask, release_faults=mask.release_faults | shift_release)
-    apply_x_mask(view, cfg.top, mask)
+    if x_engine:
+        _, module = _top_module(view, cfg.top)
+        sources = x_source_nets(module, x_instances)
+        release: frozenset[tuple[str, str]] = frozenset()
+        if blocking_instances and sources:
+            _, release = blocked_sources(
+                core,
+                module,
+                json.loads(Path(cell_map).read_text(encoding="utf-8")),
+                x_source_nets(module, blocking_instances),
+                sources,
+            )
+        mark_unknown_ties(module, x_instances)
+        mask = XMask(
+            launch_mode=launch_mode,
+            release_faults=release | shift_release,
+            x_engine=True,
+        )
+    else:
+        mask = compute_x_mask(
+            core,
+            view_path,
+            top=cfg.top,
+            cell_map=cell_map,
+            unsupported=unsupported,
+            x_instances=x_instances,
+            launch_mode=launch_mode,
+            functional_output_order=functional_output_order,
+            blocking_instances=blocking_instances,
+        )
+        mask = replace(mask, release_faults=mask.release_faults | shift_release)
+        apply_x_mask(view, cfg.top, mask)
     view_path.write_text(
         json.dumps(view, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return mask
+
+
+def instance_output_nets(
+    module: dict[str, Any], instances: Collection[str]
+) -> list[int]:
+    """The net ids the output pins of `instances` (cells of `module`) drive: a
+    blackbox's outputs, which the X engine's scan protocol holds unknown."""
+    cells = module.get("cells", {})
+    nets: set[int] = set()
+    for inst in instances:
+        cell = cells.get(inst, {})
+        directions = cell.get("port_directions", {})
+        for pin, bits in cell.get("connections", {}).items():
+            if directions.get(pin) == "output":
+                nets.update(b for b in bits if isinstance(b, int))
+    return sorted(nets)
 
 
 def check_x_off_scan_path(
@@ -420,17 +511,9 @@ def check_x_off_scan_path(
     in are returned: under one the shift itself is unknown."""
     top = str(manifest["top"])
     _, module = _top_module(json.loads(generic_json.read_text(encoding="utf-8")), top)
-    cells = module.get("cells", {})
 
     def outputs(instances: Collection[str]) -> set[int]:
-        nets: set[int] = set()
-        for inst in instances:
-            cell = cells.get(inst, {})
-            directions = cell.get("port_directions", {})
-            for pin, bits in cell.get("connections", {}).items():
-                if directions.get(pin) == "output":
-                    nets.update(b for b in bits if isinstance(b, int))
-        return nets
+        return set(instance_output_nets(module, instances))
 
     sources = set(extra_sources) | outputs(x_instances)
     release: frozenset[tuple[str, str]] = frozenset()
