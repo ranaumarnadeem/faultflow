@@ -1149,12 +1149,6 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     if fault_launch not in {"loc", "los"}:
         raise ConfigError("fault_model.launch must be 'loc' or 'los'")
 
-    if engine == "x" and fault_model != "stuck_at":
-        raise ConfigError(
-            "simulation.engine = x grades stuck-at faults only; transition faults "
-            "are graded by the two-valued engine"
-        )
-
     fault_collapsing = _bool(parser, "fault_model", "collapsing", True)
     if fault_model == "transition" and fault_collapsing:
         raise ConfigError(

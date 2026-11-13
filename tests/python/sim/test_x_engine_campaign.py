@@ -118,11 +118,6 @@ def test_engine_x_asks_the_core_for_an_x_mode_graph(tmp_path: Path) -> None:
         ("[simulation]\nengine = three\n", "engine"),
         ("[fault_model]\npossible_credit = 120\n", "possible_credit"),
         ("[fault_model]\npossible_credit = half\n", "possible_credit"),
-        (
-            "[simulation]\nengine = x\n[fault_model]\nmodel = transition\n"
-            "collapsing = false\n",
-            "stuck-at",
-        ),
     ],
 )
 def test_bad_engine_settings_are_refused(tmp_path: Path, body: str, match: str) -> None:

@@ -52,6 +52,7 @@ add_executable(
   sim/test_x_latch.cpp
   sim/test_x_loop.cpp
   sim/test_x_tristate.cpp
+  sim/test_x_transition.cpp
   helpers/test_helpers.cpp
 )
 

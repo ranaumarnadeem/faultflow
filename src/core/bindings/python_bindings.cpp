@@ -961,8 +961,12 @@ scan::ScanPatternRequest scan_request_x(
     const std::map<std::string, bool>& capture_pi_values,
     const std::vector<std::string>& active_clock_ports, int preamble_cycles,
     const std::map<std::string, bool>& shift_pi_values,
-    const std::vector<SetupCyclePy>& setup_cycles) {
+    const std::vector<SetupCyclePy>& setup_cycles, bool loc_two_capture,
+    bool los_two_capture, const std::map<int, bool>& los_launch_scan_in) {
   scan::ScanPatternRequest request;
+  request.loc_two_capture = loc_two_capture;
+  request.los_two_capture = los_two_capture;
+  request.los_launch_scan_in = los_launch_scan_in;
   request.clock_ports = clock_ports;
   request.clock_off_states = clock_off_states;
   request.scan_enable_port = scan_enable_port;
@@ -993,12 +997,14 @@ py::dict simulate_scan_pattern_x_py(
     const std::vector<std::string>& active_clock_ports,
     const std::vector<std::string>& blackbox_instances, int preamble_cycles,
     const std::map<std::string, bool>& shift_pi_values,
-    const std::vector<SetupCyclePy>& setup_cycles, const std::vector<int>& unknown_nets) {
+    const std::vector<SetupCyclePy>& setup_cycles, const std::vector<int>& unknown_nets,
+    bool loc_two_capture, bool los_two_capture,
+    const std::map<int, bool>& los_launch_scan_in) {
   const scan::ScanPatternRequest request = scan_request_x(
       clock_ports, clock_off_states, scan_enable_port, scan_input_ports,
       scan_output_ports, functional_output_ports, max_chain_length, load_seqs,
       capture_pi_values, active_clock_ports, preamble_cycles, shift_pi_values,
-      setup_cycles);
+      setup_cycles, loc_two_capture, los_two_capture, los_launch_scan_in);
   scan::ScanPatternResultX result;
   {
     py::gil_scoped_release release;
@@ -1033,13 +1039,14 @@ py::dict simulate_scan_protocol_faults_x_py(
     const std::map<int, std::vector<bool>>& unload_mask, int preamble_cycles,
     const std::map<std::string, bool>& shift_pi_values,
     const std::vector<SetupCyclePy>& setup_cycles, const std::vector<int>& unknown_nets,
-    bool reference) {
+    bool reference, bool loc_two_capture, bool los_two_capture,
+    const std::map<int, bool>& los_launch_scan_in) {
   scan::ScanProtocolFaultRequest request;
-  request.pattern = scan_request_x(clock_ports, clock_off_states, scan_enable_port,
-                                   scan_input_ports, scan_output_ports,
-                                   functional_output_ports, max_chain_length, load_seqs,
-                                   capture_pi_values, active_clock_ports,
-                                   preamble_cycles, shift_pi_values, setup_cycles);
+  request.pattern = scan_request_x(
+      clock_ports, clock_off_states, scan_enable_port, scan_input_ports,
+      scan_output_ports, functional_output_ports, max_chain_length, load_seqs,
+      capture_pi_values, active_clock_ports, preamble_cycles, shift_pi_values,
+      setup_cycles, loc_two_capture, los_two_capture, los_launch_scan_in);
   request.capture_diffs = capture_diffs;
   request.unload_mask = unload_mask;
   for (const auto& [net_index, fault_type] : faults) {
@@ -1106,7 +1113,8 @@ py::list fault_free_outputs_x_py(const std::string& json_path,
                                  const std::vector<std::string>& input_order,
                                  const std::vector<std::string>& output_order,
                                  const std::string& unsupported_policy,
-                                 const std::vector<std::string>& blackbox_instances) {
+                                 const std::vector<std::string>& blackbox_instances,
+                                 const std::vector<std::string>& unknown_inputs) {
   const CachedGraph& graph = load_cached_graph(json_path, cell_map_path,
                                                unsupported_policy, blackbox_instances);
   const std::vector<TestVector> vectors =
@@ -1116,11 +1124,20 @@ py::list fault_free_outputs_x_py(const std::string& json_path,
   for (const auto& output : output_order) {
     yids.push_back(graph.parsed.net_id_by_name(output));
   }
+  // `unknown_inputs` unknown, whatever their value in a vector.
+  XRunOptions options;
+  if (!unknown_inputs.empty()) {
+    std::set<int> unknown;
+    for (const std::string& name : unknown_inputs) {
+      unknown.insert(graph.parsed.net_id_by_name(name));
+    }
+    options.unknown_inputs = {std::move(unknown)};
+  }
   GoldenRefSimX sim;
   py::list out;
   for (const TestVector& vector : vectors) {
     const std::vector<XSnapshot> samples =
-        sim.simulate_sequence(graph.cg, vector, nullptr, XRunOptions{}, &yids);
+        sim.simulate_sequence(graph.cg, vector, nullptr, options, &yids);
     if (samples.size() != 1) {
       throw std::runtime_error("fault_free_outputs_x: one sample per vector expected");
     }
@@ -1468,6 +1485,56 @@ py::dict compaction_detections_preloaded_x_py(
   return out;
 }
 
+// compaction_pair_detections_preloaded on the X engine: {"definite": [...],
+// "possible": [...]} fault ids.
+py::dict compaction_pair_detections_preloaded_x_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::map<std::string, bool>& launch,
+    const std::map<std::string, bool>& capture,
+    const std::vector<std::string>& input_order,
+    const std::vector<std::tuple<int64_t, uint32_t, uint8_t>>& targets,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances,
+    const std::vector<std::string>& capture_unknown) {
+  const atpg::XDetections d = atpg::detect_with_pair_x(
+      json_path, cell_map_path, launch, capture, input_order,
+      targets_from_triples(targets), unsupported_policy, blackbox_instances,
+      capture_unknown);
+  py::dict out;
+  out["definite"] = d.definite;
+  out["possible"] = d.possible;
+  return out;
+}
+
+// simulate_transition_incremental on the X engine: rows {fault_id,
+// vector_index, possible}.
+py::list simulate_transition_incremental_x_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t campaign_id, int64_t run_id,
+    const std::vector<atpg::VectorPair>& new_pairs,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances, int sim_threads) {
+  std::vector<atpg::XProgressiveDetection> detections;
+  {
+    py::gil_scoped_release release;
+    detections = atpg::simulate_transition_incremental_x(
+        json_path, cell_map_path, db_path, campaign_id, run_id, new_pairs,
+        input_order, fault_ids, vector_start_index, unsupported_policy,
+        blackbox_instances, sim_threads);
+  }
+  py::list out;
+  for (const auto& det : detections) {
+    py::dict row;
+    row["fault_id"] = det.fault_id;
+    row["vector_index"] = det.vector_index;
+    row["possible"] = det.possible;
+    out.append(row);
+  }
+  return out;
+}
+
 // simulate_incremental on the X engine: rows {fault_id, vector_index, possible}.
 py::list simulate_incremental_x_py(
     const std::string& json_path, const std::string& cell_map_path,
@@ -1751,6 +1818,31 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("vector_start_index"), py::arg("unsupported_policy") = "fail+x",
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("sim_threads") = 1);
+  m.def("compaction_pair_detections_preloaded_x",
+        &faultflow::compaction_pair_detections_preloaded_x_py, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("launch"), py::arg("capture"),
+        py::arg("input_order"), py::arg("targets"),
+        py::arg("unsupported_policy") = "fail+x",
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("capture_unknown") = std::vector<std::string>{});
+  m.def("simulate_transition_incremental_x",
+        &faultflow::simulate_transition_incremental_x_py, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("db_path"), py::arg("campaign_id"),
+        py::arg("run_id"), py::arg("new_pairs"), py::arg("input_order"),
+        py::arg("fault_ids"), py::arg("vector_start_index"),
+        py::arg("unsupported_policy") = "fail+x",
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("sim_threads") = 1);
+  m.def("verify_transition_candidate_x",
+        &faultflow::atpg::verify_transition_fault_vector_x, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("db_path"), py::arg("fault_id"),
+        py::arg("launch"), py::arg("capture"),
+        py::arg("unsupported_policy") = "fail+x",
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("capture_unknown") = std::vector<std::string>{},
+        "2 when the pair detects the transition definitely on the X engine, 1 "
+        "when only possibly, 0 when not; capture_unknown: inputs unknown in the "
+        "capture frame.");
   m.def("verify_fault_candidate_x", &faultflow::atpg::verify_fault_vector_x,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("db_path"),
         py::arg("fault_id"), py::arg("vector"),
@@ -1849,6 +1941,8 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("shift_pi_values") = std::map<std::string, bool>{},
         py::arg("setup_cycles") = std::vector<faultflow::SetupCyclePy>{},
         py::arg("unknown_nets") = std::vector<int>{},
+        py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
+        py::arg("los_launch_scan_in") = std::map<int, bool>{},
         "simulate_scan_pattern on the X engine: every flop powered up X, the "
         "unknown_nets (Yosys ids) X in every cycle; values True/False/None.");
   m.def("simulate_scan_protocol_faults_x",
@@ -1867,12 +1961,15 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("preamble_cycles") = 0,
         py::arg("shift_pi_values") = std::map<std::string, bool>{},
         py::arg("setup_cycles") = std::vector<faultflow::SetupCyclePy>{},
-        py::arg("unknown_nets") = std::vector<int>{}, py::arg("reference") = false);
+        py::arg("unknown_nets") = std::vector<int>{}, py::arg("reference") = false,
+        py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
+        py::arg("los_launch_scan_in") = std::map<int, bool>{});
   m.def("fault_free_outputs_x", &faultflow::fault_free_outputs_x_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("vectors"),
         py::arg("input_order"), py::arg("output_order"),
         py::arg("unsupported_policy") = "fail+x",
-        py::arg("blackbox_instances") = std::vector<std::string>{});
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("unknown_inputs") = std::vector<std::string>{});
   m.def("simulate_sequence_faults", &faultflow::simulate_sequence_faults_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("input_order"),
         py::arg("cycles"), py::arg("sample"), py::arg("observe_outputs"),

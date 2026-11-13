@@ -43,10 +43,33 @@ class GoldenRefSimX {
                                            const XRunOptions& options,
                                            const std::vector<int>* sample_yids =
                                                nullptr) const;
+
+  // The two-frame transition oracle: the launch frame `v1` fault-free, the
+  // capture frame `v2` with the fault as a stuck-at (SA0 slow to rise, SA1 slow
+  // to fall). Nothing is credited unless the good machine at the fault net is
+  // known at the pre-transition value in the launch frame and at the post one in
+  // the capture frame (an unknown launch may never make the edge); given that,
+  // the detection as classify_detection grades it.
+  XDetection simulate_transition_fault(const CompiledSimGraph& cg, const TestVector& v1,
+                                       const TestVector& v2, const CompactFault& fault,
+                                       const XRunOptions& options) const;
 };
 
 XDetection classify_detection(const CompiledSimGraph& cg,
                               const std::vector<XSnapshot>& good,
                               const std::vector<XSnapshot>& faulty);
+
+// The launch/capture pair as one two-cycle vector: both cycles sampled, the
+// fault active in the capture cycle only (BitParallelSim's transition vector).
+TestVector transition_pair(const TestVector& v1, const TestVector& v2);
+
+// The good machine's value at a transition fault's net before (pre) and after
+// (post) the edge: STR (SA0) 0 -> 1, STF (SA1) 1 -> 0.
+inline Logic transition_pre(FaultType type) {
+  return type == FaultType::SA0 ? Logic::ZERO : Logic::ONE;
+}
+inline Logic transition_post(FaultType type) {
+  return type == FaultType::SA0 ? Logic::ONE : Logic::ZERO;
+}
 
 }  // namespace faultflow

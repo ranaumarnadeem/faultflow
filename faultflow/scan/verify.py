@@ -86,8 +86,6 @@ def verify_golden_scan_protocol(
 
     cell_map = resolve_scan_cell_map(cfg)
     if x_unknown_nets is not None:
-        if loc_two_capture or los_two_capture:
-            raise RunnerError("the X engine grades stuck-at scan patterns only")
         result = dict(
             core.simulate_scan_pattern_x(
                 str(generic_json),
@@ -107,6 +105,9 @@ def verify_golden_scan_protocol(
                 shift_pi_values=pattern.shift_pi_values,
                 setup_cycles=setup_request(pattern.setup),
                 unknown_nets=list(x_unknown_nets),
+                loc_two_capture=loc_two_capture,
+                los_two_capture=los_two_capture,
+                los_launch_scan_in=los_launch_scan_in or {},
             )
         )
     else:

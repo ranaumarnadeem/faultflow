@@ -212,10 +212,17 @@ drivers as the library's tristate buffers (a two-valued run's synthesis reads
 SAT test generation follows the same rules: it looks for a test that detects a
 fault definitely, and with none, for one that may (`POSSIBLE`); it proves a
 fault redundant only when no value of the unknowns lets any test show it.
-`engine = x` grades stuck-at faults in combinational runs (`ff.py sim`, also
-`--ext`) and in scan runs (`--scan`, `intest`, `extest`, with compression and
-compaction). Transition faults and the iverilog gate (`verify`) stay two-valued
-and refuse it.
+`engine = x` grades stuck-at and transition faults in combinational runs
+(`ff.py sim`; `--ext` stuck-at) and in scan runs (`--scan`, `intest`, `extest`,
+launch on capture or on shift, with compression and compaction). The iverilog
+gate (`verify`) stays two-valued and refuses it.
+
+A transition fault counts only when its launch is known: the good machine holds
+the fault site at the old value in the launch frame and at the new value in the
+capture frame. Where an unknown leaves either open -- a flop capturing an unknown
+value at a launch-on-capture launch edge, say -- the edge may never happen and the
+fault gets no credit, possible or definite. Given a known launch, the capture is
+graded as a stuck-at is: definite, or possible where the faulty value is unknown.
 
 In a scan run the X engine simulates what the two-valued flow masks by cone: a
 blackbox output of unknown value (`[blackbox] output_value = x`, the default) and a

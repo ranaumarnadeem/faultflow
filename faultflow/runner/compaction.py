@@ -520,6 +520,7 @@ def compact_run_transition(
     vectors: VectorSet,
     unsupported: str,
     blackbox_instances: Sequence[str] = (),
+    possible_credit: float = DEFAULT_POSSIBLE_CREDIT,
 ) -> tuple[VectorSet, int, int]:
     """Reverse-order TWO-FRAME (transition) static compaction.
 
@@ -527,7 +528,9 @@ def compact_run_transition(
     launch frames are read from the DB ``vectors.launch_pattern`` column for this
     run. Re-grading uses the qualified two-frame transition sim (the same engine
     that detected the faults), so coverage is preserved. Kept pairs are written to
-    a new compacted run with both columns populated.
+    a new compacted run with both columns populated. With the X engine ('+x'
+    graph policy) a detected target is kept by a definite detection and a possibly
+    detected one by either kind, as compact_run does.
     """
     input_order = vectors.input_order
     with connect(db_path) as conn:
@@ -541,7 +544,9 @@ def compact_run_transition(
             """,
             (campaign_id, run_id),
         ).fetchall()
-        targets_by_id = _detected_fault_targets(conn, campaign_id)
+        targets_by_id, possible_ids = _compaction_targets(
+            conn, campaign_id, unsupported
+        )
         remaining: set[int] = set(targets_by_id)
     pairs = [
         (
@@ -561,23 +566,43 @@ def compact_run_transition(
             "Run: cmake --build build -- -j2"
         )
 
+    def detect(
+        launch: dict[str, bool], capture: dict[str, bool], targets: set[int]
+    ) -> set[int]:
+        triples = _triples(targets, targets_by_id)
+        if unsupported.endswith("+x"):
+            found = core.compaction_pair_detections_preloaded_x(
+                json_path,
+                cell_map_path,
+                launch,
+                capture,
+                input_order,
+                triples,
+                unsupported,
+                list(blackbox_instances),
+            )
+            return set(found["definite"]) | (set(found["possible"]) & possible_ids)
+        return set(
+            core.compaction_pair_detections_preloaded(
+                json_path,
+                cell_map_path,
+                launch,
+                capture,
+                input_order,
+                triples,
+                unsupported,
+                list(blackbox_instances),
+            )
+        )
+
     started = time.perf_counter()
     kept_indices: list[int] = []
     for idx in range(raw_count - 1, -1, -1):
         if not remaining:
             break
         launch, capture = pairs[idx]
-        detected = core.compaction_pair_detections_preloaded(
-            json_path,
-            cell_map_path,
-            launch,
-            capture,
-            input_order,
-            _triples(remaining, targets_by_id),
-            unsupported,
-            list(blackbox_instances),
-        )
-        newly = [fid for fid in detected if fid in remaining]
+        detected = detect(launch, capture, remaining)
+        newly = [fid for fid in sorted(detected) if fid in remaining]
         if newly:
             kept_indices.append(idx)
             remaining.difference_update(newly)
@@ -604,7 +629,9 @@ def compact_run_transition(
 
     with connect(db_path) as conn:
         init_schema(conn)
-        coverage = summary(conn, campaign_id=campaign_id)["coverage_percent"]
+        coverage = summary(
+            conn, campaign_id=campaign_id, possible_credit=possible_credit
+        )["coverage_percent"]
 
     log.info(
         "compact  %d -> %d transition pairs  (-%d)  %.2fs  coverage=%.3f%%",

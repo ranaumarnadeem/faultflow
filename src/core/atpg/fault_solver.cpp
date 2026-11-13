@@ -21,6 +21,7 @@
 #include "ir/compiled_graph/compiled_graph.hpp"
 #include "sim/gate_eval.hpp"
 #include "sim/xsim/dual.hpp"
+#include "sim/xsim/logic.hpp"
 
 namespace faultflow::atpg {
 namespace {
@@ -643,6 +644,123 @@ void add_mux_rails(CaDiCaL::Solver& solver, int& next, Rails sel, Rails if0, Rai
   add_or_of_ands(solver, next, {{sel.l, if0.l}, {sel.h, if1.l}}, out.l);
 }
 
+// One node of a dual-rail CNF, the X engine's evaluation of it: `outr` its
+// output's rails, `rails_of` its inputs', `held` a latch's held value (its
+// unknown power-up value, or its value at the end of the frame before), `zero`
+// and `one` the fixed rails.
+template <typename RailsOf>
+void encode_dual_node(CaDiCaL::Solver& solver, int& next, const CompiledSimGraph& cg,
+                      const SimNode& node, Rails outr, const RailsOf& rails_of, Rails held,
+                      Rails zero, Rails one) {
+  if (node.type == GateType::LATCH) {
+    // GoldenRefSimX's eval_latch: D while enabled, else the held value; clear
+    // and preset forcing it.
+    const CompiledFFConfig& cfg = cg.latch_configs.at(node.ff_cfg);
+    const auto act = [](Rails r, Polarity p) {
+      return p == Polarity::ACTIVE_HIGH ? r : Rails{r.l, r.h};
+    };
+    const auto constant = [&](uint8_t v) { return v != 0 ? one : zero; };
+    const Rails en = act(rails_of(node.in1), cfg.enable_polarity);
+    const Rails clr = (cfg.has_clear && node.in2 != UNUSED_INPUT)
+                          ? act(rails_of(node.in2), cfg.clear_polarity)
+                          : zero;
+    const Rails pre = (cfg.has_preset && node.in3 != UNUSED_INPUT)
+                          ? act(rails_of(node.in3), cfg.preset_polarity)
+                          : zero;
+    const Rails open{next++, next++};
+    add_mux_rails(solver, next, en, held, rails_of(node.in0), open);
+    const Rails unforced{next++, next++};
+    add_mux_rails(solver, next, pre, open, constant(cfg.preset_value), unforced);
+    const Rails cleared{next++, next++};
+    add_mux_rails(solver, next, pre, constant(cfg.clear_value),
+                  constant(cfg.clear_preset_conflict_value), cleared);
+    add_mux_rails(solver, next, clr, unforced, cleared, outr);
+    return;
+  }
+  if (node.type == GateType::TBUF_P || node.type == GateType::TBUF_N ||
+      node.type == GateType::TINV_P || node.type == GateType::TINV_N) {
+    // eval_tbuf_dual: the data while enabled, Z (0,0) while disabled, X while
+    // the enable is unknown.
+    Rails data = rails_of(node.in0);
+    Rails en = rails_of(node.in1);
+    if (node.type == GateType::TINV_P || node.type == GateType::TINV_N) {
+      data = Rails{data.l, data.h};
+    }
+    if (node.type == GateType::TBUF_N || node.type == GateType::TINV_N) {
+      en = Rails{en.l, en.h};
+    }
+    add_or_of_ands(solver, next, {{en.h, -en.l, data.h}, {en.h, en.l}}, outr.h);
+    add_or_of_ands(solver, next, {{en.h, -en.l, data.l}, {en.h, en.l}}, outr.l);
+    return;
+  }
+  if (node.type == GateType::BUS_MERGE || node.type == GateType::BUS_RES) {
+    // eval_bus_dual: the union of the drivers; BUS_RES floating reads X
+    // (h = some driver's h, or none can be 0; l likewise).
+    std::vector<std::vector<int>> hs;
+    std::vector<std::vector<int>> ls;
+    std::vector<int> none_low;
+    std::vector<int> none_high;
+    for (uint32_t slot : {node.in0, node.in1, node.in2, node.in3, node.in4, node.in5}) {
+      if (slot == UNUSED_INPUT) {
+        continue;
+      }
+      const Rails d = rails_of(slot);
+      hs.push_back({d.h});
+      ls.push_back({d.l});
+      none_low.push_back(-d.l);
+      none_high.push_back(-d.h);
+    }
+    if (node.type == GateType::BUS_RES) {
+      hs.push_back(none_low);
+      ls.push_back(none_high);
+    }
+    add_or_of_ands(solver, next, hs, outr.h);
+    add_or_of_ands(solver, next, ls, outr.l);
+    return;
+  }
+  const DualCubes& cubes = dual_cubes(node.type);
+  if (!cubes.valid) {
+    throw std::runtime_error("dual-rail SAT ATPG: a node with no combinational function");
+  }
+  std::array<Rails, 6> in{};
+  const std::array<uint32_t, 6> slots{node.in0, node.in1, node.in2,
+                                      node.in3, node.in4, node.in5};
+  for (size_t i = 0; i < slots.size(); ++i) {
+    in[i] = slots[i] == UNUSED_INPUT ? zero : rails_of(slots[i]);  // unused reads 0
+  }
+  add_cube_cover(solver, next, cubes.ones, in, outr.h);
+  add_cube_cover(solver, next, cubes.zeros, in, outr.l);
+}
+
+// A definite difference between the good and the faulty machine at one of the
+// observed nets in the fault's out-cone: the good one known and the faulty one
+// the other known value. Returns one literal per observed net (empty: none).
+template <typename GoodOf, typename BadOf>
+std::vector<int> add_definite_differences(CaDiCaL::Solver& solver, int& next,
+                                          const ConeMasks& masks, const GoodOf& good_of,
+                                          const BadOf& bad_of) {
+  std::vector<int> differs;
+  for (uint32_t obs : masks.observed) {
+    if (masks.in_outcone[obs] == 0) {
+      continue;
+    }
+    const Rails g = good_of(obs);
+    const Rails f = bad_of(obs);
+    const int d = next++;
+    const int rise = next++;  // good 0, faulty 1
+    const int fall = next++;  // good 1, faulty 0
+    for (int lit : {g.l, -g.h, f.h, -f.l}) {
+      add_clause(solver, {-rise, lit});
+    }
+    for (int lit : {g.h, -g.l, f.l, -f.h}) {
+      add_clause(solver, {-fall, lit});
+    }
+    add_clause(solver, {-d, rise, fall});
+    differs.push_back(d);
+  }
+  return differs;
+}
+
 }  // namespace
 
 SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
@@ -742,85 +860,9 @@ SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
     }
     return bad[net];
   };
+  // One frame from power-up: a latch's held value unknown.
   const auto encode = [&](const SimNode& node, Rails outr, const auto& rails_of) {
-    if (node.type == GateType::LATCH) {
-      // GoldenRefSimX's eval_latch in one frame from power-up: the held value
-      // unknown.
-      const CompiledFFConfig& cfg = cg.latch_configs.at(node.ff_cfg);
-      const auto act = [](Rails r, Polarity p) {
-        return p == Polarity::ACTIVE_HIGH ? r : Rails{r.l, r.h};
-      };
-      const auto constant = [&](uint8_t v) { return v != 0 ? one : zero; };
-      const Rails en = act(rails_of(node.in1), cfg.enable_polarity);
-      const Rails clr = (cfg.has_clear && node.in2 != UNUSED_INPUT)
-                            ? act(rails_of(node.in2), cfg.clear_polarity)
-                            : zero;
-      const Rails pre = (cfg.has_preset && node.in3 != UNUSED_INPUT)
-                            ? act(rails_of(node.in3), cfg.preset_polarity)
-                            : zero;
-      const Rails open{next++, next++};
-      add_mux_rails(solver, next, en, unknown, rails_of(node.in0), open);
-      const Rails unforced{next++, next++};
-      add_mux_rails(solver, next, pre, open, constant(cfg.preset_value), unforced);
-      const Rails cleared{next++, next++};
-      add_mux_rails(solver, next, pre, constant(cfg.clear_value),
-                    constant(cfg.clear_preset_conflict_value), cleared);
-      add_mux_rails(solver, next, clr, unforced, cleared, outr);
-      return;
-    }
-    if (node.type == GateType::TBUF_P || node.type == GateType::TBUF_N ||
-        node.type == GateType::TINV_P || node.type == GateType::TINV_N) {
-      // eval_tbuf_dual: the data while enabled, Z (0,0) while disabled, X while
-      // the enable is unknown.
-      Rails data = rails_of(node.in0);
-      Rails en = rails_of(node.in1);
-      if (node.type == GateType::TINV_P || node.type == GateType::TINV_N) {
-        data = Rails{data.l, data.h};
-      }
-      if (node.type == GateType::TBUF_N || node.type == GateType::TINV_N) {
-        en = Rails{en.l, en.h};
-      }
-      add_or_of_ands(solver, next, {{en.h, -en.l, data.h}, {en.h, en.l}}, outr.h);
-      add_or_of_ands(solver, next, {{en.h, -en.l, data.l}, {en.h, en.l}}, outr.l);
-      return;
-    }
-    if (node.type == GateType::BUS_MERGE || node.type == GateType::BUS_RES) {
-      // eval_bus_dual: the union of the drivers; BUS_RES floating reads X
-      // (h = some driver's h, or none can be 0; l likewise).
-      std::vector<std::vector<int>> hs;
-      std::vector<std::vector<int>> ls;
-      std::vector<int> none_low;
-      std::vector<int> none_high;
-      for (uint32_t slot : {node.in0, node.in1, node.in2, node.in3, node.in4, node.in5}) {
-        if (slot == UNUSED_INPUT) {
-          continue;
-        }
-        const Rails d = rails_of(slot);
-        hs.push_back({d.h});
-        ls.push_back({d.l});
-        none_low.push_back(-d.l);
-        none_high.push_back(-d.h);
-      }
-      if (node.type == GateType::BUS_RES) {
-        hs.push_back(none_low);
-        ls.push_back(none_high);
-      }
-      add_or_of_ands(solver, next, hs, outr.h);
-      add_or_of_ands(solver, next, ls, outr.l);
-      return;
-    }
-    const DualCubes& cubes = dual_cubes(node.type);
-    if (!cubes.valid) {
-      throw std::runtime_error("dual-rail SAT ATPG: a node with no combinational function");
-    }
-    std::array<Rails, 6> in{};
-    const std::array<uint32_t, 6> slots{node.in0, node.in1, node.in2,
-                                        node.in3, node.in4, node.in5};
-    for (size_t i = 0; i < slots.size(); ++i) {
-      in[i] = slots[i] == UNUSED_INPUT ? zero : rails_of(slots[i]);  // unused reads 0
-    }
-    add_cube_cover(solver, next, cubes.ones, in, outr.h);
-    add_cube_cover(solver, next, cubes.zeros, in, outr.l);
+    encode_dual_node(solver, next, cg, node, outr, rails_of, unknown, zero, one);
   };
 
   for (const SimNode& node : cg.nodes) {
@@ -864,25 +906,8 @@ SatSolveResult solve_stuck_at_fault_x(const CompiledSimGraph& cg,
 
   // A definite difference: the good machine known and the faulty one the
   // other known value, at some observed net.
-  std::vector<int> differs;
-  for (uint32_t obs : masks.observed) {
-    if (masks.in_outcone[obs] == 0) {
-      continue;
-    }
-    const Rails g = good_of(obs);
-    const Rails f = bad_of(obs);
-    const int d = next++;
-    const int rise = next++;  // good 0, faulty 1
-    const int fall = next++;  // good 1, faulty 0
-    for (int lit : {g.l, -g.h, f.h, -f.l}) {
-      add_clause(solver, {-rise, lit});
-    }
-    for (int lit : {g.h, -g.l, f.l, -f.h}) {
-      add_clause(solver, {-fall, lit});
-    }
-    add_clause(solver, {-d, rise, fall});
-    differs.push_back(d);
-  }
+  const std::vector<int> differs =
+      add_definite_differences(solver, next, masks, good_of, bad_of);
   if (differs.empty()) {
     return SatSolveResult::UNSAT;
   }
@@ -1194,6 +1219,14 @@ std::vector<char> launch_cone(const CompiledSimGraph& cg, uint32_t fault_net,
       need(launch);
     }
   }
+  // An X-mode graph's latch the capture machines read holds its launch-frame
+  // value there.
+  for (const SimNode& node : cg.nodes) {
+    if (node.type == GateType::LATCH &&
+        (masks.in_support[node.out] || masks.in_outcone[node.out])) {
+      need(node.out);
+    }
+  }
   std::vector<int> scratch;
   close_fanin(cg, driver_index_of(cg, scratch), needed, work);
   return needed;
@@ -1288,10 +1321,60 @@ SatSolveResult solve_two_frame_transition(
           ? launch_cone(cg, fault.net_index, coupling, masks)
           : std::vector<char>(static_cast<size_t>(cg.net_count), 1);
 
+  int latch_truth = 0;  // a literal fixed true, made for the first latch
   for (const SimNode& node : cg.nodes) {
     if (node.type == GateType::INPUT ||
         !(in_launch[node.out] || masks.in_support[node.out] ||
           masks.in_outcone[node.out])) {
+      continue;
+    }
+    // An X-mode graph's nodes, as solve_stuck_at_fault reads them (a two-valued
+    // graph has none): an x/z bit free in each frame, the capture machines
+    // sharing it; a bus free everywhere (no proof through it).
+    if (node.type == GateType::CONSTX) {
+      if (masks.in_outcone[node.out] && node.out != fault.net_index) {
+        add_equiv(solver, vars.free_vars.at(node.out), vars.faulty_vars.at(node.out));
+      }
+      continue;
+    }
+    if (is_tristate(node.type)) {
+      continue;
+    }
+    if (node.type == GateType::LATCH) {
+      // Its power-up value a free variable in the launch frame; in the capture
+      // frame both machines hold its launch-frame value (the launch is
+      // fault-free).
+      if (latch_truth == 0) {
+        latch_truth = vars.next++;
+        add_unit(solver, latch_truth);
+      }
+      const CompiledFFConfig& lcfg = cg.latch_configs.at(node.ff_cfg);
+      const std::array<uint32_t, 4> slots{node.in0, node.in1, node.in2, node.in3};
+      const auto pins = [&](const auto& lit_of) {
+        std::array<int, 4> lits{};
+        for (size_t i = 0; i < slots.size(); ++i) {
+          lits[i] = slots[i] == UNUSED_INPUT ? 0 : lit_of(slots[i]);
+        }
+        return lits;
+      };
+      const int held = launch_vars.at(node.out);
+      if (in_launch[node.out]) {
+        const auto p = pins([&](uint32_t net) { return launch_vars.at(net); });
+        const int state = vars.next++;
+        add_latch_cnf(solver, vars.next, latch_truth, lcfg, p[0], p[1], p[2], p[3], state,
+                      held);
+      }
+      if (masks.in_support[node.out]) {
+        const auto p = pins([&](uint32_t net) { return vars.free_vars.at(net); });
+        add_latch_cnf(solver, vars.next, latch_truth, lcfg, p[0], p[1], p[2], p[3], held,
+                      vars.free_vars.at(node.out));
+      }
+      if (masks.in_outcone[node.out] && node.out != fault.net_index) {
+        const auto p =
+            pins([&](uint32_t net) { return faulty_input_lit(vars, masks, net); });
+        add_latch_cnf(solver, vars.next, latch_truth, lcfg, p[0], p[1], p[2], p[3], held,
+                      vars.faulty_vars.at(node.out));
+      }
       continue;
     }
     const auto input_nets = inputs_of(node);
@@ -1428,10 +1511,13 @@ SatSolveResult solve_two_frame_transition(
     v2_out[pi.name] = solver.val(vars.free_vars.at(pi.compiled)) > 0;
   }
   // A coupled capture value the CNF left free (its launch net outside
-  // launch_cone): what the launch frame computes from V1, fault-free.
+  // launch_cone): what the launch frame computes from V1, fault-free. Not on an
+  // X-mode graph, whose launch frame may leave it unknown (and holds nodes a
+  // scalar evaluation has no value for): the scan flows derive the capture from
+  // the launch themselves.
   std::map<uint32_t, uint32_t> derived;  // capture net -> launch net
   for (const auto& [capture, launch] : coupling) {
-    if (!in_launch[launch]) {
+    if (!in_launch[launch] && !cg.x_mode) {
       derived[capture] = launch;
     }
   }
@@ -1454,7 +1540,285 @@ SatSolveResult solve_two_frame_transition(
   return SatSolveResult::SAT;
 }
 
+// solve_two_frame_transition on an X-mode graph: solve_stuck_at_fault_x's
+// dual-rail CNF in two frames. Three rail copies -- the launch frame's good
+// machine, the capture frame's good and faulty ones; the edge required known at
+// the fault net (pre in the launch frame, post in the capture's good machine); a
+// definite difference at an observed net. An unknown is (1,1) in each frame; a
+// latch powers up unknown in the launch frame and holds its launch-frame value in
+// the capture frame, as the X engine evaluates it. A coupled capture net reads
+// its launch net's rails. With no unknown, loop or bus in a cone this is the
+// two-valued solver. No definite pair: the two-valued CNF, every unknown free,
+// says POSSIBLE (SAT, its pair) or redundant (UNSAT; UNKNOWN through a loop or a
+// bus, which the CNF does not model).
+SatSolveResult solve_two_frame_transition_x(
+    const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
+    const CompactFault& fault, const SatSolveOptions& options,
+    const Coupling& coupling, bool launch_only_blocking,
+    const std::vector<uint32_t>& extra_block_compiled,
+    std::map<std::string, bool>& v1_out, std::map<std::string, bool>& v2_out) {
+  const auto two_valued = [&]() {
+    return solve_two_frame_transition(cg, pis, fault, options, coupling,
+                                      launch_only_blocking, extra_block_compiled, v1_out,
+                                      v2_out);
+  };
+  const std::vector<uint32_t> observable_set(cg.observable.begin(), cg.observable.end());
+  const ConeMasks masks =
+      build_cone_masks(cg, fault.net_index, observable_set, options.cone_restrict);
+  if (masks.redundant) {
+    return two_valued();  // reaches no observable, whatever the unknowns
+  }
+  const size_t n = static_cast<size_t>(cg.net_count);
+  // The launch frame over the fault net, the coupled launch nets the capture
+  // machines read and every latch they read (launch_cone). A coupled capture
+  // value outside it is left free: the scan flows derive the capture from the
+  // launch themselves, and LOS reads only its uncoupled head bits.
+  const std::vector<char> in_launch = launch_cone(cg, fault.net_index, coupling, masks);
+  bool unknown_in_cone = false;
+  bool loop_in_cone = false;
+  for (size_t i = 0; i < cg.nodes.size(); ++i) {
+    const SimNode& node = cg.nodes[i];
+    if (in_launch[node.out] == 0 && masks.in_support[node.out] == 0 &&
+        masks.in_outcone[node.out] == 0) {
+      continue;
+    }
+    unknown_in_cone = unknown_in_cone || is_x_source(node);
+    if ((i < cg.in_loop.size() && cg.in_loop[i] != 0) || is_tristate(node.type)) {
+      unknown_in_cone = true;
+      loop_in_cone = true;
+    }
+  }
+  if (!unknown_in_cone) {
+    return two_valued();
+  }
+  if (options.cnf_export != nullptr) {
+    throw std::runtime_error("an X-mode graph's dual-rail SAT ATPG has no CNF export");
+  }
+
+  CaDiCaL::Solver solver;
+  const auto time_guard = apply_solver_limits(solver, options);
+  int next = 1;
+  const int truth = next++;
+  add_unit(solver, truth);
+  const Rails zero{-truth, truth};
+  const Rails one{truth, -truth};
+  const Rails unknown{truth, truth};
+
+  // A machine's rails, made on first use from the net's driver: a PI one
+  // variable (h = v, l = ~v), a constant fixed, an unknown (1,1), a gate a pair.
+  struct Copy {
+    std::vector<Rails> rails;
+    std::vector<char> have;
+  };
+  Copy launch{std::vector<Rails>(n), std::vector<char>(n, 0)};
+  Copy good = launch;
+  Copy bad = launch;
+  const auto make = [&](Copy& copy, uint32_t net) -> Rails {
+    if (copy.have[net] == 0) {
+      copy.have[net] = 1;
+      const int d = cg.driver_index[net];
+      const GateType type =
+          d >= 0 ? cg.nodes[static_cast<size_t>(d)].type : GateType::INPUT;
+      if (type == GateType::INPUT) {
+        const int v = next++;
+        copy.rails[net] = {v, -v};
+      } else if (type == GateType::CONST0) {
+        copy.rails[net] = zero;
+      } else if (type == GateType::CONST1) {
+        copy.rails[net] = one;
+      } else if (type == GateType::CONSTX) {
+        copy.rails[net] = unknown;
+      } else {
+        copy.rails[net].h = next++;
+        copy.rails[net].l = next++;
+      }
+    }
+    return copy.rails[net];
+  };
+  std::map<uint32_t, uint32_t> coupled;  // capture net -> launch net
+  for (const auto& [capture, launch_net] : coupling) {
+    coupled[capture] = launch_net;
+  }
+  const auto launch_of = [&](uint32_t net) { return make(launch, net); };
+  const auto good_of = [&](uint32_t net) -> Rails {
+    const auto it = coupled.find(net);
+    return it != coupled.end() ? launch_of(it->second) : make(good, net);
+  };
+  // The faulty machine: the fault net forced, the rest of its out-cone its own
+  // rails, every other net -- and every source -- the good machine's.
+  const auto bad_of = [&](uint32_t net) -> Rails {
+    if (net == fault.net_index) {
+      return fault.type == FaultType::SA1 ? one : zero;
+    }
+    if (masks.in_outcone[net] == 0) {
+      return good_of(net);
+    }
+    const int d = cg.driver_index[net];
+    const GateType source =
+        d >= 0 ? cg.nodes[static_cast<size_t>(d)].type : GateType::INPUT;
+    if (source == GateType::INPUT || source == GateType::CONST0 ||
+        source == GateType::CONST1 || source == GateType::CONSTX) {
+      return good_of(net);
+    }
+    return make(bad, net);
+  };
+
+  for (const SimNode& node : cg.nodes) {
+    if (node.type == GateType::INPUT || node.type == GateType::CONST0 ||
+        node.type == GateType::CONST1 || node.type == GateType::CONSTX) {
+      continue;
+    }
+    if (in_launch[node.out] != 0) {
+      encode_dual_node(solver, next, cg, node, launch_of(node.out), launch_of, unknown,
+                       zero, one);
+    }
+    const Rails held = (node.type == GateType::LATCH && in_launch[node.out] != 0)
+                           ? launch_of(node.out)
+                           : unknown;
+    if (masks.in_support[node.out] != 0) {
+      encode_dual_node(solver, next, cg, node, good_of(node.out), good_of, held, zero,
+                       one);
+    }
+    if (masks.in_outcone[node.out] != 0 && node.out != fault.net_index) {
+      encode_dual_node(solver, next, cg, node, bad_of(node.out), bad_of, held, zero,
+                       one);
+    }
+  }
+
+  // The edge: the good machine known at the pre value in the launch frame and at
+  // the post value in the capture frame.
+  const auto require = [&](Rails r, Logic v) {
+    add_unit(solver, v == Logic::ONE ? r.h : -r.h);
+    add_unit(solver, v == Logic::ONE ? -r.l : r.l);
+  };
+  const Logic pre = fault.type == FaultType::SA0 ? Logic::ZERO : Logic::ONE;
+  require(launch_of(fault.net_index), pre);
+  require(good_of(fault.net_index), pre == Logic::ZERO ? Logic::ONE : Logic::ZERO);
+
+  // Blocked patterns over the same literals as the two-valued solver's.
+  std::vector<int> block_literals;
+  std::vector<int> capture_literals;
+  for (const AtpgPiInfo& pi : pis) {
+    block_literals.push_back(launch_of(pi.compiled).h);
+    capture_literals.push_back(good_of(pi.compiled).h);
+  }
+  if (!launch_only_blocking) {
+    block_literals.insert(block_literals.end(), capture_literals.begin(),
+                          capture_literals.end());
+  } else {
+    for (uint32_t idx : extra_block_compiled) {
+      block_literals.push_back(good_of(idx).h);
+    }
+  }
+  for (const std::string& blocked : options.blocked_patterns) {
+    if (blocked.size() != block_literals.size()) {
+      throw std::runtime_error("blocked pattern length mismatch");
+    }
+    add_blocking_clause(solver, block_literals, assignment_from_pattern(blocked));
+  }
+  // Scan compression: the launch load and (LOS) the capture's launch-shift bits
+  // from one seed, as in the two-valued CNF; every input's rails exist by now.
+  CnfVarMap seed_vars(0);
+  seed_vars.next = next;
+  const NetVar seeded_launch = [&](uint32_t net) {
+    if (launch.have[net] == 0) {
+      throw std::runtime_error("dual-rail SAT ATPG: a seeded input is no input");
+    }
+    return launch.rails[net].h;
+  };
+  const NetVar seeded_capture = [&](uint32_t net) {
+    if (coupled.count(net) == 0 && good.have[net] == 0) {
+      throw std::runtime_error("dual-rail SAT ATPG: a seeded input is no input");
+    }
+    return good_of(net).h;
+  };
+  const std::vector<int> free_seed =
+      add_seed_constraints(solver, seed_vars, options, seeded_launch, &seeded_capture);
+  next = seed_vars.next;
+
+  const std::vector<int> differs =
+      add_definite_differences(solver, next, masks, good_of, bad_of);
+  if (differs.empty()) {
+    return two_valued();
+  }
+  add_clause(solver, differs);
+
+  const int status = solver.solve();
+  const SatSolveResult mapped =
+      map_cadical_result(status, status == 0 && had_solver_limits(options));
+  if (mapped == SatSolveResult::SAT) {
+    v1_out.clear();
+    v2_out.clear();
+    for (const AtpgPiInfo& pi : pis) {
+      v1_out[pi.name] = solver.val(launch_of(pi.compiled).h) > 0;
+      v2_out[pi.name] = solver.val(good_of(pi.compiled).h) > 0;
+    }
+    read_seed(solver, options, free_seed);
+    return SatSolveResult::SAT;
+  }
+  if (mapped != SatSolveResult::UNSAT) {
+    return mapped;
+  }
+  // No pair detects it definitely. The two-valued CNF says whether any shows it
+  // for some value of the unknowns (POSSIBLE at best) or none can (redundant).
+  const SatSolveResult two = two_valued();
+  if (two == SatSolveResult::UNSAT && loop_in_cone) {
+    return SatSolveResult::UNKNOWN;  // no proof through a loop or a bus
+  }
+  return two == SatSolveResult::SAT ? SatSolveResult::POSSIBLE : two;
+}
+
 }  // namespace
+
+SatSolveResult solve_transition_fault_x(const CompiledSimGraph& cg,
+                                        const std::vector<AtpgPiInfo>& pis,
+                                        const CompactFault& fault,
+                                        const SatSolveOptions& options,
+                                        std::map<std::string, bool>& v1_out,
+                                        std::map<std::string, bool>& v2_out) {
+  return solve_two_frame_transition_x(cg, pis, fault, options, Coupling{},
+                                      /*launch_only_blocking=*/false,
+                                      /*extra_block_compiled=*/{}, v1_out, v2_out);
+}
+
+SatSolveResult solve_scan_transition_fault_x(
+    const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
+    const std::vector<LocCouple>& couples,
+    const std::vector<uint32_t>& held_pi_compiled, const CompactFault& fault,
+    const SatSolveOptions& options, std::map<std::string, bool>& v1_out,
+    std::map<std::string, bool>& v2_out) {
+  Coupling loc_coupling;
+  loc_coupling.reserve(couples.size() + held_pi_compiled.size());
+  for (const LocCouple& c : couples) {
+    loc_coupling.emplace_back(c.ppi_compiled, c.ppo_compiled);
+  }
+  for (uint32_t held : held_pi_compiled) {
+    loc_coupling.emplace_back(held, held);
+  }
+  return solve_two_frame_transition_x(cg, pis, fault, options, loc_coupling,
+                                      /*launch_only_blocking=*/true,
+                                      /*extra_block_compiled=*/{}, v1_out, v2_out);
+}
+
+SatSolveResult solve_scan_los_transition_fault_x(
+    const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
+    const std::vector<LosCouple>& couples,
+    const std::vector<uint32_t>& head_ppi_compiled,
+    const std::vector<uint32_t>& held_pi_compiled, const CompactFault& fault,
+    const SatSolveOptions& options, std::map<std::string, bool>& v1_out,
+    std::map<std::string, bool>& v2_out) {
+  Coupling los_coupling;
+  los_coupling.reserve(couples.size() + held_pi_compiled.size());
+  for (const LosCouple& c : couples) {
+    los_coupling.emplace_back(c.capture_ppi_compiled, c.pred_ppi_compiled);
+  }
+  for (uint32_t held : held_pi_compiled) {
+    los_coupling.emplace_back(held, held);
+  }
+  return solve_two_frame_transition_x(cg, pis, fault, options, los_coupling,
+                                      /*launch_only_blocking=*/true, head_ppi_compiled,
+                                      v1_out, v2_out);
+}
 
 SatSolveResult solve_transition_fault(const CompiledSimGraph& cg,
                                       const std::vector<AtpgPiInfo>& pis,

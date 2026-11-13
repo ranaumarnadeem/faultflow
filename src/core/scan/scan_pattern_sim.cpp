@@ -631,11 +631,18 @@ std::vector<ScanProtocolFaultOutcome> simulate_scan_protocol_faults_reference(
 
 namespace {
 
-void refuse_launch_x(const ScanPatternRequest& request) {
-  if (request.loc_two_capture || request.los_two_capture) {
-    throw std::runtime_error(
-        "the X engine grades stuck-at scan patterns only: no launch (LOC or LOS)");
-  }
+// A transition pattern (LOC or LOS) samples its launch first: the capture's
+// functional outputs at sample 1, the unload from sample 2.
+int functional_sample(const ScanPatternRequest& request) {
+  return (request.loc_two_capture || request.los_two_capture) ? 1 : 0;
+}
+
+// A transition lane is credited only where the good machine (lane 0) holds the
+// fault net known at its pre-transition value in the launch sample and at the
+// post one in the capture sample (GoldenRefSimX::simulate_transition_fault).
+bool launched_x(Logic launch, Logic capture, uint8_t fault_type) {
+  const FaultType type = fault_type == 0 ? FaultType::SA0 : FaultType::SA1;
+  return launch == transition_pre(type) && capture == transition_post(type);
 }
 
 // Every flop, clock-gate latch and loop net powered up X; `unknown_nets` X in
@@ -662,20 +669,22 @@ Logic lane_logic(Dual d, int lane) {
 ScanPatternResultX extract_scan_lane_observations_x(
     const SampleSlots& slots, const ScanPatternRequest& request,
     const std::vector<std::vector<Dual>>& samples, int lane) {
-  if (static_cast<int>(samples.size()) != request.max_chain_length + 1) {
+  const int functional = functional_sample(request);
+  if (static_cast<int>(samples.size()) != request.max_chain_length + functional + 1) {
     throw std::runtime_error("scan pattern sample count mismatch");
   }
   ScanPatternResultX result;
   for (size_t i = 0; i < request.functional_output_ports.size(); ++i) {
-    result.real_po_values[request.functional_output_ports[i]] =
-        lane_logic(samples[0].at(slots.po_slot[i]), lane);
+    result.real_po_values[request.functional_output_ports[i]] = lane_logic(
+        samples[static_cast<size_t>(functional)].at(slots.po_slot[i]), lane);
   }
   for (size_t chain_id = 0; chain_id < request.scan_output_ports.size(); ++chain_id) {
     const size_t slot = slots.so_slot[chain_id];
     std::vector<Logic> bits;
     bits.reserve(static_cast<size_t>(request.max_chain_length));
     for (int offset = 0; offset < request.max_chain_length; ++offset) {
-      bits.push_back(lane_logic(samples.at(static_cast<size_t>(1 + offset)).at(slot), lane));
+      bits.push_back(lane_logic(
+          samples.at(static_cast<size_t>(functional + 1 + offset)).at(slot), lane));
     }
     result.unload_seqs[static_cast<int>(chain_id)] = std::move(bits);
   }
@@ -685,7 +694,8 @@ ScanPatternResultX extract_scan_lane_observations_x(
 ScanPatternResultX scan_observations_x(const ParsedGraph& parsed,
                                        const ScanPatternRequest& request,
                                        const std::vector<XSnapshot>& samples) {
-  if (static_cast<int>(samples.size()) != request.max_chain_length + 1) {
+  const int functional = functional_sample(request);
+  if (static_cast<int>(samples.size()) != request.max_chain_length + functional + 1) {
     throw std::runtime_error("scan pattern sample count mismatch");
   }
   const auto bit = [&](const XSnapshot& sample, const std::string& port) {
@@ -697,12 +707,12 @@ ScanPatternResultX scan_observations_x(const ParsedGraph& parsed,
   };
   ScanPatternResultX result;
   for (const auto& port : request.functional_output_ports) {
-    result.real_po_values[port] = bit(samples[0], port);
+    result.real_po_values[port] = bit(samples[static_cast<size_t>(functional)], port);
   }
   for (size_t chain_id = 0; chain_id < request.scan_output_ports.size(); ++chain_id) {
     std::vector<Logic> bits;
     for (int offset = 0; offset < request.max_chain_length; ++offset) {
-      bits.push_back(bit(samples[static_cast<size_t>(1 + offset)],
+      bits.push_back(bit(samples[static_cast<size_t>(functional + 1 + offset)],
                          request.scan_output_ports[chain_id]));
     }
     result.unload_seqs[static_cast<int>(chain_id)] = std::move(bits);
@@ -760,7 +770,6 @@ ScanPatternResultX simulate_scan_pattern_x(
     const ScanPatternRequest& request, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
     const std::vector<int>& unknown_nets) {
-  refuse_launch_x(request);
   const CachedGraph& graph = load_cached_graph(json_path, cell_map_path,
                                                unsupported_policy, blackbox_instances);
   const TestVector vec = build_scan_pattern_vector(graph.parsed, request);
@@ -776,13 +785,14 @@ ScanProtocolFaultSimResultX simulate_scan_protocol_faults_x(
     const ScanProtocolFaultRequest& request, const std::string& unsupported_policy,
     int sim_threads, const std::vector<std::string>& blackbox_instances,
     const std::vector<int>& unknown_nets) {
-  refuse_launch_x(request.pattern);
   const CachedGraph& graph = load_cached_graph(json_path, cell_map_path,
                                                unsupported_policy, blackbox_instances);
   const CompiledSimGraph& cg = graph.cg;
   const TestVector vec = build_scan_pattern_vector(graph.parsed, request.pattern);
   const SampleSlots slots = scan_sample_slots(graph.parsed, cg, request.pattern);
   const XRunOptions options = scan_x_options(vec, unknown_nets);
+  const bool transition =
+      request.pattern.loc_two_capture || request.pattern.los_two_capture;
   BitParallelSimX sim;
 
   ScanProtocolFaultSimResultX result;
@@ -812,7 +822,14 @@ ScanProtocolFaultSimResultX simulate_scan_protocol_faults_x(
       batch.faults[i - begin] = fault;
       batch.mask |= fault.sa_mask;
     }
-    const auto samples = sim.simulate_batch_samples(cg, vec, batch, options, slots.nets);
+    // A transition also samples the batch's fault nets, after the ports.
+    std::vector<uint32_t> nets = slots.nets;
+    if (transition) {
+      for (size_t i = begin; i < end; ++i) {
+        nets.push_back(request.faults[i].compiled_net_index);
+      }
+    }
+    const auto samples = sim.simulate_batch_samples(cg, vec, batch, options, nets);
     const ScanPatternResultX good =
         extract_scan_lane_observations_x(slots, request.pattern, samples, 0);
     if (good.real_po_values != result.golden.real_po_values ||
@@ -826,6 +843,14 @@ ScanProtocolFaultSimResultX simulate_scan_protocol_faults_x(
           slots, request.pattern, samples, static_cast<int>(i - begin) + 1);
       classify_lane_x(result.golden, faulty, request.unload_mask, request.capture_diffs,
                       lane);
+      if (transition) {
+        const size_t slot = slots.nets.size() + (i - begin);
+        if (!launched_x(lane_logic(samples[0].at(slot), 0),
+                        lane_logic(samples[1].at(slot), 0), request.faults[i].fault_type)) {
+          lane.outcome = XDetection::NONE;
+          lane.po_outcome = XDetection::NONE;
+        }
+      }
     }
   };
   parallel_ranges(batch_count, effective_sim_threads(sim_threads), process_batch);
@@ -837,16 +862,21 @@ std::vector<XDetection> simulate_scan_protocol_faults_x_reference(
     const ScanProtocolFaultRequest& request, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances,
     const std::vector<int>& unknown_nets) {
-  refuse_launch_x(request.pattern);
   const CachedGraph& graph = load_cached_graph(json_path, cell_map_path,
                                                unsupported_policy, blackbox_instances);
   const CompiledSimGraph& cg = graph.cg;
   const TestVector vec = build_scan_pattern_vector(graph.parsed, request.pattern);
   const std::vector<int> yids = scan_sample_yids(graph.parsed, request.pattern);
   const XRunOptions options = scan_x_options(vec, unknown_nets);
+  const bool transition =
+      request.pattern.loc_two_capture || request.pattern.los_two_capture;
   GoldenRefSimX sim;
-  const ScanPatternResultX golden = scan_observations_x(
-      graph.parsed, request.pattern, sim.simulate_sequence(cg, vec, nullptr, options, &yids));
+  // Every net for a transition's launch check (a fanout branch carries its
+  // stem's Yosys id; in the good machine a branch equals its stem).
+  const std::vector<XSnapshot> fault_free =
+      sim.simulate_sequence(cg, vec, nullptr, options, transition ? nullptr : &yids);
+  const ScanPatternResultX golden =
+      scan_observations_x(graph.parsed, request.pattern, fault_free);
   std::vector<XDetection> outcomes;
   outcomes.reserve(request.faults.size());
   for (const ScanProtocolFaultSpec& spec : request.faults) {
@@ -859,6 +889,13 @@ std::vector<XDetection> simulate_scan_protocol_faults_x_reference(
         sim.simulate_sequence(cg, vec, &fault, options, &yids));
     ScanProtocolFaultLaneResultX lane;
     classify_lane_x(golden, faulty, request.unload_mask, false, lane);
+    if (transition) {
+      const int yid = cg.compiled_to_yosys.at(spec.compiled_net_index);
+      if (!launched_x(fault_free.at(0).at(yid), fault_free.at(1).at(yid),
+                      spec.fault_type)) {
+        lane.outcome = XDetection::NONE;
+      }
+    }
     outcomes.push_back(lane.outcome);
   }
   return outcomes;

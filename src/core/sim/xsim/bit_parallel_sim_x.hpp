@@ -42,6 +42,14 @@ class BitParallelSimX {
                                const FaultBatch& batch,
                                const XRunOptions& options) const;
 
+  // Two-frame transition detection, GoldenRefSimX::simulate_transition_fault's
+  // per lane: the launch `v1` fault-free, the capture `v2` with each lane's fault
+  // a stuck-at; a lane credited only where the good machine at its fault net is
+  // known pre in the launch frame and known post in the capture frame.
+  XBatchDetection detect_transition_batch(const CompiledSimGraph& cg, const TestVector& v1,
+                                          const TestVector& v2, const FaultBatch& batch,
+                                          const XRunOptions& options) const;
+
   // detect_batch on `observe` (compiled net indices) only, per lane the first
   // sampled cycle of each kind (-1: none), and lane 0's observed values per
   // sampled cycle.

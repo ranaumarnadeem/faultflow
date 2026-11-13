@@ -376,4 +376,39 @@ XDetection classify_detection(const CompiledSimGraph& cg,
   return possible ? XDetection::POSSIBLE : XDetection::NONE;
 }
 
+TestVector transition_pair(const TestVector& v1, const TestVector& v2) {
+  TestCycle launch;
+  launch.inputs = v1.inputs;
+  launch.sample_outputs = true;
+  launch.fault_active = false;
+  TestCycle capture;
+  capture.inputs = v2.inputs;
+  capture.sample_outputs = true;
+  capture.fault_active = true;
+  TestVector pair;
+  pair.cycles = {launch, capture};
+  return pair;
+}
+
+XDetection GoldenRefSimX::simulate_transition_fault(const CompiledSimGraph& cg,
+                                                    const TestVector& v1,
+                                                    const TestVector& v2,
+                                                    const CompactFault& fault,
+                                                    const XRunOptions& options) const {
+  if (fault.exclusion != FaultExclusion::NONE) {
+    return XDetection::NONE;
+  }
+  const TestVector pair = transition_pair(v1, v2);
+  const std::vector<XSnapshot> good = simulate_sequence(cg, pair, nullptr, options);
+  if (good.size() < 2) {
+    return XDetection::NONE;
+  }
+  const int site = cg.compiled_to_yosys[fault.net_index];
+  if (good[0].at(site) != transition_pre(fault.type) ||
+      good[1].at(site) != transition_post(fault.type)) {
+    return XDetection::NONE;
+  }
+  return classify_detection(cg, good, simulate_sequence(cg, pair, &fault, options));
+}
+
 }  // namespace faultflow

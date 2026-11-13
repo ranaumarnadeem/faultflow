@@ -93,13 +93,15 @@ def _workspace(
     with_memory: bool,
     capture_memory: bool = False,
     random_vectors: int = 0,
+    model: str = "stuck_at",
+    launch: str = "loc",
 ) -> tuple[Any, Path, Any, dict[str, object]]:
     from faultflow.config import load_config
     from faultflow.runner import Runner
     from faultflow.runner.runner import _load_core, _port_names
     from faultflow.scan import stitch_scan_json
     from faultflow.scan.reports import hash_file, manifest_from_result, utc_timestamp
-    from faultflow.scan.x_mask import mask_scan_view
+    from faultflow.scan.x_mask import launch_mode_key, mask_scan_view
 
     source = tmp_path / "xs.json"
     source.write_text(
@@ -113,6 +115,8 @@ netlist = {source}
 cell_lib = {CELL_MAP}
 [fault_model]
 collapsing = false
+model = {model}
+launch = {launch}
 [simulation]
 unsupported_cells = fail
 engine = {engine}
@@ -167,7 +171,7 @@ hold = TRST_N:0
         manifest,
         generic,
         functional_outputs,
-        launch_mode=None,
+        launch_mode=launch_mode_key(model == "transition", launch),
         nonscan_q_nets=[flop.q for flop in nonscan.flops],
     )
     scan_ctx = build_scan_pipeline_context(
@@ -183,7 +187,7 @@ hold = TRST_N:0
         "top": cfg.top,
         "netlist_hash": "scan-test",
         "cell_lib_hash": "cell-test",
-        "config_hash": f"cfg-{engine}",
+        "config_hash": f"cfg-{engine}-{model}-{launch}",
         "template_hash": "tmpl-test",
         "yosys_version": "yosys",
         "faultflow_version": "test",
@@ -206,10 +210,12 @@ def _run(
     with_memory: bool,
     capture_memory: bool = False,
     random_vectors: int = 0,
+    model: str = "stuck_at",
+    launch: str = "loc",
 ) -> tuple[dict[tuple[str, str], str], dict[str, Any], list[dict[str, Any]]]:
     """Each fault's class after the campaign, the summary, and the exported
     patterns."""
-    work = tmp_path / engine
+    work = tmp_path / f"{engine}-{model}-{launch}"
     work.mkdir()
     cwd = os.getcwd()
     os.chdir(work)  # the campaign's output directory is relative
@@ -220,6 +226,8 @@ def _run(
             with_memory=with_memory,
             capture_memory=capture_memory,
             random_vectors=random_vectors,
+            model=model,
+            launch=launch,
         )
         with connect(cfg.db_path) as conn:
             init_schema(conn)
@@ -234,6 +242,8 @@ def _run(
             max_rounds=4,
             target_coverage=100.0,
             scan_pattern_out=patterns,
+            transition=model == "transition",
+            launch_mode=launch,
         )
         with connect(cfg.db_path) as conn:
             init_schema(conn)
@@ -331,6 +341,7 @@ def test_the_x_engine_view_marks_its_unknown_ties_and_masks_nothing(
     assert scan_ctx.x_mask.x_engine and not scan_ctx.x_mask.nets
     # A two-valued load of the view refuses its unknown ties.
     core = _load_core()
+    assert core is not None
     with pytest.raises(Exception, match="faultflow_unknown"):
         core.list_site_keys(str(atpg_view), str(CELL_MAP), "fail")
     assert core.list_site_keys(str(atpg_view), str(CELL_MAP), "fail+x")
@@ -427,6 +438,7 @@ def test_an_x_campaigns_fault_indices_are_its_x_mode_graphs(
             )
         }
     core = _load_core()
+    assert core is not None
 
     def indices(policy: str) -> dict[str, int]:
         return {
@@ -441,3 +453,89 @@ def test_an_x_campaigns_fault_indices_are_its_x_mode_graphs(
     assert all(x_mode[key] == index for key, index in stored.items())
     two = indices("fail")
     assert any(two.get(key) != index for key, index in stored.items())
+
+
+# --- stage 7: transition faults on the X engine -------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("launch", ["loc", "los"])
+def test_with_nothing_unknown_x_transitions_grade_as_the_two_valued(
+    tmp_path: Path, launch: str
+) -> None:
+    runs = {
+        engine: _run(
+            tmp_path,
+            engine=engine,
+            with_memory=False,
+            random_vectors=16,
+            model="transition",
+            launch=launch,
+        )
+        for engine in ("two_valued", "x")
+    }
+    assert runs["x"][0] == runs["two_valued"][0]
+    assert runs["x"][1]["possible"] == 0
+    assert runs["x"][1]["coverage_percent"] == runs["two_valued"][1]["coverage_percent"]
+
+
+@pytest.mark.unit
+def test_x_launch_on_capture_credits_a_launch_the_cone_mask_cannot_tell(
+    tmp_path: Path,
+) -> None:
+    """u1 captures dout & A at the launch edge: unknown with A = 1, a known 0 with
+    A = 0. The cone mask cannot tell the patterns apart, so the two-valued flow
+    credits no transition on u1's Q (net 19). The X engine credits its fall
+    from a loaded 1 where A = 0, definitely; its rise needs dout = 1, which no
+    pattern makes known -- an unknown blocks it (blackbox_unresolved)."""
+    two, _, _ = _run(
+        tmp_path,
+        engine="two_valued",
+        with_memory=True,
+        capture_memory=True,
+        random_vectors=16,
+        model="transition",
+    )
+    x, x_data, exported = _run(
+        tmp_path,
+        engine="x",
+        with_memory=True,
+        capture_memory=True,
+        random_vectors=16,
+        model="transition",
+    )
+    differs = {site: (two[site], x[site]) for site in two if two[site] != x[site]}
+    assert differs == {
+        ("net:19:stem", "sa1"): ("undetected", "detected"),
+        ("net:19:stem", "sa0"): ("undetected", "blackbox_unresolved"),
+    }
+    assert x_data["possible"] == 0
+    # Per pattern: u1's capture-frame bit is don't-care exactly where it
+    # captured dout (A = 1, held from the launch).
+    masked = [p for p in exported if p.get("unload_mask")]
+    assert masked and all(p["capture_pi_values"]["A"] for p in masked)
+    assert all(p["launch"] == "loc" for p in exported)
+
+
+@pytest.mark.unit
+def test_x_launch_on_shift_detects_what_the_two_valued_does(tmp_path: Path) -> None:
+    """Launch on shift: the capture state is the shifted load, always known, so
+    every launch is known; the cone mask and the X engine agree here."""
+    runs = {
+        engine: _run(
+            tmp_path,
+            engine=engine,
+            with_memory=True,
+            capture_memory=True,
+            random_vectors=16,
+            model="transition",
+            launch="los",
+        )
+        for engine in ("two_valued", "x")
+    }
+    detected = {
+        engine: {site for site, tag in run[0].items() if tag == "detected"}
+        for engine, run in runs.items()
+    }
+    assert detected["two_valued"] <= detected["x"]
+    assert runs["x"][1]["detected"] == runs["two_valued"][1]["detected"]

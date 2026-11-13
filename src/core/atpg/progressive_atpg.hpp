@@ -193,7 +193,36 @@ bool verify_transition_fault_vector(
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {});
 
+// verify_transition_fault_vector on the X engine (an X-mode graph, flops and
+// latches powered up unknown): 2 when the pair detects the transition
+// definitely, 1 when only possibly, 0 when not (an unknown launch: 0).
+// `capture_unknown`: inputs unknown in the capture frame (a scan LOC view's
+// pseudo-inputs whose launch-frame next state is X), their `capture` value
+// ignored.
+int verify_transition_fault_vector_x(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::map<std::string, bool>& launch,
+    const std::map<std::string, bool>& capture,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {},
+    const std::vector<std::string>& capture_unknown = {});
+
 std::vector<ProgressiveDetection> simulate_transition_incremental(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t campaign_id, int64_t run_id,
+    const std::vector<VectorPair>& new_pairs,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {},
+    int sim_threads = 1);
+
+// simulate_transition_incremental on the X engine, as simulate_incremental_x
+// is simulate_incremental's: a definite detection marks a fault detected and
+// drops it, a possible one marks a still-undetected fault 'possible' and keeps
+// it a target.
+std::vector<XProgressiveDetection> simulate_transition_incremental_x(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, int64_t campaign_id, int64_t run_id,
     const std::vector<VectorPair>& new_pairs,

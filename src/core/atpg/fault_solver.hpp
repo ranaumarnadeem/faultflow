@@ -74,6 +74,21 @@ SatSolveResult solve_transition_fault(const CompiledSimGraph& cg,
                                       std::map<std::string, bool>& v1_out,
                                       std::map<std::string, bool>& v2_out);
 
+// solve_transition_fault on an X-mode graph, as solve_stuck_at_fault_x is
+// solve_stuck_at_fault's: with no unknown, loop or bus in the fault's cones the
+// two-valued solver; otherwise a dual-rail two-frame CNF finds a pair that
+// detects the transition definitely (SAT) -- the edge known at the fault net in
+// both frames, a latch holding its launch-frame value in the capture frame. With
+// none, the two-valued two-frame CNF (every unknown free) decides: SAT gives a
+// pair that shows it for some value of the unknowns (POSSIBLE), UNSAT proves it
+// redundant (UNKNOWN through a loop or a bus). The X engine grades every pair.
+SatSolveResult solve_transition_fault_x(const CompiledSimGraph& cg,
+                                        const std::vector<AtpgPiInfo>& pis,
+                                        const CompactFault& fault,
+                                        const SatSolveOptions& options,
+                                        std::map<std::string, bool>& v1_out,
+                                        std::map<std::string, bool>& v2_out);
+
 // Couples one scan FF's capture-frame current state (PPI) to its launch-frame
 // next-state (PPO) in the LOC two-frame CNF. Both are CompiledNetIndex values:
 // `ppi_compiled` is a member of `pis` (a pseudo-PI input) and `ppo_compiled` is
@@ -115,6 +130,25 @@ struct LosCouple {
 // blocked-pattern key is launch ‖ head-bits (length pis.size() + head count),
 // not launch-only.
 SatSolveResult solve_scan_los_transition_fault(
+    const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
+    const std::vector<LosCouple>& couples,
+    const std::vector<uint32_t>& head_ppi_compiled,
+    const std::vector<uint32_t>& held_pi_compiled, const CompactFault& fault,
+    const SatSolveOptions& options, std::map<std::string, bool>& v1_out,
+    std::map<std::string, bool>& v2_out);
+
+// The scan LOC and LOS solvers on an X-mode reduced view, as
+// solve_transition_fault_x is solve_transition_fault's: a coupled capture net
+// reads its launch net's rails (an unknown next state stays unknown). v2_out is
+// meaningful for the uncoupled capture inputs (LOS head bits); the scan flows
+// derive the rest of the capture from the launch.
+SatSolveResult solve_scan_transition_fault_x(
+    const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
+    const std::vector<LocCouple>& couples,
+    const std::vector<uint32_t>& held_pi_compiled, const CompactFault& fault,
+    const SatSolveOptions& options, std::map<std::string, bool>& v1_out,
+    std::map<std::string, bool>& v2_out);
+SatSolveResult solve_scan_los_transition_fault_x(
     const CompiledSimGraph& cg, const std::vector<AtpgPiInfo>& pis,
     const std::vector<LosCouple>& couples,
     const std::vector<uint32_t>& head_ppi_compiled,

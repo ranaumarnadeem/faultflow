@@ -65,6 +65,21 @@ std::vector<int64_t> detect_with_pair(
     const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {});
 
+// detect_with_pair on the X engine (an X-mode graph): the targets the pair
+// detects definitely and those it only possibly detects
+// (BitParallelSimX::detect_transition_batch), flops and latches powered up
+// unknown, `capture_unknown` inputs unknown in the capture frame (a scan LOC
+// view's pseudo-inputs whose launch-frame next state is X).
+XDetections detect_with_pair_x(const std::string& json_path,
+                               const std::string& cell_map_path,
+                               const std::map<std::string, bool>& launch,
+                               const std::map<std::string, bool>& capture,
+                               const std::vector<std::string>& input_order,
+                               const std::vector<FaultTarget>& targets,
+                               const std::string& unsupported_policy,
+                               const std::vector<std::string>& blackbox_instances = {},
+                               const std::vector<std::string>& capture_unknown = {});
+
 // Simulate one fully-specified test vector against the given fault ids and
 // return the subset it detects. Unlike simulate_tentative_detections (which
 // loads faults with skip_protocol_unresolved=true and therefore skips any fault

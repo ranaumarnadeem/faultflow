@@ -222,6 +222,54 @@ std::vector<int64_t> detect_with_pair(
   return detected;
 }
 
+XDetections detect_with_pair_x(const std::string& json_path,
+                               const std::string& cell_map_path,
+                               const std::map<std::string, bool>& launch,
+                               const std::map<std::string, bool>& capture,
+                               const std::vector<std::string>& input_order,
+                               const std::vector<FaultTarget>& targets,
+                               const std::string& unsupported_policy,
+                               const std::vector<std::string>& blackbox_instances,
+                               const std::vector<std::string>& capture_unknown) {
+  XDetections out;
+  if (targets.empty()) {
+    return out;
+  }
+  const CachedGraph& ctx =
+      load_cached_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  const TestVector v1 = build_vector(ctx.parsed, launch, input_order);
+  const TestVector v2 = build_vector(ctx.parsed, capture, input_order);
+  std::vector<Target> resolved = targets_from_preloaded(targets);
+  for (auto& t : resolved) {
+    t.fault.model = FaultModel::TRANSITION;
+  }
+  const BitParallelSimX sim;
+  XRunOptions options;
+  options.initial_state = Logic::X;
+  if (!capture_unknown.empty()) {
+    std::set<int> unknown;
+    for (const std::string& name : capture_unknown) {
+      unknown.insert(ctx.parsed.net_id_by_name(name));
+    }
+    options.unknown_inputs = {{}, std::move(unknown)};
+  }
+  const size_t lanes = static_cast<size_t>(kBatchSize);
+  for (size_t begin = 0; begin < resolved.size(); begin += lanes) {
+    const size_t end = std::min(begin + lanes, resolved.size());
+    const FaultBatch batch = make_batch(resolved, begin, end);
+    const XBatchDetection d = sim.detect_transition_batch(ctx.cg, v1, v2, batch, options);
+    for (size_t i = begin; i < end; ++i) {
+      const uint64_t lane = batch.faults[i - begin].sa_mask;
+      if ((d.definite & lane) != 0) {
+        out.definite.push_back(resolved[i].fault_id);
+      } else if ((d.possible & lane) != 0) {
+        out.possible.push_back(resolved[i].fault_id);
+      }
+    }
+  }
+  return out;
+}
+
 std::vector<int64_t> detect_with_vector_unfiltered(
     const std::string& json_path, const std::string& cell_map_path,
     const std::string& db_path, const std::map<std::string, bool>& vector,

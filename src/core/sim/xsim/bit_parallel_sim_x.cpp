@@ -417,6 +417,53 @@ XBatchDetection BitParallelSimX::detect_batch(const CompiledSimGraph& cg,
   return out;
 }
 
+XBatchDetection BitParallelSimX::detect_transition_batch(const CompiledSimGraph& cg,
+                                                         const TestVector& v1,
+                                                         const TestVector& v2,
+                                                         const FaultBatch& batch,
+                                                         const XRunOptions& options) const {
+  // The lanes whose good machine (lane 0) holds the pre (or post) value known at
+  // the fault net: (h, l) = (1, 0) for 1, (0, 1) for 0 -- not X, not Z.
+  const auto holding = [&](const std::vector<Dual>& nv, bool pre) {
+    uint64_t lanes = 0ULL;
+    for (int i = 0; i < batch.size; ++i) {
+      const CompactFault& f = batch.faults[i];
+      const Logic want = pre ? transition_pre(f.type) : transition_post(f.type);
+      const Dual d = nv[f.net_index];
+      const bool h = (d.h & 1ULL) != 0;
+      const bool l = (d.l & 1ULL) != 0;
+      if (h != l && h == (want == Logic::ONE)) {
+        lanes |= f.sa_mask;
+      }
+    }
+    return lanes;
+  };
+  uint64_t launched = 0ULL;
+  XBatchDetection out;
+  size_t index = 0;
+  for_each_sample(cg, transition_pair(v1, v2), batch, options,
+                  [&](const std::vector<Dual>& nv) {
+                    if (index == 0) {
+                      // The launch frame is fault-free: every lane is the good one.
+                      launched = holding(nv, true);
+                    } else {
+                      launched &= holding(nv, false);
+                      for (int obs : cg.observable) {
+                        const XBatchDetection d = detections_at(nv[static_cast<size_t>(obs)]);
+                        out.definite |= d.definite;
+                        out.possible |= d.possible;
+                      }
+                    }
+                    ++index;
+                  });
+  if (index < 2) {
+    return {};
+  }
+  out.definite &= batch.mask & launched;
+  out.possible &= batch.mask & launched & ~out.definite;
+  return out;
+}
+
 BitParallelSimX::Observed BitParallelSimX::detect_batch_observed(
     const CompiledSimGraph& cg, const TestVector& vec, const FaultBatch& batch,
     const std::vector<uint32_t>& observe, const XRunOptions& options) const {

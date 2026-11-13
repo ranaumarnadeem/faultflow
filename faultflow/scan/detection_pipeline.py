@@ -474,18 +474,20 @@ def _cone_size_map(
     return {int(fault_id): int(size) for fault_id, size in sizes.items()}
 
 
-def _detected_fault_rows(conn: sqlite3.Connection, campaign_id: int) -> list[_FaultRow]:
+def _detected_fault_rows(
+    conn: sqlite3.Connection, campaign_id: int, status: str = "detected"
+) -> list[_FaultRow]:
     rows = conn.execute(
         """
         SELECT id, fault_site_key, fault_type
         FROM faults
         WHERE campaign_id = ?
-          AND status = 'detected'
+          AND status = ?
           AND exclusion = 'none'
           AND collapsed_into IS NULL
         ORDER BY id
         """,
-        (campaign_id,),
+        (campaign_id, status),
     ).fetchall()
     return [
         _FaultRow(
@@ -1273,10 +1275,13 @@ def _materialize_reduced_outputs_x(
     functional_output_order: list[str],
     pseudo_port_map: dict[str, dict[str, Any]],
     unsupported: str,
+    unknown_inputs: Collection[str] = (),
 ) -> tuple[dict[str, bool], frozenset[str]]:
     """_materialize_reduced_outputs on the X engine: also the outputs (functional
     and PPO ports) the view's unknown values make X for this vector, False in the
-    returned values. Those are don't-care in the pattern, no observation."""
+    returned values. Those are don't-care in the pattern, no observation.
+    `unknown_inputs`: inputs unknown whatever their value in `vector` (a LOC
+    capture's pseudo-inputs whose launch-frame next state is X)."""
     ppo_order = [
         str(entry["ppo_port"])
         for _, entry in sorted(pseudo_port_map.items())
@@ -1294,6 +1299,7 @@ def _materialize_reduced_outputs_x(
             input_order,
             output_order,
             unsupported,
+            unknown_inputs=sorted(unknown_inputs),
         )
     )
     if len(samples) != 1:
@@ -1320,16 +1326,19 @@ def _protocol_faults_x(
     unknown_outputs: Collection[str],
     *,
     capture_diffs: bool = False,
+    launch: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """The X engine's scan protocol grade of `specs` ((generic compiled index,
-    0/1) stuck-ats) under `scan_pattern`, one lane dict per spec in order:
-    "outcome" definite / possible / none, and with `capture_diffs` the per-lane
-    "po_outcome", "diff_unload_seqs" and "faulty_unknown_seqs". Every flop
-    powers up unknown, the unknown blackboxes' outputs stay unknown, and what the
-    pattern leaves don't-care (the view's X outputs, its unload_mask) is not
-    compared."""
+    0/1) stuck-ats, or transitions under a `launch`) under `scan_pattern`, one
+    lane dict per spec in order: "outcome" definite / possible / none, and with
+    `capture_diffs` the per-lane "po_outcome", "diff_unload_seqs" and
+    "faulty_unknown_seqs". Every flop powers up unknown, the unknown blackboxes'
+    outputs stay unknown, and what the pattern leaves don't-care (the view's X
+    outputs, its unload_mask) is not compared. `launch`: _launch_kwargs, for a
+    transition pattern (a lane credited only with its launch known)."""
     kwargs = _protocol_fault_sim_kwargs(scan_ctx, scan_pattern)
     kwargs["functional_output_ports"] = _observed_outputs(scan_ctx, unknown_outputs)
+    kwargs.update(launch or {})
     result = dict(
         core.simulate_scan_protocol_faults_x(
             str(scan_ctx.generic_json),
@@ -1402,11 +1411,13 @@ def _check_compaction_distinguishable_x(
     generic_site_index: dict[str, int],
     fault_ids: list[int],
     unknown_outputs: Collection[str],
+    launch: dict[str, Any] | None = None,
 ) -> dict[int, str]:
     """_check_compaction_distinguishable on the X engine: per fault of
     `fault_ids`, what a tester sees through the compactor -- "definite",
     "possible" or "none" (_compaction_fold_x). A fault with no generic site
-    index passes as "definite" (under-flag, as the two-valued check does)."""
+    index passes as "definite" (under-flag, as the two-valued check does).
+    `launch`: _launch_kwargs, for a transition pattern."""
     assert scan_ctx.compaction_map is not None
     row_by_id = {row.fault_id: row for row in active_rows}
     ids: list[int] = []
@@ -1423,6 +1434,7 @@ def _check_compaction_distinguishable_x(
         return verdict
     kwargs = _protocol_fault_sim_kwargs(scan_ctx, scan_pattern)
     kwargs["functional_output_ports"] = _observed_outputs(scan_ctx, unknown_outputs)
+    kwargs.update(launch or {})
     result = dict(
         core.simulate_scan_protocol_faults_x(
             str(scan_ctx.generic_json),
@@ -1479,6 +1491,31 @@ def _derive_loc_capture(
                 launch_vector.get(str(entry["ppi_port"]), False)
             )
     return capture
+
+
+def _loc_capture_unknown(
+    launch_unknown: Collection[str], pseudo_port_map: dict[str, dict[str, Any]]
+) -> frozenset[str]:
+    """The X engine's LOC capture: the pseudo-inputs whose launch-frame next
+    state (their PPO) the launch leaves unknown -- unknown in the capture frame
+    (_derive_loc_capture gives them a placeholder False)."""
+    return frozenset(
+        str(entry["ppi_port"])
+        for entry in pseudo_port_map.values()
+        if entry.get("ppo_port") is not None
+        and str(entry["ppo_port"]) in launch_unknown
+    )
+
+
+def _launch_kwargs(
+    is_loc: bool, is_los: bool, head_bits: dict[int, bool]
+) -> dict[str, Any]:
+    """A transition pattern's launch, as the scan protocol bindings take it."""
+    return {
+        "loc_two_capture": is_loc,
+        "los_two_capture": is_los,
+        "los_launch_scan_in": dict(head_bits),
+    }
 
 
 def build_los_couples(
@@ -1620,10 +1657,11 @@ def _process_scan_candidate(
     # launch_pattern, which is always the length-N V1 launch frame.
     track_key = candidate_key if candidate_key is not None else pattern_key_str
     x_engine = _x_engine(scan_ctx)
-    if x_engine and transition:
-        raise RunnerError("the X engine grades stuck-at scan patterns only")
-    # The X engine: the view's outputs this vector leaves unknown (don't-care).
+    # The X engine: the view's outputs this vector leaves unknown (don't-care) --
+    # for a transition, those of the capture frame, which the pattern observes.
     unknown_outputs: frozenset[str] = frozenset()
+    # The X engine's LOC capture: pseudo-inputs the launch leaves unknown.
+    capture_unknown: frozenset[str] = frozenset()
     if x_engine:
         materialized_launch, unknown_outputs = _materialize_reduced_outputs_x(
             core,
@@ -1655,17 +1693,34 @@ def _process_scan_candidate(
             capture_vector = _derive_loc_capture(
                 materialized_launch, vector, scan_ctx.pseudo_port_map
             )
+            if x_engine:
+                capture_unknown = _loc_capture_unknown(
+                    unknown_outputs, scan_ctx.pseudo_port_map
+                )
         # Frame-1 outputs: PPO unload + functional PO response after the launch.
-        reduced_expectation = _materialize_reduced_outputs(
-            core,
-            reduced_json_path,
-            reduced_cell_map,
-            capture_vector,
-            input_order,
-            scan_ctx.functional_output_order,
-            scan_ctx.pseudo_port_map,
-            unsupported,
-        )
+        if x_engine:
+            reduced_expectation, unknown_outputs = _materialize_reduced_outputs_x(
+                core,
+                reduced_json_path,
+                reduced_cell_map,
+                capture_vector,
+                input_order,
+                scan_ctx.functional_output_order,
+                scan_ctx.pseudo_port_map,
+                unsupported,
+                capture_unknown,
+            )
+        else:
+            reduced_expectation = _materialize_reduced_outputs(
+                core,
+                reduced_json_path,
+                reduced_cell_map,
+                capture_vector,
+                input_order,
+                scan_ctx.functional_output_order,
+                scan_ctx.pseudo_port_map,
+                unsupported,
+            )
         # serialize: load from V1's PPIs, unload-expectation from active PPOs.
         serialize_input = dict(vector)
         for entry in scan_ctx.pseudo_port_map.values():
@@ -1753,7 +1808,21 @@ def _process_scan_candidate(
     reduced_view_rejections: list[CandidateRejection] = []
 
     if source == "sat" and sat_target_fault_id is not None:
-        if transition:
+        if transition and x_engine:
+            # 2 definite, 1 possible: a POSSIBLE solve's candidate needs 1.
+            reduced_detected = int(
+                core.verify_transition_candidate_x(
+                    reduced_json_path,
+                    reduced_cell_map,
+                    db_path,
+                    sat_target_fault_id,
+                    vector,
+                    capture_vector,
+                    unsupported,
+                    capture_unknown=sorted(capture_unknown),
+                )
+            ) >= (1 if sat_possible else 2)
+        elif transition:
             reduced_detected = core.verify_transition_candidate(
                 reduced_json_path,
                 reduced_cell_map,
@@ -1813,7 +1882,22 @@ def _process_scan_candidate(
     sim_threads = resolve_sim_threads(scan_ctx.cfg.simulation.sim_threads)
     # The X engine's possible detections (good value known, faulty X).
     possible: set[int] = set()
-    if transition:
+    if transition and x_engine:
+        found = dict(
+            core.compaction_pair_detections_preloaded_x(
+                reduced_json_path,
+                reduced_cell_map,
+                vector,
+                capture_vector,
+                input_order,
+                _preloaded,
+                unsupported,
+                capture_unknown=sorted(capture_unknown),
+            )
+        )
+        tentative = [int(fault_id) for fault_id in found["definite"]]
+        possible = {int(fault_id) for fault_id in found["possible"]}
+    elif transition:
         tentative = list(
             core.simulate_transition_tentative_preloaded(
                 reduced_json_path,
@@ -1868,6 +1952,7 @@ def _process_scan_candidate(
     if transition:
         reduced_trusted = sorted(set(tentative) - qstem_active)
         protocol_sim_fault_ids = sorted(qstem_active)
+        possible -= qstem_active  # the protocol grade decides those too
     else:
         reduced_trusted = sorted(set(tentative))
         # Residual = Q-stem faults the reduced sim did not functionally observe;
@@ -2022,32 +2107,51 @@ def _process_scan_candidate(
                     (generic_cidx, fault_type_to_sa_code(row.fault_type))
                 )
 
-            protocol_fault_sim_kwargs = _protocol_fault_sim_kwargs(
-                scan_ctx, scan_pattern
-            )
-            protocol_fault_sim_result = dict(
-                core.simulate_scan_protocol_faults(
-                    str(scan_ctx.generic_json),
-                    generic_cell_map,
-                    faults=protocol_fault_specs,
-                    unsupported_policy=unsupported,
-                    loc_two_capture=is_loc,
-                    los_two_capture=is_los,
-                    los_launch_scan_in=head_bits,
-                    active_clock_ports=active_clock_ports or [],
-                    sim_threads=resolve_sim_threads(
-                        scan_ctx.cfg.simulation.sim_threads
-                    ),
-                    **protocol_fault_sim_kwargs,
-                )
-            )
             all_lanes: list[dict[str, object]] = []
-            for batch in protocol_fault_sim_result.get("batches", []):
-                for lane in batch.get("lanes", []):
-                    all_lanes.append(dict(lane))
+            if x_engine:
+                # The X protocol: a lane credited only with its launch known.
+                for lane in _protocol_faults_x(
+                    core,
+                    scan_ctx,
+                    scan_pattern,
+                    generic_cell_map,
+                    unsupported,
+                    protocol_fault_specs,
+                    unknown_outputs,
+                    launch=_launch_kwargs(is_loc, is_los, head_bits),
+                ):
+                    outcome = str(lane["outcome"])
+                    all_lanes.append(
+                        {"outcome": {"definite": "pass"}.get(outcome, outcome)}
+                    )
+            else:
+                protocol_fault_sim_kwargs = _protocol_fault_sim_kwargs(
+                    scan_ctx, scan_pattern
+                )
+                protocol_fault_sim_result = dict(
+                    core.simulate_scan_protocol_faults(
+                        str(scan_ctx.generic_json),
+                        generic_cell_map,
+                        faults=protocol_fault_specs,
+                        unsupported_policy=unsupported,
+                        loc_two_capture=is_loc,
+                        los_two_capture=is_los,
+                        los_launch_scan_in=head_bits,
+                        active_clock_ports=active_clock_ports or [],
+                        sim_threads=resolve_sim_threads(
+                            scan_ctx.cfg.simulation.sim_threads
+                        ),
+                        **protocol_fault_sim_kwargs,
+                    )
+                )
+                for batch in protocol_fault_sim_result.get("batches", []):
+                    for lane in batch.get("lanes", []):
+                        all_lanes.append(dict(lane))
             for fault_id, lane in zip(simulated_fault_ids, all_lanes):
                 if str(lane.get("outcome")) == "pass":
                     passed_fault_ids.append(fault_id)
+                elif str(lane.get("outcome")) == "possible":
+                    possible.add(fault_id)
                 else:
                     protocol_sim_rejections.append(
                         CandidateRejection(fault_id, "no_capture_or_unload_effect")
@@ -2073,6 +2177,7 @@ def _process_scan_candidate(
             generic_site_index,
             [*passed_fault_ids, *sorted(possible)],
             unknown_outputs,
+            _launch_kwargs(is_loc, is_los, head_bits) if transition else None,
         )
         indistinguishable = [
             fid for fid in passed_fault_ids if seen.get(fid, "definite") == "none"
@@ -2232,8 +2337,6 @@ def run_progressive_scan_atpg(
     unsupported = cfg.simulation.graph_policy
     x_engine = cfg.simulation.engine == "x"
     possible_credit = cfg.fault_model.possible_credit
-    if x_engine and transition:
-        raise RunnerError("simulation.engine = x grades stuck-at scan faults only")
     # Every GENERIC-netlist load needs the blackbox list: a blackbox instance's
     # cell type is usually absent from the cell map, so a load without it fails
     # outright under unsupported_cells = fail. Reduced-view loads need none --
@@ -3284,14 +3387,35 @@ def _grade_launch_candidate(
     unsupported: str,
     launch_mode: str,
     los_head_scan_in: dict[int, bool] | None,
+    possible_out: set[int] | None = None,
 ) -> set[int]:
     """Re-grade one launch candidate (V1) against  via the two-capture
     scan-protocol sim on the generic netlist. Returns the detected subset. This is
     the same authoritative engine the forward pipeline grades with, so it is safe
-    for coverage-preserving compaction (unlike a single-frame regrade)."""
+    for coverage-preserving compaction (unlike a single-frame regrade). On the X
+    engine the subset detected definitely; those only possibly detected go to
+    `possible_out`."""
     is_los = launch_mode == "los"
     is_loc = launch_mode == "loc"
     head_bits = los_head_scan_in or {}
+    if _x_engine(scan_ctx):
+        return _grade_launch_candidate_x(
+            core,
+            scan_ctx=scan_ctx,
+            reduced_json_path=reduced_json_path,
+            reduced_cell_map=reduced_cell_map,
+            generic_cell_map=generic_cell_map,
+            vector=vector,
+            input_order=input_order,
+            fault_ids=fault_ids,
+            row_by_id=row_by_id,
+            generic_site_index=generic_site_index,
+            unsupported=unsupported,
+            is_loc=is_loc,
+            is_los=is_los,
+            head_bits=head_bits,
+            possible_out=possible_out if possible_out is not None else set(),
+        )
     materialized_launch = _materialize_reduced_outputs(
         core,
         reduced_json_path,
@@ -3371,6 +3495,99 @@ def _grade_launch_candidate(
     return passed
 
 
+def _grade_launch_candidate_x(
+    core: Any,
+    *,
+    scan_ctx: ScanPipelineContext,
+    reduced_json_path: str,
+    reduced_cell_map: str,
+    generic_cell_map: str,
+    vector: dict[str, bool],
+    input_order: list[str],
+    fault_ids: list[int],
+    row_by_id: dict[int, _FaultRow],
+    generic_site_index: dict[str, int],
+    unsupported: str,
+    is_loc: bool,
+    is_los: bool,
+    head_bits: dict[int, bool],
+    possible_out: set[int],
+) -> set[int]:
+    """_grade_launch_candidate on the X engine: the pattern built as the forward
+    pipeline builds it (a LOC capture's unknown pseudo-inputs, the capture
+    frame's unknown outputs don't-care), graded by the X protocol. Returns the
+    definite detections; the possible ones go to `possible_out`."""
+    materialized_launch, launch_unknown = _materialize_reduced_outputs_x(
+        core,
+        reduced_json_path,
+        reduced_cell_map,
+        vector,
+        input_order,
+        scan_ctx.functional_output_order,
+        scan_ctx.pseudo_port_map,
+        unsupported,
+    )
+    capture_unknown: frozenset[str] = frozenset()
+    if is_los:
+        capture_vector = _derive_los_capture(
+            vector, head_bits, scan_ctx.pseudo_port_map
+        )
+    else:
+        capture_vector = _derive_loc_capture(
+            materialized_launch, vector, scan_ctx.pseudo_port_map
+        )
+        capture_unknown = _loc_capture_unknown(launch_unknown, scan_ctx.pseudo_port_map)
+    reduced_expectation, unknown_outputs = _materialize_reduced_outputs_x(
+        core,
+        reduced_json_path,
+        reduced_cell_map,
+        capture_vector,
+        input_order,
+        scan_ctx.functional_output_order,
+        scan_ctx.pseudo_port_map,
+        unsupported,
+        capture_unknown,
+    )
+    serialize_input = dict(vector)
+    for entry in scan_ctx.pseudo_port_map.values():
+        ppo = entry.get("ppo_port")
+        if ppo is not None:
+            serialize_input[str(ppo)] = bool(reduced_expectation.get(str(ppo), False))
+    scan_pattern = _serialize(scan_ctx, serialize_input, unknown_outputs)
+    if scan_ctx.decompressor is not None:
+        scan_pattern = _decompressed(
+            scan_ctx, vector, scan_pattern, head_bits if is_los else {}
+        )
+    sim_ids: list[int] = []
+    specs: list[tuple[int, int]] = []
+    for fault_id in fault_ids:
+        row = row_by_id.get(fault_id)
+        cidx = generic_site_index.get(row.fault_site_key) if row else None
+        if row is None or cidx is None:
+            continue
+        sim_ids.append(fault_id)
+        specs.append((cidx, fault_type_to_sa_code(row.fault_type)))
+    if not specs:
+        return set()
+    lanes = _protocol_faults_x(
+        core,
+        scan_ctx,
+        scan_pattern,
+        generic_cell_map,
+        unsupported,
+        specs,
+        unknown_outputs,
+        launch=_launch_kwargs(is_loc, is_los, head_bits),
+    )
+    passed: set[int] = set()
+    for fault_id, lane in zip(sim_ids, lanes):
+        if str(lane["outcome"]) == "definite":
+            passed.add(fault_id)
+        elif str(lane["outcome"]) == "possible":
+            possible_out.add(fault_id)
+    return passed
+
+
 def compact_run_scan_transition(
     core: Any,
     *,
@@ -3405,11 +3622,20 @@ def compact_run_scan_transition(
             (campaign_id, run_id),
         ).fetchall()
         detected_rows = _detected_fault_rows(conn, campaign_id)
+        # The X engine keeps its possible detections too: a possibly detected
+        # target is kept by either kind, a detected one by a definite one.
+        x_engine = _x_engine(scan_ctx)
+        possible_rows = (
+            _detected_fault_rows(conn, campaign_id, status="possible")
+            if x_engine
+            else []
+        )
     raw_count = len(rows)
     if raw_count == 0:
         return vectors, run_id, float(raw_count)
 
-    row_by_id = {row.fault_id: row for row in detected_rows}
+    row_by_id = {row.fault_id: row for row in [*detected_rows, *possible_rows]}
+    possible_ids = {row.fault_id for row in possible_rows}
     remaining: set[int] = set(row_by_id)
     generic_site_index = build_site_key_index(
         core,
@@ -3443,6 +3669,7 @@ def compact_run_scan_transition(
     for idx in range(raw_count - 1, -1, -1):
         if not remaining:
             break
+        possible: set[int] = set()
         detected = _grade_launch_candidate(
             core,
             scan_ctx=scan_ctx,
@@ -3457,8 +3684,9 @@ def compact_run_scan_transition(
             unsupported=unsupported,
             launch_mode=launch_mode,
             los_head_scan_in=head_bits_list[idx],
+            possible_out=possible,
         )
-        newly = detected & remaining
+        newly = (detected | (possible & possible_ids)) & remaining
         if newly:
             kept_indices.append(idx)
             remaining.difference_update(newly)
@@ -3484,7 +3712,11 @@ def compact_run_scan_transition(
 
     with connect(db_path) as conn:
         init_schema(conn)
-        coverage = summary(conn, campaign_id=campaign_id)["coverage_percent"]
+        coverage = summary(
+            conn,
+            campaign_id=campaign_id,
+            possible_credit=scan_ctx.cfg.fault_model.possible_credit,
+        )["coverage_percent"]
     log.info(
         "compact  %d -> %d scan transition pairs  (-%d)  %.2fs  coverage=%.3f%%",
         raw_count,

@@ -2745,8 +2745,8 @@ class Runner:
                 f"with --scan (ff.py {mode})"
             )
         x_engine = self.cfg.simulation.engine == "x"
-        # A scan campaign on the X engine (stuck-at; config refuses transition)
-        # simulates its unknown values in place of the cone masking (scan.x_mask).
+        # A scan campaign on the X engine (stuck-at or transition) simulates its
+        # unknown values in place of the cone masking (scan.x_mask).
         if scan:
             return self._sim_scan(
                 purge=purge,
@@ -2888,7 +2888,8 @@ class Runner:
                         campaign_id=campaign_id,
                         run_id=run_id,
                         vectors=vectors,
-                        unsupported=self.cfg.simulation.unsupported_cells,
+                        unsupported=self.cfg.simulation.graph_policy,
+                        possible_credit=self.cfg.fault_model.possible_credit,
                         blackbox_instances=self.cfg.blackbox_instances,
                     )
                 else:
@@ -3352,7 +3353,8 @@ class Runner:
                     campaign_id=campaign_id,
                     run_id=run_id,
                     vectors=vectors,
-                    unsupported=self.cfg.simulation.unsupported_cells,
+                    # The X engine: its X-mode graphs, possible faults kept.
+                    unsupported=self.cfg.simulation.graph_policy,
                     launch_mode=self.cfg.fault_model.launch,
                 )
                 raw_vectors_scan = int(raw_vectors_f)

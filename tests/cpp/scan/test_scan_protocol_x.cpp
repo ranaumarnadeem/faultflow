@@ -59,6 +59,16 @@ ScanPatternRequest x_pattern(Bits& bits) {
   return request;
 }
 
+// Pattern p's launch: none (stuck-at), launch on capture, or launch on shift
+// (a random launch-shift scan-in bit).
+void set_launch(ScanPatternRequest& request, int p, Bits& bits) {
+  request.loc_two_capture = p % 3 == 1;
+  request.los_two_capture = p % 3 == 2;
+  if (request.los_two_capture) {
+    request.los_launch_scan_in[0] = bits.next();
+  }
+}
+
 std::vector<ScanProtocolFaultSpec> every_fault(const CompiledSimGraph& cg) {
   std::vector<ScanProtocolFaultSpec> faults;
   // Three copies: more than one 63-lane batch, a fault in several lanes.
@@ -82,9 +92,11 @@ TEST_CASE("X scan protocol grade == scalar X oracle, every fault",
   Bits bits{7u};
   size_t definite = 0;
   size_t possible = 0;
-  for (int p = 0; p < 16; ++p) {
+  size_t launched = 0;  // a transition's definite or possible detections
+  for (int p = 0; p < 24; ++p) {
     ScanProtocolFaultRequest request;
     request.pattern = x_pattern(bits);
+    set_launch(request.pattern, p, bits);
     request.faults = faults;
     request.capture_diffs = (p % 2) == 0;
     const auto graded = simulate_scan_protocol_faults_x(
@@ -101,10 +113,12 @@ TEST_CASE("X scan protocol grade == scalar X oracle, every fault",
       REQUIRE(graded.lanes[i].outcome == reference[i]);
       definite += reference[i] == XDetection::DEFINITE;
       possible += reference[i] == XDetection::POSSIBLE;
+      launched += p % 3 != 0 && reference[i] != XDetection::NONE;
     }
   }
   REQUIRE(definite > 0);
   REQUIRE(possible > 0);
+  REQUIRE(launched > 0);
 }
 
 TEST_CASE("X scan protocol: an unknown value a controlling input blocks is known",
@@ -150,7 +164,7 @@ TEST_CASE("X scan protocol with nothing unknown equals the two-valued one",
   const CachedGraph& graph = load_cached_graph(json, test::cell_map_path(), "fail+x");
   const auto faults = every_fault(graph.cg);
   Bits bits{11u};
-  for (int p = 0; p < 8; ++p) {
+  for (int p = 0; p < 12; ++p) {
     ScanProtocolFaultRequest request;
     request.pattern.clock_ports = {"CLK"};
     request.pattern.scan_enable_port = "scan_en";
@@ -162,6 +176,7 @@ TEST_CASE("X scan protocol with nothing unknown equals the two-valued one",
     for (const char* pi : {"D0", "D1", "D2"}) {
       request.pattern.capture_pi_values[pi] = bits.next();
     }
+    set_launch(request.pattern, p, bits);
     request.faults = faults;
     request.capture_diffs = true;
     const auto x = simulate_scan_protocol_faults_x(json, test::cell_map_path(),
@@ -188,19 +203,38 @@ TEST_CASE("X scan protocol with nothing unknown equals the two-valued one",
   }
 }
 
-TEST_CASE("X scan protocol refuses a launch", "[scan][xsim]") {
-  const std::string json = test::fixture_path("tiny_scan_chain.json");
-  ScanPatternRequest request;
-  request.clock_ports = {"CLK"};
-  request.scan_enable_port = "scan_en";
-  request.scan_input_ports = {"scan_in"};
-  request.scan_output_ports = {"scan_out_0"};
-  request.functional_output_ports = {"Q0"};
-  request.max_chain_length = 3;
-  request.loc_two_capture = true;
-  REQUIRE_THROWS_AS(
-      simulate_scan_pattern_x(json, test::cell_map_path(), request, "fail+x", {}, {}),
-      std::runtime_error);
+TEST_CASE("X scan protocol: no transition credit where the launch leaves it unknown",
+          "[scan][xsim][xtransition]") {
+  // Launch on capture: ff0 captures dout & D1. With D1 = 1 its state after the
+  // launch is u_mem's unknown output, so Q0's fall from a loaded 1 may never
+  // happen: no credit, though the faulty Q0 = 1 shows at the Q0 output. With
+  // D1 = 0 ff0 captures a known 0 and the fall is a definite detection.
+  const std::string json = test::fixture_path("tiny_scan_x.json");
+  const CachedGraph& graph =
+      load_cached_graph(json, test::cell_map_path(), "fail+x", kBlackbox);
+  const auto q0 = static_cast<uint32_t>(
+      graph.cg.yosys_to_compiled.at(graph.parsed.net_id_by_name("Q0")));
+  ScanProtocolFaultRequest request;
+  request.pattern.clock_ports = {"CLK"};
+  request.pattern.scan_enable_port = "scan_en";
+  request.pattern.scan_input_ports = {"scan_in"};
+  request.pattern.scan_output_ports = {"scan_out_0"};
+  request.pattern.functional_output_ports = {"Q0"};
+  request.pattern.max_chain_length = 3;
+  request.pattern.load_seqs[0] = {false, false, true};  // ff2, ff1, ff0: Q0 = 1
+  request.pattern.loc_two_capture = true;
+  request.faults = {{q0, 1}};  // slow to fall
+  for (const bool d1 : {true, false}) {
+    INFO("D1 = " << d1);
+    request.pattern.capture_pi_values = {{"D0", false}, {"D1", d1}, {"D2", false}};
+    const XDetection want = d1 ? XDetection::NONE : XDetection::DEFINITE;
+    const auto graded = simulate_scan_protocol_faults_x(
+        json, test::cell_map_path(), request, "fail+x", 1, kBlackbox, kUnknown);
+    CHECK(graded.lanes.at(0).outcome == want);
+    CHECK(simulate_scan_protocol_faults_x_reference(json, test::cell_map_path(), request,
+                                                    "fail+x", kBlackbox, kUnknown)
+              .at(0) == want);
+  }
 }
 
 TEST_CASE("a tie marked unknown is an X source only in an X-mode graph",

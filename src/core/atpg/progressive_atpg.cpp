@@ -818,12 +818,16 @@ SolveTransitionResult solve_transition_fault_for_db(
 
   std::map<std::string, bool> launch;
   std::map<std::string, bool> capture;
+  // An X-mode graph: the dual-rail two-frame CNF; POSSIBLE comes with a pair
+  // that shows the fault for some value of the unknowns (the X engine grades it).
   const SatSolveResult result =
-      solve_transition_fault(ctx.cg, pis, fault, options, launch, capture);
+      ctx.cg.x_mode
+          ? solve_transition_fault_x(ctx.cg, pis, fault, options, launch, capture)
+          : solve_transition_fault(ctx.cg, pis, fault, options, launch, capture);
 
   SolveTransitionResult out;
   out.result = solve_result_name(result);
-  if (result == SatSolveResult::SAT) {
+  if (result == SatSolveResult::SAT || result == SatSolveResult::POSSIBLE) {
     out.launch = std::move(launch);
     out.capture = std::move(capture);
   }
@@ -866,11 +870,15 @@ SolveTransitionResult solve_scan_transition_fault_for_db(
 
   std::map<std::string, bool> launch;
   std::map<std::string, bool> capture;
-  const SatSolveResult result = solve_scan_transition_fault(
-      ctx.cg, pis, view.couples, view.held_pis, fault, options, launch, capture);
+  const SatSolveResult result =
+      ctx.cg.x_mode
+          ? solve_scan_transition_fault_x(ctx.cg, pis, view.couples, view.held_pis, fault,
+                                          options, launch, capture)
+          : solve_scan_transition_fault(ctx.cg, pis, view.couples, view.held_pis, fault,
+                                        options, launch, capture);
 
   out.result = solve_result_name(result);
-  if (result == SatSolveResult::SAT) {
+  if (result == SatSolveResult::SAT || result == SatSolveResult::POSSIBLE) {
     out.launch = std::move(launch);
     out.capture = std::move(capture);
   }
@@ -940,11 +948,15 @@ SolveTransitionResult solve_scan_los_transition_fault_for_db(
 
   std::map<std::string, bool> launch;
   std::map<std::string, bool> capture;
-  const SatSolveResult result = solve_scan_los_transition_fault(
-      ctx.cg, pis, couples, head_ppi, held, fault, options, launch, capture);
+  const SatSolveResult result =
+      ctx.cg.x_mode
+          ? solve_scan_los_transition_fault_x(ctx.cg, pis, couples, head_ppi, held, fault,
+                                              options, launch, capture)
+          : solve_scan_los_transition_fault(ctx.cg, pis, couples, head_ppi, held, fault,
+                                            options, launch, capture);
 
   out.result = solve_result_name(result);
-  if (result == SatSolveResult::SAT) {
+  if (result == SatSolveResult::SAT || result == SatSolveResult::POSSIBLE) {
     out.launch = std::move(launch);
     out.capture = std::move(capture);
   }
@@ -973,6 +985,41 @@ bool verify_transition_fault_vector(
   GoldenRefSim golden;
   return golden.simulate_transition_fault(ctx.cg, to_vec(launch), to_vec(capture),
                                           fault);
+}
+
+int verify_transition_fault_vector_x(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t fault_id,
+    const std::map<std::string, bool>& launch,
+    const std::map<std::string, bool>& capture,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances,
+    const std::vector<std::string>& capture_unknown) {
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  const db::FaultRecord rec = db::load_fault(db_path, fault_id);
+  CompactFault fault = fault_from_record(rec);
+  fault.model = FaultModel::TRANSITION;
+  const auto to_vec = [&](const std::map<std::string, bool>& values) {
+    TestVector tv;
+    for (const auto& [name, value] : values) {
+      tv.inputs[ctx.parsed.net_id_by_name(name)] = value;
+    }
+    return tv;
+  };
+  const GoldenRefSimX ref;
+  XRunOptions options;
+  options.initial_state = Logic::X;
+  if (!capture_unknown.empty()) {
+    std::set<int> unknown;
+    for (const std::string& name : capture_unknown) {
+      unknown.insert(ctx.parsed.net_id_by_name(name));
+    }
+    options.unknown_inputs = {{}, std::move(unknown)};
+  }
+  const XDetection d = ref.simulate_transition_fault(ctx.cg, to_vec(launch),
+                                                     to_vec(capture), fault, options);
+  return d == XDetection::DEFINITE ? 2 : (d == XDetection::POSSIBLE ? 1 : 0);
 }
 
 std::vector<ProgressiveDetection> simulate_transition_incremental(
@@ -1028,6 +1075,76 @@ std::vector<ProgressiveDetection> simulate_transition_incremental(
     active = std::move(still_active);
   }
   return detections;
+}
+
+std::vector<XProgressiveDetection> simulate_transition_incremental_x(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::string& db_path, int64_t campaign_id, int64_t run_id,
+    const std::vector<VectorPair>& new_pairs,
+    const std::vector<std::string>& input_order,
+    const std::vector<int64_t>& fault_ids, int64_t vector_start_index,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances, int sim_threads) {
+  if (new_pairs.empty() || fault_ids.empty()) {
+    return {};
+  }
+  const CachedGraph& ctx =
+      load_graph(json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  std::vector<std::pair<TestVector, TestVector>> pairs;
+  pairs.reserve(new_pairs.size());
+  for (const auto& [launch, capture] : new_pairs) {
+    pairs.emplace_back(vector_from_map(ctx.parsed, launch, input_order),
+                       vector_from_map(ctx.parsed, capture, input_order));
+  }
+  const BitParallelSimX sim;  // stateless, as BitParallelSim
+  XRunOptions options;
+  options.initial_state = Logic::X;
+  std::vector<XProgressiveDetection> out;
+  std::vector<ActiveFaultRecord> active =
+      load_active_fault_records(db_path, fault_ids, false);
+  for (size_t vi = 0; vi < pairs.size() && !active.empty(); ++vi) {
+    const TestVector& launch = pairs[vi].first;
+    const TestVector& capture = pairs[vi].second;
+    const auto grade = [&](const FaultBatch& batch) -> XBatchDetection {
+      return sim.detect_transition_batch(ctx.cg, launch, capture, batch, options);
+    };
+    const std::vector<GradeRangeResult> slices =
+        grade_active_parallel(active, sim_threads, grade);
+    const int64_t vector_index = vector_start_index + static_cast<int64_t>(vi);
+    std::vector<ActiveFaultRecord> still_active;
+    still_active.reserve(active.size());
+    std::vector<int64_t> detected_this_vector;
+    std::vector<int64_t> possible_this_vector;
+    std::set<int64_t> newly_possible;
+    for (const GradeRangeResult& sr : slices) {
+      for (const size_t idx : sr.detected_indices) {
+        detected_this_vector.push_back(active[idx].fault_id);
+        out.push_back({active[idx].fault_id, vector_index, false});
+      }
+      // As simulate_incremental_x: a possible detection keeps the fault a target.
+      for (const size_t idx : sr.possible_indices) {
+        if (active[idx].fault.status == FaultStatus::UNDETECTED) {
+          possible_this_vector.push_back(active[idx].fault_id);
+          newly_possible.insert(active[idx].fault_id);
+          out.push_back({active[idx].fault_id, vector_index, true});
+        }
+      }
+      for (const ActiveFaultRecord& rec : sr.still_active) {
+        still_active.push_back(rec);
+      }
+      g_simulation_instrumentation.batch_fault_calls += sr.batch_fault_calls;
+    }
+    for (ActiveFaultRecord& rec : still_active) {
+      if (newly_possible.count(rec.fault_id) != 0) {
+        rec.fault.status = FaultStatus::POSSIBLE;
+      }
+    }
+    db::mark_faults_detected(db_path, campaign_id, run_id, vector_index,
+                             detected_this_vector);
+    db::mark_faults_possible(db_path, possible_this_vector);
+    active = std::move(still_active);
+  }
+  return out;
 }
 
 std::vector<int64_t> simulate_transition_tentative_detections(
