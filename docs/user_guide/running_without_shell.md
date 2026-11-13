@@ -533,9 +533,13 @@ Before the netlist is touched the program is replayed on faultflow's own model o
 independent of warptap's, and refused if the two disagree at any care bit. Then the
 netlist's own outputs must be the program's at every care bit, simulated with every flop
 powered up unknown (X), so whatever the flops power up to; otherwise the run is refused
-and writes nothing. A fault is credited when it changes a care bit whatever the flops
-power up to (a 0 against a 1); one that only may change it (the good output known, the
-faulty one unknown) is counted `init_dependent` and not credited.
+and writes nothing. A fault is credited when, whatever the flops power up to, it changes
+a care bit (a 0 against a 1): the same bit for every power-up state, or different bits for
+different states, since a tester comparing every care bit fails the chip either way
+(multiple observation times, decided exactly by a SAT solver over the program). A fault
+that some power-up state lets through every care bit unchanged is counted
+`init_dependent` and not credited; so is one the solver gives up on (a minute each),
+which the run reports as `undecided`.
 The result is written to
 `wsp_report.json` in the intermediate directory, kept beside the scan campaign, and
 reported as the coverage report's `wsp` block: what the program detected, and with the

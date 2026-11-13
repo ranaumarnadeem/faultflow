@@ -29,6 +29,7 @@
 #include "sim/xsim/bit_parallel_sim_x.hpp"
 #include "sim/xsim/golden_ref_sim_x.hpp"
 #include "sim/xsim/sequence_grade_x.hpp"
+#include "sim/xsim/sequence_mot_x.hpp"
 #include "scan/scan_pattern_sim.hpp"
 
 namespace py = pybind11;
@@ -1192,6 +1193,23 @@ py::dict simulate_sequence_faults_py(
   return out;
 }
 
+// A sequence grade's good values per sample: 0, 1 or None for X.
+py::list sequence_golden_py(const std::vector<std::vector<Logic>>& rows) {
+  py::list golden;
+  for (const auto& row : rows) {
+    py::list values;
+    for (Logic v : row) {
+      if (is_known(v)) {
+        values.append(v == Logic::ONE ? 1 : 0);
+      } else {
+        values.append(py::none());
+      }
+    }
+    golden.append(values);
+  }
+  return golden;
+}
+
 // simulate_sequence_faults with unknown values (grade_sequence_faults_x): flops
 // and clock-gate latches X before cycle 0 unless initial_unknown is false, and
 // inputs X where `unknown[cycle][input]` says. Returns {"golden": per sampled
@@ -1227,22 +1245,68 @@ py::dict simulate_sequence_faults_x_py(
                                      unsupported_policy, blackbox_instances,
                                      sim_threads, reference);
   }
-  py::list golden;
-  for (const auto& row : result.golden) {
-    py::list values;
-    for (Logic v : row) {
-      if (is_known(v)) {
-        values.append(v == Logic::ONE ? 1 : 0);
-      } else {
-        values.append(py::none());
-      }
-    }
-    golden.append(values);
-  }
   py::dict out;
-  out["golden"] = golden;
+  out["golden"] = sequence_golden_py(result.golden);
   out["first_definite"] = result.first_definite;
   out["first_possible"] = result.first_possible;
+  return out;
+}
+
+// Multiple-observation-time detection (grade_sequence_faults_mot_x): the
+// sequence as simulate_sequence_faults_x takes it, `compare[sample][output]`
+// the bits compared (empty: all). Returns {"golden": as simulate_sequence_faults_x's;
+// "outcome": per fault "detected" (every completion of the unknowns differs at
+// some compared bit), "escapes" or "undecided" (a budget ran out, or a loop or a
+// bus); "detected_by": the sample by which every completion has differed, or -1;
+// "witness": with witness, per escaping fault a power-up value per flop (-1: not
+// unknown), else empty}.
+py::dict simulate_sequence_faults_mot_x_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::vector<std::string>& input_order,
+    const std::vector<std::vector<bool>>& cycles, const std::vector<bool>& sample,
+    const std::vector<std::string>& observe_outputs,
+    const std::vector<std::vector<bool>>& compare,
+    const std::vector<std::pair<uint32_t, uint8_t>>& faults,
+    const std::vector<std::vector<bool>>& unknown, bool initial_unknown,
+    const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances, int sim_threads,
+    double seconds_per_fault, int64_t max_variables, bool witness,
+    bool initial_ff_value, const std::vector<bool>& fault_active) {
+  XMotRequest request;
+  SequenceGradeRequest& base = request.sequence.base;
+  base.input_order = input_order;
+  base.cycles = cycles;
+  base.sample = sample;
+  base.observe_outputs = observe_outputs;
+  base.initial_ff_value = initial_ff_value;
+  base.fault_active = fault_active;
+  for (const auto& [net_index, fault_type] : faults) {
+    base.faults.push_back(SequenceFaultSpec{net_index, fault_type});
+  }
+  request.sequence.unknown = unknown;
+  request.sequence.initial_unknown = initial_unknown;
+  request.compare = compare;
+  request.seconds_per_fault = seconds_per_fault;
+  request.max_variables = max_variables;
+  request.witness = witness;
+  XMotResult result;
+  {
+    py::gil_scoped_release release;
+    result = grade_sequence_faults_mot_x(json_path, cell_map_path, request,
+                                         unsupported_policy, blackbox_instances,
+                                         sim_threads);
+  }
+  py::list outcome;
+  for (MotOutcome o : result.outcome) {
+    outcome.append(o == MotOutcome::DETECTED  ? "detected"
+                   : o == MotOutcome::ESCAPES ? "escapes"
+                                              : "undecided");
+  }
+  py::dict out;
+  out["golden"] = sequence_golden_py(result.golden);
+  out["outcome"] = outcome;
+  out["detected_by"] = result.detected_by;
+  out["witness"] = result.witness;
   return out;
 }
 
@@ -1986,6 +2050,17 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("initial_unknown") = true, py::arg("unsupported_policy") = "fail",
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("sim_threads") = 1, py::arg("reference") = false,
+        py::arg("initial_ff_value") = false,
+        py::arg("fault_active") = std::vector<bool>{});
+  m.def("simulate_sequence_faults_mot_x", &faultflow::simulate_sequence_faults_mot_x_py,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("input_order"),
+        py::arg("cycles"), py::arg("sample"), py::arg("observe_outputs"),
+        py::arg("compare"), py::arg("faults"),
+        py::arg("unknown") = std::vector<std::vector<bool>>{},
+        py::arg("initial_unknown") = true, py::arg("unsupported_policy") = "fail",
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("sim_threads") = 1, py::arg("seconds_per_fault") = 60.0,
+        py::arg("max_variables") = int64_t{4000000}, py::arg("witness") = false,
         py::arg("initial_ff_value") = false,
         py::arg("fault_active") = std::vector<bool>{});
   m.def("unknown_cell_instances", &faultflow::unknown_cell_instances_py,

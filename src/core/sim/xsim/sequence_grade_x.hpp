@@ -4,7 +4,12 @@
 #include <string>
 #include <vector>
 
+#include "fault/effect/compact_fault.hpp"
+#include "ir/compiled_graph/compiled_graph.hpp"
+#include "ir/parsed_graph/parsed_graph.hpp"
 #include "sim/engine/sequence_grade.hpp"
+#include "sim/state/test_vector.hpp"
+#include "sim/xsim/golden_ref_sim_x.hpp"
 #include "sim/xsim/logic.hpp"
 
 namespace faultflow {
@@ -31,6 +36,20 @@ struct XSequenceGradeResult {
   std::vector<int32_t> first_definite;
   std::vector<int32_t> first_possible;
 };
+
+// The request's cycles as one vector, its unknowns in `options` (per cycle, the
+// unknown inputs; the power-up state). Throws on a malformed request.
+TestVector sequence_vector_x(const ParsedGraph& parsed, const CompiledSimGraph& cg,
+                             const XSequenceGradeRequest& request, XRunOptions& options);
+
+// A fault spec as the simulators take it. Throws on a bad net or fault type.
+CompactFault sequence_fault(const SequenceFaultSpec& spec, const CompiledSimGraph& cg);
+
+// observe_outputs' Yosys net ids and compiled net indexes. Throws on a name
+// that is no compiled net.
+void sequence_observed(const ParsedGraph& parsed, const CompiledSimGraph& cg,
+                       const std::vector<std::string>& observe_outputs,
+                       std::vector<int>& yids, std::vector<uint32_t>& compiled);
 
 // Bit-parallel on BitParallelSimX, 63 faults per batch over sim_threads; each
 // batch's good lane is checked against GoldenRefSimX and a disagreement throws.

@@ -11,11 +11,10 @@
 #include "sim/xsim/golden_ref_sim_x.hpp"
 
 namespace faultflow {
-namespace {
 
 // grade_sequence_faults' vector, plus the per-cycle unknown inputs.
-TestVector build_vector(const ParsedGraph& parsed, const CompiledSimGraph& cg,
-                        const XSequenceGradeRequest& request, XRunOptions& options) {
+TestVector sequence_vector_x(const ParsedGraph& parsed, const CompiledSimGraph& cg,
+                             const XSequenceGradeRequest& request, XRunOptions& options) {
   const SequenceGradeRequest& base = request.base;
   if (base.sample.size() != base.cycles.size()) {
     throw std::runtime_error("sequence grade: sample needs one flag per cycle");
@@ -74,7 +73,7 @@ TestVector build_vector(const ParsedGraph& parsed, const CompiledSimGraph& cg,
   return vec;
 }
 
-CompactFault make_fault(const SequenceFaultSpec& spec, const CompiledSimGraph& cg) {
+CompactFault sequence_fault(const SequenceFaultSpec& spec, const CompiledSimGraph& cg) {
   if (spec.compiled_net_index >= static_cast<uint32_t>(cg.net_count)) {
     throw std::runtime_error("sequence grade: fault net index out of range");
   }
@@ -87,6 +86,22 @@ CompactFault make_fault(const SequenceFaultSpec& spec, const CompiledSimGraph& c
   fault.exclusion = FaultExclusion::NONE;
   return fault;
 }
+
+void sequence_observed(const ParsedGraph& parsed, const CompiledSimGraph& cg,
+                       const std::vector<std::string>& observe_outputs,
+                       std::vector<int>& yids, std::vector<uint32_t>& compiled) {
+  for (const std::string& name : observe_outputs) {
+    const int yid = parsed.net_id_by_name(name);
+    const auto it = cg.yosys_to_compiled.find(yid);
+    if (it == cg.yosys_to_compiled.end()) {
+      throw std::runtime_error("sequence grade: not a compiled net: " + name);
+    }
+    yids.push_back(yid);
+    compiled.push_back(static_cast<uint32_t>(it->second));
+  }
+}
+
+namespace {
 
 // The first sample of each kind, as detect_batch_observed reports for one lane.
 std::pair<int32_t, int32_t> first_detections(const std::vector<std::vector<Logic>>& golden,
@@ -122,19 +137,11 @@ XSequenceGradeResult grade_sequence_faults_x(
   const ParsedGraph& parsed = graph.parsed;
   const CompiledSimGraph& cg = graph.cg;
   XRunOptions options;
-  const TestVector vec = build_vector(parsed, cg, request, options);
+  const TestVector vec = sequence_vector_x(parsed, cg, request, options);
 
   std::vector<int> observe_yids;
   std::vector<uint32_t> observe;
-  for (const std::string& name : request.base.observe_outputs) {
-    const int yid = parsed.net_id_by_name(name);
-    const auto it = cg.yosys_to_compiled.find(yid);
-    if (it == cg.yosys_to_compiled.end()) {
-      throw std::runtime_error("sequence grade: not a compiled net: " + name);
-    }
-    observe_yids.push_back(yid);
-    observe.push_back(static_cast<uint32_t>(it->second));
-  }
+  sequence_observed(parsed, cg, request.base.observe_outputs, observe_yids, observe);
 
   const GoldenRefSimX ref;
   XSequenceGradeResult result;
@@ -152,7 +159,7 @@ XSequenceGradeResult grade_sequence_faults_x(
   result.first_possible.assign(specs.size(), -1);
   std::vector<CompactFault> faults;
   for (const SequenceFaultSpec& spec : specs) {
-    faults.push_back(make_fault(spec, cg));
+    faults.push_back(sequence_fault(spec, cg));
   }
   const int threads = effective_sim_threads(sim_threads);
 

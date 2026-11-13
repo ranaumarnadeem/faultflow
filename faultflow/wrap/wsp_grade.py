@@ -17,8 +17,12 @@ unknown (X), so a result holds whatever they power up to. The golden gate comes
 first: the netlist's fault-free outputs are known and the model's at every care bit.
 Outputs that care at the same cycles are simulated together, sampled at those cycles
 alone. A fault is credited when a compared output definitely differs from the
-fault-free one at a care bit (a 0 against a 1); one that only possibly does (the good
-output known, the faulty one X) is left uncredited (``init_dependent``). The credit
+fault-free one at a care bit (a 0 against a 1). One that only possibly does there
+(the good output known, the faulty one X) is decided over multiple observation
+times (:func:`multiple_observation`): credited when every power-up state shows a
+difference at some care bit, perhaps a different one for each -- a tester comparing
+every care bit fails the chip whatever it powered up to -- and left uncredited
+(``init_dependent``) when some power-up state escapes every care bit. The credit
 lands in side tables beside the scan campaign (``wsp_runs``, ``wsp_detections``),
 and the coverage report gains a ``wsp`` block (:func:`report_block`) -- with the
 scan's credit, the combined coverage.
@@ -57,7 +61,10 @@ class WspGradeError(RuntimeError):
 class WspGrade:
     graded: int
     detected: dict[int, tuple[str, int]]  # fault id -> (test, program cycle)
-    init_dependent: tuple[int, ...]  # only possibly detected: depends on the power-up
+    # Only possibly detected, and some power-up state escapes every care bit (or
+    # deciding that ran out of budget: `undecided`).
+    init_dependent: tuple[int, ...]
+    undecided: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -70,6 +77,7 @@ class WspOutcome:
     seconds: float
     up_to_date: bool
     combined_coverage: float | None
+    undecided: int = 0  # of init_dependent, left so by the solver's budget
 
     def message(self, top: str) -> str:
         combined = (
@@ -81,7 +89,8 @@ class WspOutcome:
             f"wsp top={top} program={self.source} cycles={self.cycles} "
             f"graded={self.graded} "
             f"detected={self.detected} init_dependent={self.init_dependent} "
-            f"combined_coverage={combined}"
+            + (f"undecided={self.undecided} " if self.undecided else "")
+            + f"combined_coverage={combined}"
             + (
                 " up_to_date=true"
                 if self.up_to_date
@@ -255,6 +264,49 @@ def golden_gate(
                     )
 
 
+def multiple_observation(
+    benches: Sequence[_Bench], faults: list[tuple[int, int]], threads: int = 1
+) -> list[tuple[str, int | None]]:
+    """Per fault -- (compiled net index, stuck value) -- ("detected", the program
+    cycle by which it has changed a care bit from every power-up state, perhaps a
+    different bit for each), ("escapes", None) where some power-up state escapes
+    every care bit, or ("undecided", None) where deciding ran out of budget.
+    Multiple observation times, decided exactly by the core's
+    simulate_sequence_faults_mot_x (SAT). One run over every bench's outputs, each
+    compared at its own care bits: the benches share their input rows."""
+    first = benches[0]
+    if any(bench.rows != first.rows for bench in benches):
+        raise WspGradeError("the WSP benches disagree on the program's input rows")
+    count = len(first.rows)
+    sample = [any(bench.sample[c] for bench in benches) for c in range(count)]
+    sampled = [c for c in range(count) if sample[c]]
+    number_of: dict[int, int] = {}
+    for bench in benches:
+        number_of.update(zip((c for c in range(count) if bench.sample[c]), bench.at))
+    observe = [name for bench in benches for name in bench.observe]
+    compare = [
+        [bench.sample[c] for bench in benches for _ in bench.observe] for c in sampled
+    ]
+    result: dict[str, Any] = first.core.simulate_sequence_faults_mot_x(
+        first.netlist,
+        first.cell_map,
+        first.inputs,
+        first.rows,
+        sample,
+        observe,
+        compare,
+        faults,
+        initial_unknown=True,
+        unsupported_policy=first.unsupported,
+        blackbox_instances=first.blackbox,
+        sim_threads=threads,
+    )
+    return [
+        (str(outcome), number_of[sampled[by]] if outcome == "detected" else None)
+        for outcome, by in zip(result["outcome"], result["detected_by"])
+    ]
+
+
 def grade_faults(
     benches: Sequence[_Bench],
     steps: Sequence[WspStep],
@@ -263,8 +315,10 @@ def grade_faults(
 ) -> WspGrade:
     """Grade `faults` -- (fault id, compiled net index, stuck value) -- after the
     golden gate: each one's first program cycle at which a compared output
-    definitely differs at a care bit, whatever the flops power up to; one that only
-    possibly differs somewhere is ``init_dependent``."""
+    definitely differs at a care bit, whatever the flops power up to. One that only
+    possibly differs somewhere is decided by :func:`multiple_observation`: detected
+    at the program cycle by which every power-up state has shown a difference, else
+    ``init_dependent``."""
     specs = [(index, stuck) for _, index, stuck in faults]
     definite: list[int | None] = [None] * len(faults)
     possible = [False] * len(faults)
@@ -279,6 +333,15 @@ def grade_faults(
                 if known is None or number < known:
                     definite[k] = number
             possible[k] = possible[k] or maybe >= 0
+    open_ = [k for k in range(len(faults)) if definite[k] is None and possible[k]]
+    undecided: list[int] = []
+    if open_:
+        decided = multiple_observation(benches, [specs[k] for k in open_], threads)
+        for k, (outcome, number) in zip(open_, decided):
+            if number is not None:
+                definite[k] = number
+            elif outcome == "undecided":
+                undecided.append(faults[k][0])
     detected: dict[int, tuple[str, int]] = {}
     dependent: list[int] = []
     for (fault_id, _, _), number, maybe in zip(faults, definite, possible):
@@ -286,7 +349,7 @@ def grade_faults(
             detected[fault_id] = (steps[number].test, number)
         elif maybe:
             dependent.append(fault_id)
-    return WspGrade(len(faults), detected, tuple(dependent))
+    return WspGrade(len(faults), detected, tuple(dependent), tuple(undecided))
 
 
 _SCHEMA = """
@@ -582,11 +645,18 @@ def run_wsp(
     start = time.perf_counter()
     golden_gate(benched, steps, expected)
     netlist_digest = hashlib.sha256(netlist.read_bytes()).hexdigest()
-    # "x": the flops power up X; a grade from before, run from all-0 and all-1
-    # flops, has another key and is graded again.
+    # "x": the flops power up X; "multiple_observation": possible detections are
+    # decided over every care bit. A grade from before either has another key and
+    # is graded again.
     key = hashlib.sha256(
         json.dumps(
-            [program_digest(steps), netlist_digest, sorted(blackbox), "x"],
+            [
+                program_digest(steps),
+                netlist_digest,
+                sorted(blackbox),
+                "x",
+                "multiple_observation",
+            ],
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
@@ -648,4 +718,5 @@ def run_wsp(
         seconds=time.perf_counter() - start,
         up_to_date=False,
         combined_coverage=block["combined"]["test_coverage_percent"],
+        undecided=len(grade.undecided),
     )

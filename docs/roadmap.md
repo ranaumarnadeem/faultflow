@@ -79,7 +79,9 @@ Implemented today:
   value and a frozen non-scan flop are unknown in place of the cone masking, and the
   scan protocol powers every flop up unknown, so an observation point is unknown only
   in the patterns that let an unknown reach it. JTAG and WSP network-integrity grading
-  run on it with every flop powered up unknown. Its synthesis maps a design's latches
+  run on it with every flop powered up unknown; a WSP fault counts when every power-up
+  state changes some care bit, not necessarily the same one (multiple observation
+  times, decided by SAT). Its synthesis maps a design's latches
   and `1'bz` drivers onto the library's own cells.
 
 ## Planned

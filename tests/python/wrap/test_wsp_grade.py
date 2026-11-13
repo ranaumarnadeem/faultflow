@@ -155,8 +155,8 @@ def test_a_fault_only_all_0_and_all_1_flops_detect_is_not_credited(
     tmp_path: Path,
 ) -> None:
     """m stuck at 1 shows xn at WSO: from all-0 and all-1 flops WSO is then 1 where t
-    is 0, but from a mixed state it is t, WSO's good value. The detection depends on
-    the power-up state: init_dependent, not credited. WSI stuck at 0 is detected
+    is 0, but from a mixed state it is t, WSO's good value at every care bit. A mixed
+    power-up state escapes: init_dependent, not credited. WSI stuck at 0 is detected
     whatever the flops power up to."""
     from faultflow.runner.runner import _load_core
     from faultflow.wrap.wsp_grade import benches, compared, golden_gate, grade_faults
@@ -185,7 +185,93 @@ def test_a_fault_only_all_0_and_all_1_flops_detect_is_not_credited(
         bench, steps, [(1, index["net:9:stem"], 1), (2, index["net:8:stem"], 0)]
     )
     assert grade.init_dependent == (1,)
+    assert grade.undecided == ()
     assert grade.detected == {2: ("shift", 2)}  # WSI's first 1, a cycle later
+
+
+def _held(tmp_path: Path) -> tuple[Path, list[str]]:
+    """_masked's one-flop WSI -> WSO path (t), with WSO = m ? u0 : t, u0 a flop that
+    holds its power-up value. m is 0: every input but the WSP's is."""
+    nets = {
+        "wrck": 2,
+        "wrstn": 3,
+        "selectwir": 4,
+        "shiftwr": 5,
+        "capturewr": 6,
+        "updatewr": 7,
+        "wsi": 8,
+        "m": 9,
+        "clk": 15,
+    }
+
+    def cell(kind: str, **conns: int) -> dict[str, Any]:
+        return {
+            "type": f"sky130_fd_sc_hd__{kind}",
+            "port_directions": {
+                p: "output" if p in ("Q", "X", "Y") else "input" for p in conns
+            },
+            "connections": {p: [n] for p, n in conns.items()},
+        }
+
+    ports = {name: {"direction": "input", "bits": [net]} for name, net in nets.items()}
+    ports |= {"wso": {"direction": "output", "bits": [20]}}
+    design = {
+        "modules": {
+            "held": {
+                "attributes": {"top": "00000000000000000000000000000001"},
+                "ports": ports,
+                "cells": {
+                    "t": cell("dfrtp_1", CLK=2, D=8, RESET_B=3, Q=10),
+                    "u0": cell("dfxtp_1", CLK=15, D=11, Q=11),
+                    "g": cell("mux2_1", A0=10, A1=11, S=9, X=20),
+                },
+                "netnames": {n: {"bits": p["bits"]} for n, p in ports.items()},
+            }
+        }
+    }
+    path = tmp_path / "held.json"
+    path.write_text(json.dumps(design), encoding="utf-8")
+    return path, list(nets)
+
+
+@pytest.mark.unit
+def test_a_fault_every_power_up_state_shows_at_some_care_bit_is_credited(
+    tmp_path: Path,
+) -> None:
+    """m stuck at 1 shows u0 at WSO, held at its power-up value, where t (0, then
+    WSI_BITS) is expected: u0 = 1 fails at the first strobe (t = 0), u0 = 0 at the
+    second (t = 1). No one strobe fails both, so the single-sample X grade only
+    possibly detects it; a tester comparing every care bit fails the chip either
+    way, and the fault is credited at the second strobe's program cycle."""
+    from faultflow.runner.runner import _load_core
+    from faultflow.wrap.wsp_grade import benches, compared, golden_gate, grade_faults
+
+    core = _load_core()
+    if core is None:
+        pytest.skip("needs the C++ core")
+    netlist, inputs = _held(tmp_path)
+    steps = _masked_steps()
+    expected = compared(steps, "wso")
+    bench = benches(
+        core,
+        str(netlist),
+        str(CELL_MAP),
+        steps,
+        inputs,
+        WSP_PORTS,
+        expected,
+        unsupported="fail",
+        blackbox=[],
+    )
+    golden_gate(bench, steps, expected)
+    rows = core.list_site_keys(str(netlist), str(CELL_MAP), "fail")
+    index = {str(r["site_key"]): int(r["compiled_net_index"]) for r in rows}
+    faults = [(1, index["net:9:stem"], 1)]
+    (single,) = [b.run([(index["net:9:stem"], 1)]) for b in bench]
+    assert single["first_definite"] == [-1] and single["first_possible"] == [0]
+    grade = grade_faults(bench, steps, faults)
+    assert grade.detected == {1: ("shift", 2)}
+    assert grade.init_dependent == () and grade.undecided == ()
 
 
 @pytest.fixture
