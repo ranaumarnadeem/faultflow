@@ -24,18 +24,22 @@ Dual broadcast(Logic v) {
   return v == Logic::ONE ? dual_known(~0ULL) : dual_x();
 }
 
+// One fault on its lane of its net.
+void inject_fault(std::vector<Dual>& nv, const CompactFault& f) {
+  const uint32_t net = f.net_index;
+  if (f.type == FaultType::SA0) {
+    nv[net].h &= ~f.sa_mask;
+    nv[net].l |= f.sa_mask;
+  } else {
+    nv[net].h |= f.sa_mask;
+    nv[net].l &= ~f.sa_mask;
+  }
+}
+
 void inject_faults(std::vector<Dual>& nv, const FaultBatch& batch, uint32_t net) {
   for (int i = 0; i < batch.size; ++i) {
-    const CompactFault& f = batch.faults[i];
-    if (f.net_index != net) {
-      continue;
-    }
-    if (f.type == FaultType::SA0) {
-      nv[net].h &= ~f.sa_mask;
-      nv[net].l |= f.sa_mask;
-    } else {
-      nv[net].h |= f.sa_mask;
-      nv[net].l &= ~f.sa_mask;
+    if (batch.faults[i].net_index == net) {
+      inject_fault(nv, batch.faults[i]);
     }
   }
 }
@@ -52,17 +56,21 @@ void broadcast_inputs(XState& st, const CompiledSimGraph& cg, const TestCycle& c
     }
   }
   // As BitParallelSim's cycle loop: every fault net, not only the inputs', so a
-  // net no node recomputes (a pseudo-input) carries its fault too.
+  // net no node recomputes (a pseudo-input) carries its fault too. (Each fault
+  // once: the injections are idempotent and on distinct lanes.)
   for (int i = 0; i < batch.size; ++i) {
-    inject_faults(st.values, batch, batch.faults[i].net_index);
+    inject_fault(st.values, batch.faults[i]);
   }
 }
 
+// st.fault_present marks the cycle's fault nets (for_each_sample sets it).
 void seed_ff_outputs(XState& st, const CompiledSimGraph& cg, const FaultBatch& batch) {
   for (size_t idx = 0; idx < cg.ff_nodes.size(); ++idx) {
     const SimNode& sn = cg.nodes.at(cg.ff_nodes[idx]);
     st.values[sn.out] = st.ff_states.at(idx);
-    inject_faults(st.values, batch, sn.out);
+    if (st.fault_present[sn.out]) {
+      inject_faults(st.values, batch, sn.out);
+    }
   }
 }
 
@@ -126,42 +134,113 @@ Dual eval_bus_dual(const SimNode& sn, const std::array<Dual, 6>& ins) {
   return out;
 }
 
+// How the node loop evaluates a gate type (one table lookup per node, in place
+// of a chain of type tests).
+enum class Kind : uint8_t { SKIP, CONST0, CONST1, CONSTX, GATE, LATCH, TBUF, BUS, ICG };
+struct TypeInfo {
+  Kind kind = Kind::GATE;
+  const DualGate* gate = nullptr;  // GATE: its cubes (nullptr: no function)
+};
+
+const std::vector<TypeInfo>& type_info() {
+  static const std::vector<TypeInfo> table = [] {
+    std::vector<TypeInfo> t(static_cast<size_t>(GateType::BUS_RES) + 1);
+    for (size_t g = 0; g < t.size(); ++g) {
+      const GateType type = static_cast<GateType>(g);
+      TypeInfo& info = t[g];
+      switch (type) {
+        case GateType::INPUT:
+        case GateType::DFF:
+          info.kind = Kind::SKIP;
+          break;
+        case GateType::CONST0:
+          info.kind = Kind::CONST0;
+          break;
+        case GateType::CONST1:
+          info.kind = Kind::CONST1;
+          break;
+        case GateType::CONSTX:
+          info.kind = Kind::CONSTX;
+          break;
+        case GateType::LATCH:
+          info.kind = Kind::LATCH;
+          break;
+        case GateType::TBUF_P:
+        case GateType::TBUF_N:
+        case GateType::TINV_P:
+        case GateType::TINV_N:
+          info.kind = Kind::TBUF;
+          break;
+        case GateType::BUS_MERGE:
+        case GateType::BUS_RES:
+          info.kind = Kind::BUS;
+          break;
+        default:
+          if (is_icg(type)) {
+            info.kind = Kind::ICG;
+          } else {
+            info.kind = Kind::GATE;
+            info.gate = dual_gate(type);
+          }
+      }
+    }
+    return t;
+  }();
+  return table;
+}
+
 void evaluate_combinational(XState& st, const CompiledSimGraph& cg,
                             const FaultBatch& batch) {
   auto& nv = st.values;
-  auto& fp = st.fault_present;
-  for (int i = 0; i < batch.size; ++i) {
-    fp[batch.faults[i].net_index] = 1;
-  }
+  const auto& fp = st.fault_present;
+  const std::vector<TypeInfo>& info = type_info();
   std::array<Dual, 6> ins{};
-  // A node's value from its inputs now (a latch's or clock gate's state moves).
-  const auto value_of = [&](const SimNode& sn) -> Dual {
-    if (sn.type == GateType::CONST0 || sn.type == GateType::CONST1) {
-      return dual_known(sn.type == GateType::CONST1 ? ~0ULL : 0ULL);
-    }
-    if (sn.type == GateType::CONSTX) {
-      return dual_x();
-    }
+  const auto gather_all = [&](const SimNode& sn) {
     ins[0] = gather(nv, sn.in0);
     ins[1] = gather(nv, sn.in1);
     ins[2] = gather(nv, sn.in2);
     ins[3] = gather(nv, sn.in3);
     ins[4] = gather(nv, sn.in4);
     ins[5] = gather(nv, sn.in5);
-    if (sn.type == GateType::LATCH) {
-      return eval_latch_dual(cg, sn, ins, st.latches[sn.out]);
+  };
+  // A node's value from its inputs now (a latch's or clock gate's state moves).
+  const auto value_of = [&](const SimNode& sn) -> Dual {
+    const size_t g = static_cast<size_t>(sn.type);
+    const TypeInfo t = g < info.size() ? info[g] : TypeInfo{};
+    switch (t.kind) {
+      case Kind::CONST0:
+        return dual_known(0ULL);
+      case Kind::CONST1:
+        return dual_known(~0ULL);
+      case Kind::CONSTX:
+        return dual_x();
+      case Kind::GATE: {
+        if (t.gate == nullptr) {
+          throw std::runtime_error("eval_gate_dual: no combinational function for this gate");
+        }
+        // Only the inputs the function reads; eval_dual_gate ignores the rest.
+        const uint32_t slots[6] = {sn.in0, sn.in1, sn.in2, sn.in3, sn.in4, sn.in5};
+        for (uint8_t i = 0; i < t.gate->arity; ++i) {
+          ins[i] = gather(nv, slots[i]);
+        }
+        return eval_dual_gate(*t.gate, ins);
+      }
+      case Kind::LATCH:
+        gather_all(sn);
+        return eval_latch_dual(cg, sn, ins, st.latches[sn.out]);
+      case Kind::TBUF:
+        gather_all(sn);
+        return eval_tbuf_dual(sn.type, ins[0], ins[1]);
+      case Kind::BUS:
+        gather_all(sn);
+        return eval_bus_dual(sn, ins);
+      case Kind::ICG:
+        gather_all(sn);
+        return eval_icg_dual(sn.type, ins[0], dual_or(ins[1], ins[2]), st.latches[sn.out]);
+      case Kind::SKIP:
+        break;
     }
-    if (sn.type == GateType::TBUF_P || sn.type == GateType::TBUF_N ||
-        sn.type == GateType::TINV_P || sn.type == GateType::TINV_N) {
-      return eval_tbuf_dual(sn.type, ins[0], ins[1]);
-    }
-    if (sn.type == GateType::BUS_MERGE || sn.type == GateType::BUS_RES) {
-      return eval_bus_dual(sn, ins);
-    }
-    if (is_icg(sn.type)) {
-      return eval_icg_dual(sn.type, ins[0], dual_or(ins[1], ins[2]), st.latches[sn.out]);
-    }
-    return eval_gate_dual(sn.type, ins);
+    throw std::logic_error("X engine: evaluated an input or a flop");
   };
   // Writes a node's output, its faults on top.
   const auto write = [&](const SimNode& sn, Dual v) {
@@ -170,8 +249,9 @@ void evaluate_combinational(XState& st, const CompiledSimGraph& cg,
       inject_faults(nv, batch, sn.out);
     }
   };
-  const auto skipped = [](const SimNode& sn) {
-    return sn.type == GateType::INPUT || sn.type == GateType::DFF;
+  const auto skipped = [&](const SimNode& sn) {
+    const size_t g = static_cast<size_t>(sn.type);
+    return g < info.size() && info[g].kind == Kind::SKIP;
   };
   const auto eval_level = [&](int start, int end) {
     for (int i = start; i < end; ++i) {
@@ -244,9 +324,6 @@ void evaluate_combinational(XState& st, const CompiledSimGraph& cg,
     }
   } else {
     eval_level(0, static_cast<int>(cg.nodes.size()));
-  }
-  for (int i = 0; i < batch.size; ++i) {
-    fp[batch.faults[i].net_index] = 0;
   }
 }
 
@@ -335,6 +412,10 @@ void for_each_sample(const CompiledSimGraph& cg, const TestVector& vec,
     const FaultBatch& b = cycle.fault_active ? batch : inactive;
     const std::set<int>* unknown =
         c < options.unknown_inputs.size() ? &options.unknown_inputs[c] : nullptr;
+    // This cycle's fault nets, so a net without one skips the batch scan.
+    for (int i = 0; i < b.size; ++i) {
+      st.fault_present[b.faults[i].net_index] = 1;
+    }
     broadcast_inputs(st, cg, cycle, unknown, b);
     seed_ff_outputs(st, cg, b);
     evaluate_combinational(st, cg, b);
@@ -344,6 +425,9 @@ void for_each_sample(const CompiledSimGraph& cg, const TestVector& vec,
     for (int i = 0; i < cycle.settle_cycles; ++i) {
       seed_ff_outputs(st, cg, b);
       evaluate_combinational(st, cg, b);
+    }
+    for (int i = 0; i < b.size; ++i) {
+      st.fault_present[b.faults[i].net_index] = 0;
     }
     if (cycle.sample_outputs) {
       on_sample(st.values);
