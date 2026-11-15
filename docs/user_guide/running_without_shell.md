@@ -420,7 +420,10 @@ Print scan-insertion status.
 python3 ff.py scan-check --top <top> -c config.ofs [options]
 ```
 
-Validate the inserted scan chains (structural and normal-mode checks). Each scan flop's
+Validate the inserted scan chains (structural and normal-mode checks). With `[simulation]
+engine = x` the normal-mode comparison of the scanned design with the original runs on
+the X engine, every flop and latch powered up 0 as in a two-valued check, so a design
+with latches, combinational loops or tristate buses can be checked. Each scan flop's
 scan input must be the flop before's output, or its chain's scan input, and its scan
 enable the scan enable: directly, or through gates the scan test's held inputs
 (`[scan] hold`) and the non-scan flops it ties keep passing the signal on -- a chain-head

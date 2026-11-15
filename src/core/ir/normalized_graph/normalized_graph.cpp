@@ -253,6 +253,23 @@ std::set<int> parse_unobserved_nets(const ParsedModule& mod,
       "([simulation] engine = x)");
 }
 
+// Why a two-valued graph refuses a cell only the X engine models (a latch, a
+// tristate driver -- a library cell or the Yosys primitive synthesis left), or ""
+// for any other cell.
+std::string x_only_reason(const std::string& type, NodeType node_type, bool known) {
+  const auto starts = [&](const char* prefix) { return type.rfind(prefix, 0) == 0; };
+  const char* how =
+      ": the two-valued engine does not model it; simulate it with the X engine "
+      "([simulation] engine = x)";
+  if ((known && node_type == NodeType::LATCH) || starts("$_DLATCH") || starts("$_SR_")) {
+    return std::string("a latch") + how;
+  }
+  if ((known && node_type == NodeType::TBUF) || starts("$_TBUF_")) {
+    return std::string("a tristate driver") + how;
+  }
+  return "";
+}
+
 }  // namespace
 
 NormalizedGraph NormalizedGraph::from_parsed(
@@ -389,6 +406,10 @@ NormalizedGraph NormalizedGraph::from_parsed(
         ng.unknown_cells.insert(inst);
         continue;
       }
+      const std::string why = x_mode ? "" : x_only_reason(cell.type, NodeType::GATE, false);
+      if (!why.empty()) {
+        throw UnsupportedCellError(cell.type, why);
+      }
       throw UnsupportedCellError(cell.type);
     }
 
@@ -422,6 +443,9 @@ NormalizedGraph NormalizedGraph::from_parsed(
         }
         continue;
       }
+      if (!entry->unsupported && !x_mode) {
+        throw UnsupportedCellError(cell.type, x_only_reason(cell.type, entry->node_type, true));
+      }
       throw UnsupportedCellError(cell.type);
     }
 
@@ -429,6 +453,9 @@ NormalizedGraph NormalizedGraph::from_parsed(
     // tristate buffer from one with a tbuf block; a two-valued graph has no Z.
     if ((entry->node_type == NodeType::LATCH && !entry->ff.present) ||
         (entry->node_type == NodeType::TBUF && (!x_mode || !entry->tbuf.present))) {
+      if (entry->node_type == NodeType::TBUF && !x_mode) {
+        throw UnsupportedCellError(cell.type, x_only_reason(cell.type, entry->node_type, true));
+      }
       throw UnsupportedCellError(cell.type);
     }
 

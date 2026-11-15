@@ -1276,12 +1276,17 @@ def _materialize_reduced_outputs_x(
     pseudo_port_map: dict[str, dict[str, Any]],
     unsupported: str,
     unknown_inputs: Collection[str] = (),
+    launch_vector: dict[str, bool] | None = None,
 ) -> tuple[dict[str, bool], frozenset[str]]:
     """_materialize_reduced_outputs on the X engine: also the outputs (functional
     and PPO ports) the view's unknown values make X for this vector, False in the
     returned values. Those are don't-care in the pattern, no observation.
     `unknown_inputs`: inputs unknown whatever their value in `vector` (a LOC
-    capture's pseudo-inputs whose launch-frame next state is X)."""
+    capture's pseudo-inputs whose launch-frame next state is X).
+    `launch_vector`: `vector` is a transition's capture frame and this its launch:
+    the outputs are the capture sample of the pair, as the two-frame grade
+    (compaction_pair_detections_preloaded_x) sees them -- a latch the capture
+    closes keeps its launch-frame value, not the X it powers up to."""
     ppo_order = [
         str(entry["ppo_port"])
         for _, entry in sorted(pseudo_port_map.items())
@@ -1291,17 +1296,34 @@ def _materialize_reduced_outputs_x(
     filled = dict(vector)
     for name in input_order:
         filled.setdefault(name, False)
-    samples = list(
-        core.fault_free_outputs_x(
-            reduced_json_path,
-            reduced_cell_map,
-            [filled],
-            input_order,
-            output_order,
-            unsupported,
-            unknown_inputs=sorted(unknown_inputs),
+    if launch_vector is not None:
+        launch = dict(launch_vector)
+        for name in input_order:
+            launch.setdefault(name, False)
+        samples = [
+            core.fault_free_pair_outputs_x(
+                reduced_json_path,
+                reduced_cell_map,
+                launch,
+                filled,
+                input_order,
+                output_order,
+                unsupported,
+                capture_unknown=sorted(unknown_inputs),
+            )
+        ]
+    else:
+        samples = list(
+            core.fault_free_outputs_x(
+                reduced_json_path,
+                reduced_cell_map,
+                [filled],
+                input_order,
+                output_order,
+                unsupported,
+                unknown_inputs=sorted(unknown_inputs),
+            )
         )
-    )
     if len(samples) != 1:
         raise RunnerError(
             "simulator_error: reduced fault-free simulation returned "
@@ -1709,6 +1731,7 @@ def _process_scan_candidate(
                 scan_ctx.pseudo_port_map,
                 unsupported,
                 capture_unknown,
+                launch_vector=vector,
             )
         else:
             reduced_expectation = _materialize_reduced_outputs(
@@ -1951,8 +1974,12 @@ def _process_scan_candidate(
     qstem_active = set(_active_q_stem_fault_ids(active_rows, scan_ctx.q_stem_site_keys))
     if transition:
         reduced_trusted = sorted(set(tentative) - qstem_active)
-        protocol_sim_fault_ids = sorted(qstem_active)
-        possible -= qstem_active  # the protocol grade decides those too
+        # The X engine's possible detections too: the view powers each latch (and
+        # loop) up unknown at the launch, where the load has left a value the
+        # protocol knows -- a definite detection holds whatever that value is,
+        # a possible one may be an unknown the chip does not have.
+        protocol_sim_fault_ids = sorted(qstem_active | possible)
+        possible = set()  # the protocol grade decides them
     else:
         reduced_trusted = sorted(set(tentative))
         # Residual = Q-stem faults the reduced sim did not functionally observe;
@@ -3547,6 +3574,7 @@ def _grade_launch_candidate_x(
         scan_ctx.pseudo_port_map,
         unsupported,
         capture_unknown,
+        launch_vector=vector,
     )
     serialize_input = dict(vector)
     for entry in scan_ctx.pseudo_port_map.values():

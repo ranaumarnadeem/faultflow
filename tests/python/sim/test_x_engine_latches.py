@@ -142,11 +142,12 @@ def test_an_rtl_latch_is_synthesized_to_library_cells_and_graded(
     assert summary["detected"] > 0
     assert summary["denominator"] > 0
 
-    # Two-valued, the latch is a cell the engine does not model.
+    # Two-valued, the latch is a cell the engine does not model, and the refusal
+    # says which engine does.
     two_dir = tmp_path / "two"
     two_dir.mkdir()
     monkeypatch.chdir(two_dir)
     two = Runner(load_config(_cfg(two_dir, "two_valued"), "xl"))
     two.init()
-    with pytest.raises(Exception, match="(?i)unsupported cell"):
+    with pytest.raises(Exception, match=r"(?i)unsupported cell.*a latch.*engine = x"):
         two.sim(clean=True)

@@ -1480,7 +1480,8 @@ class Runner:
         if core is None:
             raise RunnerError("C++ extension _faultflow_core is required")
         cell_map = str(resolve_scan_cell_map(self.cfg))
-        unsupported = self.cfg.simulation.unsupported_cells
+        # The graph the campaign grades (the X engine's: a latch, a tristate bus).
+        unsupported = self.cfg.simulation.graph_policy
 
         def site_keys(netlist: Path, blackboxes: list[str]) -> list[str]:
             rows = core.list_site_keys(str(netlist), cell_map, unsupported, blackboxes)
@@ -1521,7 +1522,7 @@ class Runner:
         core = _load_core()
         if core is None:
             raise RunnerError("C++ extension _faultflow_core is required")
-        unsupported = self.cfg.simulation.unsupported_cells
+        unsupported = self.cfg.simulation.graph_policy
         wrapper = manifest["wrapper"]
         rows = [
             dict(row)
@@ -1723,6 +1724,21 @@ class Runner:
                 high[clk] = True
             sequences.append([low, high])
         cell_map = cell_map_path if cell_map_path is not None else self.cfg.cell_lib
+        if self.cfg.simulation.engine == "x":
+            # The X engine's graph (a latch, a loop, a tristate bus), every flop and
+            # latch powered up 0 as the two-valued check does: with no unknown in
+            # the netlist the same outputs; an X output compares as X.
+            return list(
+                core.fault_free_sequence_outputs_x(
+                    str(netlist),
+                    str(cell_map),
+                    sequences,
+                    input_order,
+                    output_order,
+                    self.cfg.simulation.graph_policy,
+                    list(self.cfg.blackbox_instances),
+                )
+            )
         return list(
             core.fault_free_sequence_outputs(
                 str(netlist),

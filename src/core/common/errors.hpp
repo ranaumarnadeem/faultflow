@@ -14,6 +14,9 @@ class UnsupportedCellError : public std::runtime_error {
  public:
   explicit UnsupportedCellError(const std::string& cell)
       : std::runtime_error("Unsupported cell: " + cell), cell_(cell) {}
+  // With what the cell is and which engine models it, after its name.
+  UnsupportedCellError(const std::string& cell, const std::string& why)
+      : std::runtime_error("Unsupported cell: " + cell + " (" + why + ")"), cell_(cell) {}
   const std::string& cell() const { return cell_; }
 
  private:

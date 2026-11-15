@@ -1155,6 +1155,97 @@ py::list fault_free_outputs_x_py(const std::string& json_path,
   return out;
 }
 
+// fault_free_sequence_outputs on the X engine (GoldenRefSimX): each sequence from
+// power-up, its last sample's outputs True / False, None for X. Every flop and
+// latch powers up 0 as in the two-valued one (initial_unknown: X), so with no
+// unknown in the netlist the outputs are the two-valued ones.
+py::list fault_free_sequence_outputs_x_py(
+    const std::string& json_path, const std::string& cell_map_path,
+    const std::vector<std::vector<std::map<std::string, bool>>>& raw_sequences,
+    const std::vector<std::string>& input_order,
+    const std::vector<std::string>& output_order, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances, bool initial_unknown) {
+  const CachedGraph& graph = load_cached_graph(json_path, cell_map_path,
+                                               unsupported_policy, blackbox_instances);
+  const std::vector<TestVector> vectors =
+      convert_sequence_vectors_strict(graph.parsed, raw_sequences, input_order);
+  std::vector<int> yids;
+  yids.reserve(output_order.size());
+  for (const auto& output : output_order) {
+    yids.push_back(graph.parsed.net_id_by_name(output));
+  }
+  XRunOptions options;
+  options.initial_state = initial_unknown ? Logic::X : Logic::ZERO;
+  GoldenRefSimX sim;
+  py::list out;
+  for (const TestVector& vector : vectors) {
+    const std::vector<XSnapshot> samples =
+        sim.simulate_sequence(graph.cg, vector, nullptr, options, &yids);
+    if (samples.empty()) {
+      throw std::runtime_error("sequence produced no sampled outputs");
+    }
+    py::dict sample;
+    for (size_t i = 0; i < output_order.size(); ++i) {
+      const auto it = samples.back().find(yids[i]);
+      if (it == samples.back().end()) {
+        throw std::runtime_error("output not simulated: " + output_order[i]);
+      }
+      sample[py::str(output_order[i])] = logic_to_py(it->second);
+    }
+    out.append(sample);
+  }
+  return out;
+}
+
+// The fault-free capture frame of a launch/capture pair on the X engine
+// (GoldenRefSimX on transition_pair, every flop and latch powered up X, the
+// capture's `capture_unknown` inputs unknown): each output True / False, None for
+// X -- the good machine detect_with_pair_x grades against, a latch keeping its
+// launch-frame value where the capture closes it.
+py::dict fault_free_pair_outputs_x_py(const std::string& json_path,
+                                      const std::string& cell_map_path,
+                                      const std::map<std::string, bool>& launch,
+                                      const std::map<std::string, bool>& capture,
+                                      const std::vector<std::string>& input_order,
+                                      const std::vector<std::string>& output_order,
+                                      const std::string& unsupported_policy,
+                                      const std::vector<std::string>& blackbox_instances,
+                                      const std::vector<std::string>& capture_unknown) {
+  const CachedGraph& graph = load_cached_graph(json_path, cell_map_path,
+                                               unsupported_policy, blackbox_instances);
+  const std::vector<TestVector> frames =
+      convert_vectors_strict(graph.parsed, {launch, capture}, input_order);
+  std::vector<int> yids;
+  yids.reserve(output_order.size());
+  for (const auto& output : output_order) {
+    yids.push_back(graph.parsed.net_id_by_name(output));
+  }
+  XRunOptions options;
+  options.initial_state = Logic::X;
+  if (!capture_unknown.empty()) {
+    std::set<int> unknown;
+    for (const std::string& name : capture_unknown) {
+      unknown.insert(graph.parsed.net_id_by_name(name));
+    }
+    options.unknown_inputs = {{}, std::move(unknown)};
+  }
+  GoldenRefSimX sim;
+  const std::vector<XSnapshot> samples = sim.simulate_sequence(
+      graph.cg, transition_pair(frames[0], frames[1]), nullptr, options, &yids);
+  if (samples.size() != 2) {
+    throw std::runtime_error("fault_free_pair_outputs_x: two samples expected");
+  }
+  py::dict out;
+  for (size_t i = 0; i < output_order.size(); ++i) {
+    const auto it = samples[1].find(yids[i]);
+    if (it == samples[1].end()) {
+      throw std::runtime_error("output not simulated: " + output_order[i]);
+    }
+    out[py::str(output_order[i])] = logic_to_py(it->second);
+  }
+  return out;
+}
+
 // Stuck-at grading over one multi-cycle input sequence, observing only
 // observe_outputs at the sampled cycles (grade_sequence_faults). faults are
 // (compiled net index, 0 = SA0 / 1 = SA1). Returns {"golden": the fault-free
@@ -2034,6 +2125,18 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("unsupported_policy") = "fail+x",
         py::arg("blackbox_instances") = std::vector<std::string>{},
         py::arg("unknown_inputs") = std::vector<std::string>{});
+  m.def("fault_free_sequence_outputs_x", &faultflow::fault_free_sequence_outputs_x_py,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("sequences"),
+        py::arg("input_order"), py::arg("output_order"),
+        py::arg("unsupported_policy") = "fail+x",
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("initial_unknown") = false);
+  m.def("fault_free_pair_outputs_x", &faultflow::fault_free_pair_outputs_x_py,
+        py::arg("json_path"), py::arg("cell_map_path"), py::arg("launch"),
+        py::arg("capture"), py::arg("input_order"), py::arg("output_order"),
+        py::arg("unsupported_policy") = "fail+x",
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::arg("capture_unknown") = std::vector<std::string>{});
   m.def("simulate_sequence_faults", &faultflow::simulate_sequence_faults_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("input_order"),
         py::arg("cycles"), py::arg("sample"), py::arg("observe_outputs"),
