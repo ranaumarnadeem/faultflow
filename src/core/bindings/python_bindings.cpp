@@ -2119,6 +2119,13 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("unknown_nets") = std::vector<int>{}, py::arg("reference") = false,
         py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
         py::arg("los_launch_scan_in") = std::map<int, bool>{});
+  m.def("scan_load_active_x", &faultflow::scan::scan_load_active_x, py::arg("json_path"),
+        py::arg("cell_map_path"), py::arg("nets"),
+        py::arg("unsupported_policy") = "fail+x",
+        py::arg("blackbox_instances") = std::vector<std::string>{},
+        py::call_guard<py::gil_scoped_release>(),
+        "Per compiled net: whether the X scan protocol runs a stuck-at on it in "
+        "the load (off the scan path, in a graph holding a latch or a loop).");
   m.def("fault_free_outputs_x", &faultflow::fault_free_outputs_x_py,
         py::arg("json_path"), py::arg("cell_map_path"), py::arg("vectors"),
         py::arg("input_order"), py::arg("output_order"),

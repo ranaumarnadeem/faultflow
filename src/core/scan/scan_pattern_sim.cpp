@@ -666,14 +666,89 @@ XRunOptions scan_x_options(const TestVector& vec, const std::vector<int>& unknow
 // launch edge's cycle. Any other graph is one the two-valued protocol grades
 // too (its flops change at the edges, the capture sample recomputes its logic)
 // and gets that vector, so with nothing unknown the results are the same.
+// State the chains don't reach and a scan test can change: a latch or a loop.
+bool holds_state(const CompiledSimGraph& cg) {
+  return !cg.latch_configs.empty() ||
+         std::any_of(cg.in_loop.begin(), cg.in_loop.end(),
+                     [](uint8_t on) { return on != 0; });
+}
+
+// Per compiled net, 1 where a stuck-at acts in the load (scan_load_active_x):
+// in a graph holding state, every net off the scan path -- the nets a pin the
+// load depends on reads, back through the logic (latches and loops included) to
+// the flops and the inputs. A scan flop's load depends on its clock, clear,
+// preset, scan-in and scan enable, not on its D or data enable (the scan mux
+// passes the scan-in); a non-scan flop's on every pin, as its state a fault
+// changes is its release faults' (scan/nonscan.py), not the load's.
+std::vector<uint8_t> load_active_nets(const CompiledSimGraph& cg) {
+  const size_t net_count = static_cast<size_t>(cg.net_count);
+  std::vector<uint8_t> active(net_count, 0);
+  if (!holds_state(cg)) {
+    return active;
+  }
+  std::vector<uint8_t> scan_path(net_count, 0);
+  std::vector<uint32_t> work;
+  const auto reach = [&](uint32_t net) {
+    if (net != UNUSED_INPUT && scan_path.at(net) == 0) {
+      scan_path[net] = 1;
+      work.push_back(net);
+    }
+  };
+  for (const int node : cg.ff_nodes) {
+    const SimNode& sn = cg.nodes.at(static_cast<size_t>(node));
+    const CompiledFFConfig& cfg = cg.ff_configs.at(sn.ff_cfg);
+    const bool scan = cfg.has_scan && sn.in4 != UNUSED_INPUT && sn.in5 != UNUSED_INPUT;
+    if (!scan) {
+      reach(sn.in0);
+    }
+    reach(sn.in1);
+    if (!scan || !cfg.has_enable) {
+      reach(sn.in2);  // a clear; a data enable only matters off the scan mux
+    }
+    reach(sn.in3);
+    reach(sn.in4);
+    reach(sn.in5);
+  }
+  while (!work.empty()) {
+    const uint32_t net = work.back();
+    work.pop_back();
+    const int driver = cg.driver_index.at(net);
+    if (driver < 0) {
+      continue;
+    }
+    const SimNode& sn = cg.nodes.at(static_cast<size_t>(driver));
+    if (sn.type == GateType::DFF || sn.type == GateType::INPUT) {
+      continue;  // a flop's output or an input: the walk stops there
+    }
+    for (const uint32_t in : {sn.in0, sn.in1, sn.in2, sn.in3, sn.in4, sn.in5}) {
+      reach(in);
+    }
+  }
+  for (size_t net = 0; net < net_count; ++net) {
+    active[net] = scan_path[net] == 0 ? 1 : 0;
+  }
+  return active;
+}
+
+// `vec` with a fault on in every cycle: a load-active stuck-at's.
+TestVector fault_active_throughout(TestVector vec) {
+  for (TestCycle& cycle : vec.cycles) {
+    cycle.fault_active = true;
+  }
+  return vec;
+}
+
+void check_fault_net(const CompiledSimGraph& cg, const ScanProtocolFaultSpec& spec) {
+  if (spec.compiled_net_index >= static_cast<uint32_t>(cg.net_count)) {
+    throw std::runtime_error("scan protocol fault compiled_net_index out of range");
+  }
+}
+
 TestVector build_scan_pattern_vector_x(const CompiledSimGraph& cg,
                                        const ParsedGraph& parsed,
                                        const ScanPatternRequest& request) {
   TestVector vec = build_scan_pattern_vector(parsed, request);
-  const bool holds_state =
-      !cg.latch_configs.empty() ||
-      std::any_of(cg.in_loop.begin(), cg.in_loop.end(), [](uint8_t on) { return on != 0; });
-  if (holds_state && (request.loc_two_capture || request.los_two_capture)) {
+  if (holds_state(cg) && (request.loc_two_capture || request.los_two_capture)) {
     // The launch sample is the first sampled cycle; its clock edge the next.
     const auto launch = std::find_if(vec.cycles.begin(), vec.cycles.end(),
                                      [](const TestCycle& c) { return c.sample_outputs; });
@@ -830,50 +905,73 @@ ScanProtocolFaultSimResultX simulate_scan_protocol_faults_x(
       sim.simulate_batch_samples(cg, vec, FaultBatch{}, options, slots.nets), 0);
   result.lanes.resize(request.faults.size());
 
+  // A load-active stuck-at (scan_load_active_x) acts in every cycle, the rest
+  // from the capture on (`vec`). A cycle's fault activity is every lane's, so
+  // each kind is batched apart: the faults in order, the kept-out-of-the-load
+  // ones first. A graph holding no state has none load-active.
+  const std::vector<uint8_t> load_active =
+      transition ? std::vector<uint8_t>{} : load_active_nets(cg);
+  const TestVector vec_load = fault_active_throughout(vec);
   const size_t per_batch = static_cast<size_t>(kScanProtocolFaultBatchSize);
-  const int batch_count =
-      static_cast<int>((request.faults.size() + per_batch - 1) / per_batch);
+  std::vector<std::vector<size_t>> batches;
+  std::vector<uint8_t> batch_in_load;
+  for (const uint8_t in_load : {uint8_t{0}, uint8_t{1}}) {
+    std::vector<size_t> kind;
+    for (size_t i = 0; i < request.faults.size(); ++i) {
+      check_fault_net(cg, request.faults[i]);
+      const uint32_t net = request.faults[i].compiled_net_index;
+      if ((load_active.empty() ? uint8_t{0} : load_active[net]) == in_load) {
+        kind.push_back(i);
+      }
+    }
+    for (size_t begin = 0; begin < kind.size(); begin += per_batch) {
+      const size_t end = std::min(begin + per_batch, kind.size());
+      batches.emplace_back(kind.begin() + static_cast<std::ptrdiff_t>(begin),
+                           kind.begin() + static_cast<std::ptrdiff_t>(end));
+      batch_in_load.push_back(in_load);
+    }
+  }
+
   // Each batch writes its own lanes' slots, so batches run concurrently and the
   // result is the same for any thread count.
   const auto process_batch = [&](int batch_idx) {
-    const size_t begin = static_cast<size_t>(batch_idx) * per_batch;
-    const size_t end = std::min(begin + per_batch, request.faults.size());
+    const std::vector<size_t>& members = batches[static_cast<size_t>(batch_idx)];
     FaultBatch batch;
-    batch.size = static_cast<int>(end - begin);
-    for (size_t i = begin; i < end; ++i) {
-      if (request.faults[i].compiled_net_index >= static_cast<uint32_t>(cg.net_count)) {
-        throw std::runtime_error("scan protocol fault compiled_net_index out of range");
-      }
-      CompactFault fault = make_compact_fault(request.faults[i]);
-      const int bit = static_cast<int>(i - begin) + 1;
+    batch.size = static_cast<int>(members.size());
+    for (size_t k = 0; k < members.size(); ++k) {
+      CompactFault fault = make_compact_fault(request.faults[members[k]]);
+      const int bit = static_cast<int>(k) + 1;
       fault.bit = static_cast<uint8_t>(bit);
       fault.sa_mask = 1ULL << bit;
-      batch.faults[i - begin] = fault;
+      batch.faults[k] = fault;
       batch.mask |= fault.sa_mask;
     }
     // A transition also samples the batch's fault nets, after the ports.
     std::vector<uint32_t> nets = slots.nets;
     if (transition) {
-      for (size_t i = begin; i < end; ++i) {
+      for (const size_t i : members) {
         nets.push_back(request.faults[i].compiled_net_index);
       }
     }
-    const auto samples = sim.simulate_batch_samples(cg, vec, batch, options, nets);
+    const TestVector& cycles =
+        batch_in_load[static_cast<size_t>(batch_idx)] != 0 ? vec_load : vec;
+    const auto samples = sim.simulate_batch_samples(cg, cycles, batch, options, nets);
     const ScanPatternResultX good =
         extract_scan_lane_observations_x(slots, request.pattern, samples, 0);
     if (good.real_po_values != result.golden.real_po_values ||
         good.unload_seqs != result.golden.unload_seqs) {
       throw std::runtime_error("X scan protocol: a batch's good machine differs");
     }
-    for (size_t i = begin; i < end; ++i) {
+    for (size_t k = 0; k < members.size(); ++k) {
+      const size_t i = members[k];
       ScanProtocolFaultLaneResultX& lane = result.lanes[i];
       lane.fault_index = i;
       const ScanPatternResultX faulty = extract_scan_lane_observations_x(
-          slots, request.pattern, samples, static_cast<int>(i - begin) + 1);
+          slots, request.pattern, samples, static_cast<int>(k) + 1);
       classify_lane_x(result.golden, faulty, request.unload_mask, request.capture_diffs,
                       lane);
       if (transition) {
-        const size_t slot = slots.nets.size() + (i - begin);
+        const size_t slot = slots.nets.size() + k;
         if (!launched_x(lane_logic(samples[0].at(slot), 0),
                         lane_logic(samples[1].at(slot), 0), request.faults[i].fault_type)) {
           lane.outcome = XDetection::NONE;
@@ -882,7 +980,27 @@ ScanProtocolFaultSimResultX simulate_scan_protocol_faults_x(
       }
     }
   };
-  parallel_ranges(batch_count, effective_sim_threads(sim_threads), process_batch);
+  parallel_ranges(static_cast<int>(batches.size()), effective_sim_threads(sim_threads),
+                  process_batch);
+  return result;
+}
+
+std::vector<bool> scan_load_active_x(const std::string& json_path,
+                                     const std::string& cell_map_path,
+                                     const std::vector<uint32_t>& nets,
+                                     const std::string& unsupported_policy,
+                                     const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& graph = load_cached_graph(json_path, cell_map_path,
+                                               unsupported_policy, blackbox_instances);
+  const std::vector<uint8_t> active = load_active_nets(graph.cg);
+  std::vector<bool> result;
+  result.reserve(nets.size());
+  for (const uint32_t net : nets) {
+    if (net >= active.size()) {
+      throw std::runtime_error("scan_load_active_x: compiled net index out of range");
+    }
+    result.push_back(active[net] != 0);
+  }
   return result;
 }
 
@@ -907,16 +1025,19 @@ std::vector<XDetection> simulate_scan_protocol_faults_x_reference(
       sim.simulate_sequence(cg, vec, nullptr, options, transition ? nullptr : &yids);
   const ScanPatternResultX golden =
       scan_observations_x(graph.parsed, request.pattern, fault_free);
+  // A load-active stuck-at acts in every cycle (simulate_scan_protocol_faults_x).
+  const std::vector<uint8_t> load_active =
+      transition ? std::vector<uint8_t>{} : load_active_nets(cg);
+  const TestVector vec_load = fault_active_throughout(vec);
   std::vector<XDetection> outcomes;
   outcomes.reserve(request.faults.size());
   for (const ScanProtocolFaultSpec& spec : request.faults) {
-    if (spec.compiled_net_index >= static_cast<uint32_t>(cg.net_count)) {
-      throw std::runtime_error("scan protocol fault compiled_net_index out of range");
-    }
+    check_fault_net(cg, spec);
+    const bool in_load = !load_active.empty() && load_active[spec.compiled_net_index] != 0;
     const CompactFault fault = make_compact_fault(spec);
     const ScanPatternResultX faulty = scan_observations_x(
         graph.parsed, request.pattern,
-        sim.simulate_sequence(cg, vec, &fault, options, &yids));
+        sim.simulate_sequence(cg, in_load ? vec_load : vec, &fault, options, &yids));
     ScanProtocolFaultLaneResultX lane;
     classify_lane_x(golden, faulty, request.unload_mask, false, lane);
     if (transition) {

@@ -245,7 +245,13 @@ its launch value), and a transition fault the view only possibly detects is
 credited only where the full scan protocol shows it (a delay fault leaves the load
 alone, so the latch or loop holds the same value in the good and the faulty chip).
 A delay fault acts from the launch edge: a loop or latch the launched flops would
-change sees the slow net's old value until the capture. `ff.py jtag` and
+change sees the slow net's old value until the capture. A stuck-at acts in the load
+too, as on the chip, where it can change what a latch or loop holds -- an enable
+stuck closed leaves it unknown, or the value it leaves shows the fault -- so a
+stuck-at the view only possibly detects is decided by the full scan protocol
+running the fault from power-up. A stuck-at on the scan path (what a scan flop's
+clock, scan-in, scan enable, clear or preset reads, or what a non-scan flop reads)
+keeps the fault-free load the ATPG view assumes. `ff.py jtag` and
 `ff.py wsp`, which always run on the X engine, then read the netlist's `x`/`z`
 bits as unknown too, as the scan campaign whose faults they grade did. The SoC chip number
 (`ff.py project`), the wrapper's coverage by part, the autoMBIST categories and the

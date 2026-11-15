@@ -18,9 +18,10 @@ capture it holds a value the load left. Two things follow, both tested:
   inactive in the slow shift).
 
 A stuck-at acts in the load too: with the latch's enable stuck closed it never
-opens, so its value at the capture is unknown -- a possible detection the
-protocol oracle (whose load is fault-free) does not show and a netlist with the
-fault tied in does."""
+opens, so its value at the capture is unknown -- a possible detection. The
+protocol oracle used to load fault-free and did not show it; it now runs a
+stuck-at off the scan path in the load, as the netlist with the fault tied in
+does."""
 
 from __future__ import annotations
 
@@ -34,9 +35,9 @@ from x_scan_replay import (
     campaign,
     config,
     faults,
+    best_with_fault_throughout,
     not_reproduced,
     redundant_detected,
-    shown_with_fault_throughout,
 )
 
 SL = Design(
@@ -127,14 +128,17 @@ def test_intest_of_a_latch_design_credits_what_the_protocol_shows(
 def test_intest_stuck_at_on_a_latch_design(
     tmp_path: Path, flow_tools: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every definite credit reproduced by the protocol; each possible one --
-    the latch's enable stuck closed, so it never opens -- shown by the netlist
-    with the fault tied in."""
+    """Every credit reproduced by the protocol, each possible one -- the latch's
+    enable stuck closed, so it never opens -- too, and possible on the netlist
+    with the fault tied in (acting in the load, as on the chip); none left
+    undetected detected definitely there."""
     monkeypatch.chdir(tmp_path)
     cfg, patterns = campaign(tmp_path, SL, "stuck_at", "loc", intest=True)
-    missing = not_reproduced(cfg, SL.top, patterns, "stuck_at", "loc", intest=True)
-    assert [row for row in missing if row[2] == "detected"] == []
-    for key, kind, _, _ in missing:
-        assert shown_with_fault_throughout(
-            cfg, SL.top, patterns, key, kind, intest=True
-        ), (key, kind)
+    assert not_reproduced(cfg, SL.top, patterns, "stuck_at", "loc", intest=True) == []
+    assert faults(cfg, ("possible",))
+    for key, kind, status in faults(cfg, ("possible", "undetected")):
+        best = best_with_fault_throughout(cfg, SL.top, patterns, key, kind, intest=True)
+        if status == "possible":
+            assert best == "possible", (key, kind)
+        else:
+            assert best != "definite", (key, kind)

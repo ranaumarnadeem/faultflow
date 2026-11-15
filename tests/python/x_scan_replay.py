@@ -299,18 +299,20 @@ def _tie(module: dict[str, Any], cell_map: Any, site_key: str, value: str) -> No
         ]
 
 
-def shown_with_fault_throughout(
+def best_with_fault_throughout(
     cfg: Any,
     top: str,
     patterns_path: Path,
     site_key: str,
     fault_type: str,
     intest: bool,
-) -> bool:
+) -> str:
     """A stuck-at tied into the netlist the campaign grades, so it acts in every
-    cycle, the load included (the protocol oracle's load is fault-free): does
-    some exported pattern show a compared bit known in the good machine and
-    unknown or different in the faulty one?"""
+    cycle, the load included, as on the chip -- independent of the protocol
+    oracle: its best outcome over the exported patterns. definite where some
+    compared bit is known in the good machine and known and different in the
+    faulty one, possible where one is known and the faulty one unknown, else
+    none."""
     proto = protocol(cfg, top, intest)
     netlist = json.loads(proto.netlist.read_text(encoding="utf-8"))
     cell_map = json.loads(Path(proto.cell_map).read_text(encoding="utf-8"))
@@ -319,23 +321,26 @@ def shown_with_fault_throughout(
     )
     faulty = proto.netlist.with_name("faulty_tied.json")
     faulty.write_text(json.dumps(netlist), encoding="utf-8")
+    best = "none"
     for pattern in exported(patterns_path):
         kwargs = proto.kwargs(pattern, "stuck_at", "loc")
         good = proto.core.simulate_scan_pattern_x(
             str(proto.netlist), proto.cell_map, **kwargs
         )
         bad = proto.core.simulate_scan_pattern_x(str(faulty), proto.cell_map, **kwargs)
-        for port, value in dict(good["real_po_values"]).items():
-            if value is not None and bad["real_po_values"][port] != value:
-                return True
+        pairs = [
+            (value, bad["real_po_values"][port])
+            for port, value in dict(good["real_po_values"]).items()
+        ]
         mask = pattern.unload_mask or {}
         for chain, bits in dict(good["unload_seqs"]).items():
             for t, value in enumerate(bits):
-                compared = chain not in mask or t >= len(mask[chain]) or mask[chain][t]
-                if (
-                    compared
-                    and value is not None
-                    and bad["unload_seqs"][chain][t] != value
-                ):
-                    return True
-    return False
+                if chain not in mask or t >= len(mask[chain]) or mask[chain][t]:
+                    pairs.append((value, bad["unload_seqs"][chain][t]))
+        for value, faulty_value in pairs:
+            if value is None or faulty_value == value:
+                continue
+            outcome = "possible" if faulty_value is None else "definite"
+            if RANK[outcome] > RANK[best]:
+                best = outcome
+    return best

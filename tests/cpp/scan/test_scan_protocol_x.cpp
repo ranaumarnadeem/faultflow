@@ -345,6 +345,82 @@ TEST_CASE("X scan protocol: a transition fault acts from the launch edge",
   }
 }
 
+namespace {
+
+// tiny_scan_loop's stuck-at pattern: q2 = 0, q1 = 1, q3 = 0 loaded with A = 0,
+// B = 1, C = 1 -- the load sets the loop (C & q1) and hold = nand(q2, C) = 1
+// keeps it set: Z = loop & B and q3's capture A ^ loop show it.
+ScanProtocolFaultRequest loop_set_by_the_load() {
+  ScanProtocolFaultRequest request;
+  request.pattern.clock_ports = {"CLK"};
+  request.pattern.scan_enable_port = "scan_en";
+  request.pattern.scan_input_ports = {"scan_in"};
+  request.pattern.scan_output_ports = {"scan_out_0"};
+  request.pattern.functional_output_ports = {"Y", "Z"};
+  request.pattern.max_chain_length = 3;
+  request.pattern.load_seqs[0] = {false, true, false};
+  request.pattern.capture_pi_values = {{"A", false}, {"B", true}, {"C", true}};
+  return request;
+}
+
+uint32_t compiled_net(const CachedGraph& graph, const char* name) {
+  return static_cast<uint32_t>(
+      graph.cg.yosys_to_compiled.at(graph.parsed.net_id_by_name(name)));
+}
+
+}  // namespace
+
+TEST_CASE("X scan protocol: a stuck-at off the scan path acts in the load",
+          "[scan][xsim]") {
+  // C stuck at 0 from power-up, as on the chip: the loop is never set (and hold
+  // stays 1, so never reset either), it holds its power-up X, and Z and q3 are
+  // unknown -- a possible detection. With the fault off in the load, the load had
+  // set the loop in the faulty machine too and nothing showed.
+  //
+  // scan_in stuck at 0 would load all zeros and leave the loop unset the same
+  // way. But a scan-path fault would corrupt the load itself: the protocol loads
+  // it fault-free, as the view assumes (the unload's scan-ins are 0 anyway), and
+  // nothing shows.
+  const std::string json = test::fixture_path("tiny_scan_loop.json");
+  const CachedGraph& graph = load_cached_graph(json, test::cell_map_path(), "fail+x", {});
+  ScanProtocolFaultRequest request = loop_set_by_the_load();
+  request.faults = {{compiled_net(graph, "C"), 0}, {compiled_net(graph, "scan_in"), 0}};
+  const auto graded =
+      simulate_scan_protocol_faults_x(json, test::cell_map_path(), request, "fail+x", 1,
+                                      {}, {});
+  CHECK(graded.lanes.at(0).outcome == XDetection::POSSIBLE);
+  CHECK(graded.lanes.at(1).outcome == XDetection::NONE);
+  CHECK(simulate_scan_protocol_faults_x_reference(json, test::cell_map_path(), request,
+                                                  "fail+x", {}, {}) ==
+        std::vector<XDetection>{XDetection::POSSIBLE, XDetection::NONE});
+}
+
+TEST_CASE("scan_load_active_x: a stuck-at off the scan path, in a graph holding state",
+          "[scan][xsim]") {
+  // A net is load-active when nothing a scan flop loads by reads it (its clock,
+  // scan-in, scan enable, clear, preset) -- nor anything a non-scan flop reads --
+  // and the graph holds a latch or a loop for it to change in the load.
+  const std::string loop = test::fixture_path("tiny_scan_loop.json");
+  const CachedGraph& graph = load_cached_graph(loop, test::cell_map_path(), "fail+x", {});
+  const std::vector<uint32_t> nets = {
+      compiled_net(graph, "C"),       compiled_net(graph, "hold"),
+      compiled_net(graph, "scan_in"), compiled_net(graph, "scan_en"),
+      compiled_net(graph, "CLK"),     compiled_net(graph, "q1")};
+  CHECK(scan_load_active_x(loop, test::cell_map_path(), nets, "fail+x", {}) ==
+        std::vector<bool>{true, true, false, false, false, false});
+
+  // tiny_scan_x holds no latch or loop: the load leaves nothing a fault changes.
+  const std::string flops = test::fixture_path("tiny_scan_x.json");
+  const CachedGraph& plain =
+      load_cached_graph(flops, test::cell_map_path(), "fail+x", kBlackbox);
+  std::vector<uint32_t> every;
+  for (uint32_t net = 0; net < static_cast<uint32_t>(plain.cg.net_count); ++net) {
+    every.push_back(net);
+  }
+  CHECK(scan_load_active_x(flops, test::cell_map_path(), every, "fail+x", kBlackbox) ==
+        std::vector<bool>(every.size(), false));
+}
+
 TEST_CASE("X scan protocol grade == scalar X oracle on a loop, every fault",
           "[scan][xsim][reference]") {
   const std::string json = test::fixture_path("tiny_scan_loop.json");

@@ -1379,6 +1379,40 @@ def _protocol_faults_x(
     return lanes
 
 
+def _load_active_ids(
+    core: Any,
+    scan_ctx: ScanPipelineContext,
+    generic_cell_map: str,
+    unsupported: str,
+    active_rows: list[_FaultRow],
+    generic_site_index: dict[str, int],
+    fault_ids: Collection[int],
+) -> list[int]:
+    """Of `fault_ids` (stuck-ats), sorted, the ones the X scan protocol runs in
+    the load (core.scan_load_active_x): off the scan path, in a graph holding a
+    latch or a loop. None in any other graph. A fault with no generic site index
+    isn't one."""
+    row_by_id = {row.fault_id: row for row in active_rows}
+    ids: list[int] = []
+    nets: list[int] = []
+    for fault_id in sorted(fault_ids):
+        row = row_by_id.get(fault_id)
+        index = generic_site_index.get(row.fault_site_key) if row else None
+        if index is not None:
+            ids.append(fault_id)
+            nets.append(index)
+    if not nets:
+        return []
+    flags = core.scan_load_active_x(
+        str(scan_ctx.generic_json),
+        generic_cell_map,
+        nets=nets,
+        unsupported_policy=unsupported,
+        blackbox_instances=list(scan_ctx.cfg.blackbox_instances),
+    )
+    return [fault_id for fault_id, on in zip(ids, flags) if on]
+
+
 def _compaction_fold_x(
     lane: dict[str, Any],
     golden_unknown: dict[int, list[bool]],
@@ -1986,8 +2020,32 @@ def _process_scan_candidate(
         # graded below by the capture-value chain-integrity credit, then a
         # protocol-sim fallback for the SAT target only.
         protocol_sim_fault_ids = sorted(qstem_active - set(tentative))
+    # The X engine: a stuck-at's possible detection the protocol runs in the load
+    # (off the scan path, in a graph holding a latch or a loop) is the protocol's
+    # to decide, as a transition's is. The view powers each latch and loop up
+    # unknown at the capture; on the chip the load, the fault acting in it, has
+    # left a value there: unknown still (an enable stuck closed), or one that
+    # shows the fault, or one that hides it. A definite detection holds whatever
+    # that value is.
+    load_checked: list[int] = []
+    if x_engine and not transition and possible:
+        load_checked = _load_active_ids(
+            core,
+            scan_ctx,
+            generic_cell_map,
+            unsupported,
+            active_rows,
+            generic_site_index,
+            possible,
+        )
+        possible -= set(load_checked)
 
-    if not reduced_trusted and not protocol_sim_fault_ids and not possible:
+    if (
+        not reduced_trusted
+        and not protocol_sim_fault_ids
+        and not possible
+        and not load_checked
+    ):
         if source == "sat" and sat_target_fault_id is not None:
             reduced_view_rejections.append(
                 CandidateRejection(sat_target_fault_id, "tier_a_reduced_mismatch")
@@ -2184,6 +2242,39 @@ def _process_scan_candidate(
                         CandidateRejection(fault_id, "no_capture_or_unload_effect")
                     )
                     blocked.append((fault_id, track_key))
+
+    if load_checked:
+        row_by_id = {row.fault_id: row for row in active_rows}
+        load_specs = [
+            (
+                generic_site_index[row_by_id[fault_id].fault_site_key],
+                fault_type_to_sa_code(row_by_id[fault_id].fault_type),
+            )
+            for fault_id in load_checked
+        ]
+        for fault_id, lane in zip(
+            load_checked,
+            _protocol_faults_x(
+                core,
+                scan_ctx,
+                scan_pattern,
+                generic_cell_map,
+                unsupported,
+                load_specs,
+                unknown_outputs,
+            ),
+        ):
+            outcome = str(lane["outcome"])
+            if outcome == "definite":
+                if fault_id not in passed_fault_ids:  # a Q-stem residual may be too
+                    passed_fault_ids.append(fault_id)
+            elif outcome == "possible":
+                possible.add(fault_id)
+            elif source == "sat" and fault_id == sat_target_fault_id:
+                protocol_sim_rejections.append(
+                    CandidateRejection(fault_id, "no_capture_or_unload_effect")
+                )
+                blocked.append((fault_id, track_key))
 
     # A definite detection outranks a possible one.
     possible -= set(passed_fault_ids)

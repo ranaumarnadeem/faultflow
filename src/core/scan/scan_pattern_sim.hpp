@@ -170,8 +170,9 @@ bool scan_observations_equal(const ScanPatternResult& lhs,
 // The same cycles as simulate_scan_pattern / simulate_scan_protocol_faults, on
 // BitParallelSimX: every flop, clock-gate latch and loop net powered up unknown,
 // and the nets `unknown_nets` names (Yosys ids: an unknown blackbox's outputs)
-// unknown in every cycle. A stuck-at grade only: a request with a launch (LOC or
-// LOS) is refused.
+// unknown in every cycle. In a graph holding a latch or a loop, a transition
+// fault acts from the launch edge, and a load-active stuck-at
+// (scan_load_active_x) in every cycle, the load included.
 
 struct ScanPatternResultX {
   std::map<std::string, Logic> real_po_values;
@@ -209,6 +210,19 @@ ScanProtocolFaultSimResultX simulate_scan_protocol_faults_x(
     const ScanProtocolFaultRequest& request, const std::string& unsupported_policy,
     int sim_threads, const std::vector<std::string>& blackbox_instances,
     const std::vector<int>& unknown_nets);
+
+// Per compiled net of `nets`: whether a stuck-at on it acts in the X protocol's
+// load (and setup and preamble). Only in a graph holding a latch or a loop, and
+// only off the scan path: no pin a scan flop's load depends on reads it -- its
+// clock, scan-in, scan enable, clear, preset -- nor any pin of a non-scan flop.
+// Such a fault can't change what the chains load (each scan flop takes its
+// scan-in), only state the chains don't reach, as it does on the chip. A
+// scan-path fault keeps the fault-free load the ATPG view assumes.
+std::vector<bool> scan_load_active_x(const std::string& json_path,
+                                     const std::string& cell_map_path,
+                                     const std::vector<uint32_t>& nets,
+                                     const std::string& unsupported_policy,
+                                     const std::vector<std::string>& blackbox_instances);
 
 // The scalar oracle for simulate_scan_protocol_faults_x: each fault graded alone
 // through GoldenRefSimX, one outcome per request.faults entry, in order.

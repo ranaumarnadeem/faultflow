@@ -12,9 +12,12 @@ so a load can leave the bus driven by one, both or neither.
 A transition fault is active from the launch edge: the protocol used to switch
 it on at the capture sample, after the launch edge had already let the loop
 settle fault-free (a slow reset term reset the loop anyway), and the view's
-credit was not reproduced. A stuck-at acts in the load too (the protocol's load
-is fault-free): c stuck at 0 leaves the loop holding whatever it powered up
-with, a possible detection the netlist with the fault tied in shows."""
+credit was not reproduced. A stuck-at off the scan path acts in the load too,
+as on the chip: c stuck at 0 leaves the loop holding whatever it powered up
+with, a possible detection; and a fault the view, which powers the loop up
+unknown at the capture, credits only possibly can be a definite detection
+through the value the load leaves (hold stuck at 1). The protocol used to load
+fault-free and showed neither; the netlist with the fault tied in checks both."""
 
 from __future__ import annotations
 
@@ -28,9 +31,9 @@ from x_scan_replay import (
     campaign,
     config,
     faults,
+    best_with_fault_throughout,
     not_reproduced,
     redundant_detected,
-    shown_with_fault_throughout,
 )
 
 LP = Design(
@@ -82,17 +85,21 @@ def flow_tools() -> None:
 def _credit_holds(
     cfg: object, design: Design, patterns: Path, model: str, launch: str, intest: bool
 ) -> None:
-    """Every definite credit reproduced by the protocol. A transition's
-    possible credit too (the protocol decides those); a stuck-at's possible
-    credit the protocol misses is shown by the netlist with the fault tied in."""
-    missing = not_reproduced(cfg, design.top, patterns, model, launch, intest)
-    assert [row for row in missing if row[2] == "detected"] == []
-    if model == "transition":
-        assert missing == []
-    for key, kind, _, _ in missing:
-        assert shown_with_fault_throughout(
-            cfg, design.top, patterns, key, kind, intest
-        ), (key, kind)
+    """Every credit reproduced by the protocol, a possible one too. And on the
+    netlist with the fault tied in (acting in the load, as on the chip), each
+    stuck-at credited possible is possible -- not a definite detection credited
+    as a possible one, nor no detection at all -- and none left undetected is
+    detected definitely."""
+    assert not_reproduced(cfg, design.top, patterns, model, launch, intest) == []
+    if model == "stuck_at":
+        for key, kind, status in faults(cfg, ("possible", "undetected")):
+            best = best_with_fault_throughout(
+                cfg, design.top, patterns, key, kind, intest
+            )
+            if status == "possible":
+                assert best == "possible", (key, kind)
+            else:
+                assert best != "definite", (key, kind)
 
 
 @pytest.mark.integration
