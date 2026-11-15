@@ -207,7 +207,9 @@ through one.
 And it resolves tristate buses: one enabled driver gives the bus its value, two
 that disagree or none give unknown. Its synthesis keeps a design's `1'bz`
 drivers as the library's tristate buffers (a two-valued run's synthesis reads
-`1'bz` as a don't-care, as it always did, and refuses a tristate cell).
+`1'bz` as a don't-care, as it always did, and refuses a tristate cell; a bus
+whose drivers it joins stops at a net with two drivers, which points to the X
+engine).
 
 SAT test generation follows the same rules: it looks for a test that detects a
 fault definitely, and with none, for one that may (`POSSIBLE`); it proves a
@@ -234,14 +236,16 @@ don't-care. Through a compactor, a compacted bit is unknown when any chain bit i
 folds in is. What stays as in a two-valued run: the check that no unknown value
 reaches the scan path, the stuck-ats that would let one past the held inputs
 (`blackbox_unresolved`), and the classification of a fault the view can't test
-(`hold_unresolved`, `blackbox_unresolved`, redundant). A latch the chains don't
-reach keeps what the load leaves in it: its enable and data change as the chains
-shift, so at the capture it may hold a known value. The ATPG view powers it up
-unknown at the capture, which can only hide a detection; a transition pattern's
+(`hold_unresolved`, `blackbox_unresolved`, redundant). A latch or a loop the
+chains don't reach keeps what the load leaves in it: its inputs change as the
+chains shift, so at the capture it may hold a known value. The ATPG view powers it
+up unknown at the capture, which can only hide a detection; a transition pattern's
 expected unload is the capture after its launch (a latch the capture closes keeps
 its launch value), and a transition fault the view only possibly detects is
 credited only where the full scan protocol shows it (a delay fault leaves the load
-alone, so the latch holds the same value in the good and the faulty chip). `ff.py jtag` and
+alone, so the latch or loop holds the same value in the good and the faulty chip).
+A delay fault acts from the launch edge: a loop or latch the launched flops would
+change sees the slow net's old value until the capture. `ff.py jtag` and
 `ff.py wsp`, which always run on the X engine, then read the netlist's `x`/`z`
 bits as unknown too, as the scan campaign whose faults they grade did. The SoC chip number
 (`ff.py project`), the wrapper's coverage by part, the autoMBIST categories and the

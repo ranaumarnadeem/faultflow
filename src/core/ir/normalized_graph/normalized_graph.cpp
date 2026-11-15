@@ -270,6 +270,27 @@ std::string x_only_reason(const std::string& type, NodeType node_type, bool know
   return "";
 }
 
+// A net with two drivers: a short, or what two-valued synthesis makes of a
+// tristate bus (it reads 1'bz as a don't-care and joins the bus's drivers).
+std::string two_drivers(const NormalizedGraph& ng, int net, const std::string& first,
+                        const std::string& second) {
+  const auto it = ng.nets.find(net);
+  const std::string name = it == ng.nets.end() || it->second.names.empty()
+                               ? ""
+                               : " (" + it->second.names.front() + ")";
+  return "Multiple drivers on net " + std::to_string(net) + name + ": " + first +
+         " and " + second +
+         ". A tristate bus? Two-valued synthesis joins its drivers; the X engine "
+         "([simulation] engine = x) keeps them as tristate buffers";
+}
+
+std::string driver_name(const NormalizedGraph& ng, int node) {
+  const auto it = ng.nodes.find(node);
+  return it == ng.nodes.end() || it->second.instance.empty()
+             ? std::string("another driver")
+             : "cell " + it->second.instance;
+}
+
 }  // namespace
 
 NormalizedGraph NormalizedGraph::from_parsed(
@@ -557,7 +578,9 @@ NormalizedGraph NormalizedGraph::from_parsed(
         const int out_net = it->second.front();
         tie.output_pins[logical] = out_net;
         if (ng.nets[out_net].driver >= 0) {
-          throw ParseError("Multiple drivers on net " + std::to_string(out_net));
+          throw ParseError(two_drivers(ng, out_net,
+                                       driver_name(ng, ng.nets[out_net].driver),
+                                       "cell " + inst));
         }
         ng.nets[out_net].driver = tie.id;
         ng.nodes[tie.id] = std::move(tie);
@@ -621,7 +644,9 @@ NormalizedGraph NormalizedGraph::from_parsed(
         const int out_net = it->second.front();
         node.output_pins[logical] = out_net;
         if (ng.nets[out_net].driver >= 0) {
-          throw ParseError("Multiple drivers on net " + std::to_string(out_net));
+          throw ParseError(two_drivers(ng, out_net,
+                                       driver_name(ng, ng.nets[out_net].driver),
+                                       "cell " + inst));
         }
         ng.nets[out_net].driver = node.id;
       }
@@ -740,7 +765,8 @@ NormalizedGraph NormalizedGraph::from_parsed(
     pi_node.gate_type = GateType::INPUT;
     pi_node.output_pins["Y"] = pi;
     if (ng.nets[pi].driver >= 0) {
-      throw ParseError("PI net already has driver");
+      throw ParseError(two_drivers(ng, pi, "an input port",
+                                   driver_name(ng, ng.nets[pi].driver)));
     }
     ng.nets[pi].driver = pi_node.id;
     ng.nodes[pi_node.id] = std::move(pi_node);

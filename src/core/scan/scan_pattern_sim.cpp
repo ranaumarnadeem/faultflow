@@ -657,6 +657,34 @@ XRunOptions scan_x_options(const TestVector& vec, const std::vector<int>& unknow
   return options;
 }
 
+// The X protocol's vector: the two-valued one, which switches a transition's
+// fault on at the capture sample, a cycle after the launch edge. A latch or a
+// loop can change in that cycle, and on the chip the slow net still has its old
+// value right after the edge: with the fault off there, the launched flops
+// settled a loop fault-free (a slow reset term reset it all the same) and the
+// delay hid. So in a graph holding a latch or a loop the fault is on from the
+// launch edge's cycle. Any other graph is one the two-valued protocol grades
+// too (its flops change at the edges, the capture sample recomputes its logic)
+// and gets that vector, so with nothing unknown the results are the same.
+TestVector build_scan_pattern_vector_x(const CompiledSimGraph& cg,
+                                       const ParsedGraph& parsed,
+                                       const ScanPatternRequest& request) {
+  TestVector vec = build_scan_pattern_vector(parsed, request);
+  const bool holds_state =
+      !cg.latch_configs.empty() ||
+      std::any_of(cg.in_loop.begin(), cg.in_loop.end(), [](uint8_t on) { return on != 0; });
+  if (holds_state && (request.loc_two_capture || request.los_two_capture)) {
+    // The launch sample is the first sampled cycle; its clock edge the next.
+    const auto launch = std::find_if(vec.cycles.begin(), vec.cycles.end(),
+                                     [](const TestCycle& c) { return c.sample_outputs; });
+    if (launch == vec.cycles.end() || launch + 1 == vec.cycles.end()) {
+      throw std::logic_error("X scan protocol: a transition vector without a launch");
+    }
+    (launch + 1)->fault_active = true;
+  }
+  return vec;
+}
+
 Logic lane_logic(Dual d, int lane) {
   const bool h = ((d.h >> lane) & 1ULL) != 0;
   const bool l = ((d.l >> lane) & 1ULL) != 0;
@@ -772,7 +800,7 @@ ScanPatternResultX simulate_scan_pattern_x(
     const std::vector<int>& unknown_nets) {
   const CachedGraph& graph = load_cached_graph(json_path, cell_map_path,
                                                unsupported_policy, blackbox_instances);
-  const TestVector vec = build_scan_pattern_vector(graph.parsed, request);
+  const TestVector vec = build_scan_pattern_vector_x(graph.cg, graph.parsed, request);
   const SampleSlots slots = scan_sample_slots(graph.parsed, graph.cg, request);
   BitParallelSimX sim;
   const auto samples = sim.simulate_batch_samples(
@@ -788,7 +816,8 @@ ScanProtocolFaultSimResultX simulate_scan_protocol_faults_x(
   const CachedGraph& graph = load_cached_graph(json_path, cell_map_path,
                                                unsupported_policy, blackbox_instances);
   const CompiledSimGraph& cg = graph.cg;
-  const TestVector vec = build_scan_pattern_vector(graph.parsed, request.pattern);
+  const TestVector vec =
+      build_scan_pattern_vector_x(graph.cg, graph.parsed, request.pattern);
   const SampleSlots slots = scan_sample_slots(graph.parsed, cg, request.pattern);
   const XRunOptions options = scan_x_options(vec, unknown_nets);
   const bool transition =
@@ -865,7 +894,8 @@ std::vector<XDetection> simulate_scan_protocol_faults_x_reference(
   const CachedGraph& graph = load_cached_graph(json_path, cell_map_path,
                                                unsupported_policy, blackbox_instances);
   const CompiledSimGraph& cg = graph.cg;
-  const TestVector vec = build_scan_pattern_vector(graph.parsed, request.pattern);
+  const TestVector vec =
+      build_scan_pattern_vector_x(graph.cg, graph.parsed, request.pattern);
   const std::vector<int> yids = scan_sample_yids(graph.parsed, request.pattern);
   const XRunOptions options = scan_x_options(vec, unknown_nets);
   const bool transition =

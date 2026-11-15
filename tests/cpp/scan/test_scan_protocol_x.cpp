@@ -304,3 +304,79 @@ TEST_CASE("seeded dual-rail SAT: a definite test only through a load the seed ma
     REQUIRE_FALSE(out.at("__ppi_ff2"));
   }
 }
+
+TEST_CASE("X scan protocol: a transition fault acts from the launch edge",
+          "[scan][xsim][xtransition]") {
+  // tiny_scan_loop: chain ff_q3 -> ff_q1 -> ff_q2; a loop, set by C & q1, held
+  // through hold = nand(q2, C) (reset by q2 & C); q3 captures A ^ loop, Z =
+  // loop & B. The launch leaves q1 = 0, q2 = 1 after a set (q1 = 1, q2 = 0), so
+  // hold falls and the loop resets. Slow to fall, hold still 1 after the launch
+  // edge: the loop holds 1 at the capture, Z and q3 show it. With the fault
+  // only from the capture sample on, the launched flops had reset the loop
+  // fault-free first and the fault hid.
+  const std::string json = test::fixture_path("tiny_scan_loop.json");
+  const CachedGraph& graph = load_cached_graph(json, test::cell_map_path(), "fail+x", {});
+  const auto hold = static_cast<uint32_t>(
+      graph.cg.yosys_to_compiled.at(graph.parsed.net_id_by_name("hold")));
+  for (const bool los : {false, true}) {
+    INFO((los ? "launch on shift" : "launch on capture"));
+    ScanProtocolFaultRequest request;
+    request.pattern.clock_ports = {"CLK"};
+    request.pattern.scan_enable_port = "scan_en";
+    request.pattern.scan_input_ports = {"scan_in"};
+    request.pattern.scan_output_ports = {"scan_out_0"};
+    request.pattern.functional_output_ports = {"Y", "Z"};
+    request.pattern.max_chain_length = 3;
+    // ff_q2, ff_q1, ff_q3. LOC: q1 = 1, q2 = 0, q3 = 1; A = 0, B = 1 capture
+    // q1 = 0, q2 = 1. LOS: q3 = 0, q1 = 1, q2 = 0 shift to q1 = 0, q2 = 1.
+    request.pattern.load_seqs[0] = {false, true, !los};
+    request.pattern.capture_pi_values = {{"A", false}, {"B", true}, {"C", true}};
+    request.pattern.loc_two_capture = !los;
+    request.pattern.los_two_capture = los;
+    request.pattern.los_launch_scan_in[0] = false;
+    request.faults = {{hold, 1}};
+    CHECK(simulate_scan_protocol_faults_x(json, test::cell_map_path(), request, "fail+x",
+                                          1, {}, {})
+              .lanes.at(0)
+              .outcome == XDetection::DEFINITE);
+    CHECK(simulate_scan_protocol_faults_x_reference(json, test::cell_map_path(), request,
+                                                    "fail+x", {}, {})
+              .at(0) == XDetection::DEFINITE);
+  }
+}
+
+TEST_CASE("X scan protocol grade == scalar X oracle on a loop, every fault",
+          "[scan][xsim][reference]") {
+  const std::string json = test::fixture_path("tiny_scan_loop.json");
+  const CachedGraph& graph = load_cached_graph(json, test::cell_map_path(), "fail+x", {});
+  const auto faults = every_fault(graph.cg);
+  Bits bits{11u};
+  size_t launched = 0;
+  for (int p = 0; p < 24; ++p) {
+    ScanProtocolFaultRequest request;
+    request.pattern.clock_ports = {"CLK"};
+    request.pattern.scan_enable_port = "scan_en";
+    request.pattern.scan_input_ports = {"scan_in"};
+    request.pattern.scan_output_ports = {"scan_out_0"};
+    request.pattern.functional_output_ports = {"Y", "Z"};
+    request.pattern.max_chain_length = 3;
+    request.pattern.load_seqs[0] = {bits.next(), bits.next(), bits.next()};
+    for (const char* pi : {"A", "B", "C"}) {
+      request.pattern.capture_pi_values[pi] = bits.next();
+    }
+    set_launch(request.pattern, p, bits);
+    request.faults = faults;
+    const auto graded = simulate_scan_protocol_faults_x(json, test::cell_map_path(),
+                                                        request, "fail+x", 2, {}, {});
+    const auto reference = simulate_scan_protocol_faults_x_reference(
+        json, test::cell_map_path(), request, "fail+x", {}, {});
+    REQUIRE(reference.size() == faults.size());
+    for (size_t i = 0; i < faults.size(); ++i) {
+      INFO("pattern " << p << " net " << faults[i].compiled_net_index << " sa"
+                      << int(faults[i].fault_type));
+      REQUIRE(graded.lanes.at(i).outcome == reference[i]);
+      launched += p % 3 != 0 && reference[i] != XDetection::NONE;
+    }
+  }
+  REQUIRE(launched > 0);
+}
