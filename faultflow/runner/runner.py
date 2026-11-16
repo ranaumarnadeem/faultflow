@@ -2686,6 +2686,16 @@ class Runner:
                 "is not meaningful in this architecture. A scan-aware vector "
                 "format would be required."
             )
+        if ext is not None and self.cfg.fault_model.model == "transition":
+            # Each external vector is one combinational vector, not a
+            # launch/capture pair: the core grades them for stuck-at faults,
+            # which a transition campaign's report would mislabel.
+            raise RunnerError(
+                "External vectors (--ext) are graded for stuck-at faults only; "
+                "each is one combinational vector, not a launch/capture pair. "
+                "Use fault_model = stuck_at with --ext, or run transition ATPG "
+                "without --ext."
+            )
         mode = str(self.cfg.test_mode)
         if mode != "functional" and not scan:
             # INTEST and EXTEST hold the IEEE 1500 wrapper's mode pins in a scan

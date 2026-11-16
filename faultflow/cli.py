@@ -57,7 +57,10 @@ def _parser() -> argparse.ArgumentParser:
     sim.add_argument(
         "--ext",
         type=Path,
-        help="External .test vectors; requires a same-stem .bench sidecar",
+        help=(
+            "External .test vectors (stuck-at only); requires a same-stem "
+            ".bench sidecar"
+        ),
     )
     sim.add_argument(
         "--max",

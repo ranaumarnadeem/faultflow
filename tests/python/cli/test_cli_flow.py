@@ -118,6 +118,68 @@ compaction = none
     assert "combinational-only" not in err  # the raw engine message is not leaked
 
 
+def _transition_config(path: Path) -> None:
+    _config(path)
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "collapsing = false", "collapsing = false\nmodel = transition"
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_sim_ext_refuses_the_transition_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """External vectors are graded for stuck-at faults only (each is one
+    combinational vector, not a launch/capture pair). `sim --ext` with
+    fault_model = transition used to grade sa0/sa1 and write a report saying
+    "fault_model: transition" -- a stuck-at grade under a transition label. It
+    is refused before anything runs."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _transition_config(cfg)
+    ext = tmp_path / "vectors.test"
+    ext.write_text("1: 0\n", encoding="utf-8")
+
+    with pytest.raises(RunnerError, match="stuck-at faults only"):
+        Runner(load_config(cfg, "demo")).sim(ext=ext)
+    assert not (tmp_path / "output" / "demo" / "coverage.rpt").exists()
+
+
+def test_cli_sim_ext_refuses_model_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The CLI's --model transition reaches the same refusal (exit 2)."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    ext = tmp_path / "vectors.test"
+    ext.write_text("1: 0\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc:
+        main(
+            [
+                "sim",
+                "--top",
+                "demo",
+                "-c",
+                str(cfg),
+                "--model",
+                "transition",
+                "--ext",
+                str(ext),
+            ]
+        )
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "stuck-at faults only" in err
+    assert "Traceback" not in err
+
+
 @pytest.mark.parametrize(
     "raised",
     [
