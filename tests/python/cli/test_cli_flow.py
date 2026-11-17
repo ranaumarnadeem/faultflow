@@ -118,6 +118,93 @@ compaction = none
     assert "combinational-only" not in err  # the raw engine message is not leaked
 
 
+def test_transition_sim_on_sequential_design_gives_clean_scan_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    require_cpp_core: None,
+) -> None:
+    """The broadside transition `sim` on a design with flip-flops reaches the
+    same engine refusal as stuck-at, and must give the same clean --scan hint
+    (exit 2) instead of the bare `combinational-only` RuntimeError."""
+    monkeypatch.chdir(tmp_path)
+    repo = Path(__file__).resolve().parents[3]
+    fixture = repo / "tests" / "cpp" / "fixtures" / "tiny_dff.json"
+    cell_lib = repo / "cells" / "sky130" / "sky130_fd_sc_hd.json"
+    cfg = tmp_path / "config.ofs"
+    cfg.write_text(
+        f"""
+[design]
+netlist = {fixture}
+cell_lib = {cell_lib}
+
+[fault_model]
+model = transition
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+mode = comb
+compaction = none
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+
+    assert main(["init", "--top", "tiny_dff", "-c", str(cfg)]) == 0
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exc:
+        main(["sim", "--top", "tiny_dff", "-c", str(cfg)])
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "sequential elements" in err
+    assert "--scan" in err
+    assert "Traceback" not in err
+    assert "combinational-only" not in err  # the raw engine message is not leaked
+
+
+def test_runner_transition_sim_on_sequential_design_raises_runner_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    """The Runner itself (also what the Tcl shell calls) raises a RunnerError
+    pointing at --scan for transition ATPG on a flop design, not RuntimeError."""
+    monkeypatch.chdir(tmp_path)
+    repo = Path(__file__).resolve().parents[3]
+    fixture = repo / "tests" / "cpp" / "fixtures" / "tiny_dff.json"
+    cell_lib = repo / "cells" / "sky130" / "sky130_fd_sc_hd.json"
+    cfg = tmp_path / "config.ofs"
+    cfg.write_text(
+        f"""
+[design]
+netlist = {fixture}
+cell_lib = {cell_lib}
+
+[fault_model]
+model = transition
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+mode = comb
+compaction = none
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    runner = Runner(load_config(cfg, "tiny_dff"))
+    runner.init()
+
+    with pytest.raises(RunnerError, match="sequential elements") as exc:
+        runner.sim()
+    assert "--scan" in str(exc.value)
+
+
 def _transition_config(path: Path) -> None:
     _config(path)
     path.write_text(
