@@ -5,3 +5,7 @@
 cells/sky130/sky130_fd_sc_hd__tt_025C_1v80.lib -text
 cells/osu/osu035_stdcells.lib -text
 cells/sky130/sky130_fd_sc_hd.v -text
+
+# Shell scripts run under bash (WSL or Linux) straight from a Windows checkout:
+# keep them LF there too, or bash stops at the first CR.
+*.sh text eol=lf
