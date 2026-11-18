@@ -2739,18 +2739,24 @@ class Runner:
         removed = self._purge_transients() if purge else 0
         netlist = self._find_netlist()
         if ext is not None:
-            # Each external vector is applied once from power-up, so a flop's
-            # state would come from the engine's assumed all-zero power-up, not
-            # from the vectors: credit a real chip need not give. Refuse before
-            # the iverilog gate or the grade runs, as the ATPG path refuses.
+            # The core simulates each external vector on its own from power-up:
+            # every flop starts in the assumed all-zero state and every input,
+            # the clock too, starts low, so a vector that raises a clock clocks
+            # its flops. A tester applies the vectors one after another, so on
+            # the chip a flop holds what the vectors before it left and a clock
+            # rises only after a vector that held it low. Credit through either
+            # assumption is credit a real chip need not give. Refuse before the
+            # iverilog gate or the grade runs, as the ATPG path refuses.
             flops = _flip_flop_instances(netlist, self.cfg.top, self.cfg.cell_lib)
             if flops:
                 raise RunnerError(
                     f"design has sequential elements ({len(flops)} flip-flop(s), "
-                    f"e.g. {flops[0]}); external vectors (--ext) are single "
-                    "combinational vectors applied from power-up and cannot test "
-                    "it. Insert scan (add_scan / ff.py scan) and run ATPG with "
-                    "--scan (ff.py sim --scan, or run_atpg -scan in the shell)."
+                    f"e.g. {flops[0]}); external vectors (--ext) are graded one "
+                    "at a time from power-up, but a tester applies them in "
+                    "sequence, so the flops' state and clock edges on the chip "
+                    "differ from the grade's. Insert scan (add_scan / ff.py scan) "
+                    "and run ATPG with --scan (ff.py sim --scan, or run_atpg -scan "
+                    "in the shell)."
                 )
         verify_enabled = self.cfg.simulation.verify if verify is None else verify
         # iverilog cannot drive/observe blackbox pseudo-ports, and the blackbox
