@@ -183,6 +183,16 @@ report (the `Redundant` column is omitted here for that reason).
 | genericfir_small | — | 471 | 48 | 99.981% | 287 | 590.0 s |
 | picorv32a | — | — | 162 | 99.785% | 1,164 | 4,387.8 s |
 
+## Comparison with Fault
+
+FaultFlow against Fault 0.9.4 on 16 ISCAS netlists mapped to OSU035 (not Sky130):
+239.2 s against 5,150.3 s for Fault's default pseudo-random ATPG, 21.5x in total
+and 14.7x as the geometric mean of the per-design ratios. With Quaigh as its ATPG,
+Fault takes 111.6 s, so FaultFlow is 2.1x slower than that flow. One run per design,
+Fault on 10 threads and FaultFlow on one worker. Setup, per-design table, logs,
+scripts and a rerun harness (three repetitions a point, fixed thread counts; not run
+yet): [docs/benchmarks/fault_compare](https://github.com/ranaumarnadeem/faultflow/tree/dev/docs/benchmarks/fault_compare).
+
 ## Transition Delay Faults
 
 ### Hybrid ATPG

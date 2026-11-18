@@ -98,6 +98,8 @@ exclude_patterns = [
     "Thumbs.db",
     ".DS_Store",
     "plans/**",
+    # Raw run records (logs, scripts); linked from benchmarking.md on GitHub.
+    "benchmarks/**",
 ]
 
 # -- HTML output -------------------------------------------------------------
