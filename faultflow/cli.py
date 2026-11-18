@@ -58,8 +58,8 @@ def _parser() -> argparse.ArgumentParser:
         "--ext",
         type=Path,
         help=(
-            "External .test vectors (stuck-at only); requires a same-stem "
-            ".bench sidecar"
+            "External .test vectors (stuck-at only, designs without "
+            "flip-flops); requires a same-stem .bench sidecar"
         ),
     )
     sim.add_argument(
