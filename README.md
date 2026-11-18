@@ -94,7 +94,9 @@ External vectors bypass native ATPG:
 python3 ff.py sim --top <top> --ext vectors.test
 ```
 
-`vectors.test` requires a same-stem `vectors.bench` sidecar for PI order.
+`vectors.test` requires a same-stem `vectors.bench` sidecar for PI order. External
+vectors are graded for stuck-at faults on designs without flip-flops; a design with
+flip-flops needs scan and `sim --scan`.
 
 To reset internal workspace state (keeps deliverables in `output/<top>/`):
 
