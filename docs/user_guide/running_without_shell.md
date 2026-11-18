@@ -52,7 +52,7 @@ command.
 | `--purge` | Remove transient junk inside `.faultflow/` before the run |
 | `--clean` | Remove the entire `.faultflow/` internal workspace first; deliverables under `output/<top>/` are kept |
 | `-v`, `--verify VALUE` | Override `[simulation] verify` for this run (a boolean) |
-| `--ext PATH` | Use external `.test` vectors instead of ATPG; requires a same-stem `.bench` sidecar for PI order. Stuck-at only: refused with `fault_model = transition` (or `--model transition`), since each vector is one combinational vector, not a launch/capture pair |
+| `--ext PATH` | Use external `.test` vectors instead of ATPG; requires a same-stem `.bench` sidecar for PI order. Stuck-at only: refused with `fault_model = transition` (or `--model transition`), since each vector is one combinational vector, not a launch/capture pair. Combinational designs only: refused on a design with flip-flops (each vector is graded on its own from power-up, the clock low before it, while a tester applies the vectors in sequence, so the flops' state and clock edges on the chip differ from the grade's); run ATPG with `--scan` instead |
 | `--max ROUNDS` | Maximum progressive ATPG rounds (default: `[atpg] max_rounds`, which itself defaults to 20); must be ≥ 1 |
 | `--scan` | Run full-scan stuck-at ATPG on the reduced pseudo-PI/PO view |
 | `--serial-ref` | Run isolated serial reference diagnostics; does not update production coverage. Cannot be combined with `--ext` |

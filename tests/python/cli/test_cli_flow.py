@@ -267,6 +267,140 @@ def test_cli_sim_ext_refuses_model_transition(
     assert "Traceback" not in err
 
 
+def _fixture_config(path: Path, fixture: str, engine: str = "two_valued") -> None:
+    repo = Path(__file__).resolve().parents[3]
+    path.write_text(
+        f"""
+[design]
+netlist = {repo / "tests" / "cpp" / "fixtures" / fixture}
+cell_lib = {repo / "cells" / "sky130" / "sky130_fd_sc_hd.json"}
+
+[fault_model]
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+engine = {engine}
+
+[atpg]
+mode = comb
+compaction = none
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+
+
+def _exhaustive_ext(tmp_path: Path, inputs: list[str]) -> Path:
+    """Every input combination as an external .test file, plus the BENCH
+    sidecar that fixes the primary-input order (the netlist's sorted inputs)."""
+    width = len(inputs)
+    ext = tmp_path / "vectors.test"
+    ext.write_text(
+        "".join(f"{i + 1}: {i:0{width}b}\n" for i in range(2**width)),
+        encoding="utf-8",
+    )
+    ext.with_suffix(".bench").write_text(
+        "".join(f"INPUT({name})\n" for name in inputs) + "OUTPUT(out)\n",
+        encoding="utf-8",
+    )
+    return ext
+
+
+def test_sim_ext_refuses_a_design_with_flip_flops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """Each external vector is graded on its own from power-up: flops start at
+    the assumed all-zero state and the clock starts low, so a vector raising
+    CLK clocks the flop. A tester applies the vectors in sequence, so on the
+    chip a clock edge needs a vector before it that held CLK low, and a flop
+    holds what earlier vectors left. On tiny_dff `sim --ext` credited 100%;
+    with these vectors in this order a tester shows only the Q = 0 capture of
+    vector 3 (D stuck-at-1, Q stuck-at-1). It refuses a design with flip-flops,
+    as the ATPG `sim` does, pointing at --scan, before anything is graded or
+    reported."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _fixture_config(cfg, "tiny_dff.json")
+    ext = _exhaustive_ext(tmp_path, ["CLK", "D"])
+    runner = Runner(load_config(cfg, "tiny_dff"))
+    runner.init()
+
+    with pytest.raises(RunnerError, match="sequential elements") as exc:
+        runner.sim(ext=ext)
+    assert "--ext" in str(exc.value)
+    assert "--scan" in str(exc.value)
+    assert not runner.cfg.coverage_report_path.exists()
+    conn = sqlite3.connect(runner.cfg.db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_sim_ext_refuses_a_design_with_flip_flops_on_the_x_engine_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """The X engine powers every flop up unknown, but it still grades each
+    external vector on its own with the clock low before it: a vector raising
+    CLK clocks the flop. Let through, it credited all four of tiny_dff's
+    non-clock faults (D and Q stuck-at 0 and 1, the stuck-at-0s by vector 4,
+    CLK = 1 D = 1); a tester applying these vectors in order raises CLK only at
+    vector 3, so it shows two. The X engine refuses a flop design too."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _fixture_config(cfg, "tiny_dff.json", engine="x")
+    ext = _exhaustive_ext(tmp_path, ["CLK", "D"])
+    runner = Runner(load_config(cfg, "tiny_dff"))
+    runner.init()
+
+    with pytest.raises(RunnerError, match="sequential elements") as exc:
+        runner.sim(ext=ext)
+    assert "--scan" in str(exc.value)
+    assert not runner.cfg.coverage_report_path.exists()
+
+
+def test_cli_sim_ext_on_a_flip_flop_design_gives_clean_scan_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    require_cpp_core: None,
+) -> None:
+    """The CLI reaches the same refusal: exit 2, the --scan hint, no traceback."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _fixture_config(cfg, "tiny_dff.json")
+    ext = _exhaustive_ext(tmp_path, ["CLK", "D"])
+    assert main(["init", "--top", "tiny_dff", "-c", str(cfg)]) == 0
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exc:
+        main(["sim", "--top", "tiny_dff", "-c", str(cfg), "--ext", str(ext)])
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "sequential elements" in err
+    assert "--scan" in err
+    assert "Traceback" not in err
+
+
+def test_sim_ext_still_grades_a_combinational_design(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """A design without flip-flops still runs under --ext: every combination of
+    an and2's inputs detects every stuck-at fault on it."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _fixture_config(cfg, "tiny_and2.json")
+    ext = _exhaustive_ext(tmp_path, ["A", "B"])
+    runner = Runner(load_config(cfg, "tiny_and2"))
+    runner.init()
+
+    runner.sim(ext=ext)
+
+    report = json.loads(runner.cfg.coverage_json_path.read_text(encoding="utf-8"))
+    assert report["summary"]["detected"] == report["summary"]["denominator"] > 0
+
+
 @pytest.mark.parametrize(
     "raised",
     [
