@@ -308,11 +308,15 @@ def _exhaustive_ext(tmp_path: Path, inputs: list[str]) -> Path:
 def test_sim_ext_refuses_a_design_with_flip_flops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
 ) -> None:
-    """Each external vector is one combinational vector applied from power-up,
-    so on a flop design `sim --ext` graded through an assumed all-zero power-up
-    state, crediting faults a real chip need not show. It refuses a design with
-    flip-flops, as the ATPG `sim` does, pointing at --scan, before anything is
-    graded or reported."""
+    """Each external vector is graded on its own from power-up: flops start at
+    the assumed all-zero state and the clock starts low, so a vector raising
+    CLK clocks the flop. A tester applies the vectors in sequence, so on the
+    chip a clock edge needs a vector before it that held CLK low, and a flop
+    holds what earlier vectors left. On tiny_dff `sim --ext` credited 100%;
+    with these vectors in this order a tester shows only the Q = 0 capture of
+    vector 3 (D stuck-at-1, Q stuck-at-1). It refuses a design with flip-flops,
+    as the ATPG `sim` does, pointing at --scan, before anything is graded or
+    reported."""
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "config.ofs"
     _fixture_config(cfg, "tiny_dff.json")
