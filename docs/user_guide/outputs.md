@@ -164,7 +164,8 @@ load and its unload take; the core's chains shift as many bits, uncompared. `wri
 (see [Running without the shell](running_without_shell.md#write-patterns)). External
 vectors supplied
 with `sim --ext` use the same plain-text format as `patterns.test` and require a
-same-stem `.bench` sidecar that fixes the primary-input order.
+same-stem `.bench` sidecar that fixes the primary-input order; they are graded for
+stuck-at faults only.
 
 ## `faultflow.sqlite`
 

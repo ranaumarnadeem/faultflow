@@ -2752,6 +2752,16 @@ class Runner:
                 "is not meaningful in this architecture. A scan-aware vector "
                 "format would be required."
             )
+        if ext is not None and self.cfg.fault_model.model == "transition":
+            # Each external vector is one combinational vector, not a
+            # launch/capture pair: the core grades them for stuck-at faults,
+            # which a transition campaign's report would mislabel.
+            raise RunnerError(
+                "External vectors (--ext) are graded for stuck-at faults only; "
+                "each is one combinational vector, not a launch/capture pair. "
+                "Use fault_model = stuck_at with --ext, or run transition ATPG "
+                "without --ext."
+            )
         mode = str(self.cfg.test_mode)
         if mode != "functional" and not scan:
             # INTEST and EXTEST hold the IEEE 1500 wrapper's mode pins in a scan
@@ -2852,44 +2862,35 @@ class Runner:
                     "sim    running progressive transition ATPG (top=%s) ...",
                     self.cfg.top,
                 )
-                vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
-                    run_progressive_transition_atpg(
-                        self.cfg,
-                        netlist,
-                        model_id,
-                        campaign_id=campaign_id,
-                        max_rounds=max_rounds,
-                        target_coverage=target_coverage,
-                    )
-                )
+                run_atpg = run_progressive_transition_atpg
                 vector_source = "native_transition_atpg"
             else:
                 log.info("sim    running progressive ATPG (top=%s) ...", self.cfg.top)
-                try:
-                    vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = (
-                        run_progressive_native_atpg(
-                            self.cfg,
-                            netlist,
-                            model_id,
-                            campaign_id=campaign_id,
-                            max_rounds=max_rounds,
-                            target_coverage=target_coverage,
-                        )
-                    )
-                except RuntimeError as exc:
-                    # The C++ engine rejects sequential designs on the plain
-                    # combinational path. Turn its bare "combinational-only"
-                    # runtime error into an actionable one pointing at --scan,
-                    # instead of leaking a raw traceback for a very common mistake.
-                    if "combinational-only" in str(exc):
-                        raise RunnerError(
-                            "design has sequential elements (flip-flops); "
-                            "combinational sim/ATPG cannot test it. Insert scan "
-                            "(add_scan / ff.py scan) and run with --scan "
-                            "(ff.py sim --scan, or run_atpg -scan in the shell)."
-                        ) from exc
-                    raise
+                run_atpg = run_progressive_native_atpg
                 vector_source = "native_sat_atpg"
+            try:
+                vectors, atpg_stats, run_id, atpg_seconds, fault_sim_seconds = run_atpg(
+                    self.cfg,
+                    netlist,
+                    model_id,
+                    campaign_id=campaign_id,
+                    max_rounds=max_rounds,
+                    target_coverage=target_coverage,
+                )
+            except RuntimeError as exc:
+                # The C++ engine rejects sequential designs on the plain
+                # combinational path (stuck-at and broadside transition alike).
+                # Turn its bare "combinational-only" runtime error into an
+                # actionable one pointing at --scan, instead of leaking a raw
+                # engine message for a very common mistake.
+                if "combinational-only" in str(exc):
+                    raise RunnerError(
+                        "design has sequential elements (flip-flops); "
+                        "combinational sim/ATPG cannot test it. Insert scan "
+                        "(add_scan / ff.py scan) and run with --scan "
+                        "(ff.py sim --scan, or run_atpg -scan in the shell)."
+                    ) from exc
+                raise
             sidecar = self.cfg.intermediate_dir / vector_source
             atpg_terminal = atpg_stats.terminal_reason
             if self.cfg.atpg.compaction != "none":

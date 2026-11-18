@@ -118,6 +118,155 @@ compaction = none
     assert "combinational-only" not in err  # the raw engine message is not leaked
 
 
+def test_transition_sim_on_sequential_design_gives_clean_scan_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    require_cpp_core: None,
+) -> None:
+    """The broadside transition `sim` on a design with flip-flops reaches the
+    same engine refusal as stuck-at, and must give the same clean --scan hint
+    (exit 2) instead of the bare `combinational-only` RuntimeError."""
+    monkeypatch.chdir(tmp_path)
+    repo = Path(__file__).resolve().parents[3]
+    fixture = repo / "tests" / "cpp" / "fixtures" / "tiny_dff.json"
+    cell_lib = repo / "cells" / "sky130" / "sky130_fd_sc_hd.json"
+    cfg = tmp_path / "config.ofs"
+    cfg.write_text(
+        f"""
+[design]
+netlist = {fixture}
+cell_lib = {cell_lib}
+
+[fault_model]
+model = transition
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+mode = comb
+compaction = none
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+
+    assert main(["init", "--top", "tiny_dff", "-c", str(cfg)]) == 0
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exc:
+        main(["sim", "--top", "tiny_dff", "-c", str(cfg)])
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "sequential elements" in err
+    assert "--scan" in err
+    assert "Traceback" not in err
+    assert "combinational-only" not in err  # the raw engine message is not leaked
+
+
+def test_runner_transition_sim_on_sequential_design_raises_runner_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+) -> None:
+    """The Runner itself (also what the Tcl shell calls) raises a RunnerError
+    pointing at --scan for transition ATPG on a flop design, not RuntimeError."""
+    monkeypatch.chdir(tmp_path)
+    repo = Path(__file__).resolve().parents[3]
+    fixture = repo / "tests" / "cpp" / "fixtures" / "tiny_dff.json"
+    cell_lib = repo / "cells" / "sky130" / "sky130_fd_sc_hd.json"
+    cfg = tmp_path / "config.ofs"
+    cfg.write_text(
+        f"""
+[design]
+netlist = {fixture}
+cell_lib = {cell_lib}
+
+[fault_model]
+model = transition
+collapsing = false
+
+[simulation]
+unsupported_cells = fail
+
+[atpg]
+mode = comb
+compaction = none
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    runner = Runner(load_config(cfg, "tiny_dff"))
+    runner.init()
+
+    with pytest.raises(RunnerError, match="sequential elements") as exc:
+        runner.sim()
+    assert "--scan" in str(exc.value)
+
+
+def _transition_config(path: Path) -> None:
+    _config(path)
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "collapsing = false", "collapsing = false\nmodel = transition"
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_sim_ext_refuses_the_transition_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """External vectors are graded for stuck-at faults only (each is one
+    combinational vector, not a launch/capture pair). `sim --ext` with
+    fault_model = transition used to grade sa0/sa1 and write a report saying
+    "fault_model: transition" -- a stuck-at grade under a transition label. It
+    is refused before anything runs."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _transition_config(cfg)
+    ext = tmp_path / "vectors.test"
+    ext.write_text("1: 0\n", encoding="utf-8")
+
+    with pytest.raises(RunnerError, match="stuck-at faults only"):
+        Runner(load_config(cfg, "demo")).sim(ext=ext)
+    assert not (tmp_path / "output" / "demo" / "coverage.rpt").exists()
+
+
+def test_cli_sim_ext_refuses_model_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The CLI's --model transition reaches the same refusal (exit 2)."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.ofs"
+    _config(cfg)
+    ext = tmp_path / "vectors.test"
+    ext.write_text("1: 0\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc:
+        main(
+            [
+                "sim",
+                "--top",
+                "demo",
+                "-c",
+                str(cfg),
+                "--model",
+                "transition",
+                "--ext",
+                str(ext),
+            ]
+        )
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "stuck-at faults only" in err
+    assert "Traceback" not in err
+
+
 @pytest.mark.parametrize(
     "raised",
     [
