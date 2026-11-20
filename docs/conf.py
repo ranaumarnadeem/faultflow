@@ -22,9 +22,11 @@ description = (
 
 # Single-sourced from the top-level VERSION file (the Nix flake reads the same
 # file; see docs/getting_started/installation.md, "Version, overlay, and nix fmt").
-release = (pathlib.Path(__file__).resolve().parent.parent / "VERSION").read_text(
-    encoding="utf-8"
-).strip()
+release = (
+    (pathlib.Path(__file__).resolve().parent.parent / "VERSION")
+    .read_text(encoding="utf-8")
+    .strip()
+)
 version = release
 
 # -- General configuration ---------------------------------------------------

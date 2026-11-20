@@ -6,9 +6,13 @@ real end-to-end SAT run. Mirrors test_compression_atpg_hook.py's structure."""
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import cast
+
 import pytest
 
 import faultflow.scan.detection_pipeline as dp
+from faultflow.config import FaultflowConfig
 from faultflow.scan.compaction import CompactionMap
 from faultflow.scan.detection_pipeline import (
     ScanPipelineContext,
@@ -28,9 +32,9 @@ _PATTERN = ScanPattern(load_seqs={}, capture_pi_values={}, expected_unload={})
 
 def _ctx(compaction_map) -> ScanPipelineContext:
     return ScanPipelineContext(
-        cfg=None,  # not read by _check_compaction_distinguishable itself
+        cfg=cast(FaultflowConfig, None),  # not read by the check itself
         manifest={"max_chain_length": 2},
-        generic_json="generic.json",
+        generic_json=Path("generic.json"),
         pseudo_port_map={},
         functional_output_order=[],
         q_stem_site_keys=frozenset(),
@@ -300,7 +304,7 @@ def test_check_compaction_distinguishable_missing_site_index_passes_through(
 
 
 @pytest.mark.unit
-def test_reject_compaction_indistinguishable_appends_rejection_and_block_for_every_fault() -> (
+def test_reject_compaction_indistinguishable_appends_rejection_and_block_for_every_fault() -> (  # noqa: E501
     None
 ):
     protocol_sim_rejections: list = []
