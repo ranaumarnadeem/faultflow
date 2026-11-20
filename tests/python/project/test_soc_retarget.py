@@ -240,11 +240,13 @@ def _retargeted_on_the_soc(tmp_path: Path, base: str, wsp: bool = False) -> None
         manifest = json.loads(soc.scan_manifest_path.read_text("utf-8"))
         chip = chip_of(manifest)
         sites = block_sites(scopes)
-        rows = core.list_site_keys(
-            str(scopes.build.composed), str(resolve_scan_cell_map(soc)), "fail", []
+        rows = list(
+            core.list_site_keys(
+                str(scopes.build.composed), str(resolve_scan_cell_map(soc)), "fail", []
+            )
         )
         identities = soc_identities(rows, sites)
-        merged = merged_inputs(sites, identities)
+        merged = merged_inputs(sites, identities, rows)
         for instance, cfg in scopes.blocks.items():
             name = sites[instance].name
             dest = tmp_path / f"{name}_on_soc.json"
