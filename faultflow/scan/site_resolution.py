@@ -117,14 +117,28 @@ def build_scan_execution_map(
         Path(generic_json_path).read_text(encoding="utf-8")
     )
     module = generic_data["modules"][str(manifest["top"])]
+    # A WS_EXTEST manifest (faultflow.wrap.serial) shifts through WSI and ShiftWR;
+    # the chip's parallel scan inputs and scan enable, which it holds, are its scan
+    # path still.
+    raw_serial = manifest.get("serial")
+    serial: dict[str, Any] = raw_serial if isinstance(raw_serial, dict) else {}
     scan_chain_yids: set[int] = set()
-    for name in [str(value) for value in manifest.get("scan_inputs", [])]:
+    for name in [
+        str(value)
+        for value in [
+            *manifest.get("scan_inputs", []),
+            *serial.get("parallel_scan_inputs", []),
+        ]
+    ]:
         port = module.get("ports", {}).get(name, {})
         scan_chain_yids.update(
             bit for bit in port.get("bits", []) if isinstance(bit, int)
         )
     scan_internal_yids: set[int] = set()
-    for name in [str(manifest["scan_enable"])]:
+    enables = [str(manifest["scan_enable"])]
+    if serial.get("parallel_scan_enable"):
+        enables.append(str(serial["parallel_scan_enable"]))
+    for name in enables:
         port = module.get("ports", {}).get(name, {})
         scan_internal_yids.update(
             bit for bit in port.get("bits", []) if isinstance(bit, int)

@@ -192,9 +192,15 @@ def replay_on_cells(
     matches. `unknown_inputs` are X all along: a wrapped block's INTEST
     environment. The STIL write-patterns makes of each must be those cycles too
     (stil_problems)."""
+    from faultflow.scan.cell_map import resolve_scan_cell_map
+    from faultflow.wrap.serial import for_patterns
+
     manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
-    chip = chip_of(manifest)
     patterns = json.loads(patterns_path.read_text(encoding="utf-8"))
+    # WS_EXTEST's patterns shift the chip's serial chain, WSI to WSO.
+    cell_map = json.loads(resolve_scan_cell_map(cfg).read_text(encoding="utf-8"))
+    manifest = for_patterns(manifest, patterns, cell_map)
+    chip = chip_of(manifest)
     problems: list[str] = []
     for overlap in (False, True):
         program = cycles(chip, patterns, overlap=overlap)

@@ -85,6 +85,7 @@ def scan_pattern_to_dict(pattern: ScanPattern) -> dict[str, Any]:
             else {}
         ),
         **({"setup": setup_to_list(pattern.setup)} if pattern.setup else {}),
+        **({"access": pattern.access} if pattern.access else {}),
     }
 
 
@@ -127,4 +128,5 @@ def scan_pattern_from_dict(data: dict[str, Any]) -> ScanPattern:
             int(data["shift_length"]) if data.get("shift_length") is not None else None
         ),
         setup=setup_from_list(data.get("setup", []), "pattern setup"),
+        access=str(data.get("access", "")),
     )

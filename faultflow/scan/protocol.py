@@ -192,6 +192,10 @@ class ScanPattern:
     # The test setup program ([scan] test_setup, faultflow.scan.setup), applied
     # before everything else: what puts the chip in its test mode. Empty: none.
     setup: tuple[SetupCycle, ...] = ()
+    # How a tester reaches the chains: "" the scan manifest's chains;
+    # "WS_EXTEST" an IEEE 1500 wrapper's boundary register from WSI to WSO, the
+    # chip's serial chain (faultflow.wrap.serial.serial_manifest).
+    access: str = ""
 
 
 def _chain_lengths(manifest: dict[str, Any]) -> dict[int, int]:

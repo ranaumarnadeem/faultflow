@@ -28,10 +28,16 @@ whole test. Each must be one of:
   starts with that many pulses, its *preamble* (:attr:`NonscanSetup.preamble`). Its
   own fault sites are reset faults (:func:`settled_sites`): scan can't test them, and
   they are the reset of what it feeds.
+- *isolated*: none of the above, but nothing sees it: its output reaches no output
+  port and no cell but gates and other isolated flops, through gates whose output
+  can change with it -- the holds and the programmed and settled flops fixing their
+  other inputs. Its output is an X source, like a frozen flop's.
 
 An IEEE 1500 WSP's flops (:mod:`faultflow.wrap.wsp`) stay out of scan too (reason
 ``wsp``): the program that loads the test mode's instruction programs them
-(:mod:`faultflow.wrap.wsp_setup`).
+(:mod:`faultflow.wrap.wsp_setup`) -- but in WS_EXTEST its bypass register, which
+shifts and captures beside the boundary register, is isolated: the instruction
+selects the boundary register at WSO.
 
 Anything else refuses. ``[scan] hold`` inputs are held in every cycle of every scan
 pattern; the view ties them (their port removed), so ATPG can't assign them either. A
@@ -54,6 +60,7 @@ twin (atpg_view.make_nonscan_free), where they are free.
 from __future__ import annotations
 
 import fnmatch
+import itertools
 from dataclasses import dataclass
 from typing import Any, Callable, Collection, Mapping, Sequence
 
@@ -62,6 +69,7 @@ from faultflow.control_trace import (
     Forced,
     Netlist,
     TraceError,
+    one_net,
     port_bits,
     release_faults,
 )
@@ -270,7 +278,8 @@ def analyze_nonscan(
             continue
         result.append(NonscanFlop(instance, flop.q, None, inputs, tied=tied))
     known = {flops[instance].q: value for instance, value in programmed.items()}
-    result += _settle(netlist, flops, unsettled, held, manifest, known)
+    outputs = {net for _, net in port_bits(module, "output")}
+    result += _settle(netlist, flops, unsettled, held, manifest, known, outputs)
     _check_globs(globs, result)
     return NonscanSetup(
         flops=tuple(sorted(result, key=lambda f: f.instance)),
@@ -449,11 +458,13 @@ def _settle(
     held: Mapping[str, int],
     manifest: Mapping[str, Any],
     known: Mapping[int, int] | None = None,
+    outputs: Collection[int] = (),
 ) -> list[NonscanFlop]:
     """The settled flops among ``candidates`` -- non-scan flops nothing holds still
     -- by induction: a plain flop a scan clock clocks, whose D is held (by the holds,
     a constant, a programmed flop in ``known`` or flops settled already), settles one
-    pulse after its D does. Refuses any other."""
+    pulse after its D does. The rest, when every one is isolated (_isolated: nothing
+    sees them, ``outputs`` the output ports' nets), are X sources. Refuses any other."""
     scan_clocks = set(manifest_clock_net_ids(dict(manifest)))
     settled: dict[int, int] = dict(known or {})  # q net -> value
     depth: dict[int, int] = {}  # q net -> pulses to settle
@@ -482,14 +493,143 @@ def _settle(
             pending.remove((instance, inputs, tied))
             progress = True
         if not progress:
+            names = {instance for instance, _, _ in pending}
+            if _isolated(netlist, flops, names, held, settled, outputs) == names:
+                # Isolated: nothing sees them change (an IEEE 1500 WSP's bypass
+                # register in WS_EXTEST, whose WSO mux the WIR deselects).
+                found += [
+                    NonscanFlop(instance, flops[instance].q, None, inputs, tied=tied)
+                    for instance, inputs, tied in pending
+                ]
+                break
             raise ScanError(
                 f"non-scan flop {pending[0][0]}: no held input keeps it in reset and "
                 "its clock isn't held, so it would change during a scan test -- "
                 "unless a scan clock settles it: a plain flop whose D traces to "
                 "holds, constants and other settled flops; or the test setup "
-                "program ([scan] test_setup) leaves it at a value it then holds"
+                "program ([scan] test_setup) leaves it at a value it then holds; or "
+                "its output reaches nothing but itself, the holds and the "
+                "programmed flops blocking every gate it enters"
             )
     return found
+
+
+def _depends(
+    netlist: Netlist,
+    instance: str,
+    pin: str,
+    held: Mapping[str, int],
+    known: Mapping[int, int],
+) -> bool:
+    """Whether gate ``instance``'s output can change with its input ``pin``, its
+    other inputs at the values the holds and ``known`` give them (any value where
+    they give none). True where that can't be worked out."""
+    from faultflow.control_trace import _MAX_EVALUATED_INPUTS
+    from faultflow.runner.runner import _load_core
+
+    entry = netlist.entry(instance) or {}
+    gate = str(entry.get("gate_type", ""))
+    inputs = [str(p) for p in entry.get("inputs", [])]
+    core = _load_core()
+    if (
+        core is None
+        or not gate
+        or pin not in inputs
+        or len(inputs) > _MAX_EVALUATED_INPUTS
+        or len(entry.get("outputs", {})) != 1
+    ):
+        return True
+    conns = netlist.cells[instance].get("connections", {})
+    values: list[int | None] = []
+    for other in inputs:
+        if other == pin:
+            values.append(None)
+            continue
+        found = netlist._held(one_net(conns.get(other)), held, known, {}, set())
+        values.append(None if found is None else found[0])
+    free = [i for i, value in enumerate(values) if value is None and inputs[i] != pin]
+    at = inputs.index(pin)
+    for assignment in itertools.product((0, 1), repeat=len(free)):
+        given = dict(zip(free, assignment))
+        outputs = {
+            int(
+                core.eval_gate(
+                    gate,
+                    [
+                        bool(level if i == at else given.get(i, values[i]))
+                        for i in range(len(inputs))
+                    ],
+                )
+            )
+            for level in (0, 1)
+        }
+        if len(outputs) > 1:
+            return True
+    return False
+
+
+def _isolated(
+    netlist: Netlist,
+    flops: Mapping[str, Flop],
+    candidates: Collection[str],
+    held: Mapping[str, int],
+    known: Mapping[int, int],
+    outputs: Collection[int],
+) -> set[str]:
+    """The flops among ``candidates`` whose outputs nothing sees: followed through
+    every gate whose output can change with them (:func:`_depends`, the held inputs
+    and the ``known`` nets fixing its other inputs), each reaches no output port
+    (``outputs``, their nets) and no cell but the gates and these flops."""
+    readers: dict[int, list[tuple[str, str]]] = {}
+    for name, cell in netlist.cells.items():
+        entry = netlist.entry(name)
+        for pin, bits in cell.get("connections", {}).items():
+            if netlist.direction(name, pin, entry) == "output":
+                continue
+            for bit in bits:
+                if isinstance(bit, int):
+                    readers.setdefault(bit, []).append((name, str(pin)))
+    ports = set(outputs)
+
+    def reached(instance: str) -> set[str] | None:
+        """The flops `instance`'s output reaches, or None when it reaches a port
+        or a cell other than a gate or a flop."""
+        seen: set[int] = set()
+        frontier = [flops[instance].q]
+        hit: set[str] = set()
+        while frontier:
+            net = frontier.pop()
+            if net in seen:
+                continue
+            seen.add(net)
+            if net in ports:
+                return None
+            for reader, pin in readers.get(net, []):
+                entry = netlist.entry(reader) or {}
+                if reader in flops:
+                    hit.add(reader)
+                    continue
+                if entry.get("node_type") != "GATE":
+                    return None
+                if not _depends(netlist, reader, pin, held, known):
+                    continue
+                cell = netlist.cells[reader]
+                frontier += [
+                    bit
+                    for out, bits in cell.get("connections", {}).items()
+                    if netlist.direction(reader, out, entry) == "output"
+                    for bit in bits
+                    if isinstance(bit, int)
+                ]
+        return hit
+
+    found = {name: reached(name) for name in candidates}
+    isolated = {name for name, hit in found.items() if hit is not None}
+    while True:
+        kept = {name for name in isolated if (found[name] or set()) <= isolated}
+        if kept == isolated:
+            return isolated
+        isolated = kept
 
 
 def _check_globs(globs: Sequence[str], flops: Sequence[NonscanFlop]) -> None:
