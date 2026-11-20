@@ -25,7 +25,29 @@ from faultflow.wrap.cell import (
 from faultflow.wrap.errors import WrapError
 from faultflow.wrap.wsp import wsp_of
 from faultflow.wrap.wsp_model import OPCODES
-from faultflow.wrap.wsp_setup import access_of, holds, mode_program
+from faultflow.wrap.wsp_setup import (
+    access_of,
+    holds,
+    instruction_program,
+    mode_program,
+)
+
+# A serial manifest's record of its access (faultflow.wrap.serial.SERIAL): the
+# manifest of a WS_EXTEST test, EXTEST through the WSP.
+_SERIAL = "serial"
+
+
+def _serial(manifest: Mapping[str, Any], mode: str) -> dict[str, Any] | None:
+    """A serial manifest's access record, None for any other manifest."""
+    serial = manifest.get(_SERIAL)
+    if not isinstance(serial, dict):
+        return None
+    if mode != "extest":
+        raise WrapError(
+            f"a WS_EXTEST scan manifest is EXTEST's; no {mode} test shifts it"
+        )
+    return serial
+
 
 VERSION = "faultflow_wrapper_v1"
 MODES = {"functional": (0, 0), "intest": (1, 0), "extest": (0, 1)}
@@ -148,6 +170,11 @@ def mode_holds(manifest: Mapping[str, Any], mode: str) -> dict[str, int]:
         return {}
     if mode not in MODES:
         raise WrapError(f"no wrapper mode {mode!r}")
+    serial = _serial(manifest, mode)
+    if serial is not None:
+        # WS_EXTEST: WRSTN, SelectWIR, UpdateWR, the scan enable and the wrapper
+        # chains' own scan inputs held, CaptureWR at its capture value.
+        return {str(port): int(value) for port, value in serial["holds"].items()}
     if wrapper.get("control") == "wsp":
         return holds(access_of(wrapper))
     if "holds" in wrapper:
@@ -165,6 +192,9 @@ def mode_setup(manifest: Mapping[str, Any], mode: str) -> tuple[SetupCycle, ...]
         return ()
     if mode not in MODES:
         raise WrapError(f"no wrapper mode {mode!r}")
+    serial = _serial(manifest, mode)
+    if serial is not None:
+        return instruction_program(wrapper, str(serial["instruction"]))
     return mode_program(wrapper, mode)
 
 

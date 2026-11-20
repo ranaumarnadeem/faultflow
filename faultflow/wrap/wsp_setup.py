@@ -123,6 +123,15 @@ def mode_program(wrapper: Mapping[str, Any], mode: str) -> tuple[SetupCycle, ...
     record) in ``mode``'s instruction."""
     if mode not in MODE_INSTRUCTIONS:
         raise WrapError(f"no wrapper mode {mode!r}")
+    return instruction_program(wrapper, MODE_INSTRUCTIONS[mode])
+
+
+def instruction_program(
+    wrapper: Mapping[str, Any], instruction: str
+) -> tuple[SetupCycle, ...]:
+    """The program that puts every WIR of ``wrapper`` in ``instruction``: WS_EXTEST
+    for EXTEST through the WSP (faultflow.wrap.serial), or a mode's."""
+    if instruction not in OPCODES:
+        raise WrapError(f"no WSP instruction {instruction!r}")
     access = access_of(wrapper)
-    code = OPCODES[MODE_INSTRUCTIONS[mode]]
-    return program(access, [code] * access.wirs)
+    return program(access, [OPCODES[instruction]] * access.wirs)

@@ -141,10 +141,26 @@ def _grader(
     preamble: int | None,
     campaign_type: str = "scan",
 ) -> _Grader:
+    from faultflow.wrap.serial import for_patterns
+
     core = _load_core()
     assert core is not None
     top = cfg.top
-    manifest = json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8"))
+    cell_map = str(resolve_scan_cell_map(cfg))
+    raw_patterns = json.loads(patterns_path.read_text(encoding="utf-8"))
+    # WS_EXTEST's patterns shift the chip's serial chain, WSI to WSO, and observe
+    # it at WSO alone (faultflow.wrap.serial).
+    manifest = for_patterns(
+        json.loads(cfg.scan_manifest_path.read_text(encoding="utf-8")),
+        raw_patterns,
+        json.loads(Path(cell_map).read_text(encoding="utf-8")),
+    )
+    serial = manifest.get("serial")
+    unobserved = (
+        {*serial["unobserved"], *manifest["scan_outputs"]}
+        if isinstance(serial, dict)
+        else set()
+    )
     generic = Path(str(manifest["generic_json"]))
     view = json.loads(
         (cfg.intermediate_dir / "scan_atpg_view.json").read_text(encoding="utf-8")
@@ -154,11 +170,12 @@ def _grader(
     outputs = [
         bit_name
         for name, port in view_module["ports"].items()
-        if port["direction"] == "output" and not name.startswith("__")
+        if port["direction"] == "output"
+        and not name.startswith("__")
+        and name not in unobserved
         for bit_name in _positional_bus_bits(name, len(port["bits"]))
         if _net_of_name(view_module, bit_name) not in masked
     ]
-    cell_map = str(resolve_scan_cell_map(cfg))
     unsupported = cfg.simulation.unsupported_cells
     blackboxes = list(cfg.blackbox_instances)
     conn = sqlite3.connect(cfg.db_path)
@@ -175,10 +192,7 @@ def _grader(
     index = build_site_key_index(core, generic, cell_map, unsupported, blackboxes)
     specs = [(index[key], fault_type_to_sa_code(ft)) for key, ft in credited]
     clock_ports = manifest_clock_ports(manifest, generic)
-    patterns = [
-        scan_pattern_from_dict(raw)
-        for raw in json.loads(patterns_path.read_text(encoding="utf-8"))
-    ]
+    patterns = [scan_pattern_from_dict(raw) for raw in raw_patterns]
 
     def detect(
         number: int,
