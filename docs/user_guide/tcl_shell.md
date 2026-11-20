@@ -216,9 +216,9 @@ See [Flow recipes](examples.md) for a walkthrough of the two most common flows.
 faultflow's other "scripting" surface is the **locked Yosys synthesis script**,
 `YOSYS_TEMPLATE` in `faultflow/runner/runner.py`. It is rendered per run into
 `output/<top>/.faultflow/generated_scripts/yosys_synth.tcl` and executed with
-`yosys -s`:
+`yosys -s` (a Yosys script, not Tcl, so it is shown unhighlighted):
 
-```tcl
+```text
 read_liberty -lib -setattr faultflow_liberty_cell <each library's Liberty>
 read_verilog -sv <verilog>
 hierarchy -check -top <top>
