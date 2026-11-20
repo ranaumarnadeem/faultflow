@@ -167,6 +167,40 @@ def test_mask_is_the_cone_of_the_unknown_outputs(
 
 
 @pytest.mark.unit
+def test_an_output_reading_a_kept_out_unknown_itself_is_masked_alone(
+    tmp_path: Path, require_cpp_core: None
+) -> None:
+    """dout[1] also drives the output mem_o, and g_po's other input is tied to 0:
+    the and2 keeps the unknown off po, but mem_o reads it itself. EXTEST's graybox
+    of a block whose core chain ends on a flop driving a core output: the core's
+    blackbox output is the core chain's scan-out and the boundary cell's held mux
+    keeps it out of the cell. mem_o is masked, po is not."""
+    generic, manifest = _design()
+    module = generic["modules"][TOP]
+    module["cells"]["g_po"]["connections"]["B"] = ["0"]
+    module["ports"]["mem_o"] = {"direction": "output", "bits": [DOUT[1]]}
+    module["netnames"]["mem_o"] = {"bits": [DOUT[1]]}
+    view, _ = build_scan_atpg_view(generic, manifest, blackbox_instances=["u_mem"])
+    path = tmp_path / "view.json"
+    path.write_text(json.dumps(view), encoding="utf-8")
+    mask = compute_x_mask(
+        _load_core(),
+        path,
+        top=TOP,
+        cell_map=CELL_MAP,
+        unsupported="fail",
+        x_instances=["u_mem"],
+        launch_mode=None,
+        functional_output_order=["po", "mem_o"],
+        blocking_instances=["u_mem"],
+    )
+    ports = view["modules"][TOP]["ports"]
+    assert mask.outputs == {"mem_o"}
+    assert mask.ppo_ports == {"__ppo_ff0"}
+    assert mask.nets == {ports[p]["bits"][0] for p in ("__ppo_ff0", "mem_o")}
+
+
+@pytest.mark.unit
 def test_no_transition_is_credited_at_a_flop_launched_unknown() -> None:
     """A flop that captures an unknown value at the LOC launch edge has an
     unknown state after it, so a transition at its Q is unknown too: none of

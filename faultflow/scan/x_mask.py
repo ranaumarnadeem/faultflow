@@ -34,7 +34,8 @@ A wrapped block's INTEST environment (faultflow.wrap.environment) is unknown too
 but the held mode pins keep it out: each input cell's mux, its select held,
 passes its flop and not the port bit. Masking structurally would mask the whole
 core. So an unknown value whose every reader is a gate the held inputs make
-indifferent to it is blocked (blocked_sources) and leaves the masking reach. The
+indifferent to it is blocked (blocked_sources) and leaves the masking reach, but
+for an output port reading it itself (a port is no gate: it sees the value). The
 mode pins hold in shift too, so it is off the scan path as well: a clock gate a
 wrapped input enables (check_x_off_scan_path). Only a stuck-at on what holds such
 a gate -- the select's net back to the held input -- lets it through, so those
@@ -256,12 +257,14 @@ def compute_x_mask(
     """The view's observation points the outputs of `x_instances` reach, for a
     campaign in `launch_mode` (launch_mode_key). The cone is walked by the C++
     core on the compiled view, the same graph SAT and the simulators use. Of the
-    outputs of `blocking_instances`, those the held inputs keep out reach nothing
-    (blocked_sources)."""
+    outputs of `blocking_instances`, those the held inputs keep out of every cell
+    reading them (blocked_sources) reach only an output port reading one itself."""
     _, module = _top_module(json.loads(view_path.read_text(encoding="utf-8")), top)
+    ports = module.get("ports", {})
     sources = x_source_nets(module, x_instances)
     blocked: frozenset[int] = frozenset()
     release: frozenset[tuple[str, str]] = frozenset()
+    seen: set[int] = set()
     if blocking_instances and sources:
         blocked, release = blocked_sources(
             core,
@@ -271,14 +274,24 @@ def compute_x_mask(
             sources,
         )
         sources = [net for net in sources if net not in blocked]
-    if not sources:
+        # A port is no cell: what it reads itself it sees, whatever the cells
+        # reading the same net keep out -- in EXTEST's graybox a core output that
+        # is the core chain's scan-out too, kept out of its boundary cell.
+        seen = {
+            bit
+            for port in ports.values()
+            if isinstance(port, dict) and port.get("direction") == "output"
+            for bit in port.get("bits", [])
+            if bit in blocked
+        }
+    if not sources and not seen:
         return XMask(launch_mode=launch_mode, blocked=blocked, release_faults=release)
 
     def reached(nets: list[int]) -> set[int]:
+        if not nets:
+            return set(seen)
         found = core.combinational_reach(str(view_path), cell_map, nets, unsupported)
-        return {int(n) for n in found["observable"]}
-
-    ports = module.get("ports", {})
+        return {int(n) for n in found["observable"]} | seen
 
     def flops(nets: set[int]) -> set[str]:
         return {
