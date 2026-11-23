@@ -23,13 +23,20 @@ class CandidateCommit:
 
 
 def load_blocked_patterns(
-    conn: sqlite3.Connection, campaign_id: int
+    conn: sqlite3.Connection, campaign_id: int, *, undetected_only: bool = False
 ) -> dict[int, set[str]]:
+    """fault_id -> its blocked patterns; `undetected_only`: only the faults still
+    undetected (the only ones a SAT solve can still ask about)."""
+    join = (
+        "JOIN faults f ON f.id = b.fault_id AND f.status = 'undetected'"
+        if undetected_only
+        else ""
+    )
     rows = conn.execute(
-        """
-        SELECT fault_id, pattern
-        FROM blocked_patterns
-        WHERE campaign_id = ?
+        f"""
+        SELECT b.fault_id, b.pattern
+        FROM blocked_patterns b {join}
+        WHERE b.campaign_id = ?
         """,
         (campaign_id,),
     ).fetchall()

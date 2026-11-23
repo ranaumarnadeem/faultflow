@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
+from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from faultflow.config import load_config
 from faultflow.db import connect, init_schema
 from faultflow.db.campaign import ensure_campaign
-from faultflow.runner.progressive_atpg import redundancy_model_id
+from faultflow.db.candidates import load_blocked_patterns
+from faultflow.runner.progressive_atpg import pattern_key, redundancy_model_id
 from faultflow.scan import stitch_scan_json
 from faultflow.scan.atpg_view import build_scan_atpg_view
 from faultflow.scan.cell_map import resolve_scan_cell_map
@@ -19,6 +23,8 @@ from faultflow.scan.detection_pipeline import (
     run_progressive_scan_atpg,
 )
 from faultflow.scan.reports import hash_file, manifest_from_result, utc_timestamp
+from wrap_flow import TOP as RING_TOP
+from wrap_flow import ring
 
 ROOT = Path(__file__).resolve().parents[3]
 CELL_MAP = ROOT / "cells/sky130/sky130_fd_sc_hd.json"
@@ -69,10 +75,16 @@ def _tiny_dff_inv_json() -> dict[str, object]:
     }
 
 
-def _transition_scan_workspace(tmp_path: Path):
-    source = tmp_path / "tiny_dff_inv.json"
+def _transition_scan_workspace(
+    tmp_path: Path,
+    netlist: dict[str, object] | None = None,
+    top: str = "tiny_dff_inv",
+    random_vectors: int = 0,
+):
+    source = tmp_path / f"{top}.json"
     source.write_text(
-        json.dumps(_tiny_dff_inv_json(), indent=2) + "\n", encoding="utf-8"
+        json.dumps(netlist or _tiny_dff_inv_json(), indent=2) + "\n",
+        encoding="utf-8",
     )
     cfg_path = tmp_path / "config.ofs"
     cfg_path.write_text(
@@ -88,17 +100,17 @@ collapsing = false
 unsupported_cells = fail
 [atpg]
 mode = comb
-random_vectors = 0
+random_vectors = {random_vectors}
 max_rounds = 3
 """.strip() + "\n",
         encoding="utf-8",
     )
-    cfg = load_config(cfg_path, "tiny_dff_inv")
+    cfg = load_config(cfg_path, top)
     cfg.ensure_workspace()
     generic = cfg.scan_json_path
     techmap = cfg.generated_scripts_dir / "faultflow_scanff_map.v"
     techmap.write_text("// test\n", encoding="utf-8")
-    result = stitch_scan_json(source, CELL_MAP, "tiny_dff_inv", generic)
+    result = stitch_scan_json(source, CELL_MAP, top, generic)
     manifest = manifest_from_result(result, source, techmap, None)
     manifest["latest_check"] = {
         "timestamp": utc_timestamp(),
@@ -257,3 +269,167 @@ def test_scan_transition_compaction_preserves_coverage(
         ).fetchall()
     assert detected_after == detected_before
     assert kept and all(str(r["launch_pattern"]) for r in kept)
+
+
+@pytest.mark.integration
+@pytest.mark.golden
+def test_scan_transition_blocks_a_pattern_only_where_sat_could_return_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """GIVEN a LOC campaign whose candidates the full protocol grades for every
+    active Q-stem fault, WHEN a candidate misses one, THEN it is rejected and
+    blocked for that fault only where SAT could hand the pattern back: the
+    fault SAT targeted, or one the reduced view (SAT's model) predicted it
+    detects. Blocking every Q-stem fault a pattern missed stored the whole
+    pattern once per fault: 6.7M rows, 41 GB, in 2.4 h of boxcar's LOC run
+    (2026-11-23)."""
+    import faultflow.runner.runner as runner_mod
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, scan_ctx, fp = _transition_scan_workspace(
+        tmp_path, netlist=ring(), top=RING_TOP, random_vectors=16
+    )
+    core = runner_mod._load_core()
+    assert core is not None
+    predicted: dict[str, set[int]] = defaultdict(set)
+    tentative = core.simulate_transition_tentative_preloaded
+
+    def recording(path, cell_map, preloaded, vector, capture, order, *a, **kw):
+        found = list(
+            tentative(path, cell_map, preloaded, vector, capture, order, *a, **kw)
+        )
+        predicted[pattern_key(vector, order)].update(int(f) for f in found)
+        return found
+
+    monkeypatch.setattr(core, "simulate_transition_tentative_preloaded", recording)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    _vectors, stats, _run_id, _a, _s = run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        redundancy_model_id(fp),
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=3,
+        target_coverage=100.0,
+        transition=True,
+    )
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        candidates = conn.execute(
+            "SELECT source, pattern, sat_target_fault_id FROM atpg_candidates "
+            "WHERE campaign_id = ?",
+            (campaign_id,),
+        ).fetchall()
+        blocked = load_blocked_patterns(conn, campaign_id)
+        rejected = conn.execute(
+            "SELECT r.fault_id, c.pattern FROM candidate_rejections r "
+            "JOIN atpg_candidates c USING (campaign_id, run_id, candidate_id) "
+            "WHERE r.campaign_id = ? AND r.reason_code = ?",
+            (campaign_id, "no_capture_or_unload_effect"),
+        ).fetchall()
+
+    assert stats.accepted_vectors >= 1
+    # random candidates were graded
+    assert any(r["source"] == "random" for r in candidates) and predicted
+    targets = {
+        (int(r["sat_target_fault_id"]), str(r["pattern"]))
+        for r in candidates
+        if r["source"] == "sat"
+    }
+
+    def stray(rows: Iterable[tuple[int, str]]) -> list[tuple[int, str]]:
+        return [
+            (fid, pat)
+            for fid, pat in rows
+            if fid not in predicted.get(pat, ()) and (fid, pat) not in targets
+        ]
+
+    assert stray((f, p) for f, pats in blocked.items() for p in pats) == []
+    assert stray((int(r["fault_id"]), str(r["pattern"])) for r in rejected) == []
+
+
+@pytest.mark.integration
+@pytest.mark.golden
+def test_scan_atpg_solver_gets_every_block_stored_before_its_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """GIVEN two LOC runs on one campaign (the second resumes it) whose protocol
+    sim misses every Q-stem fault, so each candidate blocks the ones the reduced
+    view predicted -- random fill's included, which SAT never targeted -- WHEN
+    SAT solves a fault, THEN it is handed every pattern the DB held blocked for
+    that fault when the round's SAT phase began. The loop reads the table once
+    per run and keeps it up to date from its own commits, where it used to
+    re-read it every round; this checks the two agree, across rounds and runs."""
+    import faultflow.runner.runner as runner_mod
+    import faultflow.scan.detection_pipeline as pipeline
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, scan_ctx, fp = _transition_scan_workspace(
+        tmp_path, netlist=ring(), top=RING_TOP, random_vectors=16
+    )
+    core = runner_mod._load_core()
+    assert core is not None
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    def every_fault_missed(*_a: Any, faults: list[Any], **_kw: Any) -> Any:
+        lanes = [{"fault_index": i, "outcome": "fail"} for i in range(len(faults))]
+        return {"batches": [{"lanes": lanes}]}
+
+    stored: dict[int, set[str]] = {}
+    heartbeat = pipeline.SolveHeartbeat
+
+    def sat_phase_start(*args: Any, **kwargs: Any) -> Any:
+        # Built once per round, right before the round's SAT solves.
+        with connect(cfg.db_path) as conn:
+            stored.clear()
+            stored.update(load_blocked_patterns(conn, campaign_id))
+        return heartbeat(*args, **kwargs)
+
+    solve = core.solve_scan_transition_fault_atpg
+    expected: list[tuple[int, str]] = []
+    missing: list[tuple[int, str]] = []
+
+    def checked(json_path, cell_map, db, fault_id, blocked, *a, **kw):
+        want = [(int(fault_id), p) for p in stored.get(int(fault_id), ())]
+        expected.extend(want)
+        missing.extend((f, p) for f, p in want if p not in blocked)
+        return solve(json_path, cell_map, db, fault_id, blocked, *a, **kw)
+
+    monkeypatch.setattr(core, "simulate_scan_protocol_faults", every_fault_missed)
+    monkeypatch.setattr(pipeline, "SolveHeartbeat", sat_phase_start)
+    monkeypatch.setattr(core, "solve_scan_transition_fault_atpg", checked)
+
+    first_run_checks = 0
+    for run in range(2):
+        if run:
+            # Resume as after a run stopped before it gave up on its faults,
+            # without random fill: run 2's blocks come from run 1 alone.
+            with connect(cfg.db_path) as conn:
+                conn.execute(
+                    "UPDATE faults SET protocol_unresolved = 0 WHERE campaign_id = ?",
+                    (campaign_id,),
+                )
+                conn.commit()
+            monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+        run_progressive_scan_atpg(
+            cfg,
+            atpg_view,
+            redundancy_model_id(fp),
+            campaign_id=campaign_id,
+            scan_ctx=scan_ctx,
+            max_rounds=1,
+            target_coverage=100.0,
+            transition=True,
+        )
+        first_run_checks = first_run_checks or len(expected)
+
+    # Both runs solved faults that had blocks stored, and were handed them all.
+    assert 0 < first_run_checks < len(expected)
+    assert missing == []

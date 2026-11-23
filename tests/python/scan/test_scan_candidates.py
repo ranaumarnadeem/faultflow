@@ -120,6 +120,39 @@ def test_load_blocked_patterns_groups_by_fault(tmp_path) -> None:
     assert blocked[fault_ids[1]] == {"11"}
 
 
+def test_load_blocked_patterns_undetected_only_skips_detected_faults(
+    tmp_path,
+) -> None:
+    db = tmp_path / "blocked.sqlite"
+    with connect(db) as conn:
+        init_schema(conn)
+        campaign_id = insert_campaign(conn, campaign_type="scan", top="scan_top")
+        for net_id, status in ((5, "undetected"), (7, "detected")):
+            insert_fault_row(
+                conn,
+                campaign_id,
+                net_id=net_id,
+                net_name=f"n{net_id}",
+                compiled_net_index=net_id,
+                fault_type="sa0",
+                status=status,
+            )
+        open_id, detected_id = (
+            int(row["id"])
+            for row in conn.execute("SELECT id FROM faults ORDER BY net_id")
+        )
+        conn.executemany(
+            "INSERT INTO blocked_patterns(campaign_id, fault_id, pattern) "
+            "VALUES (?, ?, ?)",
+            [(campaign_id, open_id, "01"), (campaign_id, detected_id, "10")],
+        )
+        conn.commit()
+        everything = load_blocked_patterns(conn, campaign_id)
+        undetected = load_blocked_patterns(conn, campaign_id, undetected_only=True)
+    assert everything == {open_id: {"01"}, detected_id: {"10"}}
+    assert undetected == {open_id: {"01"}}
+
+
 def test_rejected_candidate_records_protocol_sim_rejections(tmp_path) -> None:
     db = tmp_path / "reject.sqlite"
     with connect(db) as conn:

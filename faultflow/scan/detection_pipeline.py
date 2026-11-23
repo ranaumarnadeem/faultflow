@@ -1325,11 +1325,15 @@ def _process_scan_candidate(
     candidate_key: str | None = None,
     active_clock_ports: list[str] | None = None,
     seed: Sequence[bool] | None = None,
+    new_blocks: list[tuple[int, str]] | None = None,
 ) -> tuple[bool, bool, ScanPattern | None]:
     """Return (accepted, protocol_no_progress, accepted_pattern).
 
     `accepted_pattern` is the canonical block-level ScanPattern when the
     candidate is accepted (for export/retarget), else None.
+
+    `new_blocks`: the (fault_id, pattern) blocks this candidate commits are
+    appended to it, so the caller keeps the blocked set without re-reading it.
 
     `vector` is the launch state V1 (over reduced PIs). For transition the capture
     vector V2 is derived from V1: LOC couples capture PPI = launch PPO; LOS shifts,
@@ -1535,7 +1539,7 @@ def _process_scan_candidate(
     ]
     sim_threads = resolve_sim_threads(scan_ctx.cfg.simulation.sim_threads)
     if transition:
-        tentative = list(
+        tentative = set(
             core.simulate_transition_tentative_preloaded(
                 reduced_json_path,
                 reduced_cell_map,
@@ -1548,7 +1552,7 @@ def _process_scan_candidate(
             )
         )
     else:
-        tentative = list(
+        tentative = set(
             core.simulate_tentative_preloaded(
                 reduced_json_path,
                 reduced_cell_map,
@@ -1574,14 +1578,14 @@ def _process_scan_candidate(
     # graded by the two-frame protocol sim below.
     qstem_active = set(_active_q_stem_fault_ids(active_rows, scan_ctx.q_stem_site_keys))
     if transition:
-        reduced_trusted = sorted(set(tentative) - qstem_active)
+        reduced_trusted = sorted(tentative - qstem_active)
         protocol_sim_fault_ids = sorted(qstem_active)
     else:
-        reduced_trusted = sorted(set(tentative))
+        reduced_trusted = sorted(tentative)
         # Residual = Q-stem faults the reduced sim did not functionally observe;
         # graded below by the capture-value chain-integrity credit, then a
         # protocol-sim fallback for the SAT target only.
-        protocol_sim_fault_ids = sorted(qstem_active - set(tentative))
+        protocol_sim_fault_ids = sorted(qstem_active - tentative)
 
     if not reduced_trusted and not protocol_sim_fault_ids:
         if source == "sat" and sat_target_fault_id is not None:
@@ -1722,20 +1726,26 @@ def _process_scan_candidate(
                     los_two_capture=is_los,
                     los_launch_scan_in=head_bits,
                     active_clock_ports=active_clock_ports or [],
-                    sim_threads=resolve_sim_threads(
-                        scan_ctx.cfg.simulation.sim_threads
-                    ),
+                    sim_threads=sim_threads,
                     **protocol_fault_sim_kwargs,
                 )
             )
-            all_lanes: list[dict[str, object]] = []
-            for batch in protocol_fault_sim_result.get("batches", []):
-                for lane in batch.get("lanes", []):
-                    all_lanes.append(dict(lane))
-            for fault_id, lane in zip(simulated_fault_ids, all_lanes):
+            lanes = (
+                lane
+                for batch in protocol_fault_sim_result.get("batches", [])
+                for lane in batch.get("lanes", [])
+            )
+            # A miss is rejected and blocked only where SAT could hand this
+            # pattern back for the fault: the fault it targeted, or one the
+            # reduced view (SAT's model) predicted it detects. Blocking every
+            # missed Q-stem fault stores the pattern once per fault, for faults
+            # whose solves could never return it.
+            for fault_id, lane in zip(simulated_fault_ids, lanes):
                 if str(lane.get("outcome")) == "pass":
                     passed_fault_ids.append(fault_id)
-                else:
+                elif fault_id in tentative or (
+                    source == "sat" and fault_id == sat_target_fault_id
+                ):
                     protocol_sim_rejections.append(
                         CandidateRejection(fault_id, "no_capture_or_unload_effect")
                     )
@@ -1782,6 +1792,8 @@ def _process_scan_candidate(
             candidate_id=candidate_id,
             commit=commit,
         )
+        if new_blocks is not None:
+            new_blocks.extend(blocked)
         return False, source == "sat", None
 
     vector_id = append_vector_row(
@@ -1808,6 +1820,8 @@ def _process_scan_candidate(
         candidate_id=candidate_id,
         commit=commit,
     )
+    if new_blocks is not None:
+        new_blocks.extend(blocked)
     conn.execute(
         "UPDATE runs SET vector_count = ? WHERE id = ?",
         (vector_index, run_id),
@@ -2087,6 +2101,10 @@ def run_progressive_scan_atpg(
         init_schema(conn)
         _pre = summary(conn, campaign_id=campaign_id)
         _initial_active = _active_fault_rows(conn, campaign_id)
+        # Blocked patterns are read once per run (a resumed campaign's, for the
+        # faults still undetected), then kept up to date from the candidates'
+        # commits: the table grows with every round and isn't re-read.
+        db_blocked = load_blocked_patterns(conn, campaign_id, undetected_only=True)
     log.info(
         "atpg   %d active faults  %d denominator  target=%.1f%%  max_rounds=%d",
         len(_initial_active),
@@ -2099,6 +2117,8 @@ def run_progressive_scan_atpg(
     vectors: list[dict[str, bool]] = []
     seen_patterns: set[str] = set()
     rejected_patterns: dict[int, set[str]] = {}
+    # Blocks committed since db_blocked was last brought up to date.
+    new_blocks: list[tuple[int, str]] = []
     candidate_counter = 0
 
     atpg_seconds = 0.0
@@ -2295,7 +2315,6 @@ def run_progressive_scan_atpg(
             init_schema(conn)
             prev_detected, prev_redundant = _fault_counts(conn, campaign_id)
             active_rows = _active_fault_rows(conn, campaign_id)
-            db_blocked = load_blocked_patterns(conn, campaign_id)
 
         active_ids = [row.fault_id for row in active_rows]
         if not active_ids:
@@ -2368,6 +2387,7 @@ def run_progressive_scan_atpg(
                         los_head_scan_in=heads if los else None,
                         candidate_key=random_key(vector, heads) if los else None,
                         seed=seed,
+                        new_blocks=new_blocks,
                     )
                 )
             fault_sim_seconds += time.perf_counter() - sim_started
@@ -2413,12 +2433,16 @@ def run_progressive_scan_atpg(
         with connect(effective_db_path) as conn:
             init_schema(conn)
             active_rows = _active_fault_rows(conn, campaign_id)
-            db_blocked = load_blocked_patterns(conn, campaign_id)
             rejection_reasons = (
                 load_rejection_reasons(conn, campaign_id)
                 if scan_ctx.compaction_map is not None
                 else {}
             )
+        # The blocks committed since the last SAT phase reach the solver from
+        # this one on, where re-reading the table brought them in before.
+        for blocked_id, pattern in new_blocks:
+            db_blocked.setdefault(blocked_id, set()).add(pattern)
+        new_blocks.clear()
 
         # Phase A: seed a tier-skip for reconvergent-site faults so they start at
         # the second timeout tier (skipping the short 2 s attempt). This is done
@@ -2616,6 +2640,7 @@ def run_progressive_scan_atpg(
                             los_head_scan_in=los_head_scan_in_sat,
                             candidate_key=key if los else None,
                             seed=solved.get("seed") or None,
+                            new_blocks=new_blocks,
                         )
                     )
                 fault_sim_seconds += time.perf_counter() - sim_started
