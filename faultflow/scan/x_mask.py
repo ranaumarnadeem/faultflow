@@ -34,7 +34,8 @@ A wrapped block's INTEST environment (faultflow.wrap.environment) is unknown too
 but the held mode pins keep it out: each input cell's mux, its select held,
 passes its flop and not the port bit. Masking structurally would mask the whole
 core. So an unknown value whose every reader is a gate the held inputs make
-indifferent to it is blocked (blocked_sources) and leaves the masking reach. The
+indifferent to it is blocked (blocked_sources) and leaves the masking reach, but
+for an output port reading it itself (a port is no gate: it sees the value). The
 mode pins hold in shift too, so it is off the scan path as well: a clock gate a
 wrapped input enables (check_x_off_scan_path). Only a stuck-at on what holds such
 a gate -- the select's net back to the held input -- lets it through, so those
@@ -306,12 +307,14 @@ def compute_x_mask(
     """The view's observation points the outputs of `x_instances` reach, for a
     campaign in `launch_mode` (launch_mode_key). The cone is walked by the C++
     core on the compiled view, the same graph SAT and the simulators use. Of the
-    outputs of `blocking_instances`, those the held inputs keep out reach nothing
-    (blocked_sources)."""
+    outputs of `blocking_instances`, those the held inputs keep out of every cell
+    reading them (blocked_sources) reach only an output port reading one itself."""
     _, module = _top_module(json.loads(view_path.read_text(encoding="utf-8")), top)
+    ports = module.get("ports", {})
     sources = x_source_nets(module, x_instances)
     blocked: frozenset[int] = frozenset()
     release: frozenset[tuple[str, str]] = frozenset()
+    seen: set[int] = set()
     if blocking_instances and sources:
         blocked, release = blocked_sources(
             core,
@@ -321,14 +324,24 @@ def compute_x_mask(
             sources,
         )
         sources = [net for net in sources if net not in blocked]
-    if not sources:
+        # A port is no cell: what it reads itself it sees, whatever the cells
+        # reading the same net keep out -- in EXTEST's graybox a core output that
+        # is the core chain's scan-out too, kept out of its boundary cell.
+        seen = {
+            bit
+            for port in ports.values()
+            if isinstance(port, dict) and port.get("direction") == "output"
+            for bit in port.get("bits", [])
+            if bit in blocked
+        }
+    if not sources and not seen:
         return XMask(launch_mode=launch_mode, blocked=blocked, release_faults=release)
 
     def reached(nets: list[int]) -> set[int]:
+        if not nets:
+            return set(seen)
         found = core.combinational_reach(str(view_path), cell_map, nets, unsupported)
-        return {int(n) for n in found["observable"]}
-
-    ports = module.get("ports", {})
+        return {int(n) for n in found["observable"]} | seen
 
     def flops(nets: set[int]) -> set[str]:
         return {
@@ -483,6 +496,121 @@ def instance_output_nets(
     return sorted(nets)
 
 
+def _kept_off_scan_path(
+    core: Any,
+    module: Mapping[str, Any],
+    cell_map: Mapping[str, Any],
+    sources: Collection[int],
+    holds: Mapping[str, int],
+    known: Mapping[int, int],
+    scan_cells: Collection[str],
+) -> dict[int, frozenset[tuple[str, str]]]:
+    """Each of `sources` no path carries onto a scan cell's pin other than its D,
+    and the stuck-ats that would: followed gate by gate, each gate's other inputs
+    at what `holds` (input port bits) and `known` (nets of flops sitting still) hold
+    them at (Netlist._held: through any gate), a gate whose output doesn't change
+    with the source stops it there, and the stuck-ats on its held inputs' paths
+    would let it on (control_trace.release_faults). A path into another flop stops
+    there; one into a cell that is neither, or a gate too wide to evaluate, is
+    taken to reach the scan path."""
+    netlist = Netlist(dict(module), cell_map)
+    scan = set(scan_cells)
+    readers: dict[int, list[tuple[str, str]]] = {}
+    for instance, cell in netlist.cells.items():
+        entry = netlist.entry(instance)
+        for pin, bits in cell.get("connections", {}).items():
+            if netlist.direction(instance, pin, entry) == "output":
+                continue
+            for bit in bits:
+                if isinstance(bit, int):
+                    readers.setdefault(bit, []).append((instance, str(pin)))
+
+    def stops(instance: str, pin: str, net: int) -> set[tuple[str, str]] | None:
+        """The release faults when gate `instance` stops a change on its `pin`
+        (net `net`), else None."""
+        entry = netlist.entry(instance) or {}
+        gate = str(entry.get("gate_type", ""))
+        inputs = [str(p) for p in entry.get("inputs", [])]
+        if pin not in inputs or len(inputs) > _MAX_READER_INPUTS:
+            return None
+        if len(entry.get("outputs", {})) != 1:
+            return None
+        conns = netlist.cells[instance].get("connections", {})
+        values: list[int | None] = []
+        steps: list[tuple[int, str, str, int]] = []
+        for other in inputs:
+            source = one_net(conns.get(other))
+            if other == pin or source == net:
+                values.append(None)
+                continue
+            found = netlist._held(source, holds, known, {}, set())
+            if found is None:
+                values.append(None)
+                continue
+            values.append(found[0])
+            if isinstance(source, int):
+                steps.append((source, instance, other, found[0]))
+            steps.extend(found[1])
+        at = inputs.index(pin)
+        free = [i for i, v in enumerate(values) if v is None and i != at]
+        for assignment in itertools.product((False, True), repeat=len(free)):
+            given = dict(zip(free, assignment))
+            outs = {
+                bool(
+                    core.eval_gate(
+                        gate,
+                        [
+                            bool(level if i == at else given.get(i, values[i]))
+                            for i in range(len(inputs))
+                        ],
+                    )
+                )
+                for level in (False, True)
+            }
+            if len(outs) > 1:
+                return None
+        return set(release_faults(Forced(0, tuple(steps))))
+
+    kept: dict[int, frozenset[tuple[str, str]]] = {}
+    for source in sources:
+        release: set[tuple[str, str]] = set()
+        seen: set[int] = set()
+        frontier = [int(source)]
+        clear = True
+        while frontier and clear:
+            net = frontier.pop()
+            if net in seen:
+                continue
+            seen.add(net)
+            for reader, pin in readers.get(net, []):
+                entry = netlist.entry(reader) or {}
+                kind = entry.get("node_type")
+                if reader in scan:
+                    if pin != "D":
+                        clear = False
+                        break
+                    continue
+                if kind == "FF":
+                    continue
+                if kind != "GATE":
+                    clear = False
+                    break
+                stopped = stops(reader, pin, net)
+                if stopped is not None:
+                    release |= stopped
+                    continue
+                frontier += [
+                    bit
+                    for out, bits in netlist.cells[reader]["connections"].items()
+                    if netlist.direction(reader, out, entry) == "output"
+                    for bit in bits
+                    if isinstance(bit, int)
+                ]
+        if clear:
+            kept[int(source)] = frozenset(release)
+    return kept
+
+
 def check_x_off_scan_path(
     core: Any,
     generic_json: Path,
@@ -544,11 +672,44 @@ def check_x_off_scan_path(
         if isinstance(record, dict) and "q_net" in record
     }
     off_path = set(off_path_q_nets)
-    bad = sorted(
-        f"{flop_by_q.get(int(q), f'net {q}')}.{pin}"
-        for q, pin in found["flop_inputs"]
-        if pin in _SCAN_PATH_PINS and int(q) not in off_path
-    )
+
+    def on_path(found: Any) -> list[str]:
+        return sorted(
+            f"{flop_by_q.get(int(q), f'net {q}')}.{pin}"
+            for q, pin in found["flop_inputs"]
+            if pin in _SCAN_PATH_PINS and int(q) not in off_path
+        )
+
+    bad = on_path(found)
+    if bad:
+        # The cone reaches the scan path; a source every path of which the holds
+        # and the still flops stop on the way, gate after gate, doesn't -- an IEEE
+        # 1500 WSP's bypass register in WS_EXTEST behind the WSO mux its WIR
+        # deselects. The stuck-ats that would let it on are released.
+        kept = _kept_off_scan_path(
+            core,
+            module,
+            json.loads(Path(cell_map).read_text(encoding="utf-8")),
+            sorted(sources),
+            dict(holds or {}),
+            dict(known or {}),
+            {str(record["instance"]) for record in manifest.get("cells", [])},
+        )
+        rest = sorted(set(sources) - set(kept))
+        bad = []
+        if rest:
+            bad = on_path(
+                core.combinational_reach(
+                    str(generic_json),
+                    cell_map,
+                    rest,
+                    unsupported,
+                    list(blackbox_instances),
+                )
+            )
+        if not bad:
+            for faults in kept.values():
+                release |= faults
     if bad:
         raise ScanError(
             "a blackbox or unknown cell output with an unknown value reaches the "

@@ -636,8 +636,19 @@ def _serialize(
     # candidate leaves it free); it stays inactive while the chains shift, where
     # a real scan flop's reset would wipe the load (scan.shift_controls).
     shift = dict(ctx.reset_pi_holds) if ctx.cfg.fault_model.include_reset_faults else {}
+    access = ""
+    serial = ctx.manifest.get("serial")
+    if isinstance(serial, dict):
+        # WS_EXTEST (faultflow.wrap.serial): CaptureWR at 1 for the capture alone,
+        # at 0 while the boundary register shifts.
+        shift.update({str(p): bool(v) for p, v in serial["shift_values"].items()})
+        access = str(serial["instruction"])
     return replace(
-        pattern, preamble_cycles=preamble, shift_pi_values=shift, setup=ctx.setup
+        pattern,
+        preamble_cycles=preamble,
+        shift_pi_values=shift,
+        setup=ctx.setup,
+        access=access,
     )
 
 

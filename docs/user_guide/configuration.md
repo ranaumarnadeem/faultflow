@@ -300,7 +300,7 @@ JTAG and WSP combined numbers count definite detections only.
 | `scan_out` | `scan_out` | Scan output port base name |
 | `scan_enable` | `scan_en` | Scan enable port name |
 | `run_techmap` | `true` | Run the Sky130 scan-cell techmap after stitching |
-| `nonscan_cells` | (none) | Instance-name globs, e.g. `u_tap__*, u_sib_*`: flip-flops left out of scan on purpose, like a JTAG TAP and its IJTAG network that `ff.py jtag` tests through TCK. Each must hold still for the whole scan test: either a `hold` input keeps its clear or preset active, and the scan view ties its output at the value that forces, or the `test_setup` program loads it and it holds that value through the test (its clock held, its enable held off, or its D tracing back to that value, its own output through a mux a held input selects, say: a *programmed* flop, tied at that value), or its clock is held and nothing free can reset it, and its output is unknown, masked like an unknown blackbox output, or it *settles*: a scan clock clocks it, the holds keep its clear and preset inactive, and its D traces to holds, constants and other settled flops (a reset synchronizer with `rst_n` held inactive). A settled flop is tied at the value it settles to, every pattern starts with the pulses that settle it (`preamble_cycles`), and its own faults are `excluded_reset`. Anything else is an error. The other non-scan flops' faults, and those only they see, are `excluded_jtag`; a glob selects settled flops or others, not both |
+| `nonscan_cells` | (none) | Instance-name globs, e.g. `u_tap__*, u_sib_*`: flip-flops left out of scan on purpose, like a JTAG TAP and its IJTAG network that `ff.py jtag` tests through TCK. Each must hold still for the whole scan test: either a `hold` input keeps its clear or preset active, and the scan view ties its output at the value that forces, or the `test_setup` program loads it and it holds that value through the test (its clock held, its enable held off, or its D tracing back to that value, its own output through a mux a held input selects, say: a *programmed* flop, tied at that value), or its clock is held and nothing free can reset it, and its output is unknown, masked like an unknown blackbox output, or it *settles*: a scan clock clocks it, the holds keep its clear and preset inactive, and its D traces to holds, constants and other settled flops (a reset synchronizer with `rst_n` held inactive). A settled flop is tied at the value it settles to, every pattern starts with the pulses that settle it (`preamble_cycles`), and its own faults are `excluded_reset`. One that changes but that nothing sees -- its output reaches no output port and no cell but gates and other such flops, through gates the holds and the programmed and settled flops don't block -- is *isolated*: unknown, like a held clock's (an IEEE 1500 WSP's bypass register in WS_EXTEST, behind the WSO mux its instruction deselects). Anything else is an error. The other non-scan flops' faults, and those only they see, are `excluded_jtag`; a glob selects settled flops or others, not both |
 | `hold` | (none) | `input:0\|1` list, e.g. `trst_n:0, tck:0`: inputs held at that value in every scan pattern, e.g. to keep a non-scan TAP in reset. Not a scan port or scan clock, and not a value that clears or presets scan flops. A fault only the held values block is `hold_unresolved`. A held input also keeps a clock path open: a test-mode clock mux whose select it holds, an AND of the clock and an enable it holds at 1 (see [Cell libraries](../architecture/cell_libraries.md), "Clock paths"); change one and run `ff.py scan` again, or `scan-check` refuses |
 | `test_setup` | (none) | A test setup program (JSON, see below): the cycles a tester applies before every scan pattern to put the chip in its test mode, a test-mode register loaded through ports of its own, say. Each cycle sets every input (0 if it doesn't name it) and may pulse scan clocks; FaultFlow grades every pattern after it, fault-free, and the non-scan flops it leaves at a value they hold are *programmed* (`nonscan_cells`). A stuck-at that would change what it loads into one is `excluded_jtag`, like those that would let one go during the test. Not with scan compression or compaction |
 | `scan_test_access` | `false` | The test instruments' flops (a JTAG TAP, the IJTAG network: a flop clocked from `[jtag] tck`, an instance of a JTAG category of the `[autombist]` manifest, a `warptap_*` cell) are scan flops on purpose. They are tested through TCK by `ff.py jtag`, so without this key `ff.py scan` and `scan-check` refuse one on a scan chain: keep them out with `nonscan_cells` and `hold`. Set by `--scan-tap` / `-scan_tap`; `ff.py scan` then records them in the scan manifest (`test_access_scanned`) |
@@ -379,6 +379,7 @@ The IEEE 1500 wrapper `ff.py wrap` puts on the design's ports (see
 | `extest_pin` | a port name | `wbr_extest` | The EXTEST mode pin the wrapper adds |
 | `exclude` | comma list of globs on `port` or `port[bit]` | empty | Port bits left unwrapped; `*` and `?` are wildcards, brackets match themselves (`b[1]`, `b[*]`) |
 | `control` | `pins`, `wsp` | `pins` | How the mode is set: the two mode pins, or an IEEE 1500 wrapper serial port's instruction (below) |
+| `extest_instruction` | `WP_EXTEST`, `WS_EXTEST` | `WP_EXTEST` | With a WSP: the instruction EXTEST runs in -- the wrapper chains shifted on their own ports, or the boundary register shifted through the WSP alone (below). Set it in a project's config for its SoC's EXTEST |
 
 `wbr_model` went with the abstract `$wbc_*` wrapper; a config that sets it is
 refused.
@@ -436,6 +437,31 @@ leaves the WSP's faults -- its ports', its registers', its decode's and its seri
 path's -- to the WSP's own test (`excluded_wsp`). Where the decode's nets enter the
 boundary cells, the faults are the cells', owned by the mode that activates them,
 as the mode pins' are.
+
+#### EXTEST through the WSP (`extest_instruction = WS_EXTEST`)
+
+IEEE 1500's mandatory EXTEST, WS_EXTEST, reaches the boundary register through the
+WSP alone: the program loads WS_EXTEST, and every pattern shifts one chain from `wsi`
+to `wso` -- the wrapper chains in their order, each chain's head taking the tail of
+the one before -- with `shiftwr` its scan enable and `wrck` its clock. `capturewr` is
+0 while the chain shifts and 1 for the capture, when the cells the mode observes
+capture; the test holds `wrstn` at 1, `selectwir` and `updatewr` at 0, the scan
+enable at 0 (the core chains don't shift, and the core isn't clocked) and each
+wrapper chain's own scan input at 0, and reads the register at `wso` alone. The
+chain isn't taken from the records: it is traced on the cells from `wso` back to
+`wsi`, each WIR at WS_EXTEST, and a path the cells don't have is an error, as is a
+wrapper flop off it, a core flop on it, or a scan enable or clock that isn't
+`shiftwr`'s or `wrck`'s.
+
+The patterns carry `access: WS_EXTEST`; `write-patterns` and its STIL apply them to
+that chain. They test the same faults WP_EXTEST's do, with the same denominator:
+only the access differs, and each access's own ports -- `shiftwr` and `wsi` here, the
+scan enable and the wrapper chains' scan inputs there -- are its scan path
+(`excluded_scan`), the other's held. Launching on shift, a chain's head launches the
+tail of the chain before, where WP_EXTEST shifts in a bit of its own, so transition
+coverage can differ. In a project, the SoC's EXTEST shifts every block's boundary
+register along the WSP chain, the first block's first; the SoC's WSI-WSO path must
+not invert `shiftwr` or `wsi`.
 
 In a project (`ff.py project`), blocks wrapped so share one WSP on the SoC: the glue
 brings each of `wrck`, `wrstn`, `selectwir`, `shiftwr`, `capturewr` and `updatewr`

@@ -92,18 +92,17 @@ endmodule
 """
 
 
-def run_mode(
+def scanned(
     work: Path,
-    command: str,
     sections: str = "",
     netlist: Path | None = None,
     top: str = TOP,
     wrap: str = "",
-) -> tuple[Any, Path]:
-    """init, scan (the wrapper first), scan-check and `command` (intest, extest)
-    with exported patterns on `netlist` (the ring by default; RTL Yosys
-    synthesizes), run in `work`: the config and the patterns' path. `wrap`: more
-    [wrap] keys."""
+    scan: str = "chains = 1\n",
+) -> Path:
+    """init, scan (the wrapper first) and scan-check on `netlist` (the ring by
+    default; RTL Yosys synthesizes), run in `work`: the config's path. `wrap`:
+    more [wrap] keys; `scan`: the [scan] section's."""
     from faultflow.cli import main
 
     if netlist is None:
@@ -113,12 +112,29 @@ def run_mode(
     ofs.write_text(
         f"[design]\nnetlist = {netlist}\ncell_lib = {CELL_MAP_PATH}\n"
         f"liberty = {LIBERTY}\n\n[wrap]\nenabled = true\n{wrap}\n"
-        f"[scan]\nchains = 1\n\n{sections}",
+        f"[scan]\n{scan}\n{sections}",
         encoding="utf-8",
     )
-    patterns = work / f"{command}_patterns.json"
     for step in (["init"], ["scan"], ["scan-check"]):
         assert main([*step, "--top", top, "-c", str(ofs)]) == 0, step
+    return ofs
+
+
+def run_mode(
+    work: Path,
+    command: str,
+    sections: str = "",
+    netlist: Path | None = None,
+    top: str = TOP,
+    wrap: str = "",
+    scan: str = "chains = 1\n",
+) -> tuple[Any, Path]:
+    """scanned(), then `command` (intest, extest) with exported patterns: the
+    config and the patterns' path."""
+    from faultflow.cli import main
+
+    ofs = scanned(work, sections, netlist, top, wrap, scan)
+    patterns = work / f"{command}_patterns.json"
     run = [command, "--export-patterns", str(patterns), "--top", top]
     assert main([*run, "-c", str(ofs)]) == 0
     return load_config(ofs, top), patterns

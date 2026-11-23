@@ -140,3 +140,24 @@ def test_a_synthesized_blocks_extest_patterns_hold_whatever_its_core_holds(
             check = credit_not_reproduced(cfg, patterns, campaign_type="scan_extest")
             assert check == []
             assert core_dependent(cfg, patterns) == []
+
+
+@pytest.mark.integration
+def test_extest_never_compares_what_the_core_drives(
+    tmp_path: Path, flow_tools: None
+) -> None:
+    """The core chain's scan-out is the core's, an unknown blackbox output of the
+    graybox: no pattern compares it. With the ring's 3 boundary cells on 2 wrapper
+    chains a pattern shifts 2 bits, and the core chain's 3 flops keep a bit of what
+    was there before -- unknown at power-up -- so a compared scan-out would fail on
+    the cells."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(tmp_path)
+        cfg, patterns = run_mode(
+            tmp_path, "extest", scan="chains = 1\nwrapper_chains = 2\n"
+        )
+        exported = json.loads(patterns.read_text(encoding="utf-8"))
+        assert exported and all(p["shift_length"] == 2 for p in exported)
+        assert not any("scan_out" in p["capture_pi_values"] for p in exported)
+        assert replay_on_cells(cfg, patterns, tmp_path / "replay") == []
+        assert credit_not_reproduced(cfg, patterns, campaign_type="scan_extest") == []

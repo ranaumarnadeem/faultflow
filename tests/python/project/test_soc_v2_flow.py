@@ -2,7 +2,7 @@
 synthesizes (an accumulator and a counter), each wrapped with the IEEE 1500 wrapper
 ff.py wrap puts on and scanned on its own; glue that strings their wrapper chains
 into one, brings their core chains and mode pins to SoC pins, and routes the
-interconnect through inverters."""
+interconnect through inverters (or through bare wires, one reset for both)."""
 
 from __future__ import annotations
 
@@ -152,13 +152,16 @@ def test_scan_check_passes_a_soc_whose_blocks_passed(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("wires", [False, True], ids=["inverters", "wires"])
 def test_the_project_runs_and_counts_every_fault_once(
-    tmp_path: Path, flow_tools: None
+    tmp_path: Path, flow_tools: None, wires: bool
 ) -> None:
     """Each block's INTEST and the SoC's EXTEST, then the chip number: every fault
     counted once, each one a scope leaves to another graded there. The SoC's EXTEST
     patterns replay on the composed SoC's cells, and their every credit is
-    reproduced there."""
+    reproduced there. With bare wires between the blocks (GLUE_WIRE_RTL) a wire is
+    one SoC fault site standing for both blocks' port faults, and the shared reset
+    one input reaching both."""
     from faultflow.project.soc_flow import run_soc_project, soc_chip_coverage
     from faultflow.service.flow import FlowService
     from scan_credit import credit_not_reproduced
@@ -167,7 +170,7 @@ def test_the_project_runs_and_counts_every_fault_once(
     patterns = tmp_path / "soc_extest.json"
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(tmp_path)
-        project = load_soc_project(write_soc_v2(tmp_path))
+        project = load_soc_project(write_soc_v2(tmp_path, wires=wires))
         base = load_config(project.base_config, project.soc.top)
         service = FlowService()
         scopes = run_soc_project(
@@ -265,8 +268,9 @@ def test_a_soc_of_wsp_blocks_shares_one_wsp_and_counts_every_fault_once(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("wires", [False, True], ids=["inverters", "wires"])
 def test_hierarchical_coverage_holds_against_the_flat_soc(
-    tmp_path: Path, flow_tools: None
+    tmp_path: Path, flow_tools: None, wires: bool
 ) -> None:
     """The flat comparison: one functional scan test of the whole composed SoC, its
     wrappers in functional mode. Every fault it detects is detected by the
@@ -286,7 +290,7 @@ def test_hierarchical_coverage_holds_against_the_flat_soc(
     assert core is not None
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(tmp_path)
-        project = load_soc_project(write_soc_v2(tmp_path))
+        project = load_soc_project(write_soc_v2(tmp_path, wires=wires))
         base = load_config(project.base_config, project.soc.top)
         service = FlowService()
         scopes = run_soc_project(

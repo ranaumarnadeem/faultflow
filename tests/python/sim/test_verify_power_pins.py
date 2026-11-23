@@ -46,8 +46,7 @@ compaction = none
 
 [report]
 threshold = 95.0
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
 
@@ -117,8 +116,7 @@ module demo(input a, output y);
   assign y = a;
 endmodule
 `endif
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
     vectors = VectorSet("demo.test", ["a"], [{"a": True}])

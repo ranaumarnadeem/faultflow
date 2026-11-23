@@ -368,7 +368,7 @@ def soc_chip_coverage(project: SocProject, scopes: SocScopes) -> Any:
     )
     # A block input port's stem the SoC splits into branches, and a block bit the
     # glue ties to a constant: no fault of the chip.
-    accounted = [*tied, *merged_inputs(sites, identities)]
+    accounted = [*tied, *merged_inputs(sites, identities, soc_rows)]
     return aggregate_soc(project.name, scope_list, tied=accounted)
 
 

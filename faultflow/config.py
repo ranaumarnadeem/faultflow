@@ -490,7 +490,10 @@ class WrapConfig:
     pins it adds; ``exclude``, port or "port[bit]" globs it leaves unwrapped; and
     ``control``, how the mode is set: "pins", the two mode pins, or "wsp", an IEEE
     1500 wrapper serial port's instruction (faultflow.wrap.wsp; the wrapper then
-    runs on its WRCK, so ``clock`` stays empty)."""
+    runs on its WRCK, so ``clock`` stays empty). ``extest_instruction``, with a
+    WSP: the instruction EXTEST runs in -- WP_EXTEST, the wrapper chains shifted on
+    their own ports, or WS_EXTEST, the boundary register shifted from WSI to WSO
+    (faultflow.wrap.serial)."""
 
     enabled: bool = False
     clock: str = ""
@@ -498,6 +501,7 @@ class WrapConfig:
     extest_pin: str = "wbr_extest"
     exclude: tuple[str, ...] = ()
     control: str = "pins"
+    extest_instruction: str = "WP_EXTEST"
 
 
 @dataclass(frozen=True)
@@ -822,6 +826,16 @@ def _parse_wrap(parser: ConfigParser) -> WrapConfig:
         for glob in parser.get("wrap", "exclude", fallback="").split(",")
         if glob.strip()
     )
+    instruction = (
+        parser.get("wrap", "extest_instruction", fallback="WP_EXTEST").strip().upper()
+    )
+    if instruction not in ("WP_EXTEST", "WS_EXTEST"):
+        raise ConfigError(
+            "[wrap] extest_instruction must be WP_EXTEST or WS_EXTEST, got "
+            f"'{instruction}'"
+        )
+    # Whether a WSP controls the wrapper is the scan manifest's to say (a SoC's
+    # config wraps nothing itself): EXTEST refuses WS_EXTEST without one.
     return WrapConfig(
         enabled=_bool(parser, "wrap", "enabled", False),
         clock=parser.get("wrap", "clock", fallback="").strip(),
@@ -829,6 +843,7 @@ def _parse_wrap(parser: ConfigParser) -> WrapConfig:
         extest_pin=extest,
         exclude=exclude,
         control=control,
+        extest_instruction=instruction,
     )
 
 

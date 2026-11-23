@@ -161,7 +161,12 @@ port and keeps the core at 0. The graybox is the block's boundary cells; everyth
 else, the core, is one blackbox whose outputs are unknown -- the held output cells'
 muxes keep them out, so the core costs nothing and none of its faults is graded:
 - The test shifts the wrapper chains alone. Each exported pattern says how long
-  (`shift_length`); the core's chains shift along, uncompared.
+  (`shift_length`); the core's chains shift along, uncompared. Nothing the core
+  drives is compared, its chains' scan outputs included.
+- With a WSP and `[wrap] extest_instruction = WS_EXTEST` it shifts the boundary
+  register through the WSP alone, `wsi` to `wso` on `shiftwr`, the core unclocked
+  (see [Configuration](configuration.md), "EXTEST through the WSP"); each pattern
+  says so (`access`).
 - A stuck-at that would let the core out -- the EXTEST mode pin, or an output
   cell's mux select, stuck at 0 -- is `blackbox_unresolved` from the start.
 - What INTEST owns (see `intest`) is left to it, `excluded_wbr_decoupled`.

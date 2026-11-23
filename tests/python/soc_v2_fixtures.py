@@ -2,7 +2,7 @@
 accumulator and a counter), each wrapped with the IEEE 1500 wrapper ff.py wrap puts
 on and scanned on its own, and glue that strings their wrapper chains into one,
 brings their core chains and mode pins to SoC pins, and routes the interconnect
-through inverters.
+through inverters (or, GLUE_WIRE_RTL, through bare wires, one reset for both).
 
 The blocks' workspaces go under the working directory (``[design] output_root``'s
 default): change into the test's directory first."""
@@ -62,6 +62,31 @@ module soc_top(input clk, input rst_a, input rst_b, input add_sub, input [3:0] b
               .wbr_intest(t_intest), .wbr_extest(t_extest));
   ctr_fsm u_b(.clk(clk), .rst(rst_b), .en(en), .up_down(up_down),
               .load_val_n(load_val_n), .load_n(load_n),
+              .count(count_o), .done(done_o),
+              .scan_en(scan_en), .scan_in(si_b), .scan_out(so_b),
+              .wbr_si(w_mid), .wbr_so(wso),
+              .wbr_intest(t_intest), .wbr_extest(t_extest));
+  assign chip_out = carry_o ^ done_o;
+endmodule
+"""
+
+# The same SoC with bare wires between the blocks and one reset for both: u_a's
+# outputs drive u_b's inputs directly (carry also the glue's XOR), so a net from one
+# block's boundary cell to the other's is one SoC fault site with two identities,
+# and the reset net reaches both blocks' cells.
+GLUE_WIRE_RTL = """
+module soc_top(input clk, input rst, input add_sub, input [3:0] b,
+               input up_down, input en, input scan_en, input si_a, input si_b,
+               input wsi, input t_intest, input t_extest,
+               output so_a, output so_b, output wso, output chip_out);
+  wire [3:0] acc_o; wire carry_o; wire [3:0] count_o; wire done_o; wire w_mid;
+  alu_acc u_a(.clk(clk), .rst(rst), .add_sub(add_sub), .b(b),
+              .acc(acc_o), .carry(carry_o),
+              .scan_en(scan_en), .scan_in(si_a), .scan_out(so_a),
+              .wbr_si(wsi), .wbr_so(w_mid),
+              .wbr_intest(t_intest), .wbr_extest(t_extest));
+  ctr_fsm u_b(.clk(clk), .rst(rst), .en(en), .up_down(up_down),
+              .load_val_n(acc_o), .load_n(carry_o),
               .count(count_o), .done(done_o),
               .scan_en(scan_en), .scan_in(si_b), .scan_out(so_b),
               .wbr_si(w_mid), .wbr_so(wso),
@@ -145,16 +170,21 @@ def write_soc_v2(
     hold: dict[str, int] | None = None,
     base: str = "",
     wsp: bool = False,
+    wires: bool = False,
 ) -> Path:
     """The two blocks built under `root`, the glue and the base config written
     there (`base`: its sections beyond [design]), and the project manifest naming
     them (the SoC inputs `hold` names held in the SoC's tests): its path. `wsp`:
-    the blocks' wrappers an IEEE 1500 WSP controls, the glue GLUE_WSP_RTL."""
+    the blocks' wrappers an IEEE 1500 WSP controls, the glue GLUE_WSP_RTL; `wires`:
+    the glue GLUE_WIRE_RTL."""
+    if wsp and wires:
+        raise ValueError("no glue has both a WSP and bare wires")
     control = "wsp" if wsp else "pins"
     a_json, a_manifest = scanned_block(root / "blkA", ALU_RTL, "alu_acc", control)
     b_json, b_manifest = scanned_block(root / "blkB", CTR_RTL, "ctr_fsm", control)
     glue = root / "soc_glue.v"
-    glue.write_text(GLUE_WSP_RTL if wsp else GLUE_RTL, encoding="utf-8")
+    rtl = GLUE_WSP_RTL if wsp else GLUE_WIRE_RTL if wires else GLUE_RTL
+    glue.write_text(rtl, encoding="utf-8")
     base_ofs(root / "config.ofs", glue, base)
     project: dict[str, Any] = {
         "schema": "faultflow_project_v2",

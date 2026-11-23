@@ -109,6 +109,12 @@ from faultflow.wrap.record import (
     serial_nets,
     wrapper_record,
 )
+from faultflow.wrap.serial import (
+    for_patterns,
+    is_serial,
+    serial_extest,
+    serial_manifest,
+)
 
 log = logging.getLogger(__name__)
 
@@ -482,6 +488,11 @@ class Runner:
             # set, so a design without them keeps its config_hash.
             payload["scan_nonscan_cells"] = list(self.cfg.scan.nonscan_cells)
             payload["scan_hold"] = [list(pair) for pair in self.cfg.scan.hold]
+        if self.cfg.test_mode == "extest" and serial_extest(self.cfg):
+            # EXTEST through the WSP (WS_EXTEST) shifts the boundary register from
+            # WSI to WSO: another scan access than the wrapper chains' own ports,
+            # so it can't resume a parallel one. Keyed only for it.
+            payload["wrap_extest_instruction"] = self.cfg.wrap.extest_instruction
         if self.cfg.scan.test_setup is not None:
             # What the test setup program loads decides the programmed non-scan
             # flops' values and the faults left to JTAG. Keyed only when set,
@@ -1321,6 +1332,13 @@ class Runner:
             raise RunnerError(f"exported patterns not found: {patterns}")
         manifest = load_manifest(manifest_path)
         exported = json.loads(patterns.read_text(encoding="utf-8"))
+        try:
+            # WS_EXTEST's patterns shift the chip's serial chain.
+            manifest = for_patterns(
+                manifest, exported, _load_json_object(resolve_scan_cell_map(self.cfg))
+            )
+        except WrapError as exc:
+            raise RunnerError(str(exc)) from exc
         chains = manifest.get("chains", [])
         try:
             chip = chip_of(manifest)
@@ -1570,12 +1588,26 @@ class Runner:
                 "EXTEST's fault sites in the graybox aren't the block's: "
                 f"{sorted(owned - scanned)[:5]}"
             )
+        chains = box.chains
+        shifted = box.manifest
+        if serial_extest(self.cfg):
+            # WS_EXTEST: the boundary register from WSI to WSO, traced on the
+            # chip's own cells; the chip takes the patterns as they are.
+            try:
+                shifted = serial_manifest(
+                    manifest,
+                    _load_json_object(cell_map_path),
+                    _json_top_module(generic_json, top)[1],
+                )
+            except WrapError as exc:
+                raise RunnerError(str(exc)) from exc
+            chains = {}
         run_manifest = {
-            **box.manifest,
+            **shifted,
             "generic_json": str(path),
             "generic_json_hash": hash_file(path),
         }
-        return path, run_manifest, box.chains, box.cores
+        return path, run_manifest, chains, box.cores
 
     def _holds(self, manifest: Mapping[str, Any]) -> tuple[tuple[str, int], ...]:
         """[scan] hold, and an IEEE 1500 wrapper's mode pins at the campaign's test
@@ -3080,6 +3112,13 @@ class Runner:
         core = _load_core()
         if core is None:
             raise RunnerError("C++ extension _faultflow_core is required")
+        # What holds while the chains shift: WS_EXTEST's CaptureWR is held at 1
+        # for the capture alone (faultflow.wrap.serial).
+        shift_holds = dict(nonscan.holds) if nonscan is not None else None
+        if shift_holds is not None and is_serial(manifest):
+            shift_holds.update(
+                {str(p): int(v) for p, v in manifest["serial"]["shift_values"].items()}
+            )
         return mask_scan_view(
             core,
             cfg,
@@ -3094,7 +3133,7 @@ class Runner:
                 [flop.q for flop in nonscan.flops] if nonscan is not None else ()
             ),
             blocking_instances=blocking,
-            holds=nonscan.holds if nonscan is not None else None,
+            holds=shift_holds,
             known=(
                 {f.q: f.value for f in nonscan.flops if f.value is not None}
                 if nonscan is not None
@@ -3309,6 +3348,16 @@ class Runner:
             for port in _port_names(netlist, self.cfg.top, "output", expand_buses=True)
             if not port.startswith("__ppo_")
         ]
+        if is_serial(run_manifest):
+            # WS_EXTEST reads the boundary register at WSO, its scan output: not
+            # WSO at the capture, nor the wrapper chains' own scan outputs.
+            unobserved = {
+                *run_manifest["serial"]["unobserved"],
+                *run_manifest["scan_outputs"],
+            }
+            functional_output_order = [
+                port for port in functional_output_order if port not in unobserved
+            ]
         # Before the fingerprint, which then hashes the masked view.
         x_mask = self._mask_unknown_blackbox_outputs(
             view,
@@ -3371,9 +3420,11 @@ class Runner:
             scope == "extest"
             and export_patterns is not None
             and export_patterns.exists()
+            and not is_serial(run_manifest)
         ):
             # As the whole block takes them: its chains' numbers, and the wrapper
-            # chains' length to shift.
+            # chains' length to shift. (WS_EXTEST's patterns shift the chip's own
+            # serial chain, faultflow.wrap.serial: the chip takes them as they are.)
             graybox_patterns = json.loads(export_patterns.read_text("utf-8"))
             export_patterns.write_text(
                 json.dumps(

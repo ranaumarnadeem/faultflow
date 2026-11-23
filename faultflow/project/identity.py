@@ -37,6 +37,11 @@ SOC = "soc"
 Identity = tuple[str, str]  # (scope: a block's name, or SOC; its site key)
 
 
+class IdentityError(RuntimeError):
+    """A block fault the composed SoC stands for is missing from its sites'
+    identities: the chip number would lose it."""
+
+
 @dataclass(frozen=True)
 class BlockSites:
     """A block instance's name, its own netlist's fault site rows (the C++ core's
@@ -134,16 +139,35 @@ def soc_identities(
 
 
 def merged_inputs(
-    blocks: Mapping[str, BlockSites], identities: Mapping[str, list[Identity]]
+    blocks: Mapping[str, BlockSites],
+    identities: Mapping[str, list[Identity]],
+    soc_rows: Iterable[Mapping[str, Any]],
 ) -> set[Identity]:
     """The stems of the blocks' input port bits no SoC fault site is: their SoC
     nets reach more than the block, so the SoC has their readers' branches
-    instead. A flat run of the chip has no such fault."""
+    instead. A flat run of the chip has no such fault. `soc_rows`: the SoC's
+    fault sites, those `identities` were found for. Raises IdentityError for a
+    stem missing from `identities` whose SoC net the SoC doesn't fan out: a wire
+    with one reader is one SoC site, which stands for that stem too."""
     found = {identity for ids in identities.values() for identity in ids}
-    return {
-        (block.name, stem_key(b))
-        for block in blocks.values()
-        for b in block.inputs
-        if isinstance(block.remap.get(b), int)
-        and (block.name, stem_key(b)) not in found
+    fanned_out = {
+        int(row["yosys_net_id"]) for row in soc_rows if str(row["kind"]) == "branch"
     }
+    merged: set[Identity] = set()
+    lost: list[str] = []
+    for block in blocks.values():
+        for b in sorted(block.inputs):
+            soc_net = block.remap.get(b)
+            identity = (block.name, stem_key(b))
+            if not isinstance(soc_net, int) or identity in found:
+                continue
+            if soc_net in fanned_out:
+                merged.add(identity)
+            else:
+                lost.append(f"{block.name} {stem_key(b)} (SoC net {soc_net})")
+    if lost:
+        raise IdentityError(
+            "block input stems the SoC's fault sites don't stand for, on nets it "
+            f"doesn't fan out: {', '.join(lost[:5])}"
+        )
+    return merged
