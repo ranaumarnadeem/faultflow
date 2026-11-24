@@ -1326,6 +1326,7 @@ def _process_scan_candidate(
     active_clock_ports: list[str] | None = None,
     seed: Sequence[bool] | None = None,
     new_blocks: list[tuple[int, str]] | None = None,
+    detections: list[int] | None = None,
 ) -> tuple[bool, bool, ScanPattern | None]:
     """Return (accepted, protocol_no_progress, accepted_pattern).
 
@@ -1334,6 +1335,8 @@ def _process_scan_candidate(
 
     `new_blocks`: the (fault_id, pattern) blocks this candidate commits are
     appended to it, so the caller keeps the blocked set without re-reading it.
+    `detections`: an accepted candidate's credited fault ids are appended to it,
+    so the caller keeps the round's active set without re-reading it.
 
     `vector` is the launch state V1 (over reduced PIs). For transition the capture
     vector V2 is derived from V1: LOC couples capture PPI = launch PPO; LOS shifts,
@@ -1822,6 +1825,8 @@ def _process_scan_candidate(
     )
     if new_blocks is not None:
         new_blocks.extend(blocked)
+    if detections is not None:
+        detections.extend(passed_fault_ids)
     conn.execute(
         "UPDATE runs SET vector_count = ? WHERE id = ?",
         (vector_index, run_id),
@@ -2613,6 +2618,7 @@ def run_progressive_scan_atpg(
                 candidate_counter += 1
                 vector_index = len(vectors) + 1
                 sim_started = time.perf_counter()
+                candidate_detections: list[int] = []
                 with connect(effective_db_path) as conn:
                     init_schema(conn)
                     accepted, protocol_no_progress, accepted_pattern = (
@@ -2641,6 +2647,7 @@ def run_progressive_scan_atpg(
                             candidate_key=key if los else None,
                             seed=solved.get("seed") or None,
                             new_blocks=new_blocks,
+                            detections=candidate_detections,
                         )
                     )
                 fault_sim_seconds += time.perf_counter() - sim_started
@@ -2651,12 +2658,11 @@ def run_progressive_scan_atpg(
                     round_tracker.sat_outcomes.append("SAT")
                     if accepted_pattern is not None:
                         accepted_patterns.append(accepted_pattern)
-                    with connect(effective_db_path) as conn:
-                        init_schema(conn)
-                        current_active_ids = {
-                            active.fault_id
-                            for active in _active_fault_rows(conn, campaign_id)
-                        }
+                    # Only a candidate's detections change the status of a
+                    # fault the loop has yet to visit (an UNSAT mark is on the
+                    # fault just solved), so dropping them gives what re-reading
+                    # the active faults gave, without the read.
+                    current_active_ids.difference_update(candidate_detections)
                 else:
                     stats.rejected_candidates += 1
                     rejected_patterns.setdefault(fault_id, set()).add(key)
