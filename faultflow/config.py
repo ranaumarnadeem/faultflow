@@ -227,12 +227,12 @@ class SimulationConfig:
     # model set genuinely requires the power-pins variant, this drives VPWR=1 /
     # VGND=0 in the generated testbench and passes -DUSE_POWER_PINS to iverilog.
     verify_use_power_pins: bool = False
-    # Threads used to parallelize fault GRADING (the dominant ATPG cost). 1 keeps
-    # the original serial behaviour; 0 = auto (cpu_count - 2, min 1); N uses N
-    # threads. Each thread owns its SimState over the shared immutable graph; the
-    # detected-set merge and the single SQLite writer stay on the calling thread,
-    # so coverage is bit-identical for any value. See resolve_sim_threads().
-    sim_threads: int = 1
+    # Threads used to parallelize fault GRADING (the dominant ATPG cost). 0 = auto
+    # (cpu_count - 2, min 1; the default); 1 is serial; N uses N threads. Each
+    # thread owns its SimState over the shared immutable graph; the detected-set
+    # merge and the single SQLite writer stay on the calling thread, so coverage
+    # is bit-identical for any value. See resolve_sim_threads().
+    sim_threads: int = 0
 
 
 def resolve_sim_threads(sim_threads: int) -> int:
@@ -1096,7 +1096,7 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
         raise ConfigError("verify_tool must be 'iverilog'")
 
     try:
-        sim_threads = parser.getint("simulation", "sim_threads", fallback=1)
+        sim_threads = parser.getint("simulation", "sim_threads", fallback=0)
     except ValueError:
         raise ConfigError("sim_threads must be an integer")
     if sim_threads < 0:

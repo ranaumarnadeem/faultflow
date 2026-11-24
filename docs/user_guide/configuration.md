@@ -157,7 +157,7 @@ line rather than setting it turns collapsing back on.
 | `verify` | bool | `false` | Run the optional iverilog verification gate |
 | `verify_tool` | `iverilog` | `iverilog` | Verification backend |
 | `verify_use_power_pins` | bool | `false` | Drive `VPWR=1`/`VGND=0` and pass `-DUSE_POWER_PINS` in the generated testbench, for behavioral models that need it |
-| `sim_threads` | int | `1` | Threads for parallel fault grading, the dominant ATPG cost. `1` = serial, `0` = auto (`cpu_count - 2`, min 1), `N` = `N` threads. Coverage is bit-identical for any value — only wall-clock changes |
+| `sim_threads` | int | `0` | Threads for parallel fault grading, the dominant ATPG cost. `0` = auto (`cpu_count - 2`, min 1), `1` = serial, `N` = `N` threads. Coverage is bit-identical for any value — only wall-clock changes |
 | `verilog_models` | — | Sky130 models | Behavioral cell models for verification |
 
 ```{admonition} Unsupported-cell policy

@@ -115,6 +115,27 @@ def test_resolve_sim_threads_contract() -> None:
     assert auto >= 1
 
 
+def test_sim_threads_defaults_to_auto(tmp_path: Path) -> None:
+    """With no [simulation] sim_threads key, grading takes the auto thread count
+    (0): coverage is bit-identical for any count, so the default uses the cores."""
+    from faultflow.config import SimulationConfig
+
+    cfg_path = tmp_path / "default.ofs"
+    cfg_path.write_text(
+        f"""
+[design]
+netlist = {ROOT / "tests/cpp/fixtures/tiny_inv.json"}
+cell_lib = {ROOT / "cells/sky130/sky130_fd_sc_hd.json"}
+
+[simulation]
+unsupported_cells = fail
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+    assert load_config(cfg_path, top="tiny_inv").simulation.sim_threads == 0
+    assert SimulationConfig().sim_threads == 0
+
+
 @pytest.mark.unit
 def test_sim_threads_plumbing_is_inert_on_tiny_inv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
