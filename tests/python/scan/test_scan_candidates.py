@@ -73,6 +73,82 @@ def test_commit_candidate_writes_vector_index_not_row_id(tmp_path) -> None:
         assert int(row["vector_index"]) != vector_id
 
 
+def test_commit_candidate_records_a_fault_once_its_first_detection(tmp_path) -> None:
+    """GIVEN a fault an earlier candidate detected, WHEN a later candidate of the
+    same round credits it again (the round's active list still holds it), THEN
+    its row is left as it is and fault_detections keeps the first detection
+    only. Rewriting every such row and adding one more detection for it was 516k
+    rows, and most of 5.9 GB written, in genericfir_small's stuck-at scan run
+    (2026-11-24); a detected row is already what the rewrite would make it."""
+    db = tmp_path / "candidates.sqlite"
+    with connect(db) as conn:
+        init_schema(conn)
+        campaign_id = insert_campaign(conn, campaign_type="scan", top="scan_top")
+        run_id = insert_run(conn, campaign_id, vector_source="scan_native_sat_atpg")
+        for net in (10, 11):
+            insert_fault_row(
+                conn,
+                campaign_id,
+                net_id=net,
+                net_name=f"n{net}",
+                compiled_net_index=net,
+                fault_type="sa0",
+                status="undetected",
+                fault_site_key=f"net:{net}:stem",
+            )
+        first, second = (int(r[0]) for r in conn.execute("SELECT id FROM faults"))
+        for candidate_id, detections in ((1, [first]), (2, [first, second])):
+            insert_pending_candidate(
+                conn,
+                campaign_id=campaign_id,
+                run_id=run_id,
+                candidate_id=candidate_id,
+                pattern=f"p{candidate_id}",
+                source="random",
+                sat_target_fault_id=None,
+            )
+            vector_index = candidate_id + 1
+            vector_id = append_vector_row(
+                conn,
+                campaign_id=campaign_id,
+                run_id=run_id,
+                source="scan_native_sat_atpg",
+                vector_index=vector_index,
+                pattern=f"p{candidate_id}",
+            )
+            before = conn.total_changes
+            commit_candidate(
+                conn,
+                campaign_id=campaign_id,
+                run_id=run_id,
+                candidate_id=candidate_id,
+                commit=CandidateCommit(
+                    status="accepted",
+                    vector_index=vector_index,
+                    accepted_vector_id=vector_id,
+                    detections=detections,
+                ),
+            )
+            conn.commit()
+            changed = conn.total_changes - before
+        detections_rows = conn.execute(
+            "SELECT fault_id, vector_index FROM fault_detections ORDER BY fault_id"
+        ).fetchall()
+        statuses = {
+            int(r["id"]): str(r["status"])
+            for r in conn.execute("SELECT id, status FROM faults")
+        }
+
+    assert statuses == {first: "detected", second: "detected"}
+    assert [(int(r[0]), int(r[1])) for r in detections_rows] == [
+        (first, 2),
+        (second, 3),
+    ]
+    # Candidate 2 wrote the second fault's row and detection, and its own
+    # candidate row: not the first fault's again.
+    assert changed == 3
+
+
 def test_load_blocked_patterns_groups_by_fault(tmp_path) -> None:
     db = tmp_path / "blocked.sqlite"
     with connect(db) as conn:
