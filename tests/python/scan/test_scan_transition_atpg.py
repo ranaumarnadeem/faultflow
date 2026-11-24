@@ -433,3 +433,108 @@ def test_scan_atpg_solver_gets_every_block_stored_before_its_round(
     # Both runs solved faults that had blocks stored, and were handed them all.
     assert 0 < first_run_checks < len(expected)
     assert missing == []
+
+
+@pytest.mark.integration
+@pytest.mark.golden
+def test_scan_atpg_reads_the_active_faults_per_round_not_per_accepted_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """GIVEN a scan campaign whose SAT phase accepts several candidates, WHEN the
+    loop moves on after an accepted candidate, THEN it takes the candidate's own
+    detections out of the round's active set in memory: the active faults are
+    read from the DB once per round boundary (before the first round, and at a
+    round's start, after its random phase and at its end), not again after every
+    accepted SAT candidate. The re-read gave the same answer for every fault the
+    loop had yet to visit and cost ~5% of genericfir_small's stuck-at scan run
+    (2026-11-24 profile)."""
+    import faultflow.scan.detection_pipeline as pipeline
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, scan_ctx, fp = _transition_scan_workspace(
+        tmp_path, netlist=ring(), top=RING_TOP, random_vectors=0
+    )
+    reads = 0
+    accepted_sat = 0
+    real_reads = pipeline._active_fault_rows
+    real_candidate = pipeline._process_scan_candidate
+
+    def counted_reads(conn: Any, campaign_id: int) -> Any:
+        nonlocal reads
+        reads += 1
+        return real_reads(conn, campaign_id)
+
+    def counted_candidate(*args: Any, **kwargs: Any) -> Any:
+        nonlocal accepted_sat
+        result = real_candidate(*args, **kwargs)
+        if kwargs.get("source") == "sat" and result[0]:
+            accepted_sat += 1
+        return result
+
+    monkeypatch.setattr(pipeline, "_active_fault_rows", counted_reads)
+    monkeypatch.setattr(pipeline, "_process_scan_candidate", counted_candidate)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    _vectors, stats, _run_id, _a, _s = run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        redundancy_model_id(fp),
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=3,
+        target_coverage=100.0,
+        transition=True,
+    )
+
+    assert accepted_sat >= 2
+    assert reads <= 1 + 3 * stats.rounds, (
+        f"{reads} reads of the active faults across {stats.rounds} rounds and "
+        f"{accepted_sat} accepted SAT candidates"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.golden
+def test_scan_atpg_grades_every_candidate_on_one_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """GIVEN a scan campaign with random and SAT candidates, WHEN the loop grades
+    them, THEN every candidate is handed the run's one DB connection: a fresh
+    connection (and init_schema) per candidate started each from a cold page
+    cache (2026-11-24 profile of genericfir_small)."""
+    import faultflow.scan.detection_pipeline as pipeline
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, scan_ctx, fp = _transition_scan_workspace(
+        tmp_path, netlist=ring(), top=RING_TOP, random_vectors=8
+    )
+    handed: list[tuple[str, Any]] = []
+    real_candidate = pipeline._process_scan_candidate
+
+    def recorded(*args: Any, **kwargs: Any) -> Any:
+        # Holding each connection keeps a freed one's address from being reused.
+        handed.append((str(kwargs.get("source")), args[1]))
+        return real_candidate(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "_process_scan_candidate", recorded)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        redundancy_model_id(fp),
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=3,
+        target_coverage=100.0,
+        transition=True,
+    )
+
+    assert {source for source, _ in handed} == {"random", "sat"}
+    assert all(conn is handed[0][1] for _, conn in handed)

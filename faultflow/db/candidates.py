@@ -102,16 +102,22 @@ def _apply_candidate_commit(
     commit: CandidateCommit,
 ) -> None:
     for fault_id in commit.detections:
-        conn.execute(
+        # A detected row is already what this makes it (every *_unresolved mark
+        # skips a detected fault), so a fault an earlier candidate detected --
+        # still in the round's active list -- is left alone, and its first
+        # detection is the one fault_detections keeps.
+        changed = conn.execute(
             """
             UPDATE faults
             SET status = 'detected', protocol_unresolved = 0,
                 compression_unresolved = 0, compaction_unresolved = 0,
                 blackbox_unresolved = 0, hold_unresolved = 0
-            WHERE id = ? AND campaign_id = ?
+            WHERE id = ? AND campaign_id = ? AND status != 'detected'
             """,
             (fault_id, campaign_id),
-        )
+        ).rowcount
+        if not changed:
+            continue
         conn.execute(
             """
             INSERT OR IGNORE INTO fault_detections(
