@@ -494,3 +494,47 @@ def test_scan_atpg_reads_the_active_faults_per_round_not_per_accepted_candidate(
         f"{reads} reads of the active faults across {stats.rounds} rounds and "
         f"{accepted_sat} accepted SAT candidates"
     )
+
+
+@pytest.mark.integration
+@pytest.mark.golden
+def test_scan_atpg_grades_every_candidate_on_one_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None
+) -> None:
+    """GIVEN a scan campaign with random and SAT candidates, WHEN the loop grades
+    them, THEN every candidate is handed the run's one DB connection: a fresh
+    connection (and init_schema) per candidate started each from a cold page
+    cache (2026-11-24 profile of genericfir_small)."""
+    import faultflow.scan.detection_pipeline as pipeline
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, scan_ctx, fp = _transition_scan_workspace(
+        tmp_path, netlist=ring(), top=RING_TOP, random_vectors=8
+    )
+    handed: list[tuple[str, Any]] = []
+    real_candidate = pipeline._process_scan_candidate
+
+    def recorded(*args: Any, **kwargs: Any) -> Any:
+        # Holding each connection keeps a freed one's address from being reused.
+        handed.append((str(kwargs.get("source")), args[1]))
+        return real_candidate(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "_process_scan_candidate", recorded)
+
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        redundancy_model_id(fp),
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=3,
+        target_coverage=100.0,
+        transition=True,
+    )
+
+    assert {source for source, _ in handed} == {"random", "sat"}
+    assert all(conn is handed[0][1] for _, conn in handed)

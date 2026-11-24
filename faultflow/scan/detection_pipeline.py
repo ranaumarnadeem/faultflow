@@ -2310,6 +2310,12 @@ def run_progressive_scan_atpg(
         return key
 
     terminal = "MAX_ROUNDS"
+    # Every candidate of the run is graded on this one connection: init_schema
+    # once, and connect()'s page cache stays warm from one candidate to the
+    # next. `with candidate_conn` commits on exit, as a candidate's own
+    # connection's `with` did.
+    candidate_conn = connect(effective_db_path)
+    init_schema(candidate_conn)
     # Random fill runs ONCE (round 1): up to random_vectors patterns, or until
     # fault coverage crosses random_stop_coverage -- then SAT mode for the rest.
     switched_to_sat = False
@@ -2365,8 +2371,7 @@ def run_progressive_scan_atpg(
             candidate_counter += 1
             vector_index = len(vectors) + 1
             sim_started = time.perf_counter()
-            with connect(effective_db_path) as conn:
-                init_schema(conn)
+            with candidate_conn as conn:
                 accepted, protocol_no_progress, accepted_pattern = (
                     _process_scan_candidate(
                         core,
@@ -2619,8 +2624,7 @@ def run_progressive_scan_atpg(
                 vector_index = len(vectors) + 1
                 sim_started = time.perf_counter()
                 candidate_detections: list[int] = []
-                with connect(effective_db_path) as conn:
-                    init_schema(conn)
+                with candidate_conn as conn:
                     accepted, protocol_no_progress, accepted_pattern = (
                         _process_scan_candidate(
                             core,
@@ -2783,6 +2787,7 @@ def run_progressive_scan_atpg(
             terminal = "STALLED"
             break
 
+    candidate_conn.close()
     if _executor is not None:
         _executor.shutdown(wait=False)
 
