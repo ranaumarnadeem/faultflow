@@ -712,6 +712,10 @@ def _model_blackboxes_opaque(module: dict[str, Any], instances: Sequence[str]) -
     tie-off -- since the real netlist keeps its fault sites, which need a site
     in the view to be graded; and it marks the blackbox's inputs for
     make_blackbox_transparent to observe.
+
+    A blackbox with no connected pin -- a Yosys $scopeinfo cell a
+    pre-synthesized netlist keeps -- has nothing to tie or observe, nor a net
+    to fault: dropping it is exact, whatever its (empty) port_directions say.
     """
     cells = module.get("cells", {})
     input_bits: list[tuple[str, object]] = []
@@ -719,6 +723,8 @@ def _model_blackboxes_opaque(module: dict[str, Any], instances: Sequence[str]) -
         cell = cells.pop(inst, None)
         if not isinstance(cell, dict):
             raise ScanError(f"blackbox instance {inst!r} not found in the scan view")
+        if not any((cell.get("connections") or {}).values()):
+            continue
         dirs = cell.get("port_directions")
         if not isinstance(dirs, dict) or not dirs:
             raise ScanError(

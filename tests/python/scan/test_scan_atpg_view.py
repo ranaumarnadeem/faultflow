@@ -721,15 +721,64 @@ def test_unknown_blackbox_instance_is_an_error() -> None:
         build_scan_atpg_view(generic, manifest, blackbox_instances=["u_missing"])
 
 
-def test_blackbox_without_port_directions_is_an_error() -> None:
+@pytest.mark.parametrize("directions", ["missing", "empty"])
+def test_blackbox_without_port_directions_is_an_error(directions: str) -> None:
     """Without Yosys's port_directions the view can't tell a memory's outputs
     from its inputs; guessing from pin names is how a memory's dout0 was once
-    read as an input."""
+    read as an input. An empty dict, as a $scopeinfo cell has, is no better
+    for a cell with pins."""
     generic, manifest = _scan_chain_with_memory()
-    del generic["modules"][manifest["top"]]["cells"]["u_mem"]["port_directions"]
+    mem = generic["modules"][manifest["top"]]["cells"]["u_mem"]
+    if directions == "missing":
+        del mem["port_directions"]
+    else:
+        mem["port_directions"] = {}
 
     with pytest.raises(ScanError, match="port_directions"):
         build_scan_atpg_view(generic, manifest, blackbox_instances=["u_mem"])
+
+
+def _scopeinfo_cell() -> dict[str, Any]:
+    """A Yosys $scopeinfo cell as a pre-synthesized netlist keeps it (picorv32a's
+    genblk1.pcpi_mul): no pins at all."""
+    return {
+        "hide_name": 0,
+        "type": "$scopeinfo",
+        "parameters": {"TYPE": "module"},
+        "attributes": {"module": "picorv32_pcpi_fast_mul"},
+        "port_directions": {},
+        "connections": {},
+    }
+
+
+@pytest.mark.parametrize("with_scan_cells", [True, False])
+def test_blackbox_without_pins_contributes_nothing(with_scan_cells: bool) -> None:
+    """A blackboxed cell with no pins -- the $scopeinfo cell a pre-synthesized
+    netlist keeps, which unsupported_cells = blackbox lists as an unknown cell
+    -- has no output to tie, no input to observe and no net to fault, so its
+    empty port_directions don't matter: the view is the one of the netlist
+    without it, with no extra tie, observation point or fault site. Also on
+    the no-scan-FF early return."""
+    generic, manifest = _scan_chain_with_memory()
+    if not with_scan_cells:
+        manifest["cells"] = []
+    scoped = copy.deepcopy(generic)
+    scoped["modules"][manifest["top"]]["cells"]["genblk1.pcpi_mul"] = _scopeinfo_cell()
+
+    view, port_map = build_scan_atpg_view(
+        scoped, manifest, blackbox_instances=["u_mem", "genblk1.pcpi_mul"]
+    )
+
+    expected, expected_map = build_scan_atpg_view(
+        generic, manifest, blackbox_instances=["u_mem"]
+    )
+    assert "genblk1.pcpi_mul" not in view["modules"][manifest["top"]]["cells"]
+    assert view == expected
+    assert port_map == expected_map
+    twin, expected_twin = copy.deepcopy(view), copy.deepcopy(expected)
+    make_blackbox_transparent(twin, manifest["top"])
+    make_blackbox_transparent(expected_twin, manifest["top"])
+    assert twin == expected_twin
 
 
 def test_blackbox_transparent_twin_frees_outputs_and_observes_inputs() -> None:
