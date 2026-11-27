@@ -76,8 +76,14 @@ def verify_golden_scan_protocol(
     max_chain_length = int(manifest.get("max_chain_length", 0))
 
     cell_map = resolve_scan_cell_map(cfg)
+    # The same fault-free replay on either engine ([scan] golden_engine).
+    replay = (
+        core.simulate_scan_pattern
+        if cfg.scan.golden_engine == "scalar"
+        else core.simulate_scan_pattern_bit_parallel
+    )
     result = dict(
-        core.simulate_scan_pattern(
+        replay(
             str(generic_json),
             str(cell_map),
             clock_ports,

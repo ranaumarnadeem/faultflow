@@ -458,6 +458,8 @@ class _FakeCore:
     def simulate_scan_pattern(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         return {"unload_seqs": {0: self.unload}, "real_po_values": {}}
 
+    simulate_scan_pattern_bit_parallel = simulate_scan_pattern
+
 
 @pytest.mark.unit
 def test_golden_gate_skips_dont_care_bits(

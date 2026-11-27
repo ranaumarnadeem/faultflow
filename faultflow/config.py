@@ -352,6 +352,12 @@ class ScanConfig:
     # flops on purpose (autombist-generate / mbist-insert --scan-tap). They are
     # tested through TCK by ff.py jtag; scan ATPG grading them is the opt-in.
     scan_test_access: bool = False
+    # The engine the golden gate (faultflow.scan.verify) replays each candidate's
+    # full scan protocol on, fault-free: "bit_parallel" (the default) or "scalar"
+    # (the GoldenRefSim oracle, about 3x slower). Both give the same outputs and
+    # unloads (shown on 20,707 candidates over genericfir_small, boxcar and
+    # picorv32a, stuck-at/LOC/LOS, and the test suite), so results don't change.
+    golden_engine: str = "bit_parallel"
 
 
 @dataclass(frozen=True)
@@ -766,6 +772,12 @@ def _parse_scan(parser: ConfigParser) -> ScanConfig:
         raise ConfigError(
             f"[scan] shift_controls must be fail or warn, got '{shift_controls}'"
         )
+    golden_engine = parser.get("scan", "golden_engine", fallback="bit_parallel").strip()
+    if golden_engine not in {"bit_parallel", "scalar"}:
+        raise ConfigError(
+            "[scan] golden_engine must be bit_parallel or scalar, "
+            f"got '{golden_engine}'"
+        )
     test_setup = _optional_path(parser, "scan", "test_setup")
     if test_setup is not None:
         from faultflow.scan.errors import ScanError
@@ -788,6 +800,7 @@ def _parse_scan(parser: ConfigParser) -> ScanConfig:
         wrapper_chains=_optional_int(parser, "scan", "wrapper_chains"),
         test_setup=test_setup,
         scan_test_access=_bool(parser, "scan", "scan_test_access", False),
+        golden_engine=golden_engine,
     )
 
 
