@@ -73,6 +73,31 @@ TEST_CASE("a setup program loads a falling-edge register before the pattern",
   REQUIRE_FALSE(unpulsed.real_po_values.at("mode_out"));
 }
 
+TEST_CASE("a setup program on the bit-parallel engine == the scalar oracle",
+          "[scan][setup][reference]") {
+  ScanPatternRequest request = capture_request();
+  for (const bool with_setup : {false, true}) {
+    request.setup_cycles = with_setup ? load_then_update() : std::vector<SetupCycle>{};
+    for (const bool d0 : {false, true}) {
+      request.capture_pi_values["D0"] = d0;
+      const auto scalar =
+          simulate_scan_pattern(test::fixture_path("tiny_scan_setup.json"),
+                                test::cell_map_path(), request, "fail");
+      const auto parallel = simulate_scan_pattern_bit_parallel(
+          test::fixture_path("tiny_scan_setup.json"), test::cell_map_path(), request,
+          "fail");
+      INFO("setup " << with_setup << " D0 " << d0);
+      REQUIRE(scan_observations_equal(parallel, scalar));
+    }
+  }
+  // The same protocol, so the same refusals.
+  request.setup_cycles = {SetupCycle{{{"en", true}}, {"din"}}};
+  REQUIRE_THROWS_AS(
+      simulate_scan_pattern_bit_parallel(test::fixture_path("tiny_scan_setup.json"),
+                                         test::cell_map_path(), request, "fail"),
+      std::runtime_error);
+}
+
 TEST_CASE("a setup program runs fault-free", "[scan][setup]") {
   ScanProtocolFaultRequest request;
   request.pattern = capture_request();

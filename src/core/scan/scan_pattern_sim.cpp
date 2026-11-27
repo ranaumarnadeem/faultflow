@@ -452,6 +452,23 @@ ScanPatternResult simulate_scan_pattern(
   return extract_scan_observations(parsed, request, samples);
 }
 
+ScanPatternResult simulate_scan_pattern_bit_parallel(
+    const std::string& json_path, const std::string& cell_map_path,
+    const ScanPatternRequest& request, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances) {
+  const CachedGraph& graph = load_cached_graph(
+      json_path, cell_map_path, unsupported_policy, blackbox_instances);
+  const ParsedGraph& parsed = graph.parsed;
+  const CompiledSimGraph& cg = graph.cg;
+
+  const TestVector vec = build_scan_pattern_vector(parsed, request);
+  const SampleSlots slots = scan_sample_slots(parsed, cg, request);
+  const FaultBatch no_faults;
+  BitParallelSim sim;
+  const auto samples = sim.simulate_batch_samples(cg, vec, no_faults, slots.nets);
+  return extract_scan_lane_observations(slots, request, samples, 0);
+}
+
 ScanProtocolFaultSimResult simulate_scan_protocol_faults(
     const std::string& json_path, const std::string& cell_map_path,
     const ScanProtocolFaultRequest& request,

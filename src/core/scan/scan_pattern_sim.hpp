@@ -142,6 +142,13 @@ ScanPatternResult simulate_scan_pattern(
     const ScanPatternRequest& request, const std::string& unsupported_policy,
     const std::vector<std::string>& blackbox_instances = {});
 
+// simulate_scan_pattern on the bit-parallel engine: the same protocol, the good
+// machine's lane (bit 0) of a batch with no faults.
+ScanPatternResult simulate_scan_pattern_bit_parallel(
+    const std::string& json_path, const std::string& cell_map_path,
+    const ScanPatternRequest& request, const std::string& unsupported_policy,
+    const std::vector<std::string>& blackbox_instances = {});
+
 // `sim_threads` parallelizes grading across the independent fault batches:
 // <= 0 auto, 1 serial, N threads. Batches are written to pre-assigned slots, so
 // the result is bit-identical for any thread count.

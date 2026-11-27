@@ -106,3 +106,6 @@ scan_in          = scan_in
 scan_out         = scan_out
 scan_enable      = scan_en
 run_techmap      = true
+# Engine for the golden gate's fault-free replay of each scan ATPG candidate:
+# bit_parallel (default) or scalar (the reference simulator, ~3x slower; same result).
+golden_engine    = bit_parallel
