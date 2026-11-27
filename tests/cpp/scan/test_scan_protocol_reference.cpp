@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -129,6 +130,37 @@ TEST_CASE("scan protocol grade == scalar oracle, every fault, LOS",
           "[scan][reference][los]") {
   check_against_reference("tiny_scan_chain.json", Mode::LOS);
   check_against_reference("tiny_scan_multichain.json", Mode::LOS);
+}
+
+// The scan golden gate (faultflow/scan/verify.py) replays each candidate's full
+// protocol fault-free. On the bit-parallel engine it must give the scalar
+// oracle's observations exactly: every pattern, every mode, with a preamble.
+TEST_CASE("scan pattern on the bit-parallel engine == the scalar oracle",
+          "[scan][reference]") {
+  for (const std::string fixture :
+       {"tiny_scan_chain.json", "tiny_scan_multichain.json"}) {
+    for (const Mode mode : {Mode::STUCK_AT, Mode::LOC, Mode::LOS}) {
+      Bits bits{11u + static_cast<uint32_t>(mode)};
+      std::vector<ScanPatternResult> seen;
+      for (int p = 0; p < 32; ++p) {
+        ScanPatternRequest request = pattern(fixture, mode, bits);
+        request.preamble_cycles = p % 3;
+        const auto scalar = simulate_scan_pattern(
+            test::fixture_path(fixture), test::cell_map_path(), request, "fail");
+        const auto parallel = simulate_scan_pattern_bit_parallel(
+            test::fixture_path(fixture), test::cell_map_path(), request, "fail");
+        INFO(fixture << " mode " << static_cast<int>(mode) << " pattern " << p);
+        REQUIRE(scan_observations_equal(parallel, scalar));
+        if (std::none_of(seen.begin(), seen.end(), [&](const auto& r) {
+              return scan_observations_equal(r, scalar);
+            })) {
+          seen.push_back(scalar);
+        }
+      }
+      // The patterns exercise more than one response.
+      REQUIRE(seen.size() > 1);
+    }
+  }
 }
 
 TEST_CASE("simulate_batch_samples on chosen nets == the full samples there",

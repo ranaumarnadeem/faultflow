@@ -777,7 +777,10 @@ std::vector<scan::SetupCycle> setup_cycles_of(
   return out;
 }
 
-py::dict simulate_scan_pattern_py(
+// simulate_scan_pattern / simulate_scan_pattern_bit_parallel: one protocol,
+// replayed fault-free on the scalar oracle or on the bit-parallel engine.
+template <bool kBitParallel>
+py::dict simulate_scan_pattern_on(
     const std::string& json_path, const std::string& cell_map_path,
     const std::vector<std::string>& clock_ports,
     const std::vector<bool>& clock_off_states,
@@ -813,8 +816,13 @@ py::dict simulate_scan_pattern_py(
   request.preamble_cycles = preamble_cycles;
   request.setup_cycles = setup_cycles_of(setup_cycles);
   request.shift_pi_values = shift_pi_values;
-  const scan::ScanPatternResult result = scan::simulate_scan_pattern(
-      json_path, cell_map_path, request, unsupported_policy, blackbox_instances);
+  const scan::ScanPatternResult result =
+      kBitParallel ? scan::simulate_scan_pattern_bit_parallel(
+                         json_path, cell_map_path, request, unsupported_policy,
+                         blackbox_instances)
+                   : scan::simulate_scan_pattern(json_path, cell_map_path, request,
+                                                 unsupported_policy,
+                                                 blackbox_instances);
   py::dict out;
   out["real_po_values"] = result.real_po_values;
   py::dict unload;
@@ -1361,21 +1369,26 @@ PYBIND11_MODULE(_faultflow_core, m) {
         py::arg("rejected"), py::arg("generated"), py::arg("accepted"));
   m.def("update_run_vector_count", &faultflow::update_run_vector_count_py,
         py::arg("db_path"), py::arg("run_id"), py::arg("vector_count"));
-  m.def("simulate_scan_pattern", &faultflow::simulate_scan_pattern_py,
-        py::arg("json_path"), py::arg("cell_map_path"),
-        py::arg("clock_ports"),
-        py::arg("clock_off_states") = std::vector<bool>{},
-        py::arg("scan_enable_port"), py::arg("scan_input_ports"),
-        py::arg("scan_output_ports"), py::arg("functional_output_ports"),
-        py::arg("max_chain_length"), py::arg("load_seqs"),
-        py::arg("capture_pi_values"), py::arg("unsupported_policy") = "fail",
-        py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
-        py::arg("los_launch_scan_in") = std::map<int, bool>{},
-        py::arg("active_clock_ports") = std::vector<std::string>{},
-        py::arg("blackbox_instances") = std::vector<std::string>{},
-        py::arg("preamble_cycles") = 0,
-        py::arg("shift_pi_values") = std::map<std::string, bool>{},
-        py::arg("setup_cycles") = std::vector<faultflow::SetupCyclePy>{});
+  for (const auto& [name, fn] :
+       {std::pair{"simulate_scan_pattern",
+                  &faultflow::simulate_scan_pattern_on<false>},
+        std::pair{"simulate_scan_pattern_bit_parallel",
+                  &faultflow::simulate_scan_pattern_on<true>}}) {
+    m.def(name, fn, py::arg("json_path"), py::arg("cell_map_path"),
+          py::arg("clock_ports"),
+          py::arg("clock_off_states") = std::vector<bool>{},
+          py::arg("scan_enable_port"), py::arg("scan_input_ports"),
+          py::arg("scan_output_ports"), py::arg("functional_output_ports"),
+          py::arg("max_chain_length"), py::arg("load_seqs"),
+          py::arg("capture_pi_values"), py::arg("unsupported_policy") = "fail",
+          py::arg("loc_two_capture") = false, py::arg("los_two_capture") = false,
+          py::arg("los_launch_scan_in") = std::map<int, bool>{},
+          py::arg("active_clock_ports") = std::vector<std::string>{},
+          py::arg("blackbox_instances") = std::vector<std::string>{},
+          py::arg("preamble_cycles") = 0,
+          py::arg("shift_pi_values") = std::map<std::string, bool>{},
+          py::arg("setup_cycles") = std::vector<faultflow::SetupCyclePy>{});
+  }
   m.def("simulate_scan_protocol_faults",
         &faultflow::simulate_scan_protocol_faults_py,
         py::arg("json_path"), py::arg("cell_map_path"),
