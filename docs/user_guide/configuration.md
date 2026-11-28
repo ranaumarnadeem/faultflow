@@ -44,14 +44,13 @@ verify_tool       = iverilog
 verilog_models    = cells/sky130/sky130_fd_sc_hd.v
 
 [atpg]
-tool                = native
-mode                = comb
-output              = patterns.test
-random_vectors      = 64
-sat_conflict_limit  = 100000
-max_rounds          = 20
-sat_timeout_seconds = 10
-compaction          = reverse
+tool                  = native
+mode                  = comb
+output                = patterns.test
+random_vectors        = 64
+sat_conflict_schedule = 10000,100000,1000000
+max_rounds            = 20
+compaction            = reverse
 
 [report]
 output    = coverage.rpt
@@ -184,10 +183,12 @@ scan-in, scan-enable or async set/reset. The report lists the cells
 | `output` | path | `patterns.test` | Fallback pattern file name (under `output/<top>/`). Not produced by a normal `sim`/`run_atpg` run — see [Outputs & reports](outputs.md) |
 | `random_vectors` | int | `64` | Random vectors applied before targeted ATPG |
 | `random_stop_coverage` | float | `85.0` | Stop grading further random vectors and switch to SAT once coverage reaches this percent — or once the full `random_vectors` budget is graded, whichever comes first. `0.0` disables the early switch |
-| `sat_conflict_limit` | int | `100000` | Per-fault CaDiCaL conflict limit |
 | `max_rounds` | int | `20` | Maximum progressive ATPG rounds |
-| `sat_timeout_seconds` | int | `10` | Per-fault SAT timeout; the fallback used when `sat_timeout_schedule` is empty |
-| `sat_timeout_schedule` | comma list | `2,10,60` | Escalating per-fault SAT timeout, smallest tier first — a fault only escalates to the next tier when it times out at the current one. Empty uses the fixed `sat_timeout_seconds` for every fault |
+| `sat_conflict_schedule` | comma list | `10000,100000,1000000` | SAT abort limits: escalating per-fault CaDiCaL conflict caps, smallest first — a fault only escalates to the next cap when it aborts at the current one. Where a solve stops doesn't depend on machine load, so a run gives the same patterns every time. Empty selects the wall-clock schedule below |
+| `sat_ceiling_seconds` | int | `300` | With `sat_conflict_schedule`, the wall-clock backstop per solve, only against a pathological solve. A solve it stops depends on load again, and the run warns that it may not reproduce |
+| `sat_timeout_schedule` | comma list | `2,10,60` | The wall-clock schedule (load-dependent, so a run may not reproduce): escalating per-fault SAT timeout, smallest tier first. Setting it, or `sat_conflict_limit`, selects the wall clock; setting either beside `sat_conflict_schedule` is an error. Empty uses the fixed `sat_timeout_seconds` for every fault |
+| `sat_conflict_limit` | int | `100000` | With the wall-clock schedule, the CaDiCaL conflict limit of every tier |
+| `sat_timeout_seconds` | int | `10` | Per-fault SAT timeout when `sat_timeout_schedule` is empty, and the timeout of `write-cnf`'s one solve |
 | `compaction` | `none`, `reverse`, `dynamic` | `reverse` | Test-set compaction after ATPG. `reverse` is reverse-order, fault-sim-verified static compaction (coverage-preserving); `dynamic` is sim-verified cube-packing |
 | `fault_drop_sat` | bool | `true` | Fault-simulate an accepted SAT vector against *all* remaining faults, not just the target fault, so incidental "fallout" detections are dropped too |
 | `cone_restrict` | bool | `true` | Restrict each fault's CNF to its structural cone of influence |
@@ -195,7 +196,7 @@ scan-in, scan-enable or async set/reset. The report lists the cells
 | `pack_orders` | int | `1` | Number of packing orders tried during dynamic compaction |
 | `order_by_cone_size` | bool | `true` | Order faults by ascending structural cone size so the fastest SAT calls run first, incidentally detecting more faults early. Coverage-identical; stuck-at only |
 | `workers` | int | `1` | Parallel SAT worker processes (`1` = serial). Requires a fork-capable OS (Linux/WSL); silently falls back to serial on Windows/spawn platforms. Also settable interactively in the shell with `WORKERS N` |
-| `preflight` | bool | `true` | Run OpenTestability structural reconvergence analysis before ATPG (reconvergent-site faults sorted last and skip the short timeout tier). Ordering only: a fault is classified redundant only when SAT proves it UNSAT. Requires the `opentest` binary on `PATH`; falls back silently when unavailable |
+| `preflight` | bool | `true` | Run OpenTestability structural reconvergence analysis before ATPG (reconvergent-site faults sorted last and skip the smallest SAT tier). Ordering only: a fault is classified redundant only when SAT proves it UNSAT. Requires the `opentest` binary on `PATH`; falls back silently when unavailable |
 | `preflight_tech` | str | `""` (auto-detect) | PDK tech tag passed to `opentest`'s preflight pass. Empty auto-detects from the `cell_lib` path (`sky130` unless the path contains `osu035`/`osu`) |
 | `easy_fault_reserve` | int | `2` | Easy/hard worker split, applied only when `workers >= 4`: each wave reserves this many slots for easy (small-cone, non-reconvergent) faults while the rest run hard faults, so fast and slow faults progress concurrently. `0` disables the split |
 

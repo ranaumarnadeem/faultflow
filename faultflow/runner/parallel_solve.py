@@ -20,6 +20,7 @@ Solve kinds
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -45,10 +46,12 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
     lists — no Path objects, no dataclasses. The scan kinds also carry the
     seed constraints install_seed installed.
 
-    The returned ``solved_dict`` is the raw dict from the C++ solver.  For
-    SAT results it contains 'vector' (stuck-at), 'launch'+'capture' (LOS),
-    or 'launch' (broadside).  UNSAT/TIMEOUT/UNKNOWN dicts have no extra keys.
-    On an unexpected exception the result is UNKNOWN with a '_exc' entry.
+    The returned ``solved_dict`` is the raw dict from the C++ solver plus
+    'solve_seconds', the call's wall time (the coordinator tells a wall-clock
+    ceiling stop from a conflict-cap stop by it, progressive_atpg.CeilingWatch).
+    For SAT results it contains 'vector' (stuck-at), 'launch'+'capture' (LOS),
+    or 'launch' (broadside).  On an unexpected exception the result is UNKNOWN
+    with a '_exc' entry.
     """
     (
         solve_kind,
@@ -85,6 +88,7 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
                 sys.path.insert(0, _p)
     import _faultflow_core as _core  # type: ignore[import-not-found]
 
+    started = time.perf_counter()
     try:
         if solve_kind == "los_transition":
             solved: dict[str, Any] = dict(
@@ -169,4 +173,5 @@ def solve_fault_worker(args: tuple) -> tuple[int, str, dict[str, Any]]:
     except Exception as exc:
         return (fault_id, "UNKNOWN", {"result": "UNKNOWN", "_exc": str(exc)})
 
+    solved["solve_seconds"] = time.perf_counter() - started
     return (fault_id, str(solved.get("result", "UNKNOWN")), solved)

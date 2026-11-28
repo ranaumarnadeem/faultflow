@@ -131,9 +131,11 @@ See [Test-point insertion](testpoints.md) for the full workflow.
 | Key | Meaning |
 |---|---|
 | `atpg.max_rounds` | Maximum progressive ATPG rounds (positive integer) |
-| `atpg.sat_conflict_limit` | Per-fault CaDiCaL conflict limit (positive integer) |
-| `atpg.sat_timeout_seconds` | Fixed per-fault SAT timeout in seconds (positive integer); the fallback used when `sat_timeout_schedule` is empty |
-| `atpg.sat_timeout_schedule` | Comma list of escalating per-fault timeouts, e.g. `2,10,60` — a fault only escalates to the next tier when it times out at the current one |
+| `atpg.sat_conflict_schedule` | Comma list of escalating per-fault CaDiCaL conflict caps (default `10000,100000,1000000`): a run gives the same patterns under any load. Empty selects the wall-clock schedule |
+| `atpg.sat_ceiling_seconds` | With `sat_conflict_schedule`, the wall-clock backstop per solve in seconds (positive integer, default 300) |
+| `atpg.sat_timeout_schedule` | The wall-clock schedule (load-dependent): comma list of escalating per-fault timeouts, e.g. `2,10,60`. Setting it, or `atpg.sat_conflict_limit`, selects the wall clock; beside a non-empty `atpg.sat_conflict_schedule` it is refused |
+| `atpg.sat_conflict_limit` | With the wall-clock schedule, the CaDiCaL conflict limit of every tier (positive integer) |
+| `atpg.sat_timeout_seconds` | Fixed per-fault SAT timeout in seconds when `sat_timeout_schedule` is empty, and `write_cnf`'s solve timeout (positive integer) |
 | `atpg.random_vectors` | Random-fill vector budget per round (non-negative integer; `0` = no random phase) |
 | `atpg.random_stop_coverage` | Stop random fill and switch to SAT once coverage reaches this percent (`0`–`100`; `0` = always grade the full random budget) |
 | `atpg.workers` | Parallel SAT worker processes (positive integer); prefer the `WORKERS` command |

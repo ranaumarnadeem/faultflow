@@ -22,8 +22,9 @@ Configured with `[design] netlist`, `cell_lib`, `liberty`, and `yosys_ver`.
 [CaDiCaL](https://github.com/arminbiere/cadical) is the SAT engine behind the native
 ATPG. Unlike the others it is **not** a subprocess — it is linked directly into the C++
 core (`-lcadical`). It must be installed at build time; see
-[Installation](getting_started/installation.md). Tuned with `[atpg] sat_conflict_limit`
-and `sat_timeout_seconds`.
+[Installation](getting_started/installation.md). Tuned with `[atpg]
+sat_conflict_schedule` and `sat_ceiling_seconds` (or the wall-clock `sat_timeout_schedule`
+and `sat_conflict_limit`).
 
 ### Icarus Verilog — verification gate
 

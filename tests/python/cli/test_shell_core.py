@@ -115,6 +115,8 @@ def test_set_option_materializes_into_config(tmp_path: Path) -> None:
     assert cfg.report.threshold == 92.5
     assert cfg.atpg.sat_timeout_schedule == "2,10,60"
     assert cfg.atpg.sat_conflict_limit == 2000000
+    # Tuning the wall clock selects it over the default conflict schedule.
+    assert cfg.atpg.sat_conflict_schedule == ""
     assert cfg.fault_model.collapsing is True
     assert cfg.atpg.incremental_sat is True
     assert cfg.atpg.random_vectors == 64
@@ -254,6 +256,76 @@ def test_set_option_rejects_bad_timeout_schedule(tmp_path: Path) -> None:
         session.set_option("atpg.sat_timeout_schedule", "2,fast,60")
     with pytest.raises(ShellError, match="INVALID_VALUE|>= 1"):
         session.set_option("atpg.sat_timeout_schedule", "0,10")
+
+
+def test_set_option_materializes_the_conflict_schedule(tmp_path: Path) -> None:
+    source = tmp_path / "demo.json"
+    _tiny_json(source)
+    session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
+    session.read_netlist(source, "demo")
+    session.use_lib_cells("sky130")
+
+    session.set_option("atpg.sat_conflict_schedule", "2000,20000,200000")
+    session.set_option("atpg.sat_ceiling_seconds", "120")
+
+    cfg = session.materialize_config()
+    assert cfg.atpg.sat_conflict_schedule == "2000,20000,200000"
+    assert cfg.atpg.sat_ceiling_seconds == 120
+
+
+def test_shell_default_is_the_conflict_schedule(tmp_path: Path) -> None:
+    source = tmp_path / "demo.json"
+    _tiny_json(source)
+    session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
+    session.read_netlist(source, "demo")
+    session.use_lib_cells("sky130")
+    session.set_option("atpg.sat_timeout_seconds", "30")
+
+    cfg = session.materialize_config()
+    assert cfg.atpg.sat_conflict_schedule == "10000,100000,1000000"
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    [
+        (
+            ("atpg.sat_conflict_schedule", "10,20"),
+            ("atpg.sat_timeout_schedule", "2,10"),
+        ),
+        (("atpg.sat_conflict_limit", "5000"), ("atpg.sat_conflict_schedule", "10,20")),
+    ],
+)
+def test_set_option_refuses_a_wall_clock_key_beside_a_conflict_schedule(
+    tmp_path: Path, first: tuple[str, str], second: tuple[str, str]
+) -> None:
+    session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
+    session.set_option(*first)
+    with pytest.raises(ShellError, match="doesn't apply with sat_conflict_schedule"):
+        session.set_option(*second)
+
+
+def test_set_option_empty_conflict_schedule_beside_wall_clock(tmp_path: Path) -> None:
+    source = tmp_path / "demo.json"
+    _tiny_json(source)
+    session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
+    session.read_netlist(source, "demo")
+    session.use_lib_cells("sky130")
+    session.set_option("atpg.sat_conflict_schedule", "")
+    session.set_option("atpg.sat_timeout_schedule", "5,50")
+
+    cfg = session.materialize_config()
+    assert cfg.atpg.sat_conflict_schedule == ""
+    assert cfg.atpg.sat_timeout_schedule == "5,50"
+
+
+def test_set_option_rejects_bad_conflict_schedule(tmp_path: Path) -> None:
+    session = ProjectSession(output_root=tmp_path / "output", service=FakeService())
+    with pytest.raises(ShellError, match="INVALID_VALUE|must be"):
+        session.set_option("atpg.sat_conflict_schedule", "2000,lots")
+    with pytest.raises(ShellError, match="INVALID_VALUE|strictly increasing"):
+        session.set_option("atpg.sat_conflict_schedule", "200,100")
+    with pytest.raises(ShellError, match="INVALID_VALUE|positive integer"):
+        session.set_option("atpg.sat_ceiling_seconds", "0")
 
 
 def test_tcl_catch_receives_stable_faultflow_error_code(tmp_path: Path) -> None:

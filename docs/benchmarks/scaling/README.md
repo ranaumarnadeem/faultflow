@@ -62,7 +62,9 @@ per-fault SAT timeout can make the workers differ: it is wall-clock (10 s by
 default), more workers share the CPUs, and a fault that times out changes the
 vectors after it. Hence the timeouts rising with the worker count and the
 vector count moving by up to 3. Fault simulation is bit-identical across
-`sim_threads` (tested). One sample per point.
+`sim_threads` (tested). One sample per point. (These runs predate the
+conflict-cap default, `[atpg] sat_conflict_schedule`: with it, picorv32a
+stuck-at gives identical results at 1 and 4 workers and under load.)
 
 ## Status
 

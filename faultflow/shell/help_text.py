@@ -418,14 +418,21 @@ COMMAND_HELP = {
         " atpg.fault_drop_sat, atpg.incremental_sat, atpg.max_rounds,"
         " atpg.order_by_cone_size, atpg.pack_orders, atpg.preflight,"
         " atpg.preflight_tech, atpg.random_stop_coverage, atpg.random_vectors,"
-        " atpg.sat_conflict_limit,"
+        " atpg.sat_ceiling_seconds, atpg.sat_conflict_limit,"
+        " atpg.sat_conflict_schedule,"
         " atpg.sat_timeout_seconds, atpg.sat_timeout_schedule, atpg.workers,"
         " fault_model.collapsing, fault_model.include_reset_faults,"
         " fault_model.include_clock_faults, report.output, report.threshold,"
         " simulation.sim_threads, simulation.unsupported_cells,"
         " simulation.verify, simulation.verify_use_power_pins."
-        " atpg.sat_timeout_schedule is a comma list like 2,10,60 that"
-        " escalates a fault's SAT timeout only when it times out."
+        " atpg.sat_conflict_schedule (default 10000,100000,1000000) is a"
+        " comma list of conflict caps that escalates a fault's SAT budget only"
+        " when it aborts, so a run gives the same patterns under any load;"
+        " atpg.sat_ceiling_seconds (default 300) is the wall-clock backstop"
+        " per solve. atpg.sat_timeout_schedule (a comma list like 2,10,60)"
+        " or atpg.sat_conflict_limit selects the old wall-clock schedule"
+        " instead (load-dependent); either beside a conflict schedule is"
+        " refused."
         " atpg.workers sets parallel workers (1=serial); prefer WORKERS."
         " atpg.easy_fault_reserve (default 2): when workers >= 4, reserve"
         " this many slots per wave for easy (small-cone) faults while the"
@@ -464,7 +471,7 @@ COMMAND_HELP = {
         " atpg.output is a rarely-produced internal fallback path, not a"
         " normal ATPG deliverable.",
         "",
-        "set_option atpg.sat_timeout_schedule 2,10,60\n"
+        "set_option atpg.sat_ceiling_seconds 600\n"
         "set_option atpg.compaction dynamic\n"
         "set_option simulation.verify true",
     ),

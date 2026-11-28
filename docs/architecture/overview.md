@@ -191,7 +191,7 @@ flowchart TD
     A[Random-fill vectors] --> B[Fault-simulate]
     B --> C{coverage target met?}
     C -- yes --> Z([done: THRESHOLD_MET])
-    C -- no --> D["Per-fault SAT — CaDiCaL<br/>cone-restricted, escalating timeout"]
+    C -- no --> D["Per-fault SAT — CaDiCaL<br/>cone-restricted, escalating conflict caps"]
     D -- SAT --> E[Golden-ref verify] --> F[Fault-simulate vs. remaining faults]
     D -- UNSAT --> G[mark redundant]
     D -- TIMEOUT / UNKNOWN --> H[leave undetected]

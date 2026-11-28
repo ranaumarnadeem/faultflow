@@ -15,9 +15,10 @@ from typing import Any, Sequence
 from faultflow.atpg import VectorSet
 from faultflow.config import (
     FaultflowConfig,
+    SatTier,
     interleave_easy_hard,
-    parse_timeout_schedule,
     resolve_sim_threads,
+    sat_tiers,
 )
 from faultflow.db import connect, init_schema, record_sat_outcomes, summary
 from faultflow.db.candidates import (
@@ -33,6 +34,7 @@ from faultflow.runner.parallel_solve import install_seed, solve_fault_worker
 from faultflow.runner.progressive_atpg import (
     ATPGRANDOM_SEED,
     AtpgStats,
+    CeilingWatch,
     GradeHeartbeat,
     SolveHeartbeat,
     _RoundTracker,
@@ -43,6 +45,8 @@ from faultflow.runner.progressive_atpg import (
     _random_stop_reached,
     _should_stall,
     pattern_key,
+    schedule_key,
+    tier_for,
 )
 from faultflow.runner.runner import RunnerError
 from faultflow.scan.atpg_view import (
@@ -2142,18 +2146,19 @@ def run_progressive_scan_atpg(
         conn.commit()
         run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
 
-    # Escalating SAT timeout: each fault starts at the smallest tier and only
-    # moves up a tier once it has timed out. prior_timeout_count persists across
-    # rounds so a fault that keeps timing out is given progressively more budget.
-    timeout_tiers = parse_timeout_schedule(
-        cfg.atpg.sat_timeout_schedule, cfg.atpg.sat_timeout_seconds
-    )
+    # Escalating SAT tiers (see sat_tiers): each fault starts at the smallest tier
+    # and only moves up a tier once it has aborted. prior_timeout_count persists
+    # across rounds so a fault that keeps aborting is given progressively more
+    # budget.
+    tiers = sat_tiers(cfg.atpg)
+    ceiling = CeilingWatch(cfg.atpg)
     prior_timeout_count: dict[int, int] = {}
-    if len(timeout_tiers) > effective_max_rounds:
+    if len(tiers) > effective_max_rounds:
         log.warning(
-            "atpg   sat_timeout_schedule has %d tiers but only %d rounds are "
+            "atpg   %s has %d tiers but only %d rounds are "
             "allowed; the longest tiers will never be reached",
-            len(timeout_tiers),
+            schedule_key(cfg.atpg),
+            len(tiers),
             effective_max_rounds,
         )
 
@@ -2207,9 +2212,9 @@ def run_progressive_scan_atpg(
         _solve_kind = "scan_stuck_at"
 
     # OT structural reconvergence preflight (cfg.atpg.preflight, stuck-at only):
-    # reconvergent-site faults are sorted last and their SAT timeout tier is
-    # bumped by 1 so the short (2 s) tier is skipped -- these faults are likely
-    # hard and waste the short budget. Ordering only: a reconvergent stem is no
+    # reconvergent-site faults are sorted last and their SAT tier is bumped by 1
+    # so the smallest tier is skipped -- these faults are likely hard and waste
+    # the smallest budget. Ordering only: a reconvergent stem is no
     # redundancy proof (its faults, and each branch's, can be testable), so every
     # verdict still comes from SAT. Falls back silently if opentest is not on
     # PATH or the preflight subprocess fails.
@@ -2244,10 +2249,10 @@ def run_progressive_scan_atpg(
         )
 
     def solve(
-        fault_id: int, blocked: list[str], timeout: int, *, seeded: bool
+        fault_id: int, blocked: list[str], tier: SatTier, *, seeded: bool
     ) -> dict[str, Any]:
-        """One scan SAT solve on the view; `seeded`: through the decompressor
-        (no constraint without compression)."""
+        """One scan SAT solve on the view at `tier`; `seeded`: through the
+        decompressor (no constraint without compression)."""
         seed = _seed_kwargs(scan_ctx, los=los) if seeded else {}
         if los:
             return dict(
@@ -2259,8 +2264,8 @@ def run_progressive_scan_atpg(
                     los_couple_ports,
                     los_head_ports,
                     blocked,
-                    cfg.atpg.sat_conflict_limit,
-                    timeout,
+                    tier.conflicts,
+                    tier.seconds,
                     unsupported,
                     cone_restrict=cfg.atpg.cone_restrict,
                     **seed,
@@ -2274,8 +2279,8 @@ def run_progressive_scan_atpg(
                     effective_db_path,
                     fault_id,
                     blocked,
-                    cfg.atpg.sat_conflict_limit,
-                    timeout,
+                    tier.conflicts,
+                    tier.seconds,
                     unsupported,
                     cone_restrict=cfg.atpg.cone_restrict,
                     **seed,
@@ -2288,8 +2293,8 @@ def run_progressive_scan_atpg(
                 effective_db_path,
                 fault_id,
                 blocked,
-                cfg.atpg.sat_conflict_limit,
-                timeout,
+                tier.conflicts,
+                tier.seconds,
                 unsupported,
                 **seed,
             )
@@ -2455,7 +2460,7 @@ def run_progressive_scan_atpg(
         new_blocks.clear()
 
         # Phase A: seed a tier-skip for reconvergent-site faults so they start at
-        # the second timeout tier (skipping the short 2 s attempt). This is done
+        # the second SAT tier (skipping the smallest attempt). This is done
         # once per round, before the sort and before parallel dispatch, so both
         # paths pick up the updated prior_timeout_count.
         if _reconv_ids:
@@ -2527,13 +2532,8 @@ def run_progressive_scan_atpg(
                         db_blocked.get(row.fault_id, set())
                         | rejected_patterns.get(row.fault_id, set())
                     ),
-                    cfg.atpg.sat_conflict_limit,
-                    timeout_tiers[
-                        min(
-                            prior_timeout_count.get(row.fault_id, 0),
-                            len(timeout_tiers) - 1,
-                        )
-                    ],
+                    tier_for(tiers, prior_timeout_count, row.fault_id).conflicts,
+                    tier_for(tiers, prior_timeout_count, row.fault_id).seconds,
                     unsupported,
                     cfg.atpg.cone_restrict,
                     list(los_couple_ports) if los else [],
@@ -2577,9 +2577,7 @@ def run_progressive_scan_atpg(
             blocked = sorted(
                 db_blocked.get(fault_id, set()) | rejected_patterns.get(fault_id, set())
             )
-            tier_timeout = timeout_tiers[
-                min(prior_timeout_count.get(fault_id, 0), len(timeout_tiers) - 1)
-            ]
+            tier = tier_for(tiers, prior_timeout_count, fault_id)
             if _parallel_results:
                 # Parallel path: result already computed by a worker process.
                 _pre_res, _pre_slv = _parallel_results.get(
@@ -2587,11 +2585,14 @@ def run_progressive_scan_atpg(
                 )
                 solved = dict(_pre_slv)
                 result = _pre_res
+                ceiling.note(result, float(solved.get("solve_seconds", 0.0)))
             else:
                 solve_started = time.perf_counter()
-                solved = solve(fault_id, blocked, tier_timeout, seeded=True)
-                atpg_seconds += time.perf_counter() - solve_started
+                solved = solve(fault_id, blocked, tier, seeded=True)
+                solve_seconds = time.perf_counter() - solve_started
+                atpg_seconds += solve_seconds
                 result = str(solved["result"])
+                ceiling.note(result, solve_seconds)
                 _solved_count += 1
                 _solve_hb.tick(_solved_count)
             if result == "SAT":
@@ -2686,7 +2687,7 @@ def run_progressive_scan_atpg(
                 if scan_ctx.decompressor is not None and not q_stem:
                     solve_started = time.perf_counter()
                     testable_free = (
-                        solve(fault_id, blocked, tier_timeout, seeded=False)["result"]
+                        solve(fault_id, blocked, tier, seeded=False)["result"]
                         != "UNSAT"
                     )
                     atpg_seconds += time.perf_counter() - solve_started
@@ -2708,8 +2709,8 @@ def run_progressive_scan_atpg(
                             fault_id=fault_id,
                             site_key=row.fault_site_key,
                             cell_map=reduced_cell_map,
-                            conflict_limit=cfg.atpg.sat_conflict_limit,
-                            timeout=tier_timeout,
+                            conflict_limit=tier.conflicts,
+                            timeout=tier.seconds,
                             unsupported=unsupported,
                             cone_restrict=cfg.atpg.cone_restrict,
                             transition=transition,
@@ -2778,9 +2779,7 @@ def run_progressive_scan_atpg(
             prev_detected=prev_detected,
             prev_redundant=prev_redundant,
             round_outcomes=round_tracker.sat_outcomes,
-        ) and not _escalation_headroom(
-            active_ids_end, prior_timeout_count, timeout_tiers
-        ):
+        ) and not _escalation_headroom(active_ids_end, prior_timeout_count, tiers):
             with connect(effective_db_path) as conn:
                 init_schema(conn)
                 _termination_sweep_q_stems(conn, campaign_id, scan_ctx.q_stem_site_keys)
@@ -2792,6 +2791,7 @@ def run_progressive_scan_atpg(
         _executor.shutdown(wait=False)
 
     log.info("atpg   terminated: %s", terminal)
+    ceiling.warn()
     if unresolved["hold"]:
         log.info(
             "atpg   %d faults are testable only with [scan] hold lifted "
