@@ -1128,6 +1128,161 @@ def test_compressed_campaign_solves_through_the_decompressor(
                 assert kwargs["seeded_inputs"] == compressed_ctx.seeded_inputs
 
 
+class _InlineScanPool:
+    """Stands in for ProcessPoolExecutor in the scan loop: records each wave's
+    solve_fault_worker tuples (kind, json, cell_map, db, fault_id, blocked,
+    conflict_limit, timeout, ...) and answers an instant TIMEOUT (what the C++
+    reports for a conflict-cap stop)."""
+
+    waves: list[tuple[Any, ...]] = []
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
+    def map(self, _fn: object, wave: Any) -> list[tuple[int, str, dict[str, object]]]:
+        out = []
+        for args in wave:
+            _InlineScanPool.waves.append(tuple(args))
+            out.append(
+                (int(args[4]), "TIMEOUT", {"result": "TIMEOUT", "solve_seconds": 0.0})
+            )
+        return out
+
+    def shutdown(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("workers", [1, 2])
+def test_scan_loop_escalates_through_conflict_caps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_cpp_core: None,
+    workers: int,
+) -> None:
+    """[atpg] sat_conflict_schedule: every scan solve, serial or in a parallel
+    wave, carries the tier's conflict cap and the wall-clock ceiling, and a fault
+    the cap stops moves to the next cap."""
+    import faultflow.runner.runner as runner_mod
+    import faultflow.scan.detection_pipeline as pipeline
+    from faultflow.db.campaign import ensure_campaign
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(tmp_path)
+    cfg = dataclasses.replace(
+        cfg,
+        atpg=dataclasses.replace(
+            cfg.atpg,
+            sat_conflict_schedule="10,20,30",
+            sat_ceiling_seconds=77,
+            workers=workers,
+        ),
+    )
+    scan_ctx = dataclasses.replace(scan_ctx, cfg=cfg)
+    core = runner_mod._load_core()
+    assert core is not None
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    seen: list[tuple[int, int, int]] = []
+
+    def capped_solve(*args: object, **kwargs: object) -> dict[str, object]:
+        seen.append(
+            (
+                int(cast(int, args[3])),
+                int(cast(int, kwargs.get("conflict_limit", args[5]))),
+                int(cast(int, kwargs.get("sat_timeout_seconds", args[6]))),
+            )
+        )
+        return {"result": "TIMEOUT", "vector": {}}
+
+    monkeypatch.setattr(core, "solve_fault_atpg", capped_solve)
+    _InlineScanPool.waves = []
+    monkeypatch.setattr(pipeline, "ProcessPoolExecutor", _InlineScanPool)
+    run_progressive_scan_atpg(
+        cfg,
+        atpg_view,
+        redundancy_model_id(fp),
+        campaign_id=campaign_id,
+        scan_ctx=scan_ctx,
+        max_rounds=5,
+        target_coverage=100.0,
+    )
+
+    if workers > 1:
+        seen = [(int(a[4]), int(a[6]), int(a[7])) for a in _InlineScanPool.waves]
+    per_fault: dict[int, list[tuple[int, int]]] = {}
+    for fault_id, conflicts, seconds in seen:
+        per_fault.setdefault(fault_id, []).append((conflicts, seconds))
+    escalating = [seq for seq in per_fault.values() if len(seq) >= 3]
+    assert escalating, "no fault was attempted in three rounds"
+    for seq in escalating:
+        assert seq[:3] == [(10, 77), (20, 77), (30, 77)]
+        assert all(pair == (30, 77) for pair in seq[3:])
+
+
+@pytest.mark.unit
+def test_scan_ceiling_hit_warns_the_run_may_not_reproduce(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    require_cpp_core: None,
+) -> None:
+    """A scan solve the wall-clock ceiling stopped (it ran the whole ceiling):
+    the run warns; the instant conflict-cap stops beside it don't count."""
+    import time
+
+    import faultflow.runner.runner as runner_mod
+    from faultflow.db.campaign import ensure_campaign
+
+    monkeypatch.chdir(tmp_path)
+    cfg, atpg_view, _generic, scan_ctx, fp = _tiny_dff_scan_workspace(tmp_path)
+    cfg = dataclasses.replace(
+        cfg,
+        atpg=dataclasses.replace(
+            cfg.atpg, sat_conflict_schedule="10,20,30", sat_ceiling_seconds=1
+        ),
+    )
+    scan_ctx = dataclasses.replace(scan_ctx, cfg=cfg)
+    core = runner_mod._load_core()
+    assert core is not None
+    monkeypatch.setattr(core, "atpg_random_vectors", lambda *_a, **_k: [])
+    calls: list[int] = []
+
+    def first_slow(*_args: object, **_kwargs: object) -> dict[str, object]:
+        if not calls:
+            time.sleep(1.05)
+        calls.append(1)
+        return {"result": "TIMEOUT", "vector": {}}
+
+    monkeypatch.setattr(core, "solve_fault_atpg", first_slow)
+    with connect(cfg.db_path) as conn:
+        init_schema(conn)
+        campaign_id = ensure_campaign(conn, "scan", fp)
+
+    with caplog.at_level("WARNING"):
+        run_progressive_scan_atpg(
+            cfg,
+            atpg_view,
+            redundancy_model_id(fp),
+            campaign_id=campaign_id,
+            scan_ctx=scan_ctx,
+            max_rounds=1,
+            target_coverage=100.0,
+        )
+
+    assert len(calls) > 1
+    warnings = [
+        r.message
+        for r in caplog.records
+        if r.levelname == "WARNING" and "sat_ceiling_seconds" in r.message
+    ]
+    assert len(warnings) == 1
+    assert " 1 SAT solve(s) " in warnings[0] and "reproduce" in warnings[0]
+
+
 @pytest.mark.unit
 def test_unsat_only_through_the_decompressor_is_compression_unresolved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_cpp_core: None

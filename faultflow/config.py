@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Sequence
 from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
@@ -92,6 +93,104 @@ def parse_timeout_schedule(value: str, fallback: int) -> list[int]:
             )
         tiers.append(seconds)
     return tiers
+
+
+# The default SAT tiers: conflict caps, so a run gives the same patterns under
+# any load. Measured 2026-11-27/28 on picorv32a (docs/plans/abort_limits.md):
+# the 1,000,000 tier proves redundant the faults every 100,000-capped schedule
+# (the old wall clock's included) leaves aborted.
+DEFAULT_SAT_CONFLICT_SCHEDULE = "10000,100000,1000000"
+
+# The keys that tune the wall-clock schedule; set explicitly, they select it.
+WALL_CLOCK_SAT_KEYS = ("sat_timeout_schedule", "sat_conflict_limit")
+
+
+def parse_conflict_schedule(value: str) -> list[int]:
+    """Parse ``[atpg] sat_conflict_schedule`` into a list of conflict caps.
+
+    A comma-separated list of positive integers, smallest first (e.g.
+    ``"2000,20000,200000"``): each tier stops a SAT solve after that many CaDiCaL
+    conflicts, so where a solve aborts does not depend on machine load. An empty
+    string means "off" (the wall-clock ``sat_timeout_schedule`` applies).
+    """
+    text = value.strip()
+    if not text:
+        return []
+    caps: list[int] = []
+    for token in text.split(","):
+        token = token.strip()
+        try:
+            conflicts = int(token)
+        except ValueError:
+            raise ConfigError(
+                f"sat_conflict_schedule entries must be integers, got {token!r}"
+            )
+        if conflicts < 1:
+            raise ConfigError(
+                f"sat_conflict_schedule entries must be >= 1 conflict, got {conflicts}"
+            )
+        if caps and conflicts <= caps[-1]:
+            # A conflict-capped solve is deterministic: an equal or smaller next
+            # cap can never resolve what the previous one could not.
+            raise ConfigError(
+                "sat_conflict_schedule must be strictly increasing "
+                f"(smallest first): got {conflicts} after {caps[-1]}"
+            )
+        caps.append(conflicts)
+    return caps
+
+
+def resolve_conflict_schedule(
+    current: str, explicit: str | None, wall_keys: Sequence[str]
+) -> str:
+    """The ``sat_conflict_schedule`` a run uses, given what was set explicitly.
+
+    `explicit` is the schedule the user set (None: not set; empty: off) and
+    `wall_keys` the wall-clock keys (WALL_CLOCK_SAT_KEYS) they set. An explicit
+    schedule wins, and a wall-clock key beside a non-empty one is a contradiction;
+    a wall-clock key alone selects the wall clock (an existing config that tunes
+    it runs as it did before the conflict schedule became the default); with
+    neither, `current` stands (the default, or what a loaded config chose).
+    """
+    if explicit is not None:
+        if parse_conflict_schedule(explicit) and wall_keys:
+            raise ConfigError(
+                f"[atpg] {wall_keys[0]} doesn't apply with sat_conflict_schedule "
+                "(each tier is a conflict cap under sat_ceiling_seconds): "
+                "set one or the other"
+            )
+        return explicit.strip()
+    if wall_keys:
+        return ""
+    return current
+
+
+@dataclass(frozen=True)
+class SatTier:
+    """One SAT escalation tier: the CaDiCaL conflict cap and the wall-clock limit
+    (seconds) every solve at this tier runs under."""
+
+    conflicts: int
+    seconds: int
+
+
+def sat_tiers(atpg: AtpgConfig) -> list[SatTier]:
+    """The escalation tiers a progressive ATPG loop solves each fault at.
+
+    With ``sat_conflict_schedule`` (the default) the tiers are its conflict caps,
+    each under the ``sat_ceiling_seconds`` wall-clock backstop: reproducible under
+    any load as long as the backstop never fires. Empty, the wall-clock tiers: the
+    fixed ``sat_conflict_limit`` beside each ``sat_timeout_schedule`` entry.
+    """
+    caps = parse_conflict_schedule(atpg.sat_conflict_schedule)
+    if caps:
+        return [SatTier(conflicts=c, seconds=atpg.sat_ceiling_seconds) for c in caps]
+    return [
+        SatTier(conflicts=atpg.sat_conflict_limit, seconds=s)
+        for s in parse_timeout_schedule(
+            atpg.sat_timeout_schedule, atpg.sat_timeout_seconds
+        )
+    ]
 
 
 def interleave_easy_hard(sorted_items: list, workers: int, easy_reserve: int) -> list:
@@ -274,6 +373,17 @@ class AtpgConfig:
     # escalates a fault that times out, so easy faults clear fast and long
     # budgets are reserved for hard ones. Parsed by parse_timeout_schedule().
     sat_timeout_schedule: str = "2,10,60"
+    # Reproducible SAT abort limits (the default). A comma-separated list of
+    # CaDiCaL conflict caps replaces the wall-clock schedule above (and
+    # sat_conflict_limit): where a solve stops doesn't depend on machine load, so
+    # a run gives the same patterns every time. Empty selects the wall clock, as
+    # does setting sat_timeout_schedule or sat_conflict_limit in a config
+    # (resolve_conflict_schedule). Parsed by parse_conflict_schedule(); see
+    # sat_tiers().
+    sat_conflict_schedule: str = DEFAULT_SAT_CONFLICT_SCHEDULE
+    # With sat_conflict_schedule, the wall-clock backstop per solve, only against
+    # a pathological solve. A solve it stops depends on load again: the run warns.
+    sat_ceiling_seconds: int = 300
     compaction: str = "reverse"
     # When true, an accepted+verified SAT pattern is fault-simulated against ALL
     # remaining undetected faults this round (dropping fortuitous detections),
@@ -302,7 +412,7 @@ class AtpgConfig:
     # [simulation] sim_threads.
     workers: int = 1
     # Run OT structural reconvergence analysis before ATPG (requires opentest on PATH).
-    # Reconvergent-site faults are sorted last and skip the short timeout tier.
+    # Reconvergent-site faults are sorted last and skip the smallest SAT tier.
     # Ordering only: redundancy is still decided by SAT alone.
     # Falls back silently when opentest is unavailable.
     preflight: bool = True
@@ -1134,6 +1244,21 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
     parse_timeout_schedule(
         atpg_sat_timeout_schedule, _int(parser, "atpg", "sat_timeout_seconds", 10)
     )
+    atpg_sat_conflict_schedule = resolve_conflict_schedule(
+        DEFAULT_SAT_CONFLICT_SCHEDULE,
+        (
+            parser.get("atpg", "sat_conflict_schedule")
+            if parser.has_option("atpg", "sat_conflict_schedule")
+            else None
+        ),
+        [key for key in WALL_CLOCK_SAT_KEYS if parser.has_option("atpg", key)],
+    )
+    atpg_sat_ceiling_seconds = _int(parser, "atpg", "sat_ceiling_seconds", 300)
+    if atpg_sat_ceiling_seconds < 1:
+        raise ConfigError(
+            "[atpg] sat_ceiling_seconds must be >= 1, "
+            f"got {atpg_sat_ceiling_seconds}"
+        )
 
     # Fault model: `model` is canonical; `type` is a back-compat alias (older
     # configs carried `type = stuck_at`). Prefer `model` when both are present.
@@ -1210,6 +1335,8 @@ def load_config(path: str | Path, top: str) -> FaultflowConfig:
             max_rounds=_int(parser, "atpg", "max_rounds", 20),
             sat_timeout_seconds=_int(parser, "atpg", "sat_timeout_seconds", 10),
             sat_timeout_schedule=atpg_sat_timeout_schedule,
+            sat_conflict_schedule=atpg_sat_conflict_schedule,
+            sat_ceiling_seconds=atpg_sat_ceiling_seconds,
             compaction=atpg_compaction,
             fault_drop_sat=_bool(parser, "atpg", "fault_drop_sat", True),
             cone_restrict=_bool(parser, "atpg", "cone_restrict", True),

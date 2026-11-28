@@ -47,14 +47,22 @@ random_vectors       = 64
 # this percent, or once the full random_vectors budget is graded, whichever comes
 # first (default 85.0). 0.0 disables the early switch.
 random_stop_coverage = 85.0
-sat_conflict_limit   = 100000
 max_rounds           = 20
-sat_timeout_seconds  = 10
-# Escalating per-fault SAT timeout (default: 2,10,60). Comma list smallest-first:
-# each fault is attempted at the shortest timeout first and only escalates when it
-# times out, so easy faults clear fast and long budgets go to the hard ones.
-# Set to empty to use the fixed sat_timeout_seconds for all faults.
-sat_timeout_schedule = 2,10,60
+# SAT abort limits, escalating per fault (default 10000,100000,1000000): a comma
+# list of CaDiCaL conflict caps, smallest first. Each fault is attempted at the
+# smallest cap and only escalates when it aborts there, so easy faults clear fast
+# and the big budgets go to the hard ones. A conflict cap doesn't depend on machine
+# load, so a run gives the same patterns every time. sat_ceiling_seconds (default
+# 300) is a wall-clock backstop per solve, only against a pathological one.
+# sat_conflict_schedule = 10000,100000,1000000
+# sat_ceiling_seconds   = 300
+# The old wall-clock schedule instead (load-dependent: a run may not reproduce):
+# setting sat_timeout_schedule or sat_conflict_limit selects it, and setting either
+# beside sat_conflict_schedule is an error. Empty sat_timeout_schedule uses the
+# fixed sat_timeout_seconds for every fault.
+# sat_timeout_schedule = 2,10,60
+# sat_conflict_limit   = 100000
+# sat_timeout_seconds  = 10
 # Test-set compaction after ATPG: reverse (reverse-order fault-sim static
 # compaction, coverage-preserving; default), dynamic (sim-verified cube-packing),
 # or none.

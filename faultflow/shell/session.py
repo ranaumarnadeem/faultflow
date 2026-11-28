@@ -5,9 +5,10 @@ import json
 import os
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from faultflow.config import (
+    WALL_CLOCK_SAT_KEYS,
     AtpgConfig,
     ClockSpec,
     ConfigError,
@@ -17,11 +18,27 @@ from faultflow.config import (
     ScanConfig,
     SimulationConfig,
     parse_bool_value,
+    parse_conflict_schedule,
     parse_timeout_schedule,
+    resolve_conflict_schedule,
 )
 from faultflow.project.profiles import TechnologyProfile, get_profile
 from faultflow.service import ArtifactPolicy, FlowService, OperationResult
 from faultflow.shell.errors import ShellError, precondition, unsupported
+
+
+def _sat_conflict_schedule(current: str, options: Mapping[str, str]) -> str:
+    """The run's sat_conflict_schedule under the session's options (see
+    config.resolve_conflict_schedule): an explicit one wins, a wall-clock key
+    alone selects the wall clock, neither keeps `current`."""
+    try:
+        return resolve_conflict_schedule(
+            current,
+            options.get("atpg.sat_conflict_schedule"),
+            [key for key in WALL_CLOCK_SAT_KEYS if f"atpg.{key}" in options],
+        )
+    except ConfigError as exc:
+        raise ShellError(str(exc), "CONFIG", "INVALID_VALUE")
 
 
 @dataclass(frozen=True)
@@ -485,6 +502,16 @@ class ProjectSession:
                     cfg,
                     atpg=replace(cfg.atpg, sat_timeout_schedule=value),
                 )
+            elif key == "atpg.sat_conflict_schedule":
+                cfg = replace(
+                    cfg,
+                    atpg=replace(cfg.atpg, sat_conflict_schedule=value),
+                )
+            elif key == "atpg.sat_ceiling_seconds":
+                cfg = replace(
+                    cfg,
+                    atpg=replace(cfg.atpg, sat_ceiling_seconds=int(value)),
+                )
             elif key == "atpg.preflight":
                 cfg = replace(
                     cfg,
@@ -573,6 +600,15 @@ class ProjectSession:
                         verify_use_power_pins=parse_bool_value(value, key),
                     ),
                 )
+        cfg = replace(
+            cfg,
+            atpg=replace(
+                cfg.atpg,
+                sat_conflict_schedule=_sat_conflict_schedule(
+                    cfg.atpg.sat_conflict_schedule, self.options
+                ),
+            ),
+        )
         if self.scan_nonscan_cells or self.scan_holds or self.scan_test_access:
             cfg = replace(
                 cfg,
@@ -894,7 +930,9 @@ class ProjectSession:
             "atpg.preflight",
             "atpg.random_stop_coverage",
             "atpg.random_vectors",
+            "atpg.sat_ceiling_seconds",
             "atpg.sat_conflict_limit",
+            "atpg.sat_conflict_schedule",
             "atpg.sat_timeout_seconds",
             "atpg.sat_timeout_schedule",
             "atpg.workers",
@@ -939,6 +977,7 @@ class ProjectSession:
                 )
         if key in {
             "atpg.max_rounds",
+            "atpg.sat_ceiling_seconds",
             "atpg.sat_conflict_limit",
             "atpg.sat_timeout_seconds",
             "atpg.workers",
@@ -988,6 +1027,16 @@ class ProjectSession:
                 parse_timeout_schedule(value, 1)
             except ConfigError as exc:
                 raise ShellError(str(exc), "CONFIG", "INVALID_VALUE")
+        if key == "atpg.sat_conflict_schedule":
+            try:
+                parse_conflict_schedule(value)
+            except ConfigError as exc:
+                raise ShellError(str(exc), "CONFIG", "INVALID_VALUE")
+        if key == "atpg.sat_conflict_schedule" or key in {
+            f"atpg.{wall_key}" for wall_key in WALL_CLOCK_SAT_KEYS
+        }:
+            # A wall-clock key beside a conflict schedule fails here, not at run.
+            _sat_conflict_schedule("", {**self.options, key: value})
         if key in {
             "atpg.incremental_sat",
             "atpg.preflight",

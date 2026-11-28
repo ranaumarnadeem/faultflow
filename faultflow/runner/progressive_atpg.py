@@ -10,14 +10,17 @@ from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from multiprocessing import get_context
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from faultflow.atpg import VectorSet
 from faultflow.config import (
+    AtpgConfig,
     FaultflowConfig,
+    SatTier,
     interleave_easy_hard,
-    parse_timeout_schedule,
+    parse_conflict_schedule,
     resolve_sim_threads,
+    sat_tiers,
 )
 from faultflow.db import (
     CAMPAIGN_TYPE_COMB,
@@ -561,27 +564,81 @@ def _should_stall(
 def _escalation_headroom(
     active_ids: list[int],
     prior_timeout_count: dict[int, int],
-    timeout_tiers: list[int],
+    tiers: Sequence[object],
 ) -> bool:
-    """True while a still-active fault has an untried, longer SAT-timeout tier.
+    """True while a still-active fault has an untried, larger SAT tier.
 
-    This holds off the stall verdict: a fault that keeps timing out should be
-    retried at every tier of sat_timeout_schedule before the loop gives up,
-    otherwise the longest tiers -- the whole point of the schedule -- would never
-    be reached once a round stops making other progress.
+    This holds off the stall verdict: a fault that keeps aborting should be
+    retried at every tier (sat_timeout_schedule, or sat_conflict_schedule) before
+    the loop gives up, otherwise the largest tiers -- the whole point of the
+    schedule -- would never be reached once a round stops making other progress.
 
-    prior_timeout_count[fault] is how many times the fault has already timed out,
+    prior_timeout_count[fault] is how many times the fault has already aborted,
     which equals how many distinct tiers it has already been attempted at. A fault
-    has headroom only if it has actually timed out at least once (count >= 1) AND
-    has a longer tier still untried (count < number of tiers). Faults that have not
-    timed out -- e.g. protocol-sim failures -- carry no headroom and must not
+    has headroom only if it has actually aborted at least once (count >= 1) AND
+    has a larger tier still untried (count < number of tiers). Faults that have not
+    aborted -- e.g. protocol-sim failures -- carry no headroom and must not
     suppress a stall. With no schedule (a single tier) headroom is always False, so
     the stall behaviour is exactly as before.
     """
-    tier_count = len(timeout_tiers)
+    tier_count = len(tiers)
     return any(
         0 < prior_timeout_count.get(fault_id, 0) < tier_count for fault_id in active_ids
     )
+
+
+def tier_for(
+    tiers: Sequence[SatTier], prior_timeout_count: dict[int, int], fault_id: int
+) -> SatTier:
+    """The tier a fault is solved at: the first, one further per abort so far,
+    capped at the last."""
+    return tiers[min(prior_timeout_count.get(fault_id, 0), len(tiers) - 1)]
+
+
+def schedule_key(atpg: AtpgConfig) -> str:
+    """The [atpg] key the loop's tiers come from (for its log lines)."""
+    if parse_conflict_schedule(atpg.sat_conflict_schedule):
+        return "sat_conflict_schedule"
+    return "sat_timeout_schedule"
+
+
+class CeilingWatch:
+    """Counts the fault solves the wall-clock ceiling stopped in conflict mode.
+
+    The C++ reports any limit stop as TIMEOUT, so a conflict-cap stop and a
+    wall-clock stop look alike; the ceiling's terminator starts its clock just
+    before the solve, so a solve it stopped ran at least the whole ceiling. Such a
+    verdict depends on machine load, which is what the conflict schedule avoids:
+    the loop says so at the end. Without a conflict schedule nothing is counted
+    (every tier is a wall clock there, by design).
+    """
+
+    def __init__(self, atpg: AtpgConfig) -> None:
+        self.seconds: int | None = (
+            atpg.sat_ceiling_seconds
+            if parse_conflict_schedule(atpg.sat_conflict_schedule)
+            else None
+        )
+        self.hits = 0
+
+    def note(self, result: str, solve_seconds: float) -> None:
+        if (
+            self.seconds is not None
+            and result == "TIMEOUT"
+            and solve_seconds >= self.seconds
+        ):
+            self.hits += 1
+
+    def warn(self) -> None:
+        if self.hits:
+            log.warning(
+                "atpg   %d SAT solve(s) ran into the %d s wall-clock ceiling "
+                "(sat_ceiling_seconds) and stopped on it: their verdicts depend "
+                "on machine load, so this run may not reproduce. Raise "
+                "sat_ceiling_seconds or lower the last sat_conflict_schedule cap.",
+                self.hits,
+                self.seconds,
+            )
 
 
 def run_progressive_native_atpg(
@@ -704,18 +761,18 @@ def run_progressive_native_atpg(
         conn.commit()
         run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
 
-    # Escalating SAT timeout (see parse_timeout_schedule): each fault starts at
-    # the smallest tier and only escalates after it times out. prior_timeout_count
-    # persists across rounds so a repeatedly-timing-out fault gets more budget.
-    timeout_tiers = parse_timeout_schedule(
-        cfg.atpg.sat_timeout_schedule, cfg.atpg.sat_timeout_seconds
-    )
+    # Escalating SAT tiers (see sat_tiers): each fault starts at the smallest tier
+    # and only escalates after it aborts. prior_timeout_count persists across
+    # rounds so a repeatedly-aborting fault gets more budget.
+    tiers = sat_tiers(cfg.atpg)
+    ceiling = CeilingWatch(cfg.atpg)
     prior_timeout_count: dict[int, int] = {}
-    if len(timeout_tiers) > effective_max_rounds:
+    if len(tiers) > effective_max_rounds:
         log.warning(
-            "atpg   sat_timeout_schedule has %d tiers but only %d rounds are "
+            "atpg   %s has %d tiers but only %d rounds are "
             "allowed; the longest tiers will never be reached",
-            len(timeout_tiers),
+            schedule_key(cfg.atpg),
+            len(tiers),
             effective_max_rounds,
         )
 
@@ -748,7 +805,7 @@ def run_progressive_native_atpg(
             _parallel = False
 
     # OT structural reconvergence preflight (cfg.atpg.preflight): reconvergent-
-    # site faults sorted last + tier bumped to skip the short timeout tier.
+    # site faults sorted last + tier bumped to skip the smallest SAT tier.
     # Ordering only: a reconvergent stem is no redundancy proof (its faults, and
     # each branch's, can be testable), so every verdict still comes from SAT.
     # Falls back silently if opentest is not on PATH.
@@ -1006,13 +1063,8 @@ def run_progressive_native_atpg(
                             effective_db_path,
                             fid,
                             sorted(rejected_patterns.get(fid, set())),
-                            cfg.atpg.sat_conflict_limit,
-                            timeout_tiers[
-                                min(
-                                    prior_timeout_count.get(fid, 0),
-                                    len(timeout_tiers) - 1,
-                                )
-                            ],
+                            tier_for(tiers, prior_timeout_count, fid).conflicts,
+                            tier_for(tiers, prior_timeout_count, fid).seconds,
                             unsupported,
                             cfg.atpg.cone_restrict,
                             [],  # los_couple_ports: native path is stuck-at only
@@ -1053,9 +1105,7 @@ def run_progressive_native_atpg(
                         )
                     atpg_seconds += time.perf_counter() - _wave_started
             blocked = sorted(rejected_patterns.get(fault_id, set()))
-            tier_timeout = timeout_tiers[
-                min(prior_timeout_count.get(fault_id, 0), len(timeout_tiers) - 1)
-            ]
+            tier = tier_for(tiers, prior_timeout_count, fault_id)
             if _parallel_results:
                 # pop, not get: each fault_id in active_ids is read exactly
                 # once (this loop never revisits one), and a wave's results
@@ -1071,6 +1121,7 @@ def run_progressive_native_atpg(
                 )
                 solved = dict(_pre_slv)
                 result = _pre_res
+                ceiling.note(result, float(solved.get("solve_seconds", 0.0)))
             else:
                 atpg_started = time.perf_counter()
                 solved = dict(
@@ -1080,16 +1131,18 @@ def run_progressive_native_atpg(
                         effective_db_path,
                         fault_id,
                         blocked,
-                        cfg.atpg.sat_conflict_limit,
-                        tier_timeout,
+                        tier.conflicts,
+                        tier.seconds,
                         unsupported,
                         bb_instances,
                         cfg.atpg.cone_restrict,
                         cfg.atpg.incremental_sat,
                     )
                 )
-                atpg_seconds += time.perf_counter() - atpg_started
+                solve_seconds = time.perf_counter() - atpg_started
+                atpg_seconds += solve_seconds
                 result = str(solved["result"])
+                ceiling.note(result, solve_seconds)
                 _solved_count += 1
                 _solve_hb.tick(_solved_count)
             if result == "SAT":
@@ -1174,8 +1227,8 @@ def run_progressive_native_atpg(
                         db_path=effective_db_path,
                         fault_id=fault_id,
                         net_index=int(row_by_id[fault_id]["net_index"]),
-                        conflict_limit=cfg.atpg.sat_conflict_limit,
-                        timeout=tier_timeout,
+                        conflict_limit=tier.conflicts,
+                        timeout=tier.seconds,
                         unsupported=unsupported,
                         cone_restrict=cfg.atpg.cone_restrict,
                         transition=False,
@@ -1235,9 +1288,7 @@ def run_progressive_native_atpg(
             prev_detected=prev_detected,
             prev_redundant=prev_redundant,
             round_outcomes=round_tracker.sat_outcomes,
-        ) and not _escalation_headroom(
-            active_ids_end, prior_timeout_count, timeout_tiers
-        ):
+        ) and not _escalation_headroom(active_ids_end, prior_timeout_count, tiers):
             terminal = "STALLED"
             break
 
@@ -1245,6 +1296,7 @@ def run_progressive_native_atpg(
         _executor.shutdown(wait=False)
 
     log.info("atpg   terminated: %s", terminal)
+    ceiling.warn()
 
     with connect(effective_db_path) as conn:
         init_schema(conn)
@@ -1378,18 +1430,18 @@ def run_progressive_transition_atpg(
         conn.commit()
         run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
 
-    # Escalating SAT timeout (see parse_timeout_schedule): each fault starts at
-    # the smallest tier and only escalates after it times out. prior_timeout_count
-    # persists across rounds so a repeatedly-timing-out fault gets more budget.
-    timeout_tiers = parse_timeout_schedule(
-        cfg.atpg.sat_timeout_schedule, cfg.atpg.sat_timeout_seconds
-    )
+    # Escalating SAT tiers (see sat_tiers): each fault starts at the smallest tier
+    # and only escalates after it aborts. prior_timeout_count persists across
+    # rounds so a repeatedly-aborting fault gets more budget.
+    tiers = sat_tiers(cfg.atpg)
+    ceiling = CeilingWatch(cfg.atpg)
     prior_timeout_count: dict[int, int] = {}
-    if len(timeout_tiers) > effective_max_rounds:
+    if len(tiers) > effective_max_rounds:
         log.warning(
-            "atpg   sat_timeout_schedule has %d tiers but only %d rounds are "
+            "atpg   %s has %d tiers but only %d rounds are "
             "allowed; the longest tiers will never be reached",
-            len(timeout_tiers),
+            schedule_key(cfg.atpg),
+            len(tiers),
             effective_max_rounds,
         )
 
@@ -1559,13 +1611,8 @@ def run_progressive_transition_atpg(
                             effective_db_path,
                             fid,
                             sorted(rejected_patterns.get(fid, set())),
-                            cfg.atpg.sat_conflict_limit,
-                            timeout_tiers[
-                                min(
-                                    prior_timeout_count.get(fid, 0),
-                                    len(timeout_tiers) - 1,
-                                )
-                            ],
+                            tier_for(tiers, prior_timeout_count, fid).conflicts,
+                            tier_for(tiers, prior_timeout_count, fid).seconds,
                             unsupported,
                             cfg.atpg.cone_restrict,
                             [],  # los_couple_ports: unused by native_transition
@@ -1604,9 +1651,7 @@ def run_progressive_transition_atpg(
                         )
                     atpg_seconds += time.perf_counter() - _wave_started
             blocked = sorted(rejected_patterns.get(fault_id, set()))
-            tier_timeout = timeout_tiers[
-                min(prior_timeout_count.get(fault_id, 0), len(timeout_tiers) - 1)
-            ]
+            tier = tier_for(tiers, prior_timeout_count, fault_id)
             if _parallel_results:
                 # pop, not get: each fault_id in active_ids is read exactly
                 # once (this loop never revisits one), and a wave's results
@@ -1622,6 +1667,7 @@ def run_progressive_transition_atpg(
                 )
                 solved = dict(_pre_slv)
                 result = _pre_res
+                ceiling.note(result, float(solved.get("solve_seconds", 0.0)))
             else:
                 atpg_started = time.perf_counter()
                 solved = dict(
@@ -1631,15 +1677,17 @@ def run_progressive_transition_atpg(
                         effective_db_path,
                         fault_id,
                         blocked,
-                        cfg.atpg.sat_conflict_limit,
-                        tier_timeout,
+                        tier.conflicts,
+                        tier.seconds,
                         unsupported,
                         bb_instances,
                         cfg.atpg.cone_restrict,
                     )
                 )
-                atpg_seconds += time.perf_counter() - atpg_started
+                solve_seconds = time.perf_counter() - atpg_started
+                atpg_seconds += solve_seconds
                 result = str(solved["result"])
+                ceiling.note(result, solve_seconds)
                 _solved_count += 1
                 _solve_hb.tick(_solved_count)
             if result == "SAT":
@@ -1714,8 +1762,8 @@ def run_progressive_transition_atpg(
                         db_path=effective_db_path,
                         fault_id=fault_id,
                         net_index=int(row_by_id[fault_id]["net_index"]),
-                        conflict_limit=cfg.atpg.sat_conflict_limit,
-                        timeout=tier_timeout,
+                        conflict_limit=tier.conflicts,
+                        timeout=tier.seconds,
                         unsupported=unsupported,
                         cone_restrict=cfg.atpg.cone_restrict,
                         transition=True,
@@ -1775,9 +1823,7 @@ def run_progressive_transition_atpg(
             prev_detected=prev_detected,
             prev_redundant=prev_redundant,
             round_outcomes=round_tracker.sat_outcomes,
-        ) and not _escalation_headroom(
-            active_ids_end, prior_timeout_count, timeout_tiers
-        ):
+        ) and not _escalation_headroom(active_ids_end, prior_timeout_count, tiers):
             terminal = "STALLED"
             break
 
@@ -1785,6 +1831,7 @@ def run_progressive_transition_atpg(
         _executor.shutdown(wait=False)
 
     log.info("atpg   transition terminated: %s", terminal)
+    ceiling.warn()
 
     with connect(effective_db_path) as conn:
         init_schema(conn)

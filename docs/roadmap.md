@@ -15,7 +15,8 @@ Implemented today:
 - Posedge **and** negedge D flip-flops (simulated, not just mapped), asynchronous
   set/reset, scan-chain insertion, and scan SAT ATPG.
 - Native C++ SAT ATPG on CaDiCaL, with cone-of-influence CNF restriction, escalating
-  per-fault timeouts, parallel multi-process solving, equivalence-only fault
+  per-fault conflict caps (reproducible under any load), parallel multi-process
+  solving, equivalence-only fault
   collapsing (never dominance, so coverage is provably unchanged), and both
   reverse-order and dynamic (sim-verified cube-packing) test-set compaction.
 - Two PDKs: SkyWater Sky130 HD (default) and OSU035, driven by JSON cell maps.
